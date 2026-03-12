@@ -5489,6 +5489,56 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn init_group_follow_through_refreshes_shared_subscription_targets() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Daemon init_group refresh".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+
+        let created = create_group_and_publish_welcomes_for_init_group(
+            &inviter_keys,
+            &inviter_mdk,
+            invitee_kp,
+            invitee_keys.public_key(),
+            config,
+            |_receiver, _giftwrap| async { Ok(()) },
+        )
+        .await
+        .expect("init group create/publish");
+
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let refreshed = host
+            .refresh_session_state(Vec::new(), 90)
+            .expect("refresh daemon session state");
+        let created_group_id = hex::encode(created.group.nostr_group_id);
+
+        assert_eq!(
+            refreshed.current_group_subscriptions().target_group_ids,
+            vec![created_group_id.clone()]
+        );
+        assert_eq!(
+            refreshed.sync_plan.group_subscriptions.added_group_ids,
+            vec![created_group_id]
+        );
+    }
+
     #[test]
     fn init_group_error_mapping_uses_daemon_publish_marker() {
         let err = anyhow::anyhow!("relay confirm failed").context("init_group_publish_welcome");
@@ -6145,6 +6195,61 @@ mod tests {
         );
         assert_eq!(completed.result.attachment.filename, "daemon-op.txt");
         assert_eq!(completed.result.attachment.mime_type, "text/plain");
+    }
+
+    #[tokio::test]
+    async fn daemon_media_workflow_failure_uses_shared_upload_result_path() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let upload_dir = tempfile::tempdir().expect("upload tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "daemon media failure".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls: Vec<RelayUrl> = Vec::new();
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let file_path = upload_dir.path().join("daemon-media.txt");
+        std::fs::write(&file_path, b"daemon media workflow").expect("write media file");
+
+        let error = upload_daemon_media_file(
+            &host,
+            &inviter_keys,
+            &created.group.mls_group_id,
+            &[],
+            DaemonMediaUploadInput {
+                nostr_group_id: &hex::encode(created.group.nostr_group_id),
+                file_path: file_path.to_str().expect("file path"),
+                mime_type: Some("text/plain"),
+                filename: Some("daemon-media.txt"),
+                include_path_in_validation_errors: false,
+                require_uploaded_url: false,
+            },
+        )
+        .await
+        .expect_err("upload should fail without blossom servers");
+
+        assert_eq!(error.code, "upload_failed");
+        assert!(
+            error
+                .message
+                .contains("no valid Blossom servers configured"),
+            "real daemon media send flow should surface shared upload failure details"
+        );
     }
 
     #[test]

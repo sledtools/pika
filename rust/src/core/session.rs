@@ -112,10 +112,6 @@ fn seed_app_groups_from_open_state(
         .collect()
 }
 
-fn plan_app_session_sync(core: &AppCore, sess: &Session) -> anyhow::Result<RuntimeSessionSyncPlan> {
-    Ok(refresh_runtime_for_app(core, sess)?.sync_plan)
-}
-
 fn refresh_runtime_for_app(
     core: &AppCore,
     sess: &Session,
@@ -184,14 +180,20 @@ impl AppCore {
             self.temporary_key_package_relays(),
         )?;
         tracing::info!("mdk opened");
-        let initial_sync_plan = bootstrapped.open.sync_plan.clone();
+        let BootstrappedRuntimeSession {
+            session: runtime_session,
+            open: initial_open,
+        } = bootstrapped;
         let initial_groups =
-            seed_app_groups_from_open_state(&pubkey, &bootstrapped.open.joined_group_snapshots);
-        let initial_seen_welcomes = bootstrapped.open.seed_seen_welcomes();
-        let runtime_session = bootstrapped.session;
+            seed_app_groups_from_open_state(&pubkey, &initial_open.joined_group_snapshots);
+        let initial_seen_inbound = initial_open.bounded_inbound_relay_seen_cache();
 
         if self.network_enabled() {
-            let relays = initial_sync_plan.relay_roles.session_connect_relays.clone();
+            let relays = initial_open
+                .sync_plan
+                .relay_roles
+                .session_connect_relays
+                .clone();
             tracing::info!(relays = ?relays.iter().map(|r| r.to_string()).collect::<Vec<_>>(), "connecting_relays");
             let client = runtime_session.client.clone();
             self.runtime.spawn(async move {
@@ -227,7 +229,7 @@ impl AppCore {
 
         // Start notifications processing (async -> internal events).
         if self.network_enabled() {
-            self.start_notifications_loop(initial_seen_welcomes);
+            self.start_notifications_loop(initial_seen_inbound);
         }
 
         // Build the chat list. Profiles are already in memory, so names and
@@ -295,7 +297,7 @@ impl AppCore {
         }
     }
 
-    pub(super) fn start_notifications_loop(&mut self, initial_seen_welcomes: HashSet<EventId>) {
+    pub(super) fn start_notifications_loop(&mut self, mut seen: InboundRelaySeenCache) {
         let Some(sess) = self.session.as_ref() else {
             return;
         };
@@ -303,9 +305,6 @@ impl AppCore {
         let client = sess.client.clone();
         let tx = self.core_sender.clone();
         self.runtime.spawn(async move {
-            let mut seen = InboundRelaySeenCache::default();
-            seen.extend(initial_seen_welcomes);
-
             loop {
                 match rx.recv().await {
                     Ok(RelayPoolNotification::Event { event, .. }) => {
@@ -480,10 +479,10 @@ impl AppCore {
         let Some(sess) = self.session.as_ref() else {
             return;
         };
-        let sync_plan = match plan_app_session_sync(self, sess) {
-            Ok(plan) => plan,
+        let refreshed = match refresh_runtime_for_app(self, sess) {
+            Ok(refreshed) => refreshed,
             Err(err) => {
-                tracing::warn!(%err, "failed to plan app session sync");
+                tracing::warn!(%err, "failed to refresh app runtime session state");
                 return;
             }
         };
@@ -502,11 +501,11 @@ impl AppCore {
         let pubkey = sess.pubkey;
         let prev_giftwrap_sub = sess.giftwrap_sub.clone();
         let prev_group_sub = sess.group_sub.clone();
-        let h_values = sync_plan
-            .group_subscriptions
-            .current
+        let h_values = refreshed
+            .current_group_subscriptions()
             .target_group_ids
             .clone();
+        let sync_plan = refreshed.sync_plan;
         let alive = sess.alive.clone();
 
         self.runtime.spawn(async move {
@@ -1344,7 +1343,9 @@ mod tests {
             groups,
         };
 
-        let sync_plan = plan_app_session_sync(&core, &session).expect("plan app session sync");
+        let sync_plan = refresh_runtime_for_app(&core, &session)
+            .expect("refresh app runtime")
+            .sync_plan;
 
         assert_eq!(
             sync_plan.group_subscriptions.current.target_group_ids,
@@ -1407,7 +1408,9 @@ mod tests {
             group_sub: None,
             groups: HashMap::new(),
         };
-        let sync_plan = plan_app_session_sync(&core, &session).expect("plan app session sync");
+        let sync_plan = refresh_runtime_for_app(&core, &session)
+            .expect("refresh app runtime")
+            .sync_plan;
 
         let runtime = tokio::runtime::Runtime::new().expect("test runtime");
         let giftwrap_sub = runtime.block_on(execute_app_base_session_sync(

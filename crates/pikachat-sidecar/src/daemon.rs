@@ -29,11 +29,10 @@ use pika_marmot_runtime::message::{
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
 use pika_marmot_runtime::runtime::{
     BootstrappedRuntimeSession, CallSignalPublishKind, CallSignalPublishStatus, InboundRelayEvent,
-    InboundRelaySeenCache, MarmotRuntime, PublishedCallSignal,
-    RuntimeApplicationMessageInterpretation, RuntimeBaseSessionSyncExecution,
-    RuntimeConversationEventInterpretation, RuntimeSessionOpenRequest, RuntimeSessionSyncPlan,
-    RuntimeWelcomeInboxSubscriptionIntent, bootstrap_runtime_session, classify_inbound_relay_event,
-    subscribe_group_messages_individual,
+    MarmotRuntime, PublishedCallSignal, RuntimeApplicationMessageInterpretation,
+    RuntimeBaseSessionSyncExecution, RuntimeConversationEventInterpretation,
+    RuntimeSessionOpenRequest, RuntimeSessionSyncPlan, RuntimeWelcomeInboxSubscriptionIntent,
+    bootstrap_runtime_session, classify_inbound_relay_event, subscribe_group_messages_individual,
 };
 use pika_marmot_runtime::welcome::{
     AcceptedWelcome, accept_welcome_and_catch_up, ingest_unwrapped_welcome,
@@ -117,18 +116,6 @@ fn daemon_welcome_inbox_intent(
         lookback: Some(Duration::from_secs(giftwrap_lookback_sec)),
         limit: Some(DAEMON_WELCOME_SUBSCRIPTION_LIMIT),
     }
-}
-
-#[cfg(test)]
-fn plan_daemon_session_sync(
-    host: &DaemonHostContext<'_>,
-    subscribed_group_ids: Vec<String>,
-    _relay_urls: Vec<RelayUrl>,
-    giftwrap_lookback_sec: u64,
-) -> anyhow::Result<RuntimeSessionSyncPlan> {
-    Ok(host
-        .refresh_session_state(subscribed_group_ids, giftwrap_lookback_sec)?
-        .sync_plan)
 }
 
 fn daemon_base_session_sync_plan(
@@ -1897,29 +1884,30 @@ pub async fn daemon_main(
     };
     let bootstrapped =
         bootstrap_runtime_for_daemon(state_dir, &keys, relay_urls.clone(), giftwrap_lookback_sec)?;
-    let startup_sync = bootstrapped.open.sync_plan.clone();
-    let startup_seen_welcomes = bootstrapped.open.seed_seen_welcomes();
-    let startup_seen_group_events = bootstrapped.open.seed_seen_group_events();
-    let runtime_session = bootstrapped.session;
+    let BootstrappedRuntimeSession {
+        session: runtime_session,
+        open: startup_open,
+    } = bootstrapped;
     let client = runtime_session.client.clone();
     let mut rx = client.notifications();
-    let gift_sub =
-        execute_daemon_base_session_sync(&runtime_session, &startup_sync, &primary_relay_url)
-            .await?
-            .welcome_inbox_sub;
+    let gift_sub = execute_daemon_base_session_sync(
+        &runtime_session,
+        &startup_open.sync_plan,
+        &primary_relay_url,
+    )
+    .await?
+    .welcome_inbox_sub;
     let mdk = runtime_session.mdk;
 
     // Track inbound relay events we've already processed. Seed from bootstrapped
     // startup state so reconnects do not immediately replay known wrappers.
-    let mut seen_inbound = InboundRelaySeenCache::unbounded();
-    seen_inbound.extend(startup_seen_welcomes);
-    let mut seen_group_events = startup_seen_group_events;
-    seen_inbound.extend(seen_group_events.iter().copied());
+    let mut seen_inbound = startup_open.unbounded_inbound_relay_seen_cache();
+    let mut seen_group_events = startup_open.seed_seen_group_events();
 
     // Track group subscriptions.
     let mut group_subs: HashMap<SubscriptionId, String> = subscribe_group_messages_individual(
         &client,
-        &startup_sync.group_subscriptions.current.target_group_ids,
+        &startup_open.current_group_subscriptions().target_group_ids,
     )
     .await?;
     let mut pending_call_invites: HashMap<String, PendingIncomingCall> = HashMap::new();
@@ -5175,13 +5163,10 @@ mod tests {
         let expected_group_id = hex::encode(created.group.nostr_group_id);
         let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
 
-        let sync_plan = plan_daemon_session_sync(
-            &host,
-            vec!["stale-group".to_string()],
-            relay_urls.clone(),
-            90,
-        )
-        .expect("plan daemon session sync");
+        let sync_plan = host
+            .refresh_session_state(vec!["stale-group".to_string()], 90)
+            .expect("refresh daemon session state")
+            .sync_plan;
 
         assert_eq!(
             sync_plan.group_subscriptions.current.target_group_ids,

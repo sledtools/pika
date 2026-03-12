@@ -653,6 +653,23 @@ impl RuntimeSessionOpenState {
     pub fn seed_seen_group_events(&self) -> HashSet<EventId> {
         HashSet::new()
     }
+
+    pub fn extend_inbound_relay_seen_cache(&self, seen: &mut InboundRelaySeenCache) {
+        seen.extend(self.seed_seen_welcomes());
+        seen.extend(self.seed_seen_group_events());
+    }
+
+    pub fn bounded_inbound_relay_seen_cache(&self) -> InboundRelaySeenCache {
+        let mut seen = InboundRelaySeenCache::default();
+        self.extend_inbound_relay_seen_cache(&mut seen);
+        seen
+    }
+
+    pub fn unbounded_inbound_relay_seen_cache(&self) -> InboundRelaySeenCache {
+        let mut seen = InboundRelaySeenCache::unbounded();
+        self.extend_inbound_relay_seen_cache(&mut seen);
+        seen
+    }
 }
 
 pub struct BootstrappedRuntimeSession {
@@ -3304,6 +3321,16 @@ mod tests {
             "shared bootstrap open state"
         );
         assert!(bootstrapped.open.seed_seen_welcomes().contains(&wrapper.id));
+        let mut bounded_seen = bootstrapped.open.bounded_inbound_relay_seen_cache();
+        assert!(
+            !bounded_seen.record(wrapper.id),
+            "bootstrapped open state should seed bounded inbound seen caches"
+        );
+        let mut unbounded_seen = bootstrapped.open.unbounded_inbound_relay_seen_cache();
+        assert!(
+            !unbounded_seen.record(wrapper.id),
+            "bootstrapped open state should seed unbounded inbound seen caches"
+        );
     }
 
     #[test]

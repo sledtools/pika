@@ -34,6 +34,13 @@ pre-merge-pika: fmt clippy
         # until the underlying timing flake is fixed.
         cargo test -p pika_core --lib --tests -- --skip paging_loads_older_messages_in_pages
     fi
+    just pre-merge-pika-followup
+    echo "pre-merge-pika complete"
+
+# The non-pikaci remainder of the Pika pre-merge lane.
+pre-merge-pika-followup:
+    #!/usr/bin/env bash
+    set -euo pipefail
     cd android && ./gradlew :app:compileDebugAndroidTestKotlin
     cargo build -p pikachat
     just desktop-check

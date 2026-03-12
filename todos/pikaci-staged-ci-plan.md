@@ -1196,3 +1196,25 @@ We have at least one important Linux Rust lane where:
       - but then the local `pikaci` process stayed alive with no child `ssh`/`nix build` subprocess and no fresh guest/result output, while `run.json` remained `status = "running"` and the host logs stopped at `prepare ci.x86_64-linux.workspaceBuild`,
       - so the Linux required/advisory flip is still blocked by a live staged-run orchestration stall at the `workspaceBuild` prepare boundary on current `origin/master`, not by another known test mismatch,
       - the next slice should treat that as the single blocker: reproduce it cleanly, instrument the wait point in `pikaci`, and only flip Linux after that fresh `pre-merge-pika-rust` rerun completes cleanly on the rebased tip.
+  - the next rerun on the current rebased tip cleared that stall and closed the last practical `check-pika` parity question:
+    - `cargo fmt` passed,
+    - `cargo test -p pikaci` passed,
+    - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-rust` passed end-to-end as `20260312T063905Z-0f92c9f6`,
+    - both staged jobs exited `0`:
+      - `pika-core-lib-app-flows-tests`
+      - `pika-core-messaging-e2e-tests`,
+    - and the staged lane now matches the intended legacy `cargo test -p pika_core --lib --tests -- --skip paging_loads_older_messages_in_pages` surface without the earlier false mismatches from helper binaries or duplicate `pika_core` execution,
+  - that pass is the finish signal for the practical Linux switch:
+    - covered Linux families now gate through `pikaci` in GitHub:
+      - `check-pika-rust`
+      - `check-pikachat`
+      - `check-agent-contracts`
+      - `check-rmp`
+      - `check-notifications`,
+    - the non-`pikaci` remainder of the broader `check-pika` family remains required as `check-pika-followup`,
+    - the old legacy Linux family jobs stay in the workflow only as advisory comparison signal,
+    - and `check-fixture` remains the one explicit temporary legacy Linux carve-out,
+  - with that policy change, Linux support is now “done enough” in practice:
+    - practical required Linux coverage gates through `pikaci`,
+    - only `check-fixture` remains carved out,
+    - and the next strategic decision is whether to narrow `pikahut` enough to migrate fixture or simply keep that heavier lane separate for a while longer.

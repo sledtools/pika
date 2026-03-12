@@ -116,6 +116,11 @@ Working assumptions:
    - the existing `PreMergeRmp` / `RmpInitSmokeCi` staged identities in `crates/pikaci/src/model.rs` remain the lane authority, with unchanged coverage and the same `rmpWorkspaceDeps` / `rmpWorkspaceBuild` outputs
    - that removes the last obvious bespoke pre-merge Rust lane shape from `pikaci` without changing `pre-merge-rmp` coverage
    - the next lane-definition cleanup is Apple-host execution/ownership for `pre-merge-pikachat-apple-followup`; if we pivot away from lane-definition work, fast local smoke / pre-commit is the next developer-signal candidate
+13. Slice 14 moved Apple-host `pre-merge-pikachat-apple-followup` ownership under an explicit `pikaci` target:
+   - `crates/pikaci/src/main.rs` now defines a real `pre-merge-pikachat-apple-followup` target owning the Apple-host `pikachat` clippy, `pikachat-sidecar` clippy, desktop selector, and TypeScript channel-behavior follow-up jobs
+   - `crates/pikaci/src/model.rs`, `crates/pikaci/src/run.rs`, and `crates/pikaci/src/executor.rs` now support the minimal host-local execute shape needed for that checked-in target instead of leaving the lane logic embedded in a private recipe body
+   - `just pre-merge-pikachat` now routes its Apple Silicon follow-up through `nix run .#pikaci -- run pre-merge-pikachat-apple-followup`, so the lane still composes staged Linux Rust plus Apple-host follow-up without coverage drift
+   - that closes the remaining obvious lane-definition cleanup; the next likely pivot is fast local smoke / pre-commit developer-signal work, with Apple-host provisioning/long-term ownership as the remaining infra follow-up
 ## Progress Update
 
 Completed on 2026-03-10:
@@ -388,9 +393,10 @@ Recommended next slice:
 1. The call-path seam is now done; do not reopen it unless a regression requires it.
 2. The desktop Rust-side seam is now done; do not reintroduce a wrapper-over-ignored-test owner there.
 3. Explicit CI tier clarification is now done in checked-in docs, the staged-lane filter-alignment cleanup is done for `pikachat`, `agent_contracts`, `notifications`, and `fixture`, and the staged Linux target-model normalization now covers `pre-merge-pika-rust`, `pre-merge-agent-contracts`, `pre-merge-notifications`, `pre-merge-pikachat-rust`, `pre-merge-fixture-rust`, and `pre-merge-rmp`.
-4. The next best lane-definition target is Apple-host execution/ownership for `pre-merge-pikachat-apple-followup`.
-5. If we pivot from lane-definition into developer-signal work instead, the next best target is fast local smoke / pre-commit.
-6. Keep avoiding broad root CI/workflow churn while the parallel `pikaci` shadow-lane work is active.
+4. The lane-definition cleanup pass is now effectively done for the current pre-merge contracts.
+5. The next best target is fast local smoke / pre-commit developer-signal work.
+6. Apple-host provisioning/long-term ownership for `pre-merge-pikachat-apple-followup` remains a follow-up, but it is no longer a lane-definition gap.
+7. Keep avoiding broad root CI/workflow churn while the parallel `pikaci` shadow-lane work is active.
 
 ### Phase 3: Define Explicit CI Policy Tiers
 
@@ -468,7 +474,7 @@ The next implementation slice should target one documented root CI / `pikaci` al
 Shape:
 1. Pick exactly one documented mismatch and align it with the now-explicit policy truth.
 2. Stay conflict-aware around `.github/workflows`, `just`, `nix/ci`, and `crates/pikaci`.
-3. The current best candidate is the Apple-host execution/ownership follow-up for `pre-merge-pikachat-apple-followup`.
+3. The current best candidate is fast local smoke / pre-commit work; the Apple-host provisioning/ownership follow-up is now separate from lane-definition cleanup.
 4. Keep scope tight: do not combine this with iOS/Android ownership rewrites or another broad docs sweep.
 
 Why this is next:

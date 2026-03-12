@@ -1030,6 +1030,9 @@ fn build_run_plan(
                 RunnerKind::MicrovmRemote => {
                     format!("Build remote microvm runner for `{}`", job.id)
                 }
+                RunnerKind::HostLocal => {
+                    unreachable!("host-local jobs skip Linux microvm runner prepares")
+                }
                 RunnerKind::TartLocal => unreachable!("tart jobs skip Linux microvm runner"),
             };
             let action = match job.runner_kind() {
@@ -1043,6 +1046,9 @@ fn build_run_plan(
                     ctx: ctx.clone(),
                     log_paths: vec![ctx.host_log_path.clone()],
                 },
+                RunnerKind::HostLocal => {
+                    unreachable!("host-local jobs skip Linux microvm runner prepares")
+                }
                 RunnerKind::TartLocal => unreachable!("tart jobs skip Linux microvm runner"),
             };
             planned_prepares.push(PlannedPrepare {
@@ -1071,18 +1077,37 @@ fn build_run_plan(
         }
 
         let execute_node_id = format!("execute-{}", job.id);
-        let (command, run_as_root) = compiled_guest_command(job);
+        let execute = match job.runner_kind() {
+            RunnerKind::HostLocal => {
+                let command = match job.guest_command {
+                    crate::model::GuestCommand::HostShellCommand { command } => command.to_string(),
+                    _ => anyhow::bail!(
+                        "host-local job `{}` must use GuestCommand::HostShellCommand",
+                        job.id
+                    ),
+                };
+                ExecuteNode::HostCommand {
+                    command,
+                    timeout_secs: job.timeout_secs,
+                    writable_workspace: job.writable_workspace,
+                }
+            }
+            _ => {
+                let (command, run_as_root) = compiled_guest_command(job);
+                ExecuteNode::VmCommand {
+                    command,
+                    run_as_root,
+                    timeout_secs: job.timeout_secs,
+                    writable_workspace: job.writable_workspace,
+                }
+            }
+        };
         execute_nodes.push(PlanNodeRecord::Execute {
             id: execute_node_id.clone(),
             description: job.description.to_string(),
             executor: job.runner_kind().into(),
             depends_on: depends_on.clone(),
-            execute: ExecuteNode::VmCommand {
-                command,
-                run_as_root,
-                timeout_secs: job.timeout_secs,
-                writable_workspace: job.writable_workspace,
-            },
+            execute,
         });
         planned_jobs.push(PlannedJob {
             job: job.clone(),
@@ -4088,6 +4113,7 @@ mod tests {
                         assert_eq!(*timeout_secs, 1800);
                         assert!(!writable_workspace);
                     }
+                    other => panic!("expected vm command, got {other:?}"),
                 }
             }
             other => panic!("expected execute node, got {other:?}"),
@@ -4118,6 +4144,7 @@ mod tests {
                             "/staged/linux-rust/workspace-build/bin/run-pika-core-messaging-e2e-tests"
                         );
                     }
+                    other => panic!("expected vm command, got {other:?}"),
                 }
             }
             other => panic!("expected execute node, got {other:?}"),
@@ -4137,6 +4164,60 @@ mod tests {
                 .exists()
         );
 
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn build_run_plan_uses_host_local_execute_for_host_shell_jobs() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-host-local-plan-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let prepared = sample_prepared_run(&root);
+        let snapshot = sample_snapshot_source(&prepared);
+        let jobs = vec![JobSpec {
+            id: "pikachat-clippy",
+            description: "Run pikachat clippy on the host",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::HostShellCommand {
+                command: "cargo clippy -p pikachat -- -D warnings",
+            },
+            staged_linux_rust_lane: None,
+        }];
+
+        let plan = build_run_plan(&jobs, &prepared, &snapshot, &RunMetadata::default())
+            .expect("build plan");
+
+        assert_eq!(plan.record.nodes.len(), 1);
+        match &plan.record.nodes[0] {
+            PlanNodeRecord::Execute {
+                id,
+                executor,
+                depends_on,
+                execute,
+                ..
+            } => {
+                assert_eq!(id, "execute-pikachat-clippy");
+                assert_eq!(*executor, PlanExecutorKind::HostLocal);
+                assert!(depends_on.is_empty());
+                match execute {
+                    ExecuteNode::HostCommand {
+                        command,
+                        timeout_secs,
+                        writable_workspace,
+                    } => {
+                        assert_eq!(command, "cargo clippy -p pikachat -- -D warnings");
+                        assert_eq!(*timeout_secs, 1800);
+                        assert!(!writable_workspace);
+                    }
+                    other => panic!("expected host command, got {other:?}"),
+                }
+            }
+            other => panic!("expected execute node, got {other:?}"),
+        }
+
+        assert_eq!(plan.jobs.len(), 1);
         let _ = fs::remove_dir_all(&root);
     }
 

@@ -591,7 +591,6 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
     let workflow = fs::read_to_string(root.join(".github/workflows/pre-merge.yml"))?;
     let pikachat_filter = extract_paths_filter_entries(&workflow, "pikachat");
     let pikachat_filter: HashSet<_> = pikachat_filter.into_iter().collect();
-    let checks = fs::read_to_string(root.join("just/checks.just"))?;
 
     let justfile = fs::read_to_string(root.join("justfile"))?;
     let alias_target = extract_just_alias_target(&justfile, "pre-merge-pikachat");
@@ -610,10 +609,23 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
         extract_pikaci_target_filters(&pikaci, "pre-merge-pikachat-rust")
             .into_iter()
             .collect();
+    let apple_followup_filters: HashSet<_> =
+        extract_pikaci_target_filters(&pikaci, "pre-merge-pikachat-apple-followup")
+            .into_iter()
+            .collect();
+    let apple_followup_jobs = extract_rust_function_body(&pikaci, "pikachat_apple_followup_jobs");
     let flake = fs::read_to_string(root.join("flake.nix"))?;
     assert!(
         !rust_lane_filters.is_empty(),
         "pikaci main.rs must keep pre-merge-pikachat-rust filters discoverable"
+    );
+    assert!(
+        !apple_followup_filters.is_empty(),
+        "pikaci main.rs must keep pre-merge-pikachat-apple-followup filters discoverable"
+    );
+    assert!(
+        !apple_followup_jobs.is_empty(),
+        "pikaci main.rs must keep a checked-in Apple follow-up jobs helper"
     );
     assert!(
         flake.contains("pikachatStagedLinuxRustArgs = commonStagedLinuxRustArgs // {"),
@@ -643,18 +655,24 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
         missing_from_workflow
     );
 
-    let apple_followup = extract_just_recipe_body(&checks, "pre-merge-pikachat-apple-followup");
-    assert!(
-        !apple_followup.is_empty(),
-        "checks.just must keep a checked-in Apple host follow-up recipe for the pikachat workflow guardrail"
-    );
-    if apple_followup
+    let missing_followup_from_workflow: Vec<_> = apple_followup_filters
         .iter()
-        .any(|line| line.contains("channel-behavior.test.ts"))
-    {
+        .filter(|entry| !pikachat_filter.contains(*entry))
+        .cloned()
+        .collect();
+    assert!(
+        missing_followup_from_workflow.is_empty(),
+        "pikachat workflow filter must cover the checked-in pre-merge-pikachat-apple-followup dependency surface; missing: {:?}",
+        missing_followup_from_workflow
+    );
+    if apple_followup_jobs.contains("channel-behavior.test.ts") {
+        assert!(
+            apple_followup_filters.contains("pikachat-openclaw/**"),
+            "pre-merge-pikachat-apple-followup filters must include pikachat-openclaw/** while the Apple follow-up runs the channel behavior test"
+        );
         assert!(
             pikachat_filter.contains("pikachat-openclaw/**"),
-            "pikachat workflow filter must include pikachat-openclaw/** while the Apple host follow-up runs the channel behavior test"
+            "pikachat workflow filter must include pikachat-openclaw/** while the Apple follow-up runs the channel behavior test"
         );
     }
 
@@ -1203,6 +1221,7 @@ fn pre_merge_fixture_filter_tracks_checked_in_lane_surface() -> Result<()> {
 fn pre_merge_pikachat_apple_split_stays_explicit() -> Result<()> {
     let root = workspace_root();
     let checks = fs::read_to_string(root.join("just/checks.just"))?;
+    let pikaci = fs::read_to_string(root.join("crates/pikaci/src/main.rs"))?;
 
     let pre_merge_recipe = extract_just_recipe_body(&checks, "pre-merge-pikachat");
     assert!(
@@ -1220,13 +1239,13 @@ fn pre_merge_pikachat_apple_split_stays_explicit() -> Result<()> {
     assert!(
         apple_branch
             .iter()
-            .any(|line| line.contains("pre-merge-pikachat-rust")),
+            .any(|line| line.contains("nix run .#pikaci -- run pre-merge-pikachat-rust")),
         "Apple Silicon branch must keep the staged Linux Rust segment explicit"
     );
     assert!(
         apple_branch
             .iter()
-            .any(|line| line.contains("pre-merge-pikachat-apple-followup")),
+            .any(|line| line.contains("nix run .#pikaci -- run pre-merge-pikachat-apple-followup")),
         "Apple Silicon branch must keep the Apple host follow-up explicit"
     );
     assert!(
@@ -1245,36 +1264,28 @@ fn pre_merge_pikachat_apple_split_stays_explicit() -> Result<()> {
         !apple_branch
             .iter()
             .any(|line| line.contains("channel-behavior.test.ts")),
-        "Apple Silicon branch must not keep inline TypeScript follow-up outside the helper"
+        "Apple Silicon branch must not keep inline TypeScript follow-up outside the pikaci target"
     );
 
-    let apple_followup = extract_just_recipe_body(&checks, "pre-merge-pikachat-apple-followup");
+    let apple_followup = extract_rust_function_body(&pikaci, "pikachat_apple_followup_jobs");
     assert!(
         !apple_followup.is_empty(),
-        "checks.just must keep a checked-in Apple host follow-up recipe"
+        "pikaci main.rs must keep a checked-in Apple host follow-up jobs helper"
     );
     assert!(
-        apple_followup
-            .iter()
-            .any(|line| line.contains("cargo clippy -p pikachat -- -D warnings")),
+        apple_followup.contains("cargo clippy -p pikachat -- -D warnings"),
         "Apple host follow-up must keep pikachat clippy"
     );
     assert!(
-        apple_followup
-            .iter()
-            .any(|line| line.contains("cargo clippy -p pikachat-sidecar -- -D warnings")),
+        apple_followup.contains("cargo clippy -p pikachat-sidecar -- -D warnings"),
         "Apple host follow-up must keep pikachat-sidecar clippy"
     );
     assert!(
-        apple_followup
-            .iter()
-            .any(|line| line.contains("ui_e2e_local_desktop")),
+        apple_followup.contains("ui_e2e_local_desktop"),
         "Apple host follow-up must keep the desktop selector"
     );
     assert!(
-        apple_followup
-            .iter()
-            .any(|line| line.contains("channel-behavior.test.ts")),
+        apple_followup.contains("channel-behavior.test.ts"),
         "Apple host follow-up must keep the TypeScript channel behavior test"
     );
 

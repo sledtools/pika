@@ -442,6 +442,29 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
             ],
             pikachat_rust_jobs(),
         )),
+        "pre-merge-pikachat-apple-followup" => Ok(TargetSpec {
+            id: "pre-merge-pikachat-apple-followup",
+            description: "Run the Apple-host pikachat follow-up after the staged Linux Rust lane",
+            filters: &[
+                "Cargo.toml",
+                "Cargo.lock",
+                "flake.nix",
+                "flake.lock",
+                "nix/**",
+                "justfile",
+                "just/checks.just",
+                "crates/pikaci/**",
+                "cli/**",
+                "crates/pika-agent-control-plane/**",
+                "crates/pika-agent-protocol/**",
+                "crates/pika-desktop/**",
+                "crates/hypernote-protocol/**",
+                "crates/pikachat-sidecar/**",
+                "crates/pikahut/**",
+                "pikachat-openclaw/**",
+            ],
+            jobs: pikachat_apple_followup_jobs(),
+        }),
         "pikachat-ui-e2e-local-desktop" => Ok(TargetSpec {
             id: "pikachat-ui-e2e-local-desktop",
             description: "Run the pikahut ui_e2e_local_desktop test in a vfkit guest",
@@ -1074,6 +1097,51 @@ fn fixture_rust_jobs() -> Vec<JobSpec> {
     }]
 }
 
+fn pikachat_apple_followup_jobs() -> Vec<JobSpec> {
+    vec![
+        JobSpec {
+            id: "pikachat-clippy",
+            description: "Run pikachat clippy on the Apple host",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::HostShellCommand {
+                command: "cargo clippy -p pikachat -- -D warnings",
+            },
+            staged_linux_rust_lane: None,
+        },
+        JobSpec {
+            id: "pikachat-sidecar-clippy",
+            description: "Run pikachat-sidecar clippy on the Apple host",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::HostShellCommand {
+                command: "cargo clippy -p pikachat-sidecar -- -D warnings",
+            },
+            staged_linux_rust_lane: None,
+        },
+        JobSpec {
+            id: "pikachat-ui-e2e-local-desktop",
+            description: "Run the desktop local UI E2E selector on the Apple host",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::HostShellCommand {
+                command: "cargo test -p pikahut --test integration_deterministic ui_e2e_local_desktop -- --ignored --nocapture",
+            },
+            staged_linux_rust_lane: None,
+        },
+        JobSpec {
+            id: "pikachat-openclaw-channel-behavior",
+            description: "Run the OpenClaw channel-behavior TypeScript test on the Apple host",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::HostShellCommand {
+                command: "npx --yes tsx --test pikachat-openclaw/openclaw/extensions/pikachat-openclaw/src/channel-behavior.test.ts",
+            },
+            staged_linux_rust_lane: None,
+        },
+    ]
+}
+
 fn rmp_jobs() -> Vec<JobSpec> {
     vec![JobSpec {
         id: "rmp-init-smoke-ci",
@@ -1561,6 +1629,35 @@ mod tests {
                 .iter()
                 .all(|job| job.runner_kind() == RunnerKind::MicrovmRemote)
         );
+    }
+
+    #[test]
+    fn pre_merge_pikachat_apple_followup_target_uses_host_local_jobs() {
+        let target =
+            target_spec("pre-merge-pikachat-apple-followup").expect("apple follow-up target");
+
+        assert_eq!(target.jobs.len(), 4);
+        assert_eq!(
+            target.jobs.iter().map(|job| job.id).collect::<Vec<_>>(),
+            vec![
+                "pikachat-clippy",
+                "pikachat-sidecar-clippy",
+                "pikachat-ui-e2e-local-desktop",
+                "pikachat-openclaw-channel-behavior",
+            ]
+        );
+        assert!(
+            target
+                .jobs
+                .iter()
+                .all(|job| job.runner_kind() == RunnerKind::HostLocal)
+        );
+        assert!(target.filters.contains(&"just/checks.just"));
+        assert!(target.filters.contains(&"cli/**"));
+        assert!(target.filters.contains(&"crates/pikachat-sidecar/**"));
+        assert!(target.filters.contains(&"crates/pikahut/**"));
+        assert!(target.filters.contains(&"crates/pika-desktop/**"));
+        assert!(target.filters.contains(&"pikachat-openclaw/**"));
     }
 
     #[test]

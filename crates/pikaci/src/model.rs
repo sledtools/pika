@@ -19,6 +19,9 @@ pub enum GuestCommand {
     ShellCommand {
         command: &'static str,
     },
+    HostShellCommand {
+        command: &'static str,
+    },
     ShellCommandAsRoot {
         command: &'static str,
     },
@@ -37,6 +40,7 @@ pub struct JobSpec {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum RunnerKind {
+    HostLocal,
     VfkitLocal,
     MicrovmRemote,
     TartLocal,
@@ -45,6 +49,7 @@ pub enum RunnerKind {
 impl RunnerKind {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::HostLocal => "host_local",
             Self::VfkitLocal => "vfkit_local",
             Self::MicrovmRemote => "microvm_remote",
             Self::TartLocal => "tart_local",
@@ -75,6 +80,7 @@ impl PlanExecutorKind {
 impl From<RunnerKind> for PlanExecutorKind {
     fn from(value: RunnerKind) -> Self {
         match value {
+            RunnerKind::HostLocal => Self::HostLocal,
             RunnerKind::VfkitLocal => Self::VfkitLocal,
             RunnerKind::MicrovmRemote => Self::MicrovmRemote,
             RunnerKind::TartLocal => Self::TartLocal,
@@ -84,7 +90,9 @@ impl From<RunnerKind> for PlanExecutorKind {
 
 impl JobSpec {
     pub fn runner_kind(&self) -> RunnerKind {
-        if self.id.starts_with("tart-") {
+        if matches!(self.guest_command, GuestCommand::HostShellCommand { .. }) {
+            RunnerKind::HostLocal
+        } else if self.id.starts_with("tart-") {
             RunnerKind::TartLocal
         } else if self.staged_linux_rust_lane().is_some() {
             RunnerKind::MicrovmRemote
@@ -462,6 +470,23 @@ mod tests {
     }
 
     #[test]
+    fn host_shell_jobs_use_host_local_runner_kind() {
+        let spec = JobSpec {
+            id: "pikachat-clippy",
+            description: "Run pikachat clippy on the host",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::HostShellCommand {
+                command: "cargo clippy -p pikachat -- -D warnings",
+            },
+            staged_linux_rust_lane: None,
+        };
+
+        assert_eq!(spec.staged_linux_rust_lane(), None);
+        assert_eq!(spec.runner_kind(), super::RunnerKind::HostLocal);
+    }
+
+    #[test]
     fn agent_contract_lane_uses_agent_contracts_workspace_outputs() {
         let lane = StagedLinuxRustLane::AgentContractsDeterministicHttp;
 
@@ -831,6 +856,11 @@ pub enum ExecuteNode {
     VmCommand {
         command: String,
         run_as_root: bool,
+        timeout_secs: u64,
+        writable_workspace: bool,
+    },
+    HostCommand {
+        command: String,
         timeout_secs: u64,
         writable_workspace: bool,
     },

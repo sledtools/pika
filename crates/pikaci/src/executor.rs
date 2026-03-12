@@ -141,10 +141,116 @@ pub fn staged_linux_remote_defaults() -> StagedLinuxRemoteDefaults {
 
 pub fn run_job_on_runner(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
     match job.runner_kind() {
+        RunnerKind::HostLocal => run_host_local_job(job, ctx),
         RunnerKind::VfkitLocal => run_vfkit_job(job, ctx),
         RunnerKind::MicrovmRemote => run_remote_microvm_job(job, ctx),
         RunnerKind::TartLocal => run_tart_job(job, ctx),
     }
+}
+
+fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
+    let command = match job.guest_command {
+        GuestCommand::HostShellCommand { command } => command,
+        _ => bail!("host-local jobs require GuestCommand::HostShellCommand"),
+    };
+
+    ensure_file(&ctx.host_log_path)?;
+    append_line(
+        &ctx.host_log_path,
+        &format!(
+            "[pikaci] starting host-local job `{}` at {}",
+            job.id,
+            Utc::now().to_rfc3339()
+        ),
+    )?;
+    append_line(
+        &ctx.host_log_path,
+        &format!("[pikaci] host-local command: {command}"),
+    )?;
+
+    let mut child = Command::new("bash")
+        .arg("--noprofile")
+        .arg("--norc")
+        .arg("-lc")
+        .arg(command)
+        .current_dir(&ctx.workspace_snapshot_dir)
+        .env("CARGO_HOME", &ctx.shared_cargo_home_dir)
+        .env("CARGO_TARGET_DIR", &ctx.shared_target_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawn host-local command")?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("host-local stdout unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("host-local stderr unavailable"))?;
+
+    let log_file = Arc::new(Mutex::new(
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&ctx.host_log_path)
+            .with_context(|| format!("open {}", ctx.host_log_path.display()))?,
+    ));
+    let stdout_handle = spawn_log_pump(stdout, Arc::clone(&log_file), "[host:stdout]");
+    let stderr_handle = spawn_log_pump(stderr, Arc::clone(&log_file), "[host:stderr]");
+
+    let deadline = Instant::now() + Duration::from_secs(job.timeout_secs);
+    let status = loop {
+        if let Some(status) = child.try_wait().context("poll host-local command")? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            append_line(
+                &ctx.host_log_path,
+                &format!(
+                    "[pikaci] timeout after {}s, killing host-local job `{}`",
+                    job.timeout_secs, job.id
+                ),
+            )?;
+            child.kill().context("kill timed out host-local command")?;
+            let _ = child.wait();
+            let _ = stdout_handle.join();
+            let _ = stderr_handle.join();
+            return Ok(JobOutcome {
+                status: RunStatus::Failed,
+                exit_code: None,
+                message: format!("timed out after {}s", job.timeout_secs),
+            });
+        }
+        thread::sleep(Duration::from_millis(250));
+    };
+
+    let _ = stdout_handle.join();
+    let _ = stderr_handle.join();
+    append_line(
+        &ctx.host_log_path,
+        &format!(
+            "[pikaci] host-local job `{}` exited with {:?} at {}",
+            job.id,
+            status.code(),
+            Utc::now().to_rfc3339()
+        ),
+    )?;
+
+    Ok(JobOutcome {
+        status: if status.success() {
+            RunStatus::Passed
+        } else {
+            RunStatus::Failed
+        },
+        exit_code: status.code(),
+        message: if status.success() {
+            "host-local command passed".to_string()
+        } else {
+            format!("host-local command failed with {:?}", status.code())
+        },
+    })
 }
 
 pub fn run_vfkit_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
@@ -379,6 +485,7 @@ pub(crate) fn prepare_remote_microvm_runner(
 
 pub(crate) fn materialize_runner_flake(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<String> {
     match job.runner_kind() {
+        RunnerKind::HostLocal => bail!("host-local jobs do not use Linux microvm runner flakes"),
         RunnerKind::VfkitLocal => materialize_vfkit_runner_flake(job, ctx),
         RunnerKind::MicrovmRemote => {
             let remote = remote_microvm_context(job, ctx)?;
@@ -1211,6 +1318,7 @@ fn setting_contains(raw: &str, needle: &str) -> bool {
 
 fn guest_runner_config_for(kind: RunnerKind) -> GuestRunnerConfig {
     match kind {
+        RunnerKind::HostLocal => unreachable!("host-local jobs do not render Linux microvm flakes"),
         RunnerKind::VfkitLocal => GuestRunnerConfig {
             guest_system: VFKIT_GUEST_SYSTEM,
             host_pkgs_expr: "nixpkgs.legacyPackages.aarch64-darwin",
@@ -2169,6 +2277,10 @@ pub(crate) fn compiled_guest_command(job: &JobSpec) -> (String, bool) {
             format!("bash --noprofile --norc -lc {}", shell_escape(command)),
             false,
         ),
+        GuestCommand::HostShellCommand { command } => (
+            format!("bash --noprofile --norc -lc {}", shell_escape(command)),
+            false,
+        ),
         GuestCommand::ShellCommandAsRoot { command } => (
             format!("bash --noprofile --norc -lc {}", shell_escape(command)),
             true,
@@ -2218,13 +2330,13 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        GuestFlakePaths, REMOTE_MICROVM_VIRTIOFS_SOCKETS, RemoteMicrovmContext,
+        GuestFlakePaths, HostContext, REMOTE_MICROVM_VIRTIOFS_SOCKETS, RemoteMicrovmContext,
         build_remote_microvm_launch_command, builders_supports_aarch64_linux,
         ensure_staged_linux_rust_lane_matches_vfkit_guest, guest_runner_config_for,
-        render_guest_flake, render_local_guest_flake, staged_linux_remote_defaults,
-        staged_linux_remote_snapshot_dir, vfkit_socket_path,
+        render_guest_flake, render_local_guest_flake, run_job_on_runner,
+        staged_linux_remote_defaults, staged_linux_remote_snapshot_dir, vfkit_socket_path,
     };
-    use crate::model::{GuestCommand, JobSpec, RunnerKind};
+    use crate::model::{GuestCommand, JobSpec, RunStatus, RunnerKind};
 
     #[test]
     fn guest_flake_targets_vfkit_exact_test_beachhead() {
@@ -2646,5 +2758,53 @@ mod tests {
         assert!(
             flake.contains("stagedLinuxRustWorkspaceBuildDir = \"/nix/store/workspace-build\";")
         );
+    }
+
+    #[test]
+    fn host_local_jobs_run_from_workspace_snapshot() {
+        let root =
+            std::env::temp_dir().join(format!("pikaci-host-local-test-{}", uuid::Uuid::new_v4()));
+        let workspace_snapshot_dir = root.join("snapshot");
+        let job_dir = root.join("job");
+        std::fs::create_dir_all(&workspace_snapshot_dir).expect("create workspace snapshot");
+        std::fs::create_dir_all(job_dir.join("artifacts")).expect("create artifacts dir");
+        std::fs::create_dir_all(root.join("cargo-home")).expect("create cargo home");
+        std::fs::create_dir_all(root.join("target")).expect("create target dir");
+        std::fs::write(
+            workspace_snapshot_dir.join("pikaci-host-local-marker"),
+            "ok",
+        )
+        .expect("write workspace marker");
+
+        let job = JobSpec {
+            id: "pikachat-clippy",
+            description: "Run pikachat clippy on the host",
+            timeout_secs: 120,
+            writable_workspace: false,
+            guest_command: GuestCommand::HostShellCommand {
+                command: "test -f ./pikaci-host-local-marker && test -n \"$CARGO_HOME\" && test -n \"$CARGO_TARGET_DIR\" && echo ok",
+            },
+            staged_linux_rust_lane: None,
+        };
+        let ctx = HostContext {
+            workspace_snapshot_dir: workspace_snapshot_dir.clone(),
+            workspace_read_only: true,
+            job_dir: job_dir.clone(),
+            host_log_path: job_dir.join("host.log"),
+            guest_log_path: job_dir.join("artifacts/guest.log"),
+            shared_cargo_home_dir: root.join("cargo-home"),
+            shared_target_dir: root.join("target"),
+            staged_linux_rust_workspace_deps_dir: None,
+            staged_linux_rust_workspace_build_dir: None,
+        };
+
+        let outcome = run_job_on_runner(&job, &ctx).expect("run host-local job");
+
+        assert_eq!(outcome.status, RunStatus::Passed);
+        let host_log = std::fs::read_to_string(&ctx.host_log_path).expect("read host log");
+        assert!(host_log.contains("host-local command"));
+        assert!(host_log.contains("ok"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

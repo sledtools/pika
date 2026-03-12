@@ -646,8 +646,8 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
 
     let missing_from_workflow: Vec<_> = rust_lane_filters
         .iter()
-        .cloned()
         .filter(|entry| !pikachat_filter.contains(*entry))
+        .cloned()
         .collect();
     assert!(
         missing_from_workflow.is_empty(),

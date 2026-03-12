@@ -596,6 +596,10 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
         flake.contains("cargoLock = ./Cargo.lock;"),
         "pikachat staged source must use the full workspace lockfile"
     );
+    assert!(
+        flake.contains("./VERSION"),
+        "pikachat staged source must include the repo-root VERSION file while staged desktop package tests stay in-lane"
+    );
 
     let missing_from_workflow: Vec<_> = rust_lane_filters
         .iter()
@@ -704,6 +708,11 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
         assert!(
             openclaw.contains("pikachat-openclaw/openclaw/extensions/pikachat-openclaw"),
             "relay-backed deterministic OpenClaw scenarios must keep resolving the checked-in plugin tree while those selectors stay in-lane"
+        );
+        assert!(
+            openclaw.contains("CommandSpec::new(binary)")
+                && openclaw.contains(".capture_name(\"openclaw-invite-and-chat-peer\")"),
+            "OpenClaw peer coverage must keep running through a direct pikachat binary spec while staged pikachat selectors stay in-lane"
         );
         assert!(
             linux_rust.contains("export PIKAHUT_TEST_PIKACHAT_BIN=\"$root/bin/pikachat\""),

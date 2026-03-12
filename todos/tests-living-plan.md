@@ -92,8 +92,8 @@ Working assumptions:
 9. Slice 10 moved `pre-merge-pikachat-rust` onto the staged Linux target model:
    - `crates/pikaci/src/model.rs` now defines a real `PreMergePikachatRust` target plus explicit staged-lane identities for every `pikachat_rust_jobs()` job
    - `crates/pikaci/src/main.rs` now defines `pre-merge-pikachat-rust` through `staged_linux_target_spec(...)` instead of a bespoke unstaged `TargetSpec`
-   - the staged Linux workspace config now includes dedicated `pikachatWorkspaceDeps` / `pikachatWorkspaceBuild` outputs built from the full Rust workspace snapshot/lockfile, with wrapper commands for the `pikachat` package tests and the deterministic `pikahut` selectors (CLI smoke, post-rebase regressions, and CLI-harness OpenClaw scenarios)
-   - those staged wrappers now pass prepared `pikachat`, `pika_core`, and `pika-relay` binaries into the selected `pikahut` coverage and set an explicit staged workspace root instead of relying on guest-time Cargo rebuilds or cwd-based workspace discovery
+   - the staged Linux workspace config now includes dedicated `pikachatWorkspaceDeps` / `pikachatWorkspaceBuild` outputs built from the full Rust workspace snapshot/lockfile, including the repo-root `VERSION` file needed by staged `pika-desktop` package tests, with wrapper commands for the `pikachat` package tests and the deterministic `pikahut` selectors (CLI smoke, post-rebase regressions, and CLI-harness OpenClaw scenarios)
+   - those staged wrappers now pass prepared `pikachat`, `pika_core`, and `pika-relay` binaries into the selected `pikahut` coverage, including the OpenClaw peer path, and set an explicit staged workspace root instead of relying on guest-time Cargo rebuilds or cwd-based workspace discovery
    - the tiny `agent_contracts` guardrail blind spot is now keyed off the selected `agent_http_cli_new*` selectors and their `integration_deterministic.rs` bodies instead of the outer recipe shell text
    - `pre-merge-fixture-rust` remains intentionally deferred so the slice stayed focused on `pikachat`
 ## Progress Update
@@ -345,7 +345,7 @@ Updated recommendation after Slice 9:
 4. Keep lane coverage stable while fixing the remaining workflow-vs-lane drift.
 
 Updated recommendation after Slice 10:
-1. `pre-merge-pikachat-rust` now uses the staged Linux target model with full-workspace inputs and prepared-output wrappers for the selected `pikahut` coverage, so `pikaci` is the checked-in source of truth for one more pre-merge Rust lane contract.
+1. `pre-merge-pikachat-rust` now uses the staged Linux target model with full-workspace inputs and prepared-output wrappers for the selected `pikahut` coverage, including the staged desktop `VERSION` input and the OpenClaw peer binary path, so `pikaci` is the checked-in source of truth for one more pre-merge Rust lane contract.
 2. `pre-merge-fixture-rust` is now the obvious next staged-lane cleanup if we want the same authority/runner model for the last bespoke Rust lane.
 3. The Apple-host execution/ownership follow-up for `pre-merge-pikachat-apple-followup` should stay queued behind that `fixture` staged-lane cleanup.
 4. Keep lane coverage stable and avoid reopening workflow-filter gardening as the main event.

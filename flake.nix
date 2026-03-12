@@ -62,6 +62,7 @@
       rustWorkspaceSrc = serverPkgs.lib.fileset.toSource {
         root = ./.;
         fileset = serverPkgs.lib.fileset.unions [
+          ./VERSION
           ./Cargo.toml
           ./Cargo.lock
           ./config
@@ -75,6 +76,7 @@
       ciRustWorkspaceSrc = ciLinuxPkgs.lib.fileset.toSource {
         root = ./.;
         fileset = ciLinuxPkgs.lib.fileset.unions [
+          ./VERSION
           ./Cargo.toml
           ./Cargo.lock
           ./config

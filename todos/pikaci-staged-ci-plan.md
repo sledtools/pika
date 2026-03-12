@@ -1177,7 +1177,15 @@ We have at least one important Linux Rust lane where:
     - that parity fix is now implemented in the staged wrapper itself:
       - `/staged/linux-rust/workspace-build/bin/run-pika-core-lib-app-flows-tests` runs `pika-core-lib-tests.manifest` first and then `pika-core-lib-app-flows.manifest`,
       - so the staged `pre-merge-pika-rust` lane now matches the legacy `cargo test -p pika_core --lib --tests` contract much more closely without broadening into another new lane,
+    - one more false parity gap surfaced immediately after widening that wrapper:
+      - the staged `pika-core-lib-tests.manifest` was still explicitly including helper binaries like `interop_openclaw_voice`, `kp_debug`, `interop_rustbot_baseline`, and `nostr_connect_tap`,
+      - which meant the guest wrapper ran a non-test binary with `--nocapture` after the real `pika_core --lib --tests` suite had already passed,
+      - the fix is to make `pika-core-lib-tests.manifest` match the actual legacy `cargo test -p pika_core --lib --tests` surface again by staging only the `pika_core` lib-test harness there,
+    - after that manifest fix:
+      - the exact local legacy parity command, `cargo test -p pika_core --lib --tests -- --skip paging_loads_older_messages_in_pages`, passes cleanly on the rebased tip,
+      - a fresh staged `pre-merge-pika-rust` rerun has cleared the earlier rebased-source/libclang regressions and is back at real remote execution on the same tip,
+      - but the required/advisory flip is still deferred until that post-fix staged rerun completes cleanly and we have at least one fresh shadow sample on the same parity fix,
     - after that change, the credible “Linux support done enough to switch” definition is:
       - all practical Linux-required families under `pikaci`,
       - `check-fixture` explicitly carved out as the only temporary legacy Linux exception,
-      - and `pre-merge-pika-rust` showing no further pass/fail parity mismatches against the legacy `check-pika` Rust portion across real shadow runs.
+      - and `pre-merge-pika-rust` showing no further pass/fail parity mismatches against the legacy `check-pika` Rust portion across real shadow runs on the post-manifest-fix tip.

@@ -231,11 +231,7 @@ let
         requireIntegrationTests="''${PIKACI_REQUIRE_INTEGRATION_TEST_EXECUTABLES:-0}"
 
         manifest_from_targets "$PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST" 1 \
-          pika_core \
-          kp_debug \
-          interop_openclaw_voice \
-          interop_rustbot_baseline \
-          nostr_connect_tap
+          pika_core
 
         manifest_from_targets "$PIKACI_PIKA_CORE_LIB_APP_FLOWS_MANIFEST" "$requireIntegrationTests" \
           pika_core \

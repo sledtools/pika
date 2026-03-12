@@ -37,7 +37,7 @@ let
       pkgs.alsa-lib
       pkgs.openssl
       pkgs.postgresql
-    ] ++ pkgs.lib.optionals (lane == "pika-core" || lane == "agent-contracts" || lane == "pikachat") [
+    ] ++ pkgs.lib.optionals (lane == "pika-core" || lane == "agent-contracts" || lane == "pikachat" || lane == "fixture") [
       pkgs.llvmPackages.libclang
       pkgs.linuxHeaders
     ] ++ pkgs.lib.optionals (lane == "pika-core" || lane == "agent-contracts" || lane == "pikachat" || lane == "fixture") [
@@ -51,7 +51,7 @@ let
       pkgs.mesa
       pkgs.vulkan-loader
     ];
-  } // pkgs.lib.optionalAttrs (lane == "pika-core" || lane == "agent-contracts" || lane == "pikachat") {
+  } // pkgs.lib.optionalAttrs (lane == "pika-core" || lane == "agent-contracts" || lane == "pikachat" || lane == "fixture") {
     LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
     BINDGEN_EXTRA_CLANG_ARGS = builtins.concatStringsSep " " [
       "-I${pkgs.linuxHeaders}/include"

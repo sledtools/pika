@@ -675,6 +675,30 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn linux_fixture_lane_provisions_bindgen_for_desktop_camera_dependencies() {
+        let linux_rust = fs::read_to_string(workspace_root().join("nix/ci/linux-rust.nix"))
+            .expect("read linux-rust.nix");
+        let desktop_manifest =
+            fs::read_to_string(workspace_root().join("crates/pika-desktop/Cargo.toml"))
+                .expect("read pika-desktop Cargo.toml");
+
+        if desktop_manifest.contains("nokhwa") {
+            assert!(
+                linux_rust.contains(
+                    "pkgs.lib.optionals (lane == \"agent-contracts\" || lane == \"fixture\") [\n      pkgs.llvmPackages.libclang\n      pkgs.linuxHeaders"
+                ),
+                "fixture staged Linux lane must provision libclang and linuxHeaders while pika-desktop keeps nokhwa in the build graph"
+            );
+            assert!(
+                linux_rust.contains(
+                    "} // pkgs.lib.optionalAttrs (lane == \"agent-contracts\" || lane == \"fixture\") {\n    LIBCLANG_PATH ="
+                ),
+                "fixture staged Linux lane must export LIBCLANG_PATH while pika-desktop keeps nokhwa in the build graph"
+            );
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]

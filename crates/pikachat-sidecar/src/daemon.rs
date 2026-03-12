@@ -28,11 +28,12 @@ use pika_marmot_runtime::message::{
 };
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
 use pika_marmot_runtime::runtime::{
-    BootstrappedRuntimeSession, CallSignalPublishKind, CallSignalPublishStatus, InboundRelayEvent,
-    MarmotRuntime, PublishedCallSignal, RuntimeApplicationMessageInterpretation,
-    RuntimeBaseSessionSyncExecution, RuntimeConversationEventInterpretation,
-    RuntimeSessionOpenRequest, RuntimeSessionSyncPlan, RuntimeWelcomeInboxSubscriptionIntent,
-    bootstrap_runtime_session, classify_inbound_relay_event, subscribe_group_messages_individual,
+    BootstrappedRuntimeSession, CallSignalPublishKind, CallSignalPublishStatus,
+    CompletedMediaUpload, InboundRelayEvent, MarmotRuntime, MediaUploadStatus, PublishedCallSignal,
+    RuntimeApplicationMessageInterpretation, RuntimeBaseSessionSyncExecution,
+    RuntimeConversationEventInterpretation, RuntimeSessionOpenRequest, RuntimeSessionSyncPlan,
+    RuntimeWelcomeInboxSubscriptionIntent, bootstrap_runtime_session, classify_inbound_relay_event,
+    subscribe_group_messages_individual,
 };
 use pika_marmot_runtime::welcome::{
     AcceptedWelcome, accept_welcome_and_catch_up, ingest_unwrapped_welcome,
@@ -296,6 +297,173 @@ fn media_attachment_to_out(attachment: RuntimeMediaAttachment) -> MediaAttachmen
         height: attachment.height,
         local_path: None,
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DaemonMediaWorkflowError {
+    code: &'static str,
+    message: String,
+}
+
+impl DaemonMediaWorkflowError {
+    fn file(message: impl Into<String>) -> Self {
+        Self {
+            code: "file_error",
+            message: message.into(),
+        }
+    }
+
+    fn encrypt(err: anyhow::Error) -> Self {
+        Self {
+            code: "encrypt_error",
+            message: format!("{err:#}"),
+        }
+    }
+
+    fn upload(message: impl Into<String>) -> Self {
+        Self {
+            code: "upload_failed",
+            message: message.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompletedMediaBatchFields {
+    imeta_tags: Vec<Tag>,
+    original_hashes: Vec<String>,
+    uploaded_urls: Vec<String>,
+}
+
+struct DaemonMediaUploadInput<'a> {
+    nostr_group_id: &'a str,
+    file_path: &'a str,
+    mime_type: Option<&'a str>,
+    filename: Option<&'a str>,
+    include_path_in_validation_errors: bool,
+    require_uploaded_url: bool,
+}
+
+fn batch_media_fields_from_completed_uploads(
+    completed_uploads: &[CompletedMediaUpload],
+) -> CompletedMediaBatchFields {
+    CompletedMediaBatchFields {
+        imeta_tags: completed_uploads
+            .iter()
+            .map(|completed| completed.result.imeta_tag.clone())
+            .collect(),
+        original_hashes: completed_uploads
+            .iter()
+            .map(|completed| completed.result.attachment.original_hash_hex.clone())
+            .collect(),
+        uploaded_urls: completed_uploads
+            .iter()
+            .map(|completed| completed.result.uploaded_blob.uploaded_url.clone())
+            .collect(),
+    }
+}
+
+fn read_daemon_media_file(
+    file_path: &str,
+    include_path_in_validation_errors: bool,
+) -> Result<Vec<u8>, DaemonMediaWorkflowError> {
+    let bytes = std::fs::read(file_path)
+        .map_err(|err| DaemonMediaWorkflowError::file(format!("read {file_path}: {err}")))?;
+    if bytes.is_empty() {
+        let message = if include_path_in_validation_errors {
+            format!("file is empty: {file_path}")
+        } else {
+            "file is empty".to_string()
+        };
+        return Err(DaemonMediaWorkflowError::file(message));
+    }
+    if bytes.len() > MAX_CHAT_MEDIA_BYTES {
+        let message = if include_path_in_validation_errors {
+            format!("file too large (max 32 MB): {file_path}")
+        } else {
+            "file too large (max 32 MB)".to_string()
+        };
+        return Err(DaemonMediaWorkflowError::file(message));
+    }
+    Ok(bytes)
+}
+
+fn daemon_media_upload_error_message(
+    err: &anyhow::Error,
+    file_path: &str,
+    include_path: bool,
+) -> String {
+    if include_path {
+        format!("upload {file_path}: {err:#}")
+    } else {
+        format!("{err:#}")
+    }
+}
+
+fn daemon_media_missing_upload_url(file_path: &str, include_path: bool) -> String {
+    if include_path {
+        format!("upload {file_path}: missing upload URL")
+    } else {
+        "missing upload URL".to_string()
+    }
+}
+
+async fn upload_daemon_media_file(
+    host: &DaemonHostContext<'_>,
+    keys: &Keys,
+    mls_group_id: &GroupId,
+    blossom_servers: &[String],
+    input: DaemonMediaUploadInput<'_>,
+) -> Result<CompletedMediaUpload, DaemonMediaWorkflowError> {
+    let bytes = read_daemon_media_file(input.file_path, input.include_path_in_validation_errors)?;
+    let path = Path::new(input.file_path);
+    let resolved = resolve_upload_metadata(path, input.mime_type, input.filename);
+    let pika_marmot_runtime::media::PreparedMediaUpload {
+        upload,
+        encrypted_data,
+    } = host
+        .prepare_upload(
+            mls_group_id,
+            &bytes,
+            Some(&resolved.mime_type),
+            Some(&resolved.filename),
+        )
+        .map_err(DaemonMediaWorkflowError::encrypt)?;
+    let expected_hash_hex = hex::encode(upload.encrypted_hash);
+    let status = match upload_encrypted_blob(
+        keys,
+        encrypted_data,
+        &upload.mime_type,
+        &expected_hash_hex,
+        blossom_servers,
+    )
+    .await
+    {
+        Ok(uploaded) => MediaUploadStatus::Uploaded(uploaded),
+        Err(err) => MediaUploadStatus::UploadFailed(daemon_media_upload_error_message(
+            &err,
+            input.file_path,
+            input.include_path_in_validation_errors,
+        )),
+    };
+    let completed = host
+        .complete_media_upload_operation(
+            mls_group_id,
+            input.nostr_group_id.to_string(),
+            &upload,
+            status,
+        )
+        .into_media_upload_result()
+        .map_err(DaemonMediaWorkflowError::upload)?;
+    if input.require_uploaded_url && completed.result.uploaded_blob.uploaded_url.is_empty() {
+        return Err(DaemonMediaWorkflowError::upload(
+            daemon_media_missing_upload_url(
+                input.file_path,
+                input.include_path_in_validation_errors,
+            ),
+        ));
+    }
+    Ok(completed)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2629,83 +2797,43 @@ pub async fn daemon_main(
                                 continue;
                             }
                         };
-
-                        // Read and validate file
-                        let path = std::path::Path::new(&file_path);
-                        let bytes = match std::fs::read(path) {
-                            Ok(b) => b,
-                            Err(e) => {
-                                reply_tx.send(out_error(request_id, "file_error", format!("read {file_path}: {e}"))).ok();
-                                continue;
-                            }
-                        };
-                        if bytes.is_empty() {
-                            reply_tx.send(out_error(request_id, "file_error", "file is empty")).ok();
-                            continue;
-                        }
-                        if bytes.len() > MAX_CHAT_MEDIA_BYTES {
-                            reply_tx.send(out_error(request_id, "file_error", "file too large (max 32 MB)")).ok();
-                            continue;
-                        }
-
-                        let resolved = resolve_upload_metadata(path, mime_type.as_deref(), filename.as_deref());
-                        let prepared = match host.prepare_upload(
-                            &mls_group_id,
-                            &bytes,
-                            Some(&resolved.mime_type),
-                            Some(&resolved.filename),
-                        ) {
-                            Ok(prepared) => prepared,
-                            Err(e) => {
-                                reply_tx.send(out_error(request_id, "encrypt_error", format!("{e:#}"))).ok();
-                                continue;
-                            }
-                        };
                         let upload_servers = blossom_servers_or_default(&blossom_servers);
-                        let uploaded = match upload_encrypted_blob(
+
+                        let completed = match upload_daemon_media_file(
+                            &host,
                             &keys,
-                            prepared.encrypted_data,
-                            &prepared.upload.mime_type,
-                            &hex::encode(prepared.upload.encrypted_hash),
+                            &mls_group_id,
                             &upload_servers,
+                            DaemonMediaUploadInput {
+                                nostr_group_id: &nostr_group_id,
+                                file_path: &file_path,
+                                mime_type: mime_type.as_deref(),
+                                filename: filename.as_deref(),
+                                include_path_in_validation_errors: false,
+                                require_uploaded_url: false,
+                            },
                         )
                         .await
                         {
-                            Ok(uploaded) => uploaded,
-                            Err(e) => {
-                                reply_tx.send(out_error(
-                                    request_id,
-                                    "upload_failed",
-                                    format!("{e:#}"),
-                                )).ok();
-                                continue;
-                            }
-                        };
-
-                        let operation = host.complete_media_upload_operation(
-                            &mls_group_id,
-                            nostr_group_id.clone(),
-                            &prepared.upload,
-                            pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(uploaded),
-                        );
-                        let result = match operation.into_media_upload_result() {
-                            Ok(completed) => completed.result,
-                            Err(error) => {
-                                reply_tx.send(out_error(request_id, "upload_failed", error)).ok();
+                            Ok(completed) => completed,
+                            Err(err) => {
+                                reply_tx
+                                    .send(out_error(request_id, err.code, err.message))
+                                    .ok();
                                 continue;
                             }
                         };
 
                         // Build imeta tag and message
                         let rumor = EventBuilder::new(Kind::ChatMessage, &caption)
-                            .tag(result.imeta_tag.clone())
+                            .tag(completed.result.imeta_tag.clone())
                             .build(keys.public_key());
                         match host.sign_and_publish_rumor(&mls_group_id, rumor, "daemon_send_media").await {
                             Ok(ev) => {
                                 let _ = reply_tx.send(out_ok(request_id, Some(json!({
                                     "event_id": ev.id.to_hex(),
-                                    "uploaded_url": result.uploaded_blob.uploaded_url,
-                                    "original_hash_hex": result.attachment.original_hash_hex,
+                                    "uploaded_url": completed.result.uploaded_blob.uploaded_url,
+                                    "original_hash_hex": completed.result.attachment.original_hash_hex,
                                 }))));
                             }
                             Err(e) => {
@@ -2743,93 +2871,43 @@ pub async fn daemon_main(
                         }
 
                         let upload_servers = blossom_servers_or_default(&blossom_servers);
-                        // Process all files: read, encrypt, upload sequentially.
-                        #[allow(clippy::type_complexity)]
-                        let batch_result: Result<(Vec<Tag>, Vec<String>, Vec<String>), ()> = async {
-                            let mut imeta_tags = Vec::new();
-                            let mut original_hashes = Vec::new();
-                            let mut uploaded_urls = Vec::new();
-
-                            for file_path in &file_paths {
-                                let path = std::path::Path::new(file_path);
-                                let bytes = match std::fs::read(path) {
-                                    Ok(b) => b,
-                                    Err(e) => {
-                                        reply_tx.send(out_error(request_id.clone(), "file_error", format!("read {file_path}: {e}"))).ok();
-                                        return Err(());
-                                    }
-                                };
-                                if bytes.is_empty() {
-                                    reply_tx.send(out_error(request_id.clone(), "file_error", format!("file is empty: {file_path}"))).ok();
-                                    return Err(());
+                        let mut completed_uploads = Vec::with_capacity(file_paths.len());
+                        for file_path in &file_paths {
+                            let completed = match upload_daemon_media_file(
+                                &host,
+                                &keys,
+                                &mls_group_id,
+                                &upload_servers,
+                                DaemonMediaUploadInput {
+                                    nostr_group_id: &nostr_group_id,
+                                    file_path,
+                                    mime_type: None,
+                                    filename: None,
+                                    include_path_in_validation_errors: true,
+                                    require_uploaded_url: true,
+                                },
+                            )
+                            .await
+                            {
+                                Ok(completed) => completed,
+                                Err(err) => {
+                                    reply_tx
+                                        .send(out_error(request_id.clone(), err.code, err.message))
+                                        .ok();
+                                    completed_uploads.clear();
+                                    break;
                                 }
-                                if bytes.len() > MAX_CHAT_MEDIA_BYTES {
-                                    reply_tx.send(out_error(request_id.clone(), "file_error", format!("file too large (max 32 MB): {file_path}"))).ok();
-                                    return Err(());
-                                }
-
-                                let resolved = resolve_upload_metadata(path, None, None);
-                                let prepared = match host.prepare_upload(
-                                    &mls_group_id,
-                                    &bytes,
-                                    Some(&resolved.mime_type),
-                                    Some(&resolved.filename),
-                                ) {
-                                    Ok(prepared) => prepared,
-                                    Err(e) => {
-                                        reply_tx.send(out_error(request_id.clone(), "encrypt_error", format!("{e:#}"))).ok();
-                                        return Err(());
-                                    }
-                                };
-                                let uploaded = match upload_encrypted_blob(
-                                    &keys,
-                                    prepared.encrypted_data,
-                                    &prepared.upload.mime_type,
-                                    &hex::encode(prepared.upload.encrypted_hash),
-                                    &upload_servers,
-                                )
-                                .await
-                                {
-                                    Ok(uploaded) => uploaded,
-                                    Err(e) => {
-                                        reply_tx.send(out_error(
-                                            request_id.clone(),
-                                            "upload_failed",
-                                            format!("upload {file_path}: {e:#}"),
-                                        )).ok();
-                                        return Err(());
-                                    }
-                                };
-                                let result = host.finish_upload(
-                                    &mls_group_id,
-                                    &prepared.upload,
-                                    uploaded.clone(),
-                                );
-
-                                if result.uploaded_blob.uploaded_url.is_empty() {
-                                    reply_tx.send(out_error(
-                                        request_id.clone(),
-                                        "upload_failed",
-                                        format!("upload {file_path}: missing upload URL"),
-                                    )).ok();
-                                    return Err(());
-                                }
-
-                                original_hashes.push(result.attachment.original_hash_hex);
-                                uploaded_urls.push(result.uploaded_blob.uploaded_url);
-                                imeta_tags.push(result.imeta_tag);
-                            }
-
-                            Ok((imeta_tags, original_hashes, uploaded_urls))
-                        }.await;
-
-                        let (imeta_tags, original_hashes, uploaded_urls) = match batch_result {
-                            Ok(v) => v,
-                            Err(()) => continue,
-                        };
+                            };
+                            completed_uploads.push(completed);
+                        }
+                        if completed_uploads.len() != file_paths.len() {
+                            continue;
+                        }
+                        let batch_fields =
+                            batch_media_fields_from_completed_uploads(&completed_uploads);
 
                         let mut builder = EventBuilder::new(Kind::ChatMessage, &caption);
-                        for tag in &imeta_tags {
+                        for tag in &batch_fields.imeta_tags {
                             builder = builder.tag(tag.clone());
                         }
                         let rumor = builder.build(keys.public_key());
@@ -2837,8 +2915,8 @@ pub async fn daemon_main(
                             Ok(ev) => {
                                 let _ = reply_tx.send(out_ok(request_id, Some(json!({
                                     "event_id": ev.id.to_hex(),
-                                    "uploaded_urls": uploaded_urls,
-                                    "original_hashes": original_hashes,
+                                    "uploaded_urls": batch_fields.uploaded_urls,
+                                    "original_hashes": batch_fields.original_hashes,
                                 }))));
                             }
                             Err(e) => {
@@ -5895,19 +5973,23 @@ mod tests {
                 Some("daemon.txt"),
             )
             .expect("prepare upload");
-        let completed = host.finish_upload(
-            &created.group.mls_group_id,
-            &prepared.upload,
-            pika_marmot_runtime::media::UploadedBlob {
-                blossom_server: "https://example.com".to_string(),
-                uploaded_url: "https://example.com/blob".to_string(),
-                descriptor_sha256_hex: hex::encode(prepared.upload.encrypted_hash),
-            },
-        );
+        let completed = host
+            .complete_media_upload_operation(
+                &created.group.mls_group_id,
+                hex::encode(created.group.nostr_group_id),
+                &prepared.upload,
+                MediaUploadStatus::Uploaded(pika_marmot_runtime::media::UploadedBlob {
+                    blossom_server: "https://example.com".to_string(),
+                    uploaded_url: "https://example.com/blob".to_string(),
+                    descriptor_sha256_hex: hex::encode(prepared.upload.encrypted_hash),
+                }),
+            )
+            .into_media_upload_result()
+            .expect("completed media upload");
         let message = make_test_message(
             Kind::ChatMessage,
             "hi",
-            Tags::from_list(vec![completed.imeta_tag]),
+            Tags::from_list(vec![completed.result.imeta_tag]),
         );
 
         let attachments = host.parse_message_media_attachments(&message);
@@ -5915,6 +5997,95 @@ mod tests {
         assert_eq!(attachments.len(), 1);
         assert_eq!(attachments[0].attachment.filename, "daemon.txt");
         assert_eq!(attachments[0].attachment.mime_type, "text/plain");
+    }
+
+    #[test]
+    fn daemon_media_batch_follow_through_uses_shared_completed_upload_state() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "daemon media batch".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls: Vec<RelayUrl> = Vec::new();
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let first = host
+            .prepare_upload(
+                &created.group.mls_group_id,
+                b"daemon first attachment",
+                Some("text/plain"),
+                Some("first.txt"),
+            )
+            .expect("prepare first upload");
+        let second = host
+            .prepare_upload(
+                &created.group.mls_group_id,
+                b"daemon second attachment",
+                Some("text/plain"),
+                Some("second.txt"),
+            )
+            .expect("prepare second upload");
+        let completed_uploads = vec![
+            host.complete_media_upload_operation(
+                &created.group.mls_group_id,
+                hex::encode(created.group.nostr_group_id),
+                &first.upload,
+                MediaUploadStatus::Uploaded(pika_marmot_runtime::media::UploadedBlob {
+                    blossom_server: "https://example.com".to_string(),
+                    uploaded_url: "https://example.com/blob/1".to_string(),
+                    descriptor_sha256_hex: hex::encode(first.upload.encrypted_hash),
+                }),
+            )
+            .into_media_upload_result()
+            .expect("completed first upload"),
+            host.complete_media_upload_operation(
+                &created.group.mls_group_id,
+                hex::encode(created.group.nostr_group_id),
+                &second.upload,
+                MediaUploadStatus::Uploaded(pika_marmot_runtime::media::UploadedBlob {
+                    blossom_server: "https://example.com".to_string(),
+                    uploaded_url: "https://example.com/blob/2".to_string(),
+                    descriptor_sha256_hex: hex::encode(second.upload.encrypted_hash),
+                }),
+            )
+            .into_media_upload_result()
+            .expect("completed second upload"),
+        ];
+        let batch_fields = batch_media_fields_from_completed_uploads(&completed_uploads);
+        let message = make_test_message(
+            Kind::ChatMessage,
+            "hi",
+            Tags::from_list(batch_fields.imeta_tags.clone()),
+        );
+
+        let attachments = host.parse_message_media_attachments(&message);
+
+        assert_eq!(
+            batch_fields.uploaded_urls,
+            vec![
+                "https://example.com/blob/1".to_string(),
+                "https://example.com/blob/2".to_string(),
+            ]
+        );
+        assert_eq!(batch_fields.original_hashes.len(), 2);
+        assert_eq!(attachments.len(), 2);
+        assert_eq!(attachments[0].attachment.filename, "first.txt");
+        assert_eq!(attachments[1].attachment.filename, "second.txt");
     }
 
     #[test]

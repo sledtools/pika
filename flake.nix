@@ -808,6 +808,9 @@ EOF
           agentContractsLane = import ./nix/ci/linux-rust.nix (commonStagedLinuxRustArgs // {
             lane = "agent-contracts";
           });
+          pikachatLane = import ./nix/ci/linux-rust.nix (commonStagedLinuxRustArgs // {
+            lane = "pikachat";
+          });
           notificationsLane = import ./nix/ci/linux-rust.nix (commonStagedLinuxRustArgs // {
             lane = "notifications";
           });
@@ -824,6 +827,8 @@ EOF
         // {
           agentContractsWorkspaceDeps = agentContractsLane.workspaceDeps;
           agentContractsWorkspaceBuild = agentContractsLane.workspaceBuild;
+          pikachatWorkspaceDeps = pikachatLane.workspaceDeps;
+          pikachatWorkspaceBuild = pikachatLane.workspaceBuild;
           notificationsWorkspaceDeps = notificationsLane.workspaceDeps;
           notificationsWorkspaceBuild = notificationsLane.workspaceBuild;
           rmpWorkspaceDeps = rmpLane.workspaceDeps;

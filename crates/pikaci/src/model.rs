@@ -124,6 +124,7 @@ pub enum StagedLinuxRustTarget {
     PreMergeAgentContracts,
     PreMergeNotifications,
     PreMergeRmp,
+    PreMergePikachatRust,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -150,6 +151,16 @@ pub enum StagedLinuxRustLane {
     AgentContractsCoreNip98,
     NotificationsServerPackageTests,
     RmpInitSmokeCi,
+    PikachatPackageTests,
+    PikachatSidecarPackageTests,
+    PikachatDesktopPackageTests,
+    PikachatCliSmokeLocal,
+    PikachatPostRebaseInvalidEvent,
+    PikachatPostRebaseLogoutSession,
+    OpenclawInviteAndChat,
+    OpenclawInviteAndChatRustBot,
+    OpenclawInviteAndChatDaemon,
+    OpenclawAudioEcho,
 }
 
 impl StagedLinuxRustLane {
@@ -164,6 +175,16 @@ impl StagedLinuxRustLane {
             | Self::AgentContractsCoreNip98 => StagedLinuxRustTarget::PreMergeAgentContracts,
             Self::NotificationsServerPackageTests => StagedLinuxRustTarget::PreMergeNotifications,
             Self::RmpInitSmokeCi => StagedLinuxRustTarget::PreMergeRmp,
+            Self::PikachatPackageTests
+            | Self::PikachatSidecarPackageTests
+            | Self::PikachatDesktopPackageTests
+            | Self::PikachatCliSmokeLocal
+            | Self::PikachatPostRebaseInvalidEvent
+            | Self::PikachatPostRebaseLogoutSession
+            | Self::OpenclawInviteAndChat
+            | Self::OpenclawInviteAndChatRustBot
+            | Self::OpenclawInviteAndChatDaemon
+            | Self::OpenclawAudioEcho => StagedLinuxRustTarget::PreMergePikachatRust,
         }
     }
 
@@ -211,6 +232,36 @@ impl StagedLinuxRustLane {
                 "/staged/linux-rust/workspace-build/bin/run-pika-server-package-tests"
             }
             Self::RmpInitSmokeCi => "/staged/linux-rust/workspace-build/bin/run-rmp-init-smoke-ci",
+            Self::PikachatPackageTests => {
+                "/staged/linux-rust/workspace-build/bin/run-pikachat-package-tests"
+            }
+            Self::PikachatSidecarPackageTests => {
+                "/staged/linux-rust/workspace-build/bin/run-pikachat-sidecar-package-tests"
+            }
+            Self::PikachatDesktopPackageTests => {
+                "/staged/linux-rust/workspace-build/bin/run-pika-desktop-package-tests"
+            }
+            Self::PikachatCliSmokeLocal => {
+                "/staged/linux-rust/workspace-build/bin/run-pikachat-cli-smoke-local"
+            }
+            Self::PikachatPostRebaseInvalidEvent => {
+                "/staged/linux-rust/workspace-build/bin/run-pikachat-post-rebase-invalid-event"
+            }
+            Self::PikachatPostRebaseLogoutSession => {
+                "/staged/linux-rust/workspace-build/bin/run-pikachat-post-rebase-logout-session"
+            }
+            Self::OpenclawInviteAndChat => {
+                "/staged/linux-rust/workspace-build/bin/run-openclaw-invite-and-chat"
+            }
+            Self::OpenclawInviteAndChatRustBot => {
+                "/staged/linux-rust/workspace-build/bin/run-openclaw-invite-and-chat-rust-bot"
+            }
+            Self::OpenclawInviteAndChatDaemon => {
+                "/staged/linux-rust/workspace-build/bin/run-openclaw-invite-and-chat-daemon"
+            }
+            Self::OpenclawAudioEcho => {
+                "/staged/linux-rust/workspace-build/bin/run-openclaw-audio-echo"
+            }
         }
     }
 }
@@ -222,6 +273,7 @@ impl StagedLinuxRustTarget {
             "pre-merge-agent-contracts" => Some(Self::PreMergeAgentContracts),
             "pre-merge-notifications" => Some(Self::PreMergeNotifications),
             "pre-merge-rmp" => Some(Self::PreMergeRmp),
+            "pre-merge-pikachat-rust" => Some(Self::PreMergePikachatRust),
             _ => None,
         }
     }
@@ -275,6 +327,18 @@ impl StagedLinuxRustTarget {
                 workspace_deps_installable: ".#ci.x86_64-linux.rmpWorkspaceDeps",
                 workspace_build_installable: ".#ci.x86_64-linux.rmpWorkspaceBuild",
                 shadow_recipe: "pre-merge-rmp-shadow",
+            },
+            Self::PreMergePikachatRust => StagedLinuxRustTargetConfig {
+                target_id: "pre-merge-pikachat-rust",
+                target_description: "Run the VM-backed Rust tests from the pikachat lane",
+                shared_prepare_node_prefix: "pikachat-linux-rust",
+                shared_prepare_description: "pikachat staged Linux Rust lane",
+                workspace_deps_output_name: "ci.x86_64-linux.pikachatWorkspaceDeps",
+                workspace_build_output_name: "ci.x86_64-linux.pikachatWorkspaceBuild",
+                workspace_output_system: "x86_64-linux",
+                workspace_deps_installable: ".#ci.x86_64-linux.pikachatWorkspaceDeps",
+                workspace_build_installable: ".#ci.x86_64-linux.pikachatWorkspaceBuild",
+                shadow_recipe: "",
             },
         }
     }
@@ -399,24 +463,64 @@ mod tests {
     }
 
     #[test]
-    fn staged_linux_target_config_maps_target_ids_and_installables() {
-        let target = StagedLinuxRustTarget::from_target_id("pre-merge-notifications")
-            .expect("notifications target");
-        let config = target.config();
+    fn pikachat_lane_uses_pikachat_workspace_outputs() {
+        let lane = StagedLinuxRustLane::OpenclawAudioEcho;
 
-        assert_eq!(config.target_id, "pre-merge-notifications");
         assert_eq!(
-            config.workspace_deps_installable,
+            lane.workspace_deps_output_name(),
+            "ci.x86_64-linux.pikachatWorkspaceDeps"
+        );
+        assert_eq!(
+            lane.workspace_build_output_name(),
+            "ci.x86_64-linux.pikachatWorkspaceBuild"
+        );
+        assert_eq!(
+            lane.execute_wrapper_command(),
+            "/staged/linux-rust/workspace-build/bin/run-openclaw-audio-echo"
+        );
+    }
+
+    #[test]
+    fn staged_linux_target_config_maps_target_ids_and_installables() {
+        let notifications = StagedLinuxRustTarget::from_target_id("pre-merge-notifications")
+            .expect("notifications target");
+        let notifications_config = notifications.config();
+
+        assert_eq!(notifications_config.target_id, "pre-merge-notifications");
+        assert_eq!(
+            notifications_config.workspace_deps_installable,
             ".#ci.x86_64-linux.notificationsWorkspaceDeps"
         );
         assert_eq!(
-            config.workspace_build_installable,
+            notifications_config.workspace_build_installable,
             ".#ci.x86_64-linux.notificationsWorkspaceBuild"
         );
-        assert_eq!(config.shadow_recipe, "pre-merge-notifications-shadow");
+        assert_eq!(
+            notifications_config.shadow_recipe,
+            "pre-merge-notifications-shadow"
+        );
         assert_eq!(
             StagedLinuxRustLane::NotificationsServerPackageTests.target(),
             StagedLinuxRustTarget::PreMergeNotifications
+        );
+
+        let pikachat = StagedLinuxRustTarget::from_target_id("pre-merge-pikachat-rust")
+            .expect("pikachat target");
+        let pikachat_config = pikachat.config();
+
+        assert_eq!(pikachat_config.target_id, "pre-merge-pikachat-rust");
+        assert_eq!(
+            pikachat_config.workspace_deps_installable,
+            ".#ci.x86_64-linux.pikachatWorkspaceDeps"
+        );
+        assert_eq!(
+            pikachat_config.workspace_build_installable,
+            ".#ci.x86_64-linux.pikachatWorkspaceBuild"
+        );
+        assert_eq!(pikachat_config.shadow_recipe, "");
+        assert_eq!(
+            StagedLinuxRustLane::PikachatCliSmokeLocal.target(),
+            StagedLinuxRustTarget::PreMergePikachatRust
         );
     }
 

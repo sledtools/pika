@@ -11,6 +11,7 @@ pika-build.
 Targets:
   pre-merge-pika-rust
   pre-merge-agent-contracts
+  pre-merge-pikachat-rust
   pre-merge-notifications
   pre-merge-rmp
 

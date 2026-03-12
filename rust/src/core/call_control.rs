@@ -51,6 +51,38 @@ impl std::fmt::Display for CallEndReason {
     }
 }
 
+#[derive(Debug)]
+enum CallSignalDispatchError {
+    Prepare(String),
+    Publish(String),
+}
+
+impl CallSignalDispatchError {
+    fn into_message(self, prepare_failure_context: &str) -> String {
+        match self {
+            Self::Prepare(error) => format!("{prepare_failure_context}: {error}"),
+            Self::Publish(error) => error,
+        }
+    }
+}
+
+fn call_signal_publish_status(
+    wrapper_event_id: EventId,
+    outcome: super::relay_publish::PublishOutcome,
+) -> pika_marmot_runtime::runtime::CallSignalPublishStatus {
+    match outcome {
+        super::relay_publish::PublishOutcome::Ok => {
+            pika_marmot_runtime::runtime::CallSignalPublishStatus::Published { wrapper_event_id }
+        }
+        super::relay_publish::PublishOutcome::Err(error) => {
+            pika_marmot_runtime::runtime::CallSignalPublishStatus::PublishFailed {
+                wrapper_event_id,
+                error,
+            }
+        }
+    }
+}
+
 impl AppCore {
     fn has_live_call(&self) -> bool {
         self.state
@@ -130,11 +162,7 @@ impl AppCore {
         active: &crate::state::CallState,
         session: &CallSessionParams,
     ) -> Result<PreparedAcceptedCall, String> {
-        let sess = self
-            .session
-            .as_ref()
-            .ok_or_else(|| "no active session".to_string())?;
-        let host = sess.host_context();
+        let host = self.host_context().map_err(|e| format!("{e:#}"))?;
         let group = host
             .lookup_joined_group_snapshot(chat_id)
             .map_err(|e| format!("chat not found: {e:#}"))?;
@@ -158,6 +186,39 @@ impl AppCore {
         )
     }
 
+    fn prepare_outgoing_call_invite_signal(
+        &self,
+        chat_id: &str,
+        peer_pubkey_hex: &str,
+        call_id: &str,
+        session: &CallSessionParams,
+    ) -> Result<PreparedCallSignal, String> {
+        self.host_context()
+            .map_err(|e| format!("{e:#}"))?
+            .prepare_outgoing_call_invite(chat_id, peer_pubkey_hex, call_id, session)
+            .map(|(_, signal)| signal)
+    }
+
+    pub(super) fn prepare_call_reject_signal(
+        &self,
+        call_id: &str,
+        reason: &str,
+    ) -> Result<PreparedCallSignal, String> {
+        self.host_context()
+            .map_err(|e| format!("{e:#}"))?
+            .prepare_reject_call_signal(call_id, reason)
+    }
+
+    pub(super) fn prepare_call_end_signal(
+        &self,
+        call_id: &str,
+        reason: &str,
+    ) -> Result<PreparedCallSignal, String> {
+        self.host_context()
+            .map_err(|e| format!("{e:#}"))?
+            .prepare_end_call_signal(call_id, reason)
+    }
+
     pub(super) fn derive_relay_auth_token(
         &self,
         chat_id: &str,
@@ -166,14 +227,14 @@ impl AppCore {
         local_pubkey_hex: &str,
         peer_pubkey_hex: &str,
     ) -> Result<String, String> {
+        let host = self.host_context().map_err(|e| format!("{e:#}"))?;
+        let group = host
+            .lookup_joined_group_snapshot(chat_id)
+            .map_err(|e| format!("chat group not found: {e:#}"))?;
         let sess = self
             .session
             .as_ref()
             .ok_or_else(|| "no active session".to_string())?;
-        let group = sess
-            .host_context()
-            .lookup_joined_group_snapshot(chat_id)
-            .map_err(|e| format!("chat group not found: {e:#}"))?;
         let derive_ctx = CallCryptoDeriveContext {
             mdk: &sess.mdk,
             mls_group_id: &group.mls_group_id,
@@ -187,10 +248,46 @@ impl AppCore {
         derive_shared_relay_auth_token(&derive_ctx)
     }
 
+    fn dispatch_call_signal(
+        &mut self,
+        chat_id: &str,
+        kind: CallSignalPublishKind,
+        prepared: Result<PreparedCallSignal, String>,
+    ) -> Result<(), CallSignalDispatchError> {
+        let signal = prepared.map_err(CallSignalDispatchError::Prepare)?;
+        self.publish_call_signal(chat_id, kind, signal)
+            .map_err(CallSignalDispatchError::Publish)
+    }
+
+    fn dispatch_call_signal_or_toast(
+        &mut self,
+        chat_id: &str,
+        kind: CallSignalPublishKind,
+        prepared: Result<PreparedCallSignal, String>,
+        prepare_failure_context: &str,
+    ) -> bool {
+        match self.dispatch_call_signal(chat_id, kind, prepared) {
+            Ok(()) => true,
+            Err(error) => {
+                self.toast(error.into_message(prepare_failure_context));
+                false
+            }
+        }
+    }
+
+    fn dispatch_call_signal_best_effort(
+        &mut self,
+        chat_id: &str,
+        kind: CallSignalPublishKind,
+        prepared: Result<PreparedCallSignal, String>,
+    ) {
+        let _ = self.dispatch_call_signal(chat_id, kind, prepared);
+    }
+
     fn publish_call_signal(
         &mut self,
         chat_id: &str,
-        kind: pika_marmot_runtime::runtime::CallSignalPublishKind,
+        kind: CallSignalPublishKind,
         signal: PreparedCallSignal,
     ) -> Result<(), String> {
         let network_enabled = self.network_enabled();
@@ -248,26 +345,12 @@ impl AppCore {
                 false,
             )
             .await;
-            let publish_status = match outcome {
-                super::relay_publish::PublishOutcome::Ok => {
-                    pika_marmot_runtime::runtime::CallSignalPublishStatus::Published {
-                        wrapper_event_id: wrapper.id,
-                    }
-                }
-                super::relay_publish::PublishOutcome::Err(err) => {
-                    pika_marmot_runtime::runtime::CallSignalPublishStatus::PublishFailed {
-                        wrapper_event_id: wrapper.id,
-                        error: err,
-                    }
-                }
-            };
-            let operation =
-                pika_marmot_runtime::runtime::RuntimeOperationEvent::complete_call_signal_publish(
-                    kind,
-                    chat_id,
-                    signal,
-                    publish_status,
-                );
+            let operation = RuntimeOperationEvent::complete_call_signal_publish(
+                kind,
+                chat_id,
+                signal,
+                call_signal_publish_status(wrapper.id, outcome),
+            );
             let _ = tx.send(CoreMsg::Internal(Box::new(
                 InternalEvent::CallSignalPublishOperation { operation },
             )));
@@ -413,26 +496,6 @@ impl AppCore {
         self.schedule_call_offer_timeout();
         self.emit_call_state_with_previous(previous);
 
-        let signal = match self.session.as_ref() {
-            Some(sess) => match sess.host_context().prepare_outgoing_call_invite(
-                chat_id,
-                &peer_pubkey_hex,
-                &call_id,
-                &session,
-            ) {
-                Ok((_, signal)) => signal,
-                Err(err) => {
-                    self.toast(format!("Serialize invite failed: {err}"));
-                    self.end_call_local(CallEndReason::SerializeFailed);
-                    return;
-                }
-            },
-            None => {
-                self.toast("No active session".to_string());
-                self.end_call_local(CallEndReason::RuntimeError);
-                return;
-            }
-        };
         // Never log the full invite payload: it includes `relay_auth` (cap token).
         tracing::info!(
             call_id = %call_id,
@@ -441,13 +504,20 @@ impl AppCore {
             tracks = session.tracks.len(),
             "call_invite"
         );
-        if let Err(e) = self.publish_call_signal(
+        match self.dispatch_call_signal(
             chat_id,
-            pika_marmot_runtime::runtime::CallSignalPublishKind::Invite,
-            signal,
+            CallSignalPublishKind::Invite,
+            self.prepare_outgoing_call_invite_signal(chat_id, &peer_pubkey_hex, &call_id, &session),
         ) {
-            self.toast(e);
-            self.end_call_local(CallEndReason::PublishFailed);
+            Ok(()) => {}
+            Err(CallSignalDispatchError::Prepare(error)) => {
+                self.toast(format!("Serialize invite failed: {error}"));
+                self.end_call_local(CallEndReason::SerializeFailed);
+            }
+            Err(CallSignalDispatchError::Publish(error)) => {
+                self.toast(error);
+                self.end_call_local(CallEndReason::PublishFailed);
+            }
         }
     }
 
@@ -470,17 +540,22 @@ impl AppCore {
             Ok(prepared) => prepared,
             Err(err) => {
                 self.toast(format!("Call accept setup failed: {err}"));
-                self.send_call_reject(chat_id, &active.call_id, "auth_failed");
+                let signal = self.prepare_call_reject_signal(&active.call_id, "auth_failed");
+                self.dispatch_call_signal_best_effort(
+                    chat_id,
+                    CallSignalPublishKind::Reject,
+                    signal,
+                );
                 self.end_call_local(CallEndReason::AuthFailed);
                 return;
             }
         };
-        if let Err(e) = self.publish_call_signal(
+        if !self.dispatch_call_signal_or_toast(
             chat_id,
-            pika_marmot_runtime::runtime::CallSignalPublishKind::Accept,
-            prepared.signal,
+            CallSignalPublishKind::Accept,
+            Ok(prepared.signal),
+            "Prepare call accept failed",
         ) {
-            self.toast(e);
             return;
         }
         if let Err(e) = self.call_runtime.on_call_connecting(
@@ -511,26 +586,13 @@ impl AppCore {
         // End locally first so the UI updates and audio stops immediately.
         // The signal to the peer is best-effort and publishes asynchronously.
         self.end_call_local(CallEndReason::Declined);
-        let signal = match self.session.as_ref() {
-            Some(sess) => match sess
-                .host_context()
-                .prepare_reject_call_signal(&active.call_id, "declined")
-            {
-                Ok(signal) => signal,
-                Err(err) => {
-                    self.toast(format!("Serialize reject failed: {err}"));
-                    return;
-                }
-            },
-            None => return,
-        };
-        if let Err(e) = self.publish_call_signal(
+        let signal = self.prepare_call_reject_signal(&active.call_id, "declined");
+        self.dispatch_call_signal_or_toast(
             chat_id,
-            pika_marmot_runtime::runtime::CallSignalPublishKind::Reject,
+            CallSignalPublishKind::Reject,
             signal,
-        ) {
-            self.toast(e);
-        }
+            "Serialize reject failed",
+        );
     }
 
     pub(super) fn handle_end_call_action(&mut self) {
@@ -549,26 +611,13 @@ impl AppCore {
         // End locally first so the UI updates and audio stops immediately.
         // The signal to the peer is best-effort and publishes asynchronously.
         self.end_call_local(CallEndReason::UserHangup);
-        let signal = match self.session.as_ref() {
-            Some(sess) => match sess
-                .host_context()
-                .prepare_end_call_signal(&active.call_id, "user_hangup")
-            {
-                Ok(signal) => signal,
-                Err(err) => {
-                    self.toast(format!("Serialize end failed: {err}"));
-                    return;
-                }
-            },
-            None => return,
-        };
-        if let Err(e) = self.publish_call_signal(
+        let signal = self.prepare_call_end_signal(&active.call_id, "user_hangup");
+        self.dispatch_call_signal_or_toast(
             &active.chat_id,
-            pika_marmot_runtime::runtime::CallSignalPublishKind::End,
+            CallSignalPublishKind::End,
             signal,
-        ) {
-            self.toast(e);
-        }
+            "Serialize end failed",
+        );
     }
 
     pub(super) fn handle_call_offer_timeout(&mut self) {
@@ -580,18 +629,8 @@ impl AppCore {
         }
         tracing::info!("call_offer_timeout: ending unanswered call");
         self.end_call_local(CallEndReason::Timeout);
-        let signal = self.session.as_ref().and_then(|sess| {
-            sess.host_context()
-                .prepare_end_call_signal(&active.call_id, "timeout")
-                .ok()
-        });
-        if let Some(signal) = signal {
-            let _ = self.publish_call_signal(
-                &active.chat_id,
-                pika_marmot_runtime::runtime::CallSignalPublishKind::End,
-                signal,
-            );
-        }
+        let signal = self.prepare_call_end_signal(&active.call_id, "timeout");
+        self.dispatch_call_signal_best_effort(&active.chat_id, CallSignalPublishKind::End, signal);
     }
 
     pub(super) fn handle_toggle_mute_action(&mut self) {
@@ -629,26 +668,6 @@ impl AppCore {
         self.call_runtime
             .set_camera_enabled(&call.call_id, call.is_camera_enabled);
         self.emit_call_state();
-    }
-
-    fn send_call_reject(&mut self, chat_id: &str, call_id: &str, reason: &str) {
-        let signal = match self.session.as_ref() {
-            Some(sess) => {
-                match sess
-                    .host_context()
-                    .prepare_reject_call_signal(call_id, reason)
-                {
-                    Ok(signal) => signal,
-                    Err(_) => return,
-                }
-            }
-            None => return,
-        };
-        let _ = self.publish_call_signal(
-            chat_id,
-            pika_marmot_runtime::runtime::CallSignalPublishKind::Reject,
-            signal,
-        );
     }
 
     pub(super) fn handle_incoming_call_signal(
@@ -719,10 +738,10 @@ impl AppCore {
                 if let Some(err) = rejected.error {
                     self.toast(format!("Rejected call invite: {err}"));
                 }
-                let _ = self.publish_call_signal(
+                self.dispatch_call_signal_best_effort(
                     chat_id,
-                    pika_marmot_runtime::runtime::CallSignalPublishKind::Reject,
-                    rejected.signal,
+                    CallSignalPublishKind::Reject,
+                    Ok(rejected.signal),
                 );
             }
             InboundCallSignalOutcome::IncomingInvite(incoming) => {

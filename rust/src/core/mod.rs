@@ -9761,6 +9761,32 @@ mod tests {
             assert_eq!(pending.peer_pubkey_hex, peer_pubkey.to_hex());
             assert!(prepared.payload_json.contains("call.invite"));
         }
+
+        #[test]
+        fn app_prepare_call_reject_uses_shared_command_boundary() {
+            let (core, _tmp, _keys) = make_logged_in_core();
+            let call_id = "550e8400-e29b-41d4-a716-446655440100";
+
+            let signal = core
+                .prepare_call_reject_signal(call_id, "declined")
+                .expect("prepare call reject");
+
+            assert_eq!(signal.call_id, call_id);
+            assert!(signal.payload_json.contains("call.reject"));
+        }
+
+        #[test]
+        fn app_prepare_call_end_uses_shared_command_boundary() {
+            let (core, _tmp, _keys) = make_logged_in_core();
+            let call_id = "550e8400-e29b-41d4-a716-446655440101";
+
+            let signal = core
+                .prepare_call_end_signal(call_id, "user_hangup")
+                .expect("prepare call end");
+
+            assert_eq!(signal.call_id, call_id);
+            assert!(signal.payload_json.contains("call.end"));
+        }
     }
 
     #[test]

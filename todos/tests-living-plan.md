@@ -96,6 +96,14 @@ Working assumptions:
    - those staged wrappers now pass prepared `pikachat`, `pika_core`, and `pika-relay` binaries into the selected `pikahut` coverage, including the OpenClaw peer path, and set an explicit staged workspace root instead of relying on guest-time Cargo rebuilds or cwd-based workspace discovery
    - the tiny `agent_contracts` guardrail blind spot is now keyed off the selected `agent_http_cli_new*` selectors and their `integration_deterministic.rs` bodies instead of the outer recipe shell text
    - `pre-merge-fixture-rust` remains intentionally deferred so the slice stayed focused on `pikachat`
+10. Slice 11 closed the remaining staged `pikachat` guest/runtime gaps and made the Linux shadow lane landable:
+   - `crates/pikachat-sidecar/src/acp.rs` now records the fake ACP session end marker before emitting the final JSON-RPC response, which removes the real staged `pikachat-sidecar` race observed in the guest
+   - `crates/pikahut/src/testing/scenarios/deterministic.rs` now keeps `cli_smoke_local` fully local by forwarding the relay URL as both `--relay` and `--kp-relay` for `publish-kp` and `invite`, so the staged guest no longer falls back to public keypackage relays during invite
+   - `nix/ci/linux-rust.nix` now captures the deterministic manifest by exact test target name instead of sweeping in the plain `pikahut` binary, which fixed the post-rebase boundary wrapper mismatch in the guest
+   - `crates/pikahut/src/config.rs`, `crates/pikahut/src/testing/scenarios/openclaw.rs`, and `crates/pikahut/tests/integration_deterministic.rs` now keep the staged workspace-root and staged `pikachat` binary overrides wired all the way through deterministic/OpenClaw execution
+   - `pre-merge-pikachat-rust` passed end-to-end on the staged remote-authoritative path as run `20260312T035354Z-00c1af97`, and the lane is now eligible for the same non-gating shadow treatment as the other staged Linux families
+   - the non-gating shadow wiring for `pre-merge-pikachat-rust` is now in the same GitHub summary/debug-bundle path as the other staged Linux shadows; the only local shadow verification failure during this slice was a transient SSH `255` during concurrent `pika-build` redeploy, not a lane-logic failure
+   - updated Linux-required coverage picture under `pikaci`: `5 / 7` families have coverage, with `check-agent-contracts`, `check-notifications`, `check-rmp`, and the Linux-only `check-pikachat` slice now full, `check-pika` still partial, and `check-fixture` still intentionally deferred behind its intrinsically broad/uncached package boundary
 ## Progress Update
 
 Completed on 2026-03-10:
@@ -349,7 +357,6 @@ Updated recommendation after Slice 10:
 2. `pre-merge-fixture-rust` is now the obvious next staged-lane cleanup if we want the same authority/runner model for the last bespoke Rust lane.
 3. The Apple-host execution/ownership follow-up for `pre-merge-pikachat-apple-followup` should stay queued behind that `fixture` staged-lane cleanup.
 4. Keep lane coverage stable and avoid reopening workflow-filter gardening as the main event.
-
 Default bias:
 1. Keep the `pikahut` selector contract when practical.
 2. Do not preserve wrapper-over-opaque-legacy-test shapes when the behavior can be owned more directly.

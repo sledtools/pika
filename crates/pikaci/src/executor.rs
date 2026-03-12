@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -100,6 +101,7 @@ const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_DEFAULT: &str =
     "/var/tmp/pikaci-prepared-output";
 const REMOTE_MICROVM_HOST_UID_ENV: &str = "PIKACI_REMOTE_MICROVM_HOST_UID";
 const REMOTE_MICROVM_HOST_GID_ENV: &str = "PIKACI_REMOTE_MICROVM_HOST_GID";
+static REMOTE_OWNERSHIP_IDS_CACHE: OnceLock<Mutex<HashMap<String, (u32, u32)>>> = OnceLock::new();
 const REMOTE_MICROVM_VIRTIOFS_SOCKETS: &[&str] = &[
     "nixos-virtiofs-ro-store.sock",
     "nixos-virtiofs-snapshot.sock",
@@ -2065,11 +2067,20 @@ fn render_local_guest_flake(
 }
 
 fn remote_ownership_ids(remote_host: &str) -> anyhow::Result<(u32, u32)> {
+    let cache = REMOTE_OWNERSHIP_IDS_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(&(host_uid, host_gid)) = cache
+        .lock()
+        .expect("remote ownership cache poisoned")
+        .get(remote_host)
+    {
+        return Ok((host_uid, host_gid));
+    }
+
     if let (Ok(host_uid), Ok(host_gid)) = (
         std::env::var(REMOTE_MICROVM_HOST_UID_ENV),
         std::env::var(REMOTE_MICROVM_HOST_GID_ENV),
     ) {
-        return Ok((
+        let parsed = (
             host_uid
                 .trim()
                 .parse::<u32>()
@@ -2078,7 +2089,12 @@ fn remote_ownership_ids(remote_host: &str) -> anyhow::Result<(u32, u32)> {
                 .trim()
                 .parse::<u32>()
                 .with_context(|| format!("parse {REMOTE_MICROVM_HOST_GID_ENV}"))?,
-        ));
+        );
+        cache
+            .lock()
+            .expect("remote ownership cache poisoned")
+            .insert(remote_host.to_string(), parsed);
+        return Ok(parsed);
     }
 
     let output = run_ssh_command(remote_host, "printf '%s\\n%s\\n' \"$(id -u)\" \"$(id -g)\"")
@@ -2109,6 +2125,10 @@ fn remote_ownership_ids(remote_host: &str) -> anyhow::Result<(u32, u32)> {
         .trim()
         .parse::<u32>()
         .with_context(|| format!("parse remote gid from {remote_host}"))?;
+    cache
+        .lock()
+        .expect("remote ownership cache poisoned")
+        .insert(remote_host.to_string(), (host_uid, host_gid));
     Ok((host_uid, host_gid))
 }
 

@@ -551,9 +551,9 @@ for raw in sys.stdin:
                     }}
                 }}
             }}), flush=True)
-        print(json.dumps({{"jsonrpc":"2.0","id":msg["id"],"result":{{"stopReason":"end_turn"}}}}), flush=True)
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(f"end:{{session_id}}:{{prompt}}\n")
+        print(json.dumps({{"jsonrpc":"2.0","id":msg["id"],"result":{{"stopReason":"end_turn"}}}}), flush=True)
         continue
     print(json.dumps({{"jsonrpc":"2.0","id":msg["id"],"error":{{"code":-32601,"message":"unknown method"}}}}), flush=True)
 "#

@@ -62,6 +62,11 @@ pre-merge-rmp-shadow:
     just pikaci-remote-fulfill-pre-merge-rmp
     echo "pre-merge-rmp-shadow complete"
 
+# Advisory shadow CI lane for the staged Linux pikachat remote microVM path.
+pre-merge-pikachat-rust-shadow:
+    just pikaci-remote-fulfill-pre-merge-pikachat-rust
+    echo "pre-merge-pikachat-rust-shadow complete"
+
 # CI-safe pre-merge for the notification server lane.
 pre-merge-notifications:
     #!/usr/bin/env bash

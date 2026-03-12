@@ -603,8 +603,8 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
 
     let missing_from_workflow: Vec<_> = rust_lane_filters
         .iter()
-        .filter(|entry| !pikachat_filter.contains(entry.as_str()))
         .cloned()
+        .filter(|entry| !pikachat_filter.contains(*entry))
         .collect();
     assert!(
         missing_from_workflow.is_empty(),
@@ -718,6 +718,10 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
             openclaw.contains("CommandSpec::new(binary)")
                 && openclaw.contains(".capture_name(\"openclaw-invite-and-chat-peer\")"),
             "OpenClaw peer coverage must keep running through a direct pikachat binary spec while staged pikachat selectors stay in-lane"
+        );
+        assert!(
+            deterministic.contains("\"--kp-relay\".into(),\n            relay_url.clone(),\n            \"invite\".into()"),
+            "cli_smoke_local must keep forwarding the local kp relay into pikachat invite while relay-backed selectors stay in-lane"
         );
         assert!(
             linux_rust.contains("export PIKAHUT_TEST_PIKACHAT_BIN=\"$root/bin/pikachat\""),

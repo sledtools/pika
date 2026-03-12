@@ -345,7 +345,7 @@ impl StagedLinuxRustTarget {
                 workspace_output_system: "x86_64-linux",
                 workspace_deps_installable: ".#ci.x86_64-linux.pikachatWorkspaceDeps",
                 workspace_build_installable: ".#ci.x86_64-linux.pikachatWorkspaceBuild",
-                shadow_recipe: "",
+                shadow_recipe: "pre-merge-pikachat-rust-shadow",
             },
         }
     }
@@ -533,7 +533,10 @@ mod tests {
             pikachat_config.workspace_build_installable,
             ".#ci.x86_64-linux.pikachatWorkspaceBuild"
         );
-        assert_eq!(pikachat_config.shadow_recipe, "");
+        assert_eq!(
+            pikachat_config.shadow_recipe,
+            "pre-merge-pikachat-rust-shadow"
+        );
         assert_eq!(
             StagedLinuxRustLane::PikachatCliSmokeLocal.target(),
             StagedLinuxRustTarget::PreMergePikachatRust

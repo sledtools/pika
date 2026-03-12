@@ -35,7 +35,7 @@ let
       pkgs.alsa-lib
       pkgs.openssl
       pkgs.postgresql
-    ] ++ pkgs.lib.optionals (lane == "agent-contracts") [
+    ] ++ pkgs.lib.optionals (lane == "agent-contracts" || lane == "pikachat") [
       pkgs.llvmPackages.libclang
       pkgs.linuxHeaders
     ] ++ pkgs.lib.optionals (lane == "agent-contracts" || lane == "pikachat") [
@@ -49,7 +49,7 @@ let
       pkgs.mesa
       pkgs.vulkan-loader
     ];
-  } // pkgs.lib.optionalAttrs (lane == "agent-contracts") {
+  } // pkgs.lib.optionalAttrs (lane == "agent-contracts" || lane == "pikachat") {
     LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
     BINDGEN_EXTRA_CLANG_ARGS = builtins.concatStringsSep " " [
       "-I${pkgs.linuxHeaders}/include"
@@ -97,6 +97,22 @@ let
         EOF
         mkdir -p "$out/crates/pikahut/tests"
         cat >"$out/crates/pikahut/tests/integration_deterministic.rs" <<'EOF'
+        fn main() {}
+        EOF
+      ''
+    else if lane == "pikachat" then
+      pkgs.runCommand "ci-pikachat-workspace-dummy-src" { } ''
+        cp -R ${craneLib.mkDummySrc commonArgs} "$out"
+        chmod -R u+w "$out"
+        mkdir -p "$out/crates/pikahut/tests"
+        cat >"$out/crates/pikahut/tests/integration_deterministic.rs" <<'EOF'
+        fn main() {}
+        EOF
+        mkdir -p "$out/rust/tests"
+        cat >"$out/rust/tests/app_flows.rs" <<'EOF'
+        fn main() {}
+        EOF
+        cat >"$out/rust/tests/e2e_messaging.rs" <<'EOF'
         fn main() {}
         EOF
       ''
@@ -415,6 +431,30 @@ let
             fi
           }
 
+          capture_named_test_manifest() {
+            local cargo_build_log="$1"
+            local manifest_path="$2"
+            local target_name="$3"
+            ${pkgs.jq}/bin/jq -r \
+              --arg target_root "$target_root/" \
+              --arg target_root_abs "$target_root_abs" \
+              --arg target_name "$target_name" '
+              select(
+                .reason == "compiler-artifact"
+                and .executable != null
+                and .target.name == $target_name
+                and (.target.kind | index("test"))
+              )
+              | (.executable | sub("^" + $target_root_abs; "") | sub("^" + $target_root; ""))
+            ' <"$cargo_build_log" >"$manifest_path"
+            sort -u -o "$manifest_path" "$manifest_path"
+            if [ ! -s "$manifest_path" ]; then
+              echo "missing staged pikachat test manifest output for $manifest_path" >&2
+              cat "$cargo_build_log" >&2
+              exit 1
+            fi
+          }
+
           capture_binary() {
             local cargo_build_log="$1"
             local binary_path="$2"
@@ -463,7 +503,10 @@ let
             --test integration_deterministic \
             --no-run \
             --message-format json-render-diagnostics >"$cargoBuildLog"
-          capture_manifest "$cargoBuildLog" "$PIKACI_PIKAHUT_INTEGRATION_DETERMINISTIC_MANIFEST"
+          capture_named_test_manifest \
+            "$cargoBuildLog" \
+            "$PIKACI_PIKAHUT_INTEGRATION_DETERMINISTIC_MANIFEST" \
+            "integration_deterministic"
 
           cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
           cargo test --locked -j "$cargoJobs" -p pika_core \

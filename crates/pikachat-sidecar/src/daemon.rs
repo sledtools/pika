@@ -4732,24 +4732,26 @@ mod tests {
             prepared,
             pika_marmot_runtime::membership::EvolutionPublishStatus::Published,
         );
+        let completed_id = operation.operation_id();
+        let result = operation
+            .into_membership_evolution_result()
+            .expect("completed membership evolution");
 
-        match operation {
-            pika_marmot_runtime::runtime::RuntimeOperationEvent::MembershipEvolution(
-                pika_marmot_runtime::runtime::MembershipEvolutionOperationEvent::Completed {
-                    operation_id: completed_id,
-                    result,
-                },
-            ) => {
-                assert_eq!(completed_id, operation_id);
-                assert_eq!(
-                    result.nostr_group_id_hex,
-                    hex::encode(created.group.nostr_group_id)
-                );
-                assert_eq!(result.added_pubkeys, vec![peer_keys.public_key()]);
-                assert!(result.merge_error.is_none());
-            }
-            other => panic!("expected completed membership operation event, got {other:?}"),
-        }
+        assert_eq!(completed_id, operation_id);
+        assert_eq!(
+            result.nostr_group_id_hex,
+            hex::encode(created.group.nostr_group_id)
+        );
+        assert_eq!(result.added_pubkeys, vec![peer_keys.public_key()]);
+        assert!(result.merge_error.is_none());
+        assert_eq!(
+            result
+                .welcome_delivery
+                .as_ref()
+                .expect("welcome delivery")
+                .recipients,
+            vec![peer_keys.public_key()]
+        );
     }
 
     #[tokio::test]

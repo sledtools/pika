@@ -381,16 +381,6 @@ impl<'a> DaemonHostContext<'a> {
             .prepare_upload(mls_group_id, bytes, mime_type, filename)
     }
 
-    pub(super) fn finish_upload(
-        &self,
-        mls_group_id: &GroupId,
-        upload: &mdk_core::encrypted_media::types::EncryptedMediaUpload,
-        uploaded_blob: pika_marmot_runtime::media::UploadedBlob,
-    ) -> pika_marmot_runtime::media::RuntimeMediaUploadResult {
-        self.commands()
-            .finish_upload(mls_group_id, upload, uploaded_blob)
-    }
-
     pub(super) fn complete_media_upload_operation(
         &self,
         mls_group_id: &GroupId,

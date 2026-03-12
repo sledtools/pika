@@ -550,8 +550,9 @@ impl VmManager {
         let GuestServiceLaunch::OpenclawGateway { config_path, .. } = startup_plan.service else {
             anyhow::bail!("vm {id} startup plan is missing OpenClaw gateway details");
         };
-        let config_host_path = guest_workspace_path_on_host(&vm.microvm_state_dir, &config_path)
-            .with_context(|| format!("resolve OpenClaw config path for vm {id}"))?;
+        let config_host_path =
+            guest_workspace_regular_file_path_on_host(&vm.microvm_state_dir, &config_path)
+                .with_context(|| format!("resolve OpenClaw config path for vm {id}"))?;
         let text = fs::read_to_string(&config_host_path).with_context(|| {
             format!(
                 "read OpenClaw config for vm {id} at {}",
@@ -1388,6 +1389,43 @@ fn guest_workspace_path_on_host(
             ),
         }
     }
+    Ok(host_path)
+}
+
+fn guest_workspace_regular_file_path_on_host(
+    microvm_state_dir: &Path,
+    guest_rel_path: &str,
+) -> anyhow::Result<PathBuf> {
+    let host_path = guest_workspace_path_on_host(microvm_state_dir, guest_rel_path)?;
+    let workspace_root = microvm_state_dir.join("home");
+    let canonical_workspace_root = fs::canonicalize(&workspace_root).with_context(|| {
+        format!(
+            "canonicalize guest workspace root {}",
+            workspace_root.display()
+        )
+    })?;
+    let parent = host_path
+        .parent()
+        .context("guest workspace file must have a parent")?;
+    let canonical_parent = fs::canonicalize(parent)
+        .with_context(|| format!("canonicalize guest workspace parent {}", parent.display()))?;
+    anyhow::ensure!(
+        canonical_parent.starts_with(&canonical_workspace_root),
+        "guest workspace file parent escaped durable-home root: {}",
+        host_path.display()
+    );
+    let metadata = fs::symlink_metadata(&host_path)
+        .with_context(|| format!("stat guest workspace file {}", host_path.display()))?;
+    anyhow::ensure!(
+        !metadata.file_type().is_symlink(),
+        "guest workspace file cannot be a symlink: {}",
+        host_path.display()
+    );
+    anyhow::ensure!(
+        metadata.file_type().is_file(),
+        "guest workspace file must be a regular file: {}",
+        host_path.display()
+    );
     Ok(host_path)
 }
 
@@ -2674,6 +2712,73 @@ mod tests {
         assert_eq!(
             launch_auth.gateway_auth_token.as_deref(),
             Some("guest-launch-token")
+        );
+    }
+
+    #[tokio::test]
+    async fn openclaw_launch_auth_rejects_guest_config_symlink_escape() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = test_config(&root);
+        let manager = VmManager::new(cfg.clone()).await.unwrap();
+        let vm_id = "vm-00000001";
+        let autostart = GuestAutostartRequest {
+            command: "bash /workspace/start.sh".to_string(),
+            env: BTreeMap::new(),
+            files: BTreeMap::from([(
+                "workspace/start.sh".to_string(),
+                "#!/usr/bin/env bash\nexit 0\n".to_string(),
+            )]),
+            startup_plan: GuestStartupPlan {
+                agent_kind: pika_agent_control_plane::MicrovmAgentKind::Openclaw,
+                service_kind: GuestServiceKind::OpenclawGateway,
+                backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Native,
+                daemon_state_dir: "/root/pika-agent/state".to_string(),
+                service: GuestServiceLaunch::OpenclawGateway {
+                    exec_command: "npx -y openclaw".to_string(),
+                    state_dir: "/root/pika-agent/openclaw".to_string(),
+                    config_path: pika_agent_control_plane::GUEST_OPENCLAW_CONFIG_PATH.to_string(),
+                    gateway_port: 18789,
+                    daemon_backend: pika_agent_control_plane::GuestOpenclawDaemonBackend::Native,
+                },
+                readiness_check: pika_agent_control_plane::GuestServiceReadinessCheck::HttpGetOk {
+                    url: "http://127.0.0.1:18789/health".to_string(),
+                    ready_probe: "openclaw_gateway_health".to_string(),
+                    timeout_failure_reason: "timeout_waiting_for_openclaw_health".to_string(),
+                },
+                artifacts: pika_agent_control_plane::GuestStartupArtifacts::default(),
+                exit_failure_reason: "openclaw_gateway_exited".to_string(),
+            },
+        };
+        let vm_state_dir = cfg.state_dir.join(vm_id);
+        write_runtime_metadata(
+            &vm_state_dir,
+            vm_id,
+            &mac_for_guest_ip(Ipv4Addr::new(192, 168, 83, 11)),
+            Ipv4Addr::new(192, 168, 83, 11),
+            cfg.gateway_ip,
+            cfg.dns_ip,
+            2,
+            4096,
+            &cfg.runtime_artifacts_guest_mount,
+            None,
+            Some(&autostart),
+        )
+        .unwrap();
+        let config_path = vm_state_dir.join("home/pika-agent/openclaw/openclaw.json");
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        let escaped = root.path().join("outside-openclaw.json");
+        fs::write(
+            &escaped,
+            r#"{"gateway":{"auth":{"token":"outside-token"}}}"#,
+        )
+        .unwrap();
+        symlink(&escaped, &config_path).unwrap();
+
+        let error = manager.openclaw_launch_auth(vm_id).unwrap_err();
+        let error_chain = format!("{error:#}");
+        assert!(
+            error_chain.contains("guest workspace file cannot be a symlink"),
+            "expected symlink rejection, got {error_chain}"
         );
     }
 

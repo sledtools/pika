@@ -32,6 +32,7 @@ pub const DEFAULT_OPENCLAW_GATEWAY_PORT: u16 = 18789;
 pub const DEFAULT_DAEMON_STATE_DIR: &str = "/root/pika-agent/state";
 pub const DEFAULT_OPENCLAW_STATE_DIR: &str = "/root/pika-agent/openclaw";
 pub const DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN: &str = "http://openclaw.localhost:19401";
+pub const DEFAULT_OPENCLAW_CONTROL_UI_HTTPS_ORIGIN: &str = "https://openclaw.localhost:19401";
 const DEFAULT_OPENCLAW_TRUSTED_PROXIES: &[&str] = &["127.0.0.1", "::1"];
 
 const DEFAULT_CREATE_VM_TIMEOUT_SECS: u64 = 60;
@@ -1129,26 +1130,22 @@ fn openclaw_gateway_config(relay_urls: &[String], startup_plan: &GuestStartupPla
     // Keep the plugin entry config and channel config identical so either OpenClaw
     // surface sees the same daemon launch settings.
     let entry_config = channel_config.clone();
-    let control_ui_allowed_origins = openclaw_control_ui_allowed_origins();
-    // Managed OpenClaw is always opened through the platform's proxy + token handoff.
-    // Keep shared token auth, but disable guest-local browser device pairing because
-    // the platform session + launch ticket is the intended security boundary here.
-    //
-    // Current OpenClaw builds require dangerouslyDisableDeviceAuth for this managed
-    // launch flow; keep allowInsecureAuth alongside it for older/local flows that
-    // still key off token-only Control UI auth.
+    let mut gateway_config = json!({
+        "mode": "local",
+        "bind": "loopback",
+        "port": DEFAULT_OPENCLAW_GATEWAY_PORT,
+    });
+    gateway_config
+        .as_object_mut()
+        .expect("openclaw gateway config object")
+        .extend(
+            managed_openclaw_gateway_security_config()
+                .as_object()
+                .expect("managed OpenClaw security config object")
+                .clone(),
+        );
     serde_json::to_string_pretty(&json!({
-        "gateway": {
-            "mode": "local",
-            "bind": "loopback",
-            "port": DEFAULT_OPENCLAW_GATEWAY_PORT,
-            "controlUi": {
-                "allowInsecureAuth": true,
-                "dangerouslyDisableDeviceAuth": true,
-                "allowedOrigins": control_ui_allowed_origins,
-            },
-            "trustedProxies": DEFAULT_OPENCLAW_TRUSTED_PROXIES,
-        },
+        "gateway": gateway_config,
         "plugins": {
             "enabled": true,
             "allow": ["pikachat-openclaw"],
@@ -1172,8 +1169,27 @@ fn openclaw_gateway_config(relay_urls: &[String], startup_plan: &GuestStartupPla
     .expect("serialize openclaw config")
 }
 
+fn managed_openclaw_gateway_security_config() -> serde_json::Value {
+    let control_ui_allowed_origins = openclaw_control_ui_allowed_origins();
+    // Managed OpenClaw is launched through the platform's authenticated dashboard,
+    // ticket handoff, and scoped UI session. Guest device pairing is intentionally
+    // disabled for this allowlisted flow because the platform boundary is the
+    // intended security control, not direct guest-local browser trust.
+    json!({
+        "controlUi": {
+            "allowInsecureAuth": true,
+            "dangerouslyDisableDeviceAuth": true,
+            "allowedOrigins": control_ui_allowed_origins,
+        },
+        "trustedProxies": DEFAULT_OPENCLAW_TRUSTED_PROXIES,
+    })
+}
+
 fn openclaw_control_ui_allowed_origins() -> Vec<String> {
-    let mut origins = vec![DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN.to_string()];
+    let mut origins = vec![
+        DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN.to_string(),
+        DEFAULT_OPENCLAW_CONTROL_UI_HTTPS_ORIGIN.to_string(),
+    ];
     if let Ok(raw) = std::env::var("PIKA_OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS") {
         for origin in raw
             .split(',')
@@ -1665,7 +1681,7 @@ done
             KeypackagePublishOutcome::TimesOut { .. } => {
                 command
                     .env("PIKA_TEST_PUBLISH_ALWAYS_FAIL", "1")
-                    .env("PIKA_AGENT_READY_TIMEOUT_SECS", "2");
+                    .env("PIKA_AGENT_READY_TIMEOUT_SECS", "5");
             }
         }
 
@@ -1785,7 +1801,16 @@ done
                 let _ = child.wait().expect("wait for autostart script shutdown");
             }
             KeypackagePublishOutcome::TimesOut { expected_reason } => {
-                poll_until(StdDuration::from_secs(5), || failed_marker_path.exists());
+                poll_until(StdDuration::from_secs(10), || {
+                    read_counter(&publish_count_path) >= 1 || failed_marker_path.exists()
+                });
+                let publish_count = read_counter(&publish_count_path);
+                assert!(
+                    publish_count >= 1,
+                    "timeout harness should reach keypackage publish before failing; failed marker contents: {}",
+                    fs::read_to_string(&failed_marker_path).unwrap_or_default()
+                );
+                let status = child.wait().expect("wait for autostart script failure");
                 assert!(
                     !ready_marker_path.exists(),
                     "ready marker must stay absent when keypackage publish never succeeds"
@@ -1794,9 +1819,8 @@ done
                     fs::read_to_string(&failed_marker_path).expect("read failed marker");
                 assert!(
                     failed_marker.contains(expected_reason),
-                    "failed marker should report the dedicated keypackage publish timeout reason"
+                    "failed marker should report the dedicated keypackage publish timeout reason; got {failed_marker}"
                 );
-                let status = child.wait().expect("wait for autostart script failure");
                 assert!(
                     !status.success(),
                     "autostart script should exit non-zero when keypackage publication times out"
@@ -2186,7 +2210,10 @@ done
         );
         assert_eq!(
             openclaw_json["gateway"]["controlUi"]["allowedOrigins"],
-            serde_json::json!([DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN])
+            serde_json::json!([
+                DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN,
+                DEFAULT_OPENCLAW_CONTROL_UI_HTTPS_ORIGIN
+            ])
         );
         assert_eq!(
             openclaw_json["gateway"]["controlUi"]["allowInsecureAuth"],
@@ -2266,7 +2293,10 @@ done
             serde_json::from_str(openclaw_config).expect("parse openclaw config");
         assert_eq!(
             openclaw_json["gateway"]["controlUi"]["allowedOrigins"],
-            serde_json::json!([DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN])
+            serde_json::json!([
+                DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN,
+                DEFAULT_OPENCLAW_CONTROL_UI_HTTPS_ORIGIN
+            ])
         );
         assert_eq!(
             openclaw_json["gateway"]["controlUi"]["allowInsecureAuth"],
@@ -2321,6 +2351,7 @@ done
             openclaw_json["gateway"]["controlUi"]["allowedOrigins"],
             serde_json::json!([
                 DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN,
+                DEFAULT_OPENCLAW_CONTROL_UI_HTTPS_ORIGIN,
                 "https://openclaw.api.pikachat.org"
             ])
         );

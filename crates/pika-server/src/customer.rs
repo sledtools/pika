@@ -147,6 +147,73 @@ struct DashboardTemplate {
     has_recent_activity: bool,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum OpenClawLaunchability {
+    Launchable,
+    UnexpectedRuntime,
+    NotProvisioned,
+    Provisioning,
+    RecoverFirst,
+    WaitingForReady,
+}
+
+impl OpenClawLaunchability {
+    fn from_status(status: &ManagedEnvironmentStatus) -> Self {
+        let row = status.row.as_ref();
+        let inflight_without_vm = row
+            .map(|row| {
+                row.phase == crate::models::agent_instance::AGENT_PHASE_CREATING
+                    && row.vm_id.is_none()
+            })
+            .unwrap_or(false);
+        let recoverable_vm_exists = row.and_then(|row| row.vm_id.as_deref()).is_some();
+        if status.app_state == Some(crate::agent_api_v1_contract::AgentAppState::Ready)
+            && status.startup_phase == Some(pika_agent_control_plane::AgentStartupPhase::Ready)
+            && status.runtime_kind == Some(pika_agent_control_plane::MicrovmAgentKind::Openclaw)
+            && recoverable_vm_exists
+        {
+            Self::Launchable
+        } else if status.runtime_kind == Some(pika_agent_control_plane::MicrovmAgentKind::Pi) {
+            Self::UnexpectedRuntime
+        } else if row.is_none() {
+            Self::NotProvisioned
+        } else if inflight_without_vm {
+            Self::Provisioning
+        } else if status.app_state == Some(crate::agent_api_v1_contract::AgentAppState::Error) {
+            Self::RecoverFirst
+        } else {
+            Self::WaitingForReady
+        }
+    }
+
+    fn can_launch(self) -> bool {
+        matches!(self, Self::Launchable)
+    }
+
+    fn status_copy(self) -> &'static str {
+        match self {
+            Self::Launchable => {
+                "Open the built-in OpenClaw UI on its own platform-managed origin. Launch uses a short-lived platform ticket and a scoped UI session rather than the dashboard cookie."
+            }
+            Self::UnexpectedRuntime => {
+                "This managed environment was provisioned with the Pi runtime instead of OpenClaw. Reset or reprovision it before using the built-in OpenClaw UI."
+            }
+            Self::NotProvisioned => {
+                "Provision Managed OpenClaw before launching the built-in UI."
+            }
+            Self::Provisioning => {
+                "OpenClaw launch unlocks after the current VM assignment finishes."
+            }
+            Self::RecoverFirst => {
+                "Recover or reprovision the managed environment before opening OpenClaw."
+            }
+            Self::WaitingForReady => {
+                "OpenClaw launch becomes available once the managed environment is fully ready."
+            }
+        }
+    }
+}
+
 #[derive(Template)]
 #[template(path = "customer/reset_confirm.html")]
 struct ResetConfirmTemplate {
@@ -802,9 +869,8 @@ fn dashboard_template(
     backup: ManagedEnvironmentBackupStatus,
     recent_activity: Vec<DashboardActivityItem>,
 ) -> DashboardTemplate {
+    let launchability = OpenClawLaunchability::from_status(&status);
     let row = status.row;
-    let app_state = status.app_state;
-    let startup_phase = status.startup_phase;
     let runtime_kind = status.runtime_kind;
     let inflight_without_vm = row
         .as_ref()
@@ -813,10 +879,6 @@ fn dashboard_template(
         })
         .unwrap_or(false);
     let recoverable_vm_exists = row.as_ref().and_then(|row| row.vm_id.as_deref()).is_some();
-    let can_launch_openclaw = app_state == Some(crate::agent_api_v1_contract::AgentAppState::Ready)
-        && startup_phase == Some(pika_agent_control_plane::AgentStartupPhase::Ready)
-        && runtime_kind == Some(pika_agent_control_plane::MicrovmAgentKind::Openclaw)
-        && recoverable_vm_exists;
     let has_backup_host = backup.backup_host.is_some();
     let backup_host = backup
         .backup_host
@@ -886,20 +948,8 @@ fn dashboard_template(
             "Recent backup protection is healthy, so destructive reset remains available directly from the dashboard."
                 .to_string()
         },
-        can_launch_openclaw,
-        launch_status_copy: if can_launch_openclaw {
-            "Open the built-in OpenClaw UI on its own platform-managed origin. Launch uses a short-lived platform ticket and a scoped UI session rather than the dashboard cookie."
-        } else if runtime_kind == Some(pika_agent_control_plane::MicrovmAgentKind::Pi) {
-            "This managed environment was provisioned with the Pi runtime instead of OpenClaw. Reset or reprovision it before using the built-in OpenClaw UI."
-        } else if row.is_none() {
-            "Provision Managed OpenClaw before launching the built-in UI."
-        } else if inflight_without_vm {
-            "OpenClaw launch unlocks after the current VM assignment finishes."
-        } else if app_state == Some(crate::agent_api_v1_contract::AgentAppState::Error) {
-            "Recover or reprovision the managed environment before opening OpenClaw."
-        } else {
-            "OpenClaw launch becomes available once the managed environment is fully ready."
-        },
+        can_launch_openclaw: launchability.can_launch(),
+        launch_status_copy: launchability.status_copy(),
         has_recent_activity: !recent_activity.is_empty(),
         recent_activity,
     }

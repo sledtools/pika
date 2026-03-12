@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
 pub enum GuestCommand {
+    HostShellCommand {
+        command: &'static str,
+    },
     ExactCargoTest {
         package: &'static str,
         test_name: &'static str,

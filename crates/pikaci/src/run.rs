@@ -135,10 +135,9 @@ pub fn run_jobs_with_metadata(
 }
 
 fn snapshot_profile_for_jobs(jobs: &[JobSpec]) -> SnapshotProfile {
-    if !jobs.is_empty()
-        && jobs
-            .iter()
-            .all(|job| job.staged_linux_rust_lane().is_some())
+    if jobs
+        .iter()
+        .any(|job| job.staged_linux_rust_lane().is_some())
     {
         SnapshotProfile::StagedLinuxRust
     } else {
@@ -1026,6 +1025,7 @@ fn build_run_plan(
             let prepare_node_id = format!("prepare-{}-runner", job.id);
             let installable = materialize_runner_flake(job, &ctx)?;
             let runner_description = match job.runner_kind() {
+                RunnerKind::HostLocal => unreachable!("host-local jobs skip Linux microvm runner"),
                 RunnerKind::VfkitLocal => format!("Build vfkit runner for `{}`", job.id),
                 RunnerKind::MicrovmRemote => {
                     format!("Build remote microvm runner for `{}`", job.id)
@@ -1036,6 +1036,7 @@ fn build_run_plan(
                 RunnerKind::TartLocal => unreachable!("tart jobs skip Linux microvm runner"),
             };
             let action = match job.runner_kind() {
+                RunnerKind::HostLocal => unreachable!("host-local jobs skip Linux microvm runner"),
                 RunnerKind::VfkitLocal => PrepareAction::VfkitRunner {
                     installable: installable.clone(),
                     runner_link: ctx.job_dir.join("vm").join("runner"),
@@ -3315,12 +3316,15 @@ fn resolve_run_prepared_output_consumer_kind_for_mode(
         ));
     }
     if jobs.is_empty()
-        || jobs
+        || !jobs
             .iter()
-            .any(|job| job.staged_linux_rust_lane().is_none())
+            .any(|job| job.staged_linux_rust_lane().is_some())
+        || jobs.iter().any(|job| {
+            job.staged_linux_rust_lane().is_none() && job.runner_kind() != RunnerKind::HostLocal
+        })
     {
         return Err(anyhow!(
-            "{STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV} requires staged Linux Rust jobs"
+            "{STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV} requires staged Linux Rust jobs, optionally mixed with host-local follow-up jobs"
         ));
     }
     Ok((
@@ -3850,7 +3854,6 @@ mod tests {
         PreparedOutputResidency, PreparedOutputsRecord, RealizedPreparedOutputRecord,
         RunPlanRecord, RunRecord, RunStatus, StagedLinuxRustLane,
     };
-
     #[test]
     fn gc_runs_keeps_latest_run_directories() {
         let root = std::env::temp_dir().join(format!("pikaci-gc-test-{}", uuid::Uuid::new_v4()));

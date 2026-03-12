@@ -149,12 +149,17 @@ pub fn run_job_on_runner(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<Job
 }
 
 fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
-    let command = match job.guest_command {
-        GuestCommand::HostShellCommand { command } => command,
-        _ => bail!("host-local jobs require GuestCommand::HostShellCommand"),
-    };
-
     ensure_file(&ctx.host_log_path)?;
+    ensure_file(&ctx.guest_log_path)?;
+
+    let artifacts_dir = ctx.job_dir.join("artifacts");
+    fs::create_dir_all(&artifacts_dir)
+        .with_context(|| format!("create {}", artifacts_dir.display()))?;
+
+    let (command, run_as_root) = compiled_guest_command(job);
+    if run_as_root {
+        bail!("host-local jobs do not support root commands");
+    }
     append_line(
         &ctx.host_log_path,
         &format!(
@@ -163,93 +168,77 @@ fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOut
             Utc::now().to_rfc3339()
         ),
     )?;
-    append_line(
-        &ctx.host_log_path,
-        &format!("[pikaci] host-local command: {command}"),
-    )?;
 
-    let mut child = Command::new("bash")
-        .arg("--noprofile")
-        .arg("--norc")
-        .arg("-lc")
-        .arg(command)
+    let mut cmd = Command::new("/bin/bash");
+    cmd.args(["--noprofile", "--norc", "-lc", &command])
         .current_dir(&ctx.workspace_snapshot_dir)
+        .env("ARTIFACTS", &artifacts_dir)
         .env("CARGO_HOME", &ctx.shared_cargo_home_dir)
         .env("CARGO_TARGET_DIR", &ctx.shared_target_dir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("spawn host-local command")?;
+        .stderr(Stdio::piped());
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!("host-local stdout unavailable"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| anyhow!("host-local stderr unavailable"))?;
+    let snapshot_openclaw_dir = ctx.workspace_snapshot_dir.join("openclaw");
+    if std::env::var_os("OPENCLAW_DIR").is_none()
+        && snapshot_openclaw_dir.join("package.json").is_file()
+    {
+        cmd.env("OPENCLAW_DIR", &snapshot_openclaw_dir);
+    }
 
-    let log_file = Arc::new(Mutex::new(
-        OpenOptions::new()
+    let output = cmd
+        .output()
+        .with_context(|| format!("run host-local job `{}`", job.id))?;
+    {
+        let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&ctx.host_log_path)
-            .with_context(|| format!("open {}", ctx.host_log_path.display()))?,
-    ));
-    let stdout_handle = spawn_log_pump(stdout, Arc::clone(&log_file), "[host:stdout]");
-    let stderr_handle = spawn_log_pump(stderr, Arc::clone(&log_file), "[host:stderr]");
-
-    let deadline = Instant::now() + Duration::from_secs(job.timeout_secs);
-    let status = loop {
-        if let Some(status) = child.try_wait().context("poll host-local command")? {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            append_line(
-                &ctx.host_log_path,
-                &format!(
-                    "[pikaci] timeout after {}s, killing host-local job `{}`",
-                    job.timeout_secs, job.id
-                ),
-            )?;
-            child.kill().context("kill timed out host-local command")?;
-            let _ = child.wait();
-            let _ = stdout_handle.join();
-            let _ = stderr_handle.join();
-            return Ok(JobOutcome {
-                status: RunStatus::Failed,
-                exit_code: None,
-                message: format!("timed out after {}s", job.timeout_secs),
-            });
-        }
-        thread::sleep(Duration::from_millis(250));
-    };
-
-    let _ = stdout_handle.join();
-    let _ = stderr_handle.join();
+            .with_context(|| format!("open {}", ctx.host_log_path.display()))?;
+        file.write_all(&output.stdout)
+            .with_context(|| format!("write stdout to {}", ctx.host_log_path.display()))?;
+        file.write_all(&output.stderr)
+            .with_context(|| format!("write stderr to {}", ctx.host_log_path.display()))?;
+    }
     append_line(
         &ctx.host_log_path,
         &format!(
-            "[pikaci] host-local job `{}` exited with {:?} at {}",
-            job.id,
-            status.code(),
+            "[pikaci] host-local job exited with {:?} at {}",
+            output.status.code(),
             Utc::now().to_rfc3339()
         ),
     )?;
 
+    let exit_code = output.status.code().unwrap_or(1);
+    let status = if output.status.success() {
+        RunStatus::Passed
+    } else {
+        RunStatus::Failed
+    };
+    let message = if output.status.success() {
+        "host-local command passed".to_string()
+    } else {
+        format!("host-local command exited with {exit_code}")
+    };
+    let result = GuestResult {
+        status: match status {
+            RunStatus::Passed => "passed".to_string(),
+            _ => "failed".to_string(),
+        },
+        exit_code,
+        finished_at: Utc::now().to_rfc3339(),
+        message: Some(message.clone()),
+    };
+    let result_path = artifacts_dir.join("result.json");
+    fs::write(
+        &result_path,
+        serde_json::to_vec_pretty(&result).context("encode host-local result")?,
+    )
+    .with_context(|| format!("write {}", result_path.display()))?;
+
     Ok(JobOutcome {
-        status: if status.success() {
-            RunStatus::Passed
-        } else {
-            RunStatus::Failed
-        },
-        exit_code: status.code(),
-        message: if status.success() {
-            "host-local command passed".to_string()
-        } else {
-            format!("host-local command failed with {:?}", status.code())
-        },
+        status,
+        exit_code: Some(exit_code),
+        message,
     })
 }
 
@@ -2246,6 +2235,10 @@ pub(crate) fn compiled_guest_command(job: &JobSpec) -> (String, bool) {
     }
 
     match job.guest_command {
+        GuestCommand::HostShellCommand { command } => (
+            format!("bash --noprofile --norc -lc {}", shell_escape(command)),
+            false,
+        ),
         GuestCommand::ExactCargoTest { package, test_name } => (
             format!(
                 "cargo test -p {} {} -- --exact --nocapture",

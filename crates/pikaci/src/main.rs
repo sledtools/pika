@@ -459,9 +459,13 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "crates/pika-agent-protocol/**",
                 "crates/pika-desktop/**",
                 "crates/hypernote-protocol/**",
+                "crates/pika-marmot-runtime/**",
+                "crates/pika-media/**",
+                "crates/pika-relay-profiles/**",
                 "crates/pikachat-sidecar/**",
                 "crates/pikahut/**",
                 "pikachat-openclaw/**",
+                "rust/**",
             ],
             jobs: pikachat_apple_followup_jobs(),
         }),
@@ -1657,7 +1661,11 @@ mod tests {
         assert!(target.filters.contains(&"crates/pikachat-sidecar/**"));
         assert!(target.filters.contains(&"crates/pikahut/**"));
         assert!(target.filters.contains(&"crates/pika-desktop/**"));
+        assert!(target.filters.contains(&"crates/pika-marmot-runtime/**"));
+        assert!(target.filters.contains(&"crates/pika-media/**"));
+        assert!(target.filters.contains(&"crates/pika-relay-profiles/**"));
         assert!(target.filters.contains(&"pikachat-openclaw/**"));
+        assert!(target.filters.contains(&"rust/**"));
     }
 
     #[test]

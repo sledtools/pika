@@ -683,6 +683,8 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
             "pika-agent-control-plane",
             "crates/pika-agent-control-plane/**",
         ),
+        ("pika-marmot-runtime", "crates/pika-marmot-runtime/**"),
+        ("pika-relay-profiles", "crates/pika-relay-profiles/**"),
         ("pikachat-sidecar", "crates/pikachat-sidecar/**"),
         ("hypernote-protocol", "crates/hypernote-protocol/**"),
     ] {
@@ -696,6 +698,29 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
                 "pikachat workflow filter must include {filter_path} while cli/Cargo.toml keeps the direct {dependency_name} dependency"
             );
         }
+    }
+    let sidecar_manifest = fs::read_to_string(root.join("crates/pikachat-sidecar/Cargo.toml"))?;
+    if apple_followup_jobs.contains("pikachat-sidecar -- -D warnings")
+        && sidecar_manifest.contains("pika-media")
+    {
+        assert!(
+            apple_followup_filters.contains("crates/pika-media/**"),
+            "pre-merge-pikachat-apple-followup filters must include crates/pika-media/** while Apple follow-up sidecar clippy keeps pika-media in the build graph"
+        );
+        assert!(
+            pikachat_filter.contains("crates/pika-media/**"),
+            "pikachat workflow filter must include crates/pika-media/** while Apple follow-up sidecar clippy keeps pika-media in the build graph"
+        );
+    }
+    if apple_followup_jobs.contains("ui_e2e_local_desktop") {
+        assert!(
+            apple_followup_filters.contains("rust/**"),
+            "pre-merge-pikachat-apple-followup filters must include rust/** while the Apple follow-up keeps the desktop selector path"
+        );
+        assert!(
+            pikachat_filter.contains("rust/**"),
+            "pikachat workflow filter must include rust/** while the Apple follow-up keeps the desktop selector path"
+        );
     }
     if cli_manifest.contains("pika-test-utils") {
         assert!(

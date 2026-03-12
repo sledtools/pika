@@ -32,9 +32,10 @@ use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversa
 use pika_marmot_runtime::runtime::{
     BootstrappedRuntimeSession, CallSignalPublishKind, CallSignalPublishStatus, InboundRelayEvent,
     InboundRelaySeenCache, MarmotRuntime, PublishedCallSignal,
-    RuntimeApplicationMessageInterpretation, RuntimeConversationEventInterpretation,
-    RuntimeSessionOpenRequest, RuntimeWelcomeInboxSubscriptionIntent, bootstrap_runtime_session,
-    classify_inbound_relay_event, subscribe_group_messages_individual, subscribe_welcome_inbox,
+    RuntimeApplicationMessageInterpretation, RuntimeBaseSessionSyncExecution,
+    RuntimeConversationEventInterpretation, RuntimeSessionOpenRequest, RuntimeSessionSyncPlan,
+    RuntimeWelcomeInboxSubscriptionIntent, bootstrap_runtime_session, classify_inbound_relay_event,
+    subscribe_group_messages_individual,
 };
 use pika_marmot_runtime::welcome::{
     AcceptedWelcome, accept_welcome_and_catch_up, ingest_unwrapped_welcome,
@@ -62,8 +63,6 @@ use host_context::{DaemonHostContext, DaemonPrepareError};
 
 #[cfg(test)]
 use pika_marmot_runtime::call::key_id_for_sender;
-#[cfg(test)]
-use pika_marmot_runtime::runtime::RuntimeSessionSyncPlan;
 #[cfg(test)]
 use pika_marmot_runtime::welcome::find_pending_welcome_index;
 #[cfg(test)]
@@ -132,6 +131,39 @@ fn plan_daemon_session_sync(
     Ok(host
         .refresh_session_state(subscribed_group_ids, giftwrap_lookback_sec)?
         .sync_plan)
+}
+
+fn daemon_base_session_sync_plan(
+    sync_plan: &RuntimeSessionSyncPlan,
+    primary_relay_url: &RelayUrl,
+) -> RuntimeSessionSyncPlan {
+    let mut ordered = sync_plan.clone();
+    let mut session_connect_relays = vec![primary_relay_url.clone()];
+    session_connect_relays.extend(
+        sync_plan
+            .relay_roles
+            .session_connect_relays
+            .iter()
+            .filter(|relay| *relay != primary_relay_url)
+            .cloned(),
+    );
+    ordered.relay_roles.session_connect_relays = session_connect_relays;
+    ordered
+}
+
+async fn execute_daemon_base_session_sync(
+    session: &pika_marmot_runtime::runtime::RuntimeSession,
+    sync_plan: &RuntimeSessionSyncPlan,
+    primary_relay_url: &RelayUrl,
+) -> anyhow::Result<RuntimeBaseSessionSyncExecution> {
+    session
+        .execute_base_session_sync(
+            &daemon_base_session_sync_plan(sync_plan, primary_relay_url),
+            false,
+            None,
+        )
+        .await
+        .context("execute daemon base session sync")
 }
 
 async fn accept_welcome_with_backfill<F, Fut>(
@@ -1882,33 +1914,14 @@ pub async fn daemon_main(
     let startup_sync = bootstrapped.open.sync_plan.clone();
     let startup_seen_welcomes = bootstrapped.open.seed_seen_welcomes();
     let startup_seen_group_events = bootstrapped.open.seed_seen_group_events();
-    let client = bootstrapped.session.client.clone();
-    let mdk = bootstrapped.session.mdk;
-
-    // Daemon keeps its primary-relay-first connect policy local.
-    client
-        .add_relay(primary_relay_url.clone())
-        .await
-        .with_context(|| format!("add primary relay {primary_relay}"))?;
-    for r in startup_sync
-        .relay_roles
-        .session_connect_relays
-        .iter()
-        .filter(|relay| *relay != &primary_relay_url)
-    {
-        let _ = client.add_relay(r.clone()).await;
-    }
-    client.connect().await;
-
+    let runtime_session = bootstrapped.session;
+    let client = runtime_session.client.clone();
     let mut rx = client.notifications();
-
-    let gift_sub = subscribe_welcome_inbox(
-        &client,
-        keys.public_key(),
-        startup_sync.welcome_inbox.lookback,
-        startup_sync.welcome_inbox.limit,
-    )
-    .await?;
+    let gift_sub =
+        execute_daemon_base_session_sync(&runtime_session, &startup_sync, &primary_relay_url)
+            .await?
+            .welcome_inbox_sub;
+    let mdk = runtime_session.mdk;
 
     // Track inbound relay events we've already processed. Seed from bootstrapped
     // startup state so reconnects do not immediately replay known wrappers.
@@ -5204,6 +5217,54 @@ mod tests {
             ]
         );
         assert_eq!(sync_plan.welcome_inbox, daemon_welcome_inbox_intent(90));
+    }
+
+    #[tokio::test]
+    async fn daemon_base_session_sync_uses_shared_runtime_executor() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData::new(
+                    "Daemon base session sync".to_string(),
+                    String::new(),
+                    None,
+                    None,
+                    None,
+                    vec![RelayUrl::parse("wss://group-1.example").expect("group relay")],
+                    vec![inviter_keys.public_key(), invitee_keys.public_key()],
+                ),
+            )
+            .expect("create group");
+
+        let bootstrapped = bootstrap_runtime_for_daemon(
+            inviter_dir.path(),
+            &inviter_keys,
+            vec![RelayUrl::parse("wss://message-1.example").expect("message relay")],
+            90,
+        )
+        .expect("bootstrap daemon runtime");
+        let primary_relay_url = RelayUrl::parse("wss://message-1.example").expect("message relay");
+
+        let execution = execute_daemon_base_session_sync(
+            &bootstrapped.session,
+            &bootstrapped.open.sync_plan,
+            &primary_relay_url,
+        )
+        .await
+        .expect("execute daemon base session sync");
+
+        assert!(
+            !execution.welcome_inbox_sub.as_str().is_empty(),
+            "daemon startup should use the shared base session sync executor"
+        );
     }
 
     #[test]

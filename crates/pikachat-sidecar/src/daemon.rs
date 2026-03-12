@@ -26,9 +26,7 @@ use pika_marmot_runtime::group::{CreatedGroup, create_group_and_publish_welcomes
 use pika_marmot_runtime::message::{
     CALL_SIGNAL_KIND, MessageClassification, classify_message as classify_shared_message,
 };
-use pika_marmot_runtime::outbound::{
-    OutboundConversationAction, PreparedConversationAction, PublishedConversationAction,
-};
+use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
 use pika_marmot_runtime::runtime::{
     BootstrappedRuntimeSession, InboundRelayEvent, InboundRelaySeenCache, MarmotRuntime,
     RuntimeApplicationMessageInterpretation, RuntimeConversationEventInterpretation,
@@ -230,42 +228,6 @@ fn map_init_group_error(err: &anyhow::Error) -> (&'static str, String) {
         ("publish_failed", format!("{err:#}"))
     } else {
         ("mdk_error", format!("create_group: {err:#}"))
-    }
-}
-
-fn expect_outbound_publish_completed(
-    operation: pika_marmot_runtime::runtime::RuntimeOperationEvent,
-) -> Result<PublishedConversationAction, String> {
-    match operation {
-        pika_marmot_runtime::runtime::RuntimeOperationEvent::OutboundConversationPublish(
-            pika_marmot_runtime::runtime::OutboundConversationPublishOperationEvent::Completed {
-                result,
-                ..
-            },
-        ) => Ok(result),
-        pika_marmot_runtime::runtime::RuntimeOperationEvent::OutboundConversationPublish(
-            pika_marmot_runtime::runtime::OutboundConversationPublishOperationEvent::Failed {
-                error,
-                ..
-            },
-        ) => Err(error),
-        other => Err(format!("unexpected outbound publish result: {other:?}")),
-    }
-}
-
-fn expect_call_signal_publish_completed(
-    operation: pika_marmot_runtime::runtime::RuntimeOperationEvent,
-) -> Result<pika_marmot_runtime::runtime::PublishedCallSignal, String> {
-    match operation {
-        pika_marmot_runtime::runtime::RuntimeOperationEvent::CallSignalPublish(
-            pika_marmot_runtime::runtime::CallSignalPublishOperationEvent::Completed {
-                result, ..
-            },
-        ) => Ok(result),
-        pika_marmot_runtime::runtime::RuntimeOperationEvent::CallSignalPublish(
-            pika_marmot_runtime::runtime::CallSignalPublishOperationEvent::Failed { error, .. },
-        ) => Err(error),
-        other => Err(format!("unexpected call signal publish result: {other:?}")),
     }
 }
 
@@ -2376,60 +2338,57 @@ pub async fn daemon_main(
                                 continue;
                             }
                         };
-                        match host.publish_prepared(&prepared, "daemon_send").await {
-                            Ok(wrapper) => match expect_outbound_publish_completed(
-                                host.complete_outbound_publish_operation(
-                                    prepared,
-                                    pika_marmot_runtime::outbound::OutboundConversationPublishStatus::Published {
-                                        wrapper_event_id: wrapper.id,
-                                    },
+                        let rumor_id = prepared.rumor_id;
+                        let (published, publish_status) =
+                            match host.publish_prepared(&prepared, "daemon_send").await {
+                            Ok(wrapper) => (
+                                true,
+                                pika_marmot_runtime::outbound::OutboundConversationPublishStatus::Published {
+                                    wrapper_event_id: wrapper.id,
+                                },
+                            ),
+                            Err(e) => (
+                                false,
+                                pika_marmot_runtime::outbound::OutboundConversationPublishStatus::PublishFailed(
+                                    format!("{e:#}"),
                                 ),
-                            ) {
-                                Ok(result) => {
-                                    let _ = reply_tx.send(out_ok(
-                                        request_id,
-                                        Some(json!({"event_id": result.rumor_id.to_hex()})),
-                                    ));
-                                }
-                                Err(error) => {
-                                    warn!(
-                                        "[pikachat] unexpected outbound publish result for daemon_send: {error}"
-                                    );
-                                    let _ = reply_tx.send(out_error(
-                                        request_id,
-                                        "publish_failed",
-                                        "unexpected outbound publish result".to_string(),
-                                    ));
-                                }
-                            },
-                            Err(e) => {
-                                match expect_outbound_publish_completed(
-                                    host.complete_outbound_publish_operation(
-                                        prepared,
-                                        pika_marmot_runtime::outbound::OutboundConversationPublishStatus::PublishFailed(
-                                            format!("{e:#}"),
-                                        ),
-                                    ),
-                                ) {
-                                    Ok(result) => {
-                                        warn!(
-                                            "[pikachat] unexpected completed outbound publish result for daemon_send: rumor_id={}",
-                                            result.rumor_id
-                                        );
-                                        let _ = reply_tx.send(out_error(
-                                            request_id,
-                                            "publish_failed",
-                                            "unexpected outbound publish result",
-                                        ));
-                                    }
-                                    Err(error) => {
-                                        let _ = reply_tx.send(out_error(
-                                            request_id,
-                                            "publish_failed",
-                                            error,
-                                        ));
-                                    }
-                                }
+                            ),
+                        };
+                        let operation =
+                            host.complete_outbound_publish_operation(prepared, publish_status);
+                        match operation.into_outbound_conversation_publish_result() {
+                            Ok(result) if published => {
+                                let _ = reply_tx.send(out_ok(
+                                    request_id,
+                                    Some(json!({"event_id": result.rumor_id.to_hex()})),
+                                ));
+                            }
+                            Ok(_) => {
+                                warn!(
+                                    "[pikachat] unexpected completed outbound publish result for daemon_send: rumor_id={rumor_id}"
+                                );
+                                let _ = reply_tx.send(out_error(
+                                    request_id,
+                                    "publish_failed",
+                                    "unexpected outbound publish result",
+                                ));
+                            }
+                            Err(error) if published => {
+                                warn!(
+                                    "[pikachat] unexpected outbound publish result for daemon_send: {error}"
+                                );
+                                let _ = reply_tx.send(out_error(
+                                    request_id,
+                                    "publish_failed",
+                                    "unexpected outbound publish result".to_string(),
+                                ));
+                            }
+                            Err(error) => {
+                                let _ = reply_tx.send(out_error(
+                                    request_id,
+                                    "publish_failed",
+                                    error,
+                                ));
                             }
                         }
                     }
@@ -3018,7 +2977,7 @@ pub async fn daemon_main(
                             publish_status,
                         );
 
-                        match expect_call_signal_publish_completed(operation) {
+                        match operation.into_call_signal_publish_result() {
                             Ok(result) => {
                                 pending_outgoing_call_invites.insert(call_id.clone(), pending);
                                 let _ = reply_tx.send(out_ok(
@@ -4620,24 +4579,17 @@ mod tests {
                 wrapper_event_id: EventId::all_zeros(),
             },
         );
+        let completed = operation
+            .into_outbound_conversation_publish_result()
+            .expect("completed outbound publish");
 
-        match operation {
-            pika_marmot_runtime::runtime::RuntimeOperationEvent::OutboundConversationPublish(
-                pika_marmot_runtime::runtime::OutboundConversationPublishOperationEvent::Completed {
-                    operation_id: completed_id,
-                    result,
-                },
-            ) => {
-                assert_eq!(completed_id, operation_id);
-                assert_eq!(
-                    result.target.nostr_group_id_hex,
-                    hex::encode(created.group.nostr_group_id)
-                );
-                assert_eq!(result.kind, Kind::ChatMessage);
-                assert_eq!(result.wrapper_event_id, EventId::all_zeros());
-            }
-            other => panic!("expected completed outbound publish event, got {other:?}"),
-        }
+        assert_eq!(completed.rumor_id, operation_id);
+        assert_eq!(
+            completed.target.nostr_group_id_hex,
+            hex::encode(created.group.nostr_group_id)
+        );
+        assert_eq!(completed.kind, Kind::ChatMessage);
+        assert_eq!(completed.wrapper_event_id, EventId::all_zeros());
     }
 
     #[test]
@@ -4662,25 +4614,19 @@ mod tests {
             },
             pika_marmot_runtime::runtime::CallSignalPublishStatus::Published { wrapper_event_id },
         );
+        let operation_id = operation.operation_id();
+        let result = operation
+            .into_call_signal_publish_result()
+            .expect("completed call signal publish");
 
-        match operation {
-            pika_marmot_runtime::runtime::RuntimeOperationEvent::CallSignalPublish(
-                pika_marmot_runtime::runtime::CallSignalPublishOperationEvent::Completed {
-                    operation_id,
-                    result,
-                },
-            ) => {
-                assert_eq!(operation_id, wrapper_event_id);
-                assert_eq!(
-                    result.kind,
-                    pika_marmot_runtime::runtime::CallSignalPublishKind::Invite
-                );
-                assert_eq!(result.nostr_group_id_hex, "deadbeef");
-                assert_eq!(result.call_id, "550e8400-e29b-41d4-a716-446655440017");
-                assert_eq!(result.wrapper_event_id, wrapper_event_id);
-            }
-            other => panic!("expected completed call signal publish event, got {other:?}"),
-        }
+        assert_eq!(operation_id, wrapper_event_id);
+        assert_eq!(
+            result.kind,
+            pika_marmot_runtime::runtime::CallSignalPublishKind::Invite
+        );
+        assert_eq!(result.nostr_group_id_hex, "deadbeef");
+        assert_eq!(result.call_id, "550e8400-e29b-41d4-a716-446655440017");
+        assert_eq!(result.wrapper_event_id, wrapper_event_id);
     }
 
     #[test]

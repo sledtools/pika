@@ -3831,6 +3831,28 @@ impl AppCore {
         self.update_delivery_or_refresh(&chat_id, &rumor_id, delivery);
     }
 
+    fn handle_outbound_publish_operation(
+        &mut self,
+        operation: OutboundConversationPublishOperationEvent,
+    ) {
+        let chat_id = operation.nostr_group_id_hex().to_string();
+        let rumor_id = operation.operation_id().to_hex();
+        match operation.into_result() {
+            Ok(_) => self.handle_publish_message_result(chat_id, rumor_id, true, None),
+            Err(error) => self.handle_publish_message_result(chat_id, rumor_id, false, Some(error)),
+        }
+    }
+
+    fn handle_call_signal_publish_operation(&mut self, operation: CallSignalPublishOperationEvent) {
+        let kind = operation.kind();
+        if let Err(error) = operation.into_result() {
+            self.toast(format!(
+                "{}: {error}",
+                call_signal_publish_failure_context(kind)
+            ));
+        }
+    }
+
     fn handle_peer_key_package_fetched(
         &mut self,
         token: u64,
@@ -4305,43 +4327,11 @@ impl AppCore {
 
                 self.refresh_all_from_storage();
             }
-            RuntimeOperationEvent::OutboundConversationPublish(
-                OutboundConversationPublishOperationEvent::Completed { result, .. },
-            ) => {
-                self.handle_publish_message_result(
-                    result.target.nostr_group_id_hex,
-                    result.rumor_id.to_hex(),
-                    true,
-                    None,
-                );
+            RuntimeOperationEvent::OutboundConversationPublish(operation) => {
+                self.handle_outbound_publish_operation(operation);
             }
-            RuntimeOperationEvent::OutboundConversationPublish(
-                OutboundConversationPublishOperationEvent::Failed {
-                    target,
-                    operation_id,
-                    error,
-                    ..
-                },
-            ) => {
-                self.handle_publish_message_result(
-                    target.nostr_group_id_hex,
-                    operation_id.to_hex(),
-                    false,
-                    Some(error),
-                );
-            }
-            RuntimeOperationEvent::CallSignalPublish(
-                CallSignalPublishOperationEvent::Completed { .. },
-            ) => {}
-            RuntimeOperationEvent::CallSignalPublish(CallSignalPublishOperationEvent::Failed {
-                kind,
-                error,
-                ..
-            }) => {
-                self.toast(format!(
-                    "{}: {error}",
-                    call_signal_publish_failure_context(kind)
-                ));
+            RuntimeOperationEvent::CallSignalPublish(operation) => {
+                self.handle_call_signal_publish_operation(operation);
             }
             RuntimeOperationEvent::MediaUpload(_) => {}
         }

@@ -253,6 +253,22 @@ impl RuntimeOperationEvent {
             other => Err(format!("unexpected media upload result: {other:?}")),
         }
     }
+
+    pub fn into_outbound_conversation_publish_result(
+        self,
+    ) -> Result<PublishedConversationAction, String> {
+        match self {
+            Self::OutboundConversationPublish(event) => event.into_result(),
+            other => Err(format!("unexpected outbound publish result: {other:?}")),
+        }
+    }
+
+    pub fn into_call_signal_publish_result(self) -> Result<PublishedCallSignal, String> {
+        match self {
+            Self::CallSignalPublish(event) => event.into_result(),
+            other => Err(format!("unexpected call signal publish result: {other:?}")),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -318,6 +334,13 @@ impl OutboundConversationPublishOperationEvent {
             Self::Failed { target, .. } => &target.nostr_group_id_hex,
         }
     }
+
+    pub fn into_result(self) -> Result<PublishedConversationAction, String> {
+        match self {
+            Self::Completed { result, .. } => Ok(result),
+            Self::Failed { error, .. } => Err(error),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -377,6 +400,20 @@ impl CallSignalPublishOperationEvent {
             Self::Failed {
                 nostr_group_id_hex, ..
             } => nostr_group_id_hex,
+        }
+    }
+
+    pub fn kind(&self) -> CallSignalPublishKind {
+        match self {
+            Self::Completed { result, .. } => result.kind,
+            Self::Failed { kind, .. } => *kind,
+        }
+    }
+
+    pub fn into_result(self) -> Result<PublishedCallSignal, String> {
+        match self {
+            Self::Completed { result, .. } => Ok(result),
+            Self::Failed { error, .. } => Err(error),
         }
     }
 }
@@ -2502,17 +2539,13 @@ mod tests {
                 wrapper_event_id: EventId::all_zeros(),
             },
         );
+        let result = operation
+            .into_outbound_conversation_publish_result()
+            .expect("completed outbound publish");
 
-        match operation {
-            RuntimeOperationEvent::OutboundConversationPublish(
-                OutboundConversationPublishOperationEvent::Completed { result, .. },
-            ) => {
-                assert_eq!(result.target.nostr_group_id_hex, chat_id);
-                assert_eq!(result.kind, crate::message::TYPING_INDICATOR_KIND);
-                assert_eq!(result.wrapper_event_id, EventId::all_zeros());
-            }
-            other => panic!("expected completed outbound publish event, got {other:?}"),
-        }
+        assert_eq!(result.target.nostr_group_id_hex, chat_id);
+        assert_eq!(result.kind, crate::message::TYPING_INDICATOR_KIND);
+        assert_eq!(result.wrapper_event_id, EventId::all_zeros());
     }
 
     #[test]
@@ -2551,28 +2584,23 @@ mod tests {
                 },
             )
             .expect("prepare outbound action");
+        let expected_rumor_id = prepared.rumor_id;
         let expected_wrapper_id = prepared.wrapper.id;
 
         let operation = commands.complete_outbound_publish_operation(
             prepared,
             OutboundConversationPublishStatus::PublishFailed("relay down".to_string()),
         );
+        let operation_id = operation.operation_id();
+        let group_id = operation.nostr_group_id_hex().to_string();
+        let error = operation
+            .into_outbound_conversation_publish_result()
+            .expect_err("failed outbound publish");
 
-        match operation {
-            RuntimeOperationEvent::OutboundConversationPublish(
-                OutboundConversationPublishOperationEvent::Failed {
-                    target,
-                    wrapper_event_id,
-                    error,
-                    ..
-                },
-            ) => {
-                assert_eq!(target.nostr_group_id_hex, chat_id);
-                assert_eq!(wrapper_event_id, expected_wrapper_id);
-                assert_eq!(error, "relay down");
-            }
-            other => panic!("expected failed outbound publish event, got {other:?}"),
-        }
+        assert_eq!(group_id, chat_id);
+        assert_eq!(operation_id, expected_rumor_id);
+        assert_ne!(expected_wrapper_id, EventId::all_zeros());
+        assert_eq!(error, "relay down");
     }
 
     #[test]
@@ -2712,22 +2740,16 @@ mod tests {
                 wrapper_event_id: EventId::all_zeros(),
             },
         );
+        let operation_id = operation.operation_id();
+        let result = operation
+            .into_call_signal_publish_result()
+            .expect("completed call signal publish");
 
-        match operation {
-            RuntimeOperationEvent::CallSignalPublish(
-                CallSignalPublishOperationEvent::Completed {
-                    operation_id,
-                    result,
-                },
-            ) => {
-                assert_eq!(operation_id, EventId::all_zeros());
-                assert_eq!(result.kind, CallSignalPublishKind::Invite);
-                assert_eq!(result.nostr_group_id_hex, "deadbeef");
-                assert_eq!(result.call_id, "550e8400-e29b-41d4-a716-446655440014");
-                assert_eq!(result.wrapper_event_id, EventId::all_zeros());
-            }
-            other => panic!("expected completed call signal publish event, got {other:?}"),
-        }
+        assert_eq!(operation_id, EventId::all_zeros());
+        assert_eq!(result.kind, CallSignalPublishKind::Invite);
+        assert_eq!(result.nostr_group_id_hex, "deadbeef");
+        assert_eq!(result.call_id, "550e8400-e29b-41d4-a716-446655440014");
+        assert_eq!(result.wrapper_event_id, EventId::all_zeros());
     }
 
     #[test]
@@ -2749,23 +2771,20 @@ mod tests {
                 error: "relay down".to_string(),
             },
         );
+        let operation_id = operation.operation_id();
+        let kind = match &operation {
+            RuntimeOperationEvent::CallSignalPublish(event) => event.kind(),
+            other => panic!("expected call signal publish event, got {other:?}"),
+        };
+        let nostr_group_id_hex = operation.nostr_group_id_hex().to_string();
+        let error = operation
+            .into_call_signal_publish_result()
+            .expect_err("failed call signal publish");
 
-        match operation {
-            RuntimeOperationEvent::CallSignalPublish(CallSignalPublishOperationEvent::Failed {
-                operation_id,
-                kind,
-                nostr_group_id_hex,
-                call_id,
-                error,
-            }) => {
-                assert_eq!(operation_id, wrapper_event_id);
-                assert_eq!(kind, CallSignalPublishKind::Invite);
-                assert_eq!(nostr_group_id_hex, "deadbeef");
-                assert_eq!(call_id, "550e8400-e29b-41d4-a716-446655440015");
-                assert_eq!(error, "relay down");
-            }
-            other => panic!("expected failed call signal publish event, got {other:?}"),
-        }
+        assert_eq!(operation_id, wrapper_event_id);
+        assert_eq!(kind, CallSignalPublishKind::Invite);
+        assert_eq!(nostr_group_id_hex, "deadbeef");
+        assert_eq!(error, "relay down");
     }
 
     #[test]

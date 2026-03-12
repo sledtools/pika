@@ -168,6 +168,10 @@ fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOut
             Utc::now().to_rfc3339()
         ),
     )?;
+    append_line(
+        &ctx.host_log_path,
+        &format!("[pikaci] host-local command: {command}"),
+    )?;
 
     let mut cmd = Command::new("/bin/bash");
     cmd.args(["--noprofile", "--norc", "-lc", &command])
@@ -2267,10 +2271,6 @@ pub(crate) fn compiled_guest_command(job: &JobSpec) -> (String, bool) {
             false,
         ),
         GuestCommand::ShellCommand { command } => (
-            format!("bash --noprofile --norc -lc {}", shell_escape(command)),
-            false,
-        ),
-        GuestCommand::HostShellCommand { command } => (
             format!("bash --noprofile --norc -lc {}", shell_escape(command)),
             false,
         ),

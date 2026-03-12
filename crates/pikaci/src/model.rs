@@ -22,9 +22,6 @@ pub enum GuestCommand {
     ShellCommand {
         command: &'static str,
     },
-    HostShellCommand {
-        command: &'static str,
-    },
     ShellCommandAsRoot {
         command: &'static str,
     },

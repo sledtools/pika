@@ -1030,9 +1030,6 @@ fn build_run_plan(
                 RunnerKind::MicrovmRemote => {
                     format!("Build remote microvm runner for `{}`", job.id)
                 }
-                RunnerKind::HostLocal => {
-                    unreachable!("host-local jobs skip Linux microvm runner prepares")
-                }
                 RunnerKind::TartLocal => unreachable!("tart jobs skip Linux microvm runner"),
             };
             let action = match job.runner_kind() {
@@ -1047,9 +1044,6 @@ fn build_run_plan(
                     ctx: ctx.clone(),
                     log_paths: vec![ctx.host_log_path.clone()],
                 },
-                RunnerKind::HostLocal => {
-                    unreachable!("host-local jobs skip Linux microvm runner prepares")
-                }
                 RunnerKind::TartLocal => unreachable!("tart jobs skip Linux microvm runner"),
             };
             planned_prepares.push(PlannedPrepare {

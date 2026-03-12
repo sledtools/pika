@@ -68,6 +68,7 @@ in
     cacert
     clang
     coreutils
+    curl
     findutils
     gcc
     gawk
@@ -75,6 +76,7 @@ in
     gnugrep
     gnused
     git
+    jq
     linuxHeaders
     llvmPackages.libclang
     nix
@@ -82,6 +84,7 @@ in
     pkg-config
     postgresql
     procps
+    python3
     util-linux
   ] ++ rustPackages ++ androidPackages ++ moqRelayPackages;
 
@@ -95,6 +98,7 @@ in
       bash
       cacert
       coreutils
+      curl
       findutils
       gcc
       gawk
@@ -102,10 +106,12 @@ in
       gnugrep
       gnused
       git
+      jq
       nix
       postgresql
       procps
       pkg-config
+      python3
       util-linux
     ] ++ rustPackages ++ androidPackages ++ moqRelayPackages;
     serviceConfig = {

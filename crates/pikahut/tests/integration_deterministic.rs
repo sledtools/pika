@@ -43,6 +43,18 @@ fn env_path(name: &str) -> Option<PathBuf> {
     env_opt(name).map(PathBuf::from)
 }
 
+fn pikachat_command_spec(args: &[&str], capture: &str) -> CommandSpec {
+    if let Some(command) = env_opt("PIKAHUT_PIKACHAT_CMD") {
+        CommandSpec::new(command)
+    } else {
+        CommandSpec::cargo()
+            .cwd(workspace_root())
+            .args(["run", "-q", "-p", "pikachat", "--"])
+    }
+    .args(args.iter().copied())
+    .capture_name(capture)
+}
+
 fn cli_smoke_request(with_media: bool) -> CliSmokeRequest {
     CliSmokeRequest {
         relay: env_opt("PIKAHUT_CLI_SMOKE_RELAY"),
@@ -642,24 +654,17 @@ async fn agent_http_cli_new_local() -> Result<()> {
     insert_agent_allowlist_row(&database_url, &owner_npub)?;
 
     let runner = CommandRunner::new(&context);
-    let output = runner.run(
-        &CommandSpec::cargo()
-            .cwd(workspace_root())
-            .args([
-                "run",
-                "-q",
-                "-p",
-                "pikachat",
-                "--",
-                "agent",
-                "new",
-                "--api-base-url",
-                &server_url,
-                "--nsec",
-                &owner_nsec,
-            ])
-            .capture_name("agent-http-cli-new"),
-    )?;
+    let output = runner.run(&pikachat_command_spec(
+        &[
+            "agent",
+            "new",
+            "--api-base-url",
+            &server_url,
+            "--nsec",
+            &owner_nsec,
+        ],
+        "agent-http-cli-new",
+    ))?;
     let stdout = String::from_utf8(output.stdout).context("decode pikachat stdout")?;
     let cli_json: Value = serde_json::from_str(stdout.trim()).context("decode cli json output")?;
     if cli_json.get("operation").and_then(Value::as_str) != Some("ensure") {
@@ -754,24 +759,17 @@ async fn agent_http_cli_new_idempotent_local() -> Result<()> {
 
     let runner = CommandRunner::new(&context);
 
-    let first_new_output = runner.run(
-        &CommandSpec::cargo()
-            .cwd(workspace_root())
-            .args([
-                "run",
-                "-q",
-                "-p",
-                "pikachat",
-                "--",
-                "agent",
-                "new",
-                "--api-base-url",
-                &server_url,
-                "--nsec",
-                &owner_nsec,
-            ])
-            .capture_name("agent-http-cli-new-idempotent-first"),
-    )?;
+    let first_new_output = runner.run(&pikachat_command_spec(
+        &[
+            "agent",
+            "new",
+            "--api-base-url",
+            &server_url,
+            "--nsec",
+            &owner_nsec,
+        ],
+        "agent-http-cli-new-idempotent-first",
+    ))?;
     let first_stdout =
         String::from_utf8(first_new_output.stdout).context("decode first new stdout")?;
     let first_json: Value =
@@ -788,24 +786,17 @@ async fn agent_http_cli_new_idempotent_local() -> Result<()> {
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("first CLI new missing agent.agent_id"))?;
 
-    let second_new_output = runner.run(
-        &CommandSpec::cargo()
-            .cwd(workspace_root())
-            .args([
-                "run",
-                "-q",
-                "-p",
-                "pikachat",
-                "--",
-                "agent",
-                "new",
-                "--api-base-url",
-                &server_url,
-                "--nsec",
-                &owner_nsec,
-            ])
-            .capture_name("agent-http-cli-new-idempotent-second"),
-    )?;
+    let second_new_output = runner.run(&pikachat_command_spec(
+        &[
+            "agent",
+            "new",
+            "--api-base-url",
+            &server_url,
+            "--nsec",
+            &owner_nsec,
+        ],
+        "agent-http-cli-new-idempotent-second",
+    ))?;
     let second_stdout =
         String::from_utf8(second_new_output.stdout).context("decode second new stdout")?;
     let second_json: Value =
@@ -888,48 +879,34 @@ async fn agent_http_cli_new_me_recover_local() -> Result<()> {
     insert_agent_allowlist_row(&database_url, &owner_npub)?;
 
     let runner = CommandRunner::new(&context);
-    let new_output = runner.run(
-        &CommandSpec::cargo()
-            .cwd(workspace_root())
-            .args([
-                "run",
-                "-q",
-                "-p",
-                "pikachat",
-                "--",
-                "agent",
-                "new",
-                "--api-base-url",
-                &server_url,
-                "--nsec",
-                &owner_nsec,
-            ])
-            .capture_name("agent-http-cli-new-me-recover-new"),
-    )?;
+    let new_output = runner.run(&pikachat_command_spec(
+        &[
+            "agent",
+            "new",
+            "--api-base-url",
+            &server_url,
+            "--nsec",
+            &owner_nsec,
+        ],
+        "agent-http-cli-new-me-recover-new",
+    ))?;
     let new_stdout = String::from_utf8(new_output.stdout).context("decode pikachat new stdout")?;
     let new_json: Value = serde_json::from_str(new_stdout.trim()).context("decode new json")?;
     if new_json.get("operation").and_then(Value::as_str) != Some("ensure") {
         bail!("unexpected CLI new payload: {new_json}");
     }
 
-    let me_output = runner.run(
-        &CommandSpec::cargo()
-            .cwd(workspace_root())
-            .args([
-                "run",
-                "-q",
-                "-p",
-                "pikachat",
-                "--",
-                "agent",
-                "me",
-                "--api-base-url",
-                &server_url,
-                "--nsec",
-                &owner_nsec,
-            ])
-            .capture_name("agent-http-cli-new-me-recover-me"),
-    )?;
+    let me_output = runner.run(&pikachat_command_spec(
+        &[
+            "agent",
+            "me",
+            "--api-base-url",
+            &server_url,
+            "--nsec",
+            &owner_nsec,
+        ],
+        "agent-http-cli-new-me-recover-me",
+    ))?;
     let me_stdout = String::from_utf8(me_output.stdout).context("decode pikachat me stdout")?;
     let me_json: Value = serde_json::from_str(me_stdout.trim()).context("decode me json")?;
     if me_json.get("operation").and_then(Value::as_str) != Some("me") {
@@ -944,24 +921,17 @@ async fn agent_http_cli_new_me_recover_local() -> Result<()> {
         bail!("expected CLI me state=creating before recover, got: {me_state}");
     }
 
-    let recover_output = runner.run(
-        &CommandSpec::cargo()
-            .cwd(workspace_root())
-            .args([
-                "run",
-                "-q",
-                "-p",
-                "pikachat",
-                "--",
-                "agent",
-                "recover",
-                "--api-base-url",
-                &server_url,
-                "--nsec",
-                &owner_nsec,
-            ])
-            .capture_name("agent-http-cli-new-me-recover-recover"),
-    )?;
+    let recover_output = runner.run(&pikachat_command_spec(
+        &[
+            "agent",
+            "recover",
+            "--api-base-url",
+            &server_url,
+            "--nsec",
+            &owner_nsec,
+        ],
+        "agent-http-cli-new-me-recover-recover",
+    ))?;
     let recover_stdout =
         String::from_utf8(recover_output.stdout).context("decode pikachat recover stdout")?;
     let recover_json: Value =

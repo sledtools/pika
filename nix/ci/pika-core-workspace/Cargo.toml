@@ -1,8 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
+  "cli",
   "rust",
   "crates/hypernote-protocol",
+  "crates/pika-agent-protocol",
   "crates/pika-agent-control-plane",
   "crates/pika-agent-microvm",
   "crates/pika-marmot-runtime",
@@ -12,6 +14,7 @@ members = [
   "crates/pika-test-utils",
   "crates/pika-tls",
   "crates/pikahut",
+  "crates/pikachat-sidecar",
 ]
 
 [workspace.dependencies]

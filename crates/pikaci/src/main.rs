@@ -867,6 +867,21 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
             },
             staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsCoreNip98),
         },
+        JobSpec {
+            id: "agent-http-deterministic-tests",
+            description: "Run the deterministic pikahut agent HTTP tests in a remote Linux microVM",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: concat!(
+                    "cargo test -p pikahut --test integration_deterministic agent_http_ensure_local -- --ignored --nocapture; ",
+                    "cargo test -p pikahut --test integration_deterministic agent_http_cli_new_local -- --ignored --nocapture; ",
+                    "cargo test -p pikahut --test integration_deterministic agent_http_cli_new_idempotent_local -- --ignored --nocapture; ",
+                    "cargo test -p pikahut --test integration_deterministic agent_http_cli_new_me_recover_local -- --ignored --nocapture"
+                ),
+            },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsDeterministicHttp),
+        },
     ]
 }
 
@@ -1444,11 +1459,17 @@ mod tests {
         assert_eq!(standalone.jobs[0].runner_kind(), RunnerKind::VfkitLocal);
         assert_eq!(standalone.jobs[0].staged_linux_rust_lane(), None);
 
-        assert_eq!(
-            pre_merge.jobs[0].staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit)
+        assert_eq!(pre_merge.jobs.len(), 5);
+        assert!(
+            pre_merge
+                .jobs
+                .iter()
+                .all(|job| job.runner_kind() == RunnerKind::MicrovmRemote)
         );
-        assert_eq!(pre_merge.jobs[0].runner_kind(), RunnerKind::MicrovmRemote);
+        assert!(pre_merge.jobs.iter().any(|job| {
+            job.staged_linux_rust_lane()
+                == Some(StagedLinuxRustLane::AgentContractsDeterministicHttp)
+        }));
     }
 
     #[test]

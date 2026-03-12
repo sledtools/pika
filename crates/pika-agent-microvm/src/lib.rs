@@ -1370,6 +1370,14 @@ mod tests {
         assert!(predicate(), "condition not met within {:?}", timeout);
     }
 
+    fn async_test_timeout() -> StdDuration {
+        let secs = std::env::var("PIKA_AGENT_MICROVM_TEST_TIMEOUT_SECS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .unwrap_or(15);
+        StdDuration::from_secs(secs)
+    }
+
     fn test_guest_startup_plan() -> GuestStartupPlan {
         guest_startup_plan(&ResolvedMicrovmParams {
             spawner_url: DEFAULT_SPAWNER_URL.to_string(),
@@ -1518,6 +1526,9 @@ if [[ "$cmd" == "daemon" ]]; then
     esac
   done
   mkdir -p "$state_dir"
+  if [[ -n "${PIKA_TEST_DAEMON_READY_LOG_PATH:-}" ]]; then
+    printf '%s\n' "daemon-ready" >> "${PIKA_TEST_DAEMON_READY_LOG_PATH}"
+  fi
   printf '%s\n' '{"type":"ready","pubkey":"test","npub":"npub1test"}' >> "${PIKA_TEST_READY_LOG_PATH}"
   trap 'exit 0' TERM INT
   while :; do
@@ -1598,6 +1609,9 @@ exit 0
             &fake_openclaw_path,
             r#"#!/usr/bin/env bash
 set -euo pipefail
+if [[ -n "${PIKA_TEST_OPENCLAW_READY_LOG_PATH:-}" ]]; then
+  printf '%s\n' "openclaw-ready" >> "${PIKA_TEST_OPENCLAW_READY_LOG_PATH}"
+fi
 trap 'exit 0' TERM INT
 while :; do
   sleep 1
@@ -1681,7 +1695,7 @@ done
             KeypackagePublishOutcome::TimesOut { .. } => {
                 command
                     .env("PIKA_TEST_PUBLISH_ALWAYS_FAIL", "1")
-                    .env("PIKA_AGENT_READY_TIMEOUT_SECS", "5");
+                    .env("PIKA_AGENT_READY_TIMEOUT_SECS", "30");
             }
         }
 
@@ -1691,11 +1705,6 @@ done
                     .env("TEST_JQ_AGENT_KIND", "pi")
                     .env("TEST_JQ_SERVICE_KIND", "pikachat_daemon")
                     .env("TEST_JQ_BACKEND_MODE", "acp")
-                    .env("TEST_JQ_READY_PROBE", "daemon_ready_event")
-                    .env("TEST_JQ_READINESS_KIND", "log_contains")
-                    .env("TEST_JQ_READINESS_PATH", root_relative(&ready_log_path))
-                    .env("TEST_JQ_READINESS_PATTERN", "\"type\":\"ready\"")
-                    .env("TEST_JQ_READINESS_URL", "")
                     .env("TEST_JQ_SERVICE_ACP_PRESENT", "1")
                     .env("TEST_JQ_ACP_EXEC_COMMAND", "npx -y pi-acp")
                     .env("TEST_JQ_ACP_CWD", acp_cwd.as_os_str())
@@ -1703,20 +1712,28 @@ done
                     .env("TEST_JQ_SERVICE_STATE_DIR", "")
                     .env("TEST_JQ_SERVICE_CONFIG_PATH", "")
                     .env("TEST_JQ_GATEWAY_PORT", "");
+                if matches!(outcome, KeypackagePublishOutcome::TimesOut { .. }) {
+                    command
+                        .env("TEST_JQ_READY_PROBE", "daemon_ready_event")
+                        .env("TEST_JQ_READINESS_KIND", "log_contains")
+                        .env("TEST_JQ_READINESS_PATH", root_relative(&ready_log_path))
+                        .env("TEST_JQ_READINESS_PATTERN", "daemon-ready")
+                        .env("TEST_JQ_READINESS_URL", "")
+                        .env("PIKA_TEST_DAEMON_READY_LOG_PATH", &ready_log_path);
+                } else {
+                    command
+                        .env("TEST_JQ_READY_PROBE", "daemon_ready_event")
+                        .env("TEST_JQ_READINESS_KIND", "log_contains")
+                        .env("TEST_JQ_READINESS_PATH", root_relative(&ready_log_path))
+                        .env("TEST_JQ_READINESS_PATTERN", "\"type\":\"ready\"")
+                        .env("TEST_JQ_READINESS_URL", "");
+                }
             }
             KeypackageReadyScenario::Openclaw => {
                 command
                     .env("TEST_JQ_AGENT_KIND", "openclaw")
                     .env("TEST_JQ_SERVICE_KIND", "openclaw_gateway")
                     .env("TEST_JQ_BACKEND_MODE", "native")
-                    .env("TEST_JQ_READY_PROBE", "openclaw_gateway_health")
-                    .env("TEST_JQ_READINESS_KIND", "http_get_ok")
-                    .env("TEST_JQ_READINESS_PATH", "")
-                    .env("TEST_JQ_READINESS_PATTERN", "")
-                    .env(
-                        "TEST_JQ_READINESS_URL",
-                        format!("http://127.0.0.1:{openclaw_gateway_port}/health"),
-                    )
                     .env("TEST_JQ_SERVICE_ACP_PRESENT", "0")
                     .env("TEST_JQ_ACP_EXEC_COMMAND", "")
                     .env("TEST_JQ_ACP_CWD", "")
@@ -1734,6 +1751,25 @@ done
                         root_relative(&openclaw_config_path),
                     )
                     .env("TEST_JQ_GATEWAY_PORT", openclaw_gateway_port.to_string());
+                if matches!(outcome, KeypackagePublishOutcome::TimesOut { .. }) {
+                    command
+                        .env("TEST_JQ_READY_PROBE", "openclaw_gateway_ready")
+                        .env("TEST_JQ_READINESS_KIND", "log_contains")
+                        .env("TEST_JQ_READINESS_PATH", root_relative(&ready_log_path))
+                        .env("TEST_JQ_READINESS_PATTERN", "openclaw-ready")
+                        .env("TEST_JQ_READINESS_URL", "")
+                        .env("PIKA_TEST_OPENCLAW_READY_LOG_PATH", &ready_log_path);
+                } else {
+                    command
+                        .env("TEST_JQ_READY_PROBE", "openclaw_gateway_health")
+                        .env("TEST_JQ_READINESS_KIND", "http_get_ok")
+                        .env("TEST_JQ_READINESS_PATH", "")
+                        .env("TEST_JQ_READINESS_PATTERN", "")
+                        .env(
+                            "TEST_JQ_READINESS_URL",
+                            format!("http://127.0.0.1:{openclaw_gateway_port}/health"),
+                        );
+                }
             }
         }
 
@@ -1741,14 +1777,14 @@ done
 
         match outcome {
             KeypackagePublishOutcome::SucceedsAfterRetry => {
-                poll_until(StdDuration::from_secs(5), || {
+                poll_until(async_test_timeout(), || {
                     read_counter(&publish_count_path) >= 1
                 });
                 assert!(
                     !ready_marker_path.exists(),
                     "ready marker must not exist after a failed first keypackage publish attempt"
                 );
-                poll_until(StdDuration::from_secs(5), || {
+                poll_until(async_test_timeout(), || {
                     read_counter(&publish_count_path) >= 2 && ready_marker_path.exists()
                 });
 
@@ -1770,9 +1806,7 @@ done
                 let _ = child.wait().expect("wait for autostart script shutdown");
             }
             KeypackagePublishOutcome::SucceedsAfterReadinessRecovery => {
-                poll_until(StdDuration::from_secs(5), || {
-                    read_counter(&curl_count_path) >= 2
-                });
+                poll_until(async_test_timeout(), || read_counter(&curl_count_path) >= 2);
                 assert_eq!(
                     read_counter(&publish_count_path),
                     0,
@@ -1783,7 +1817,7 @@ done
                     "ready marker must not exist while readiness has regressed"
                 );
 
-                poll_until(StdDuration::from_secs(5), || {
+                poll_until(async_test_timeout(), || {
                     read_counter(&publish_count_path) >= 1 && ready_marker_path.exists()
                 });
 
@@ -1801,7 +1835,7 @@ done
                 let _ = child.wait().expect("wait for autostart script shutdown");
             }
             KeypackagePublishOutcome::TimesOut { expected_reason } => {
-                poll_until(StdDuration::from_secs(10), || {
+                poll_until(Duration::from_secs(45), || {
                     read_counter(&publish_count_path) >= 1 || failed_marker_path.exists()
                 });
                 let publish_count = read_counter(&publish_count_path);

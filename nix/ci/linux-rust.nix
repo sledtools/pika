@@ -70,6 +70,33 @@ let
         fn main() {}
         EOF
       ''
+    else if lane == "agent-contracts" then
+      pkgs.runCommand "ci-agent-contracts-workspace-dummy-src" { } ''
+        cp -R ${craneLib.mkDummySrc commonArgs} "$out"
+        chmod -R u+w "$out"
+        mkdir -p "$out/cli/src"
+        cp ${./pika-core-workspace/Cargo.toml} "$out/Cargo.toml"
+        cp ${../../cli/Cargo.toml} "$out/cli/Cargo.toml"
+        cat >"$out/cli/src/main.rs" <<'EOF'
+        fn main() {}
+        EOF
+        mkdir -p "$out/crates/pika-agent-protocol/src"
+        cp ${../../crates/pika-agent-protocol/Cargo.toml} \
+          "$out/crates/pika-agent-protocol/Cargo.toml"
+        cat >"$out/crates/pika-agent-protocol/src/lib.rs" <<'EOF'
+        pub fn _pikaci_dummy() {}
+        EOF
+        mkdir -p "$out/crates/pikachat-sidecar/src"
+        cp ${../../crates/pikachat-sidecar/Cargo.toml} \
+          "$out/crates/pikachat-sidecar/Cargo.toml"
+        cat >"$out/crates/pikachat-sidecar/src/lib.rs" <<'EOF'
+        pub fn _pikaci_dummy() {}
+        EOF
+        mkdir -p "$out/crates/pikahut/tests"
+        cat >"$out/crates/pikahut/tests/integration_deterministic.rs" <<'EOF'
+        fn main() {}
+        EOF
+      ''
     else
       craneLib.mkDummySrc commonArgs;
 
@@ -358,6 +385,9 @@ let
         export PIKACI_AGENT_MICROVM_TESTS_MANIFEST="$TMPDIR/agent-microvm-tests.manifest"
         export PIKACI_SERVER_AGENT_API_TESTS_MANIFEST="$TMPDIR/server-agent-api-tests.manifest"
         export PIKACI_CORE_AGENT_NIP98_TEST_MANIFEST="$TMPDIR/core-agent-nip98-test.manifest"
+        export PIKACI_AGENT_HTTP_DETERMINISTIC_TESTS_MANIFEST="$TMPDIR/agent-http-deterministic-tests.manifest"
+        export PIKACI_PIKA_SERVER_EXECUTABLE="$TMPDIR/pika-server-executable"
+        export PIKACI_PIKACHAT_EXECUTABLE="$TMPDIR/pikachat-executable"
         cargoJobs="''${CARGO_BUILD_JOBS:-''${NIX_BUILD_CORES:-}}"
         case "$cargoJobs" in
           ""|0)
@@ -408,6 +438,43 @@ let
           --message-format json-render-diagnostics >"$cargoBuildLog"
         capture_artifacts "$cargoBuildLog"
 
+        cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+        cargo test --locked -j "$cargoJobs" -p pikahut \
+          --test integration_deterministic \
+          --no-run \
+          --message-format json-render-diagnostics >"$cargoBuildLog"
+        capture_artifacts "$cargoBuildLog"
+
+        cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+        cargo build --locked -j "$cargoJobs" -p pika-server \
+          --bin pika-server \
+          --message-format json-render-diagnostics >"$cargoBuildLog"
+        ${pkgs.jq}/bin/jq -r '
+          select(.reason == "compiler-artifact" and .target.name == "pika-server" and .executable != null)
+          | .executable
+        ' <"$cargoBuildLog" | head -n1 >"$PIKACI_PIKA_SERVER_EXECUTABLE"
+        if [ ! -s "$PIKACI_PIKA_SERVER_EXECUTABLE" ]; then
+          echo "missing staged pika-server executable" >&2
+          cat "$cargoBuildLog" >&2
+          exit 1
+        fi
+
+        if [ "''${PIKACI_STAGE_PIKACHAT_BINARY:-0}" = "1" ]; then
+          cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+          cargo build --locked -j "$cargoJobs" -p pikachat \
+            --bin pikachat \
+            --message-format json-render-diagnostics >"$cargoBuildLog"
+          ${pkgs.jq}/bin/jq -r '
+            select(.reason == "compiler-artifact" and .target.name == "pikachat" and .executable != null)
+            | .executable
+          ' <"$cargoBuildLog" | head -n1 >"$PIKACI_PIKACHAT_EXECUTABLE"
+          if [ ! -s "$PIKACI_PIKACHAT_EXECUTABLE" ]; then
+            echo "missing staged pikachat executable" >&2
+            cat "$cargoBuildLog" >&2
+            exit 1
+          fi
+        fi
+
         sort -u -o "$PIKACI_AGENT_CONTRACTS_TEST_EXECUTABLES" "$PIKACI_AGENT_CONTRACTS_TEST_EXECUTABLES"
 
         manifest_from_targets() {
@@ -443,6 +510,7 @@ let
         manifest_from_targets "$PIKACI_AGENT_MICROVM_TESTS_MANIFEST" pika_agent_microvm
         manifest_from_targets "$PIKACI_SERVER_AGENT_API_TESTS_MANIFEST" pika-server
         manifest_from_targets "$PIKACI_CORE_AGENT_NIP98_TEST_MANIFEST" pika_core
+        manifest_from_targets "$PIKACI_AGENT_HTTP_DETERMINISTIC_TESTS_MANIFEST" integration_deterministic
       '';
 
   installPhaseCommand =
@@ -740,6 +808,7 @@ CFG
         cp "$PIKACI_AGENT_MICROVM_TESTS_MANIFEST" "$out/share/pikaci/agent-microvm-tests.manifest"
         cp "$PIKACI_SERVER_AGENT_API_TESTS_MANIFEST" "$out/share/pikaci/server-agent-api-tests.manifest"
         cp "$PIKACI_CORE_AGENT_NIP98_TEST_MANIFEST" "$out/share/pikaci/core-agent-nip98-test.manifest"
+        cp "$PIKACI_AGENT_HTTP_DETERMINISTIC_TESTS_MANIFEST" "$out/share/pikaci/agent-http-deterministic-tests.manifest"
         cp -R "$src/pikachat-openclaw/openclaw/extensions/pikachat-openclaw" \
           "$out/share/pikaci/pikachat-openclaw-extension"
 
@@ -761,6 +830,7 @@ CFG
           "$PIKACI_AGENT_MICROVM_TESTS_MANIFEST" \
           "$PIKACI_SERVER_AGENT_API_TESTS_MANIFEST" \
           "$PIKACI_CORE_AGENT_NIP98_TEST_MANIFEST" \
+          "$PIKACI_AGENT_HTTP_DETERMINISTIC_TESTS_MANIFEST" \
           | sort -u >"$staged_runtime_manifest"
 
         while IFS= read -r relative; do
@@ -777,6 +847,37 @@ CFG
               | sort
           )
         fi
+
+        install_staged_binary() {
+          local executable_path_file="$1"
+          local output_name="$2"
+          local executable_path
+          local relative
+
+          executable_path="$(cat "$executable_path_file")"
+          case "$executable_path" in
+            "$target_root_abs"*)
+              relative="''${executable_path#$target_root_abs}"
+              ;;
+            "$target_root"*)
+              relative="''${executable_path#$target_root/}"
+              ;;
+            *)
+              echo "unexpected staged executable path: $executable_path" >&2
+              exit 1
+              ;;
+          esac
+          copy_target_relative "$relative"
+          ln -s "../target/$relative" "$out/bin/$output_name"
+        }
+
+        target_root_abs="$(pwd)/$target_root/"
+        install_staged_binary "$PIKACI_PIKA_SERVER_EXECUTABLE" "pika-server"
+        install_staged_binary "$PIKACI_PIKACHAT_EXECUTABLE" "pikachat"
+
+        ${pkgs.lib.optionalString (pikaRelayPkg != null) ''
+        ln -s ${pikaRelayPkg}/bin/pika-relay "$out/bin/pika-relay"
+        ''}
 
         cat >"$out/bin/run-staged-test-manifest" <<'EOF'
         #!${pkgs.bash}/bin/bash
@@ -824,12 +925,32 @@ CFG
         set -euo pipefail
         exec "$(dirname "$0")/run-staged-test-manifest" core-agent-nip98-test.manifest core::agent::tests::run_agent_flow_signs_requests_with_nip98_authorization --exact --nocapture
         EOF
+        cat >"$out/bin/run-agent-http-deterministic-tests" <<'EOF'
+        #!${pkgs.bash}/bin/bash
+        set -euo pipefail
+        root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
+        export PIKA_FIXTURE_SERVER_CMD="$root/bin/pika-server"
+        if [ -x "$root/bin/pika-relay" ]; then
+          export PIKA_FIXTURE_RELAY_CMD="$root/bin/pika-relay"
+        fi
+        export PIKAHUT_PIKACHAT_CMD="$root/bin/pikachat"
+
+        run_one() {
+          "$(dirname "$0")/run-staged-test-manifest" agent-http-deterministic-tests.manifest "$1" --exact --ignored --nocapture
+        }
+
+        run_one agent_http_ensure_local
+        run_one agent_http_cli_new_local
+        run_one agent_http_cli_new_idempotent_local
+        run_one agent_http_cli_new_me_recover_local
+        EOF
         chmod +x \
           "$out/bin/run-staged-test-manifest" \
           "$out/bin/run-agent-control-plane-unit-tests" \
           "$out/bin/run-agent-microvm-tests" \
           "$out/bin/run-server-agent-api-tests" \
-          "$out/bin/run-core-agent-nip98-test"
+          "$out/bin/run-core-agent-nip98-test" \
+          "$out/bin/run-agent-http-deterministic-tests"
       '';
 in
 rec {
@@ -845,6 +966,7 @@ rec {
     cargoArtifacts = workspaceDeps;
     doCheck = false;
     buildPhaseCargoCommand = laneCompileCommand;
+    PIKACI_STAGE_PIKACHAT_BINARY = "1";
     PIKACI_REQUIRE_INTEGRATION_TEST_EXECUTABLES = "1";
     doInstallCargoArtifacts = false;
     inherit installPhaseCommand;

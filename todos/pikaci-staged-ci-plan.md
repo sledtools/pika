@@ -1084,14 +1084,14 @@ We have at least one important Linux Rust lane where:
       | `check-pika` | `just pre-merge-pika` | partial | Android compile, desktop build, and actionlint/docs checks still live outside the staged Rust sublane | keep `pre-merge-pika-rust` shadow-only until parity/runtime evidence is sufficient, then split or replace the Linux Rust portion cleanly |
       | `check-pikachat` | `just pre-merge-pikachat` | none | deterministic CLI/OpenClaw coverage still depends on a broader mixed lane shape | choose a narrower Linux-first sublane before attempting full migration |
       | `check-pikachat-openclaw-e2e` | dedicated workflow job in `.github/workflows/pre-merge.yml` | none | depends on external OpenClaw repo checkout and broader integration shape | defer until simpler Linux lanes are under `pikaci` |
-      | `check-agent-contracts` | `just pre-merge-agent-contracts` | partial | extra deterministic `pikahut` tests still run outside the staged Rust/Linux sublane | keep shadowing the migrated Rust sublane; decide later whether the remainder belongs in `pikaci` |
+      | `check-agent-contracts` | `just pre-merge-agent-contracts` | full | shadow evidence, not plumbing, is now the blocker after the deterministic `pikahut` HTTP coverage moved under the staged Linux lane | gather shadow CI parity/runtime data toward promotion |
       | `check-rmp` | `just pre-merge-rmp` | full | shadow evidence, not plumbing, is now the blocker after the generated template checks were made offline/self-contained | gather shadow CI parity/runtime data toward promotion |
       | `check-notifications` | `just pre-merge-notifications` | full | shadow evidence, not plumbing, is now the only blocker | keep gathering PR shadow data toward promotion |
       | `check-fixture` | `just pre-merge-fixture` | none | the obvious Rust-only sublane (`pre-merge-fixture-rust`) is package-bound to `pikahut`, which pulls essentially the full desktop/media/runtime stack | deprioritize this until we either split a much narrower fixture sublane or accept a much heavier staged lane |
 
-    - by required Linux job-family count, staged Linux shadow coverage is now `4 / 7`:
+    - by required Linux job-family count, staged Linux shadow coverage is now `4 / 7`, but full family replacement has improved to `3 / 7`:
       - `check-pika` partial via `pre-merge-pika-rust`
-      - `check-agent-contracts` partial via `pre-merge-agent-contracts`
+      - `check-agent-contracts` full via `pre-merge-agent-contracts`
       - `check-rmp` full via `pre-merge-rmp`
       - `check-notifications` full via `pre-merge-notifications`
     - this slice re-opened `pre-merge-fixture-rust` and treated the earlier `~1724`-derivation warning as a diagnosis problem, not a decision by itself:
@@ -1137,7 +1137,21 @@ We have at least one important Linux Rust lane where:
         - `.github/workflows/pre-merge.yml` now exposes `shadow-pikaci-pre-merge-rmp`,
         - it uses the canonical `nix develop .#default -c just pre-merge-rmp-shadow` path,
         - and it feeds the same summary/debug bundle flow as the other staged Linux shadow lanes,
+    - the next slice then finished the remaining `check-agent-contracts` Linux gap instead of opening a fourth family:
+      - the missing coverage was the deterministic `pikahut` HTTP sublane that still lived outside `pikaci` even though the rest of `pre-merge-agent-contracts` already used the staged Linux template,
+      - the new staged job is `agent-http-deterministic-tests`, which runs the existing ignored deterministic cases in the remote Linux microVM via `/staged/linux-rust/workspace-build/bin/run-agent-http-deterministic-tests`,
+      - making that work required three concrete fixes rather than more new architecture:
+        - the staged agent-contracts workspace now includes the extra Rust members and deterministic test stub state needed to build `pikachat` and the deterministic `pikahut` test binary under the narrowed staged workspace,
+        - the deterministic test harness now respects `PIKAHUT_PIKACHAT_CMD` without forcing a nonexistent build-time workspace `cwd`, which was the direct cause of the guest-side `spawn(...): ENOENT` failure,
+        - and the shared content-addressed remote snapshot sync path now publishes through a temporary directory before renaming into place, which fixed a real race where concurrent real/shadow runs could delete each other's shared remote snapshot and fail untar with `Cannot mkdir: No such file or directory`,
+      - the `pika-agent-microvm` timeout-reason harness also needed stabilization under the same shadow pressure:
+        - the OpenClaw and Pi timeout-only fake services now emit deterministic ready markers,
+        - and the timeout window/polling were widened enough that the tests reliably reach keypackage publish before asserting the dedicated timeout reason,
+      - after those fixes, both the real and shadow agent-contracts staged Linux paths passed with the full five-job family:
+        - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-agent-contracts` -> `20260312T024359Z-0d078b1e`
+        - `nix develop .#default -c just pre-merge-agent-contracts-shadow` -> `20260312T023615Z-42bb335c`,
+      - so `check-agent-contracts` is now fully covered under `pikaci` rather than just partially shadowed,
     - after this slice, what still remains before `pikaci` can own all required Linux pre-merge coverage is explicit:
-      - finish or intentionally split the remaining non-`pikaci` portions of `check-pika` and `check-agent-contracts`,
+      - finish or intentionally split the remaining non-`pikaci` portions of `check-pika`,
       - choose the first sensible Linux-only slice inside `check-pikachat`,
       - and leave `check-fixture` / `check-pikachat-openclaw-e2e` for later only if they still resist a narrower, more explicit lane boundary.

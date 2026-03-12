@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, anyhow, bail};
 use chrono::Utc;
@@ -1553,6 +1553,22 @@ fn sync_directory_to_remote(
     log_path: &Path,
     label: &str,
 ) -> anyhow::Result<()> {
+    let remote_parent = remote_dir
+        .parent()
+        .ok_or_else(|| anyhow!("remote {label} dir {} has no parent", remote_dir.display()))?;
+    let unique_suffix = format!(
+        "{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("compute unique remote sync timestamp")?
+            .as_nanos()
+    );
+    let remote_tmp_dir = remote_parent.join(format!(
+        ".pikaci-sync-{}-{}",
+        label.replace(|c: char| !c.is_ascii_alphanumeric(), "-"),
+        unique_suffix
+    ));
     append_line(
         log_path,
         &format!(
@@ -1562,15 +1578,16 @@ fn sync_directory_to_remote(
             remote_dir.display()
         ),
     )?;
-    let mkdir_command = format!(
-        "set -euo pipefail; rm -rf {}; mkdir -p {}",
-        shell_single_quote(&remote_dir.display().to_string()),
-        shell_single_quote(&remote_dir.display().to_string()),
+    let prepare_command = format!(
+        "set -euo pipefail; mkdir -p {}; rm -rf {}; mkdir -p {}",
+        shell_single_quote(&remote_parent.display().to_string()),
+        shell_single_quote(&remote_tmp_dir.display().to_string()),
+        shell_single_quote(&remote_tmp_dir.display().to_string()),
     );
     run_command_to_log(
-        &mut run_ssh_command(remote_host, &mkdir_command),
+        &mut run_ssh_command(remote_host, &prepare_command),
         log_path,
-        &format!("[pikaci] reset remote {label} dir"),
+        &format!("[pikaci] prepare remote {label} staging dir"),
     )?;
 
     let mut child = Command::new("tar")
@@ -1586,7 +1603,7 @@ fn sync_directory_to_remote(
         remote_host,
         &format!(
             "set -euo pipefail; tar -C {} -xf -",
-            shell_single_quote(&remote_dir.display().to_string())
+            shell_single_quote(&remote_tmp_dir.display().to_string())
         ),
     )
     .stdin(Stdio::piped())
@@ -1613,6 +1630,11 @@ fn sync_directory_to_remote(
         .with_context(|| format!("wait for remote {label} untar"))?;
     if !tar_status.success() || !ssh_output.status.success() {
         append_line(log_path, &String::from_utf8_lossy(&ssh_output.stderr))?;
+        let cleanup_command = format!(
+            "set -euo pipefail; rm -rf {}",
+            shell_single_quote(&remote_tmp_dir.display().to_string())
+        );
+        let _ = run_ssh_command(remote_host, &cleanup_command).status();
         bail!(
             "sync {label} to {} failed with local={:?} remote={:?}",
             remote_host,
@@ -1620,6 +1642,27 @@ fn sync_directory_to_remote(
             ssh_output.status.code()
         );
     }
+    let finalize_command = format!(
+        "set -euo pipefail; \
+         if test -e {remote}; then \
+           rm -rf {tmp}; \
+         else \
+           if mv {tmp} {remote} 2>/dev/null; then \
+             :; \
+           elif test -e {remote}; then \
+             rm -rf {tmp}; \
+           else \
+             exit 1; \
+           fi; \
+         fi",
+        remote = shell_single_quote(&remote_dir.display().to_string()),
+        tmp = shell_single_quote(&remote_tmp_dir.display().to_string()),
+    );
+    run_command_to_log(
+        &mut run_ssh_command(remote_host, &finalize_command),
+        log_path,
+        &format!("[pikaci] finalize remote {label} sync"),
+    )?;
     Ok(())
 }
 

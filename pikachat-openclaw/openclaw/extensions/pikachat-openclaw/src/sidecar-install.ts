@@ -264,8 +264,14 @@ async function resolveVersion(
     if (age < VERSION_CHECK_TTL_MS) {
       const cached = (await readFile(cacheFile, "utf-8")).trim();
       if (cached) {
-        log.info?.(`[pikachat] using cached latest version: ${cached} (checked ${Math.round(age / 60000)}m ago)`);
-        return cached;
+        const pluginVersion = getPluginVersion();
+        if (isCompatibleVersion(cached, pluginVersion)) {
+          log.info?.(`[pikachat] using cached latest version: ${cached} (checked ${Math.round(age / 60000)}m ago)`);
+          return cached;
+        }
+        log.info?.(
+          `[pikachat] cached version ${cached} incompatible with plugin v${pluginVersion}, refreshing`,
+        );
       }
     }
   } catch {

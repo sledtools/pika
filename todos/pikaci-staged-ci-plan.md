@@ -1190,3 +1190,9 @@ We have at least one important Linux Rust lane where:
       - all practical Linux-required families under `pikaci`,
       - `check-fixture` explicitly carved out as the only temporary legacy Linux exception,
       - and `pre-merge-pika-rust` showing no further pass/fail parity mismatches against the legacy `check-pika` Rust portion across real shadow runs on the post-manifest-fix tip.
+    - the fresh decision rerun on rebased tip `e0b209dff5ced29e865dd5aa434d0d08d9a4bbd6` showed the current blocker is no longer a test-parity miss:
+      - `cargo test -p pikaci` passed,
+      - the real staged `./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-rust` rerun `20260312T062018Z-4d4b346a` cleared `workspaceDeps` and re-entered `workspaceBuild`,
+      - but then the local `pikaci` process stayed alive with no child `ssh`/`nix build` subprocess and no fresh guest/result output, while `run.json` remained `status = "running"` and the host logs stopped at `prepare ci.x86_64-linux.workspaceBuild`,
+      - so the Linux required/advisory flip is still blocked by a live staged-run orchestration stall at the `workspaceBuild` prepare boundary on current `origin/master`, not by another known test mismatch,
+      - the next slice should treat that as the single blocker: reproduce it cleanly, instrument the wait point in `pikaci`, and only flip Linux after that fresh `pre-merge-pika-rust` rerun completes cleanly on the rebased tip.

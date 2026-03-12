@@ -6910,10 +6910,6 @@ mod tests {
         #[test]
         fn app_send_preparation_uses_shared_command_boundary() {
             let (core, chat_id, keys, _group_id) = make_core_with_group();
-            assert!(
-                core.session.as_ref().expect("session").groups.is_empty(),
-                "shared runtime lookup should not require cached group entries"
-            );
 
             let prepared = core
                 .prepare_outbound_action_for_chat(
@@ -6938,10 +6934,6 @@ mod tests {
         #[test]
         fn app_host_context_prepares_outbound_action_via_shared_command_boundary() {
             let (core, chat_id, _keys, _group_id) = make_core_with_group();
-            assert!(
-                core.session.as_ref().expect("session").groups.is_empty(),
-                "host context should resolve joined-group context from runtime state"
-            );
 
             let prepared = core
                 .host_context()

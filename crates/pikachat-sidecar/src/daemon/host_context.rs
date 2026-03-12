@@ -255,8 +255,11 @@ impl<'a> DaemonHostContext<'a> {
         nostr_group_id: &str,
         key_package_events: &[Event],
     ) -> Result<PreparedMembershipEvolution, DaemonPrepareError> {
+        let mls_group_id = self
+            .resolve_group(nostr_group_id)
+            .map_err(DaemonPrepareError::BadGroup)?;
         self.commands()
-            .prepare_add_members_for_nostr_group_id(nostr_group_id, key_package_events)
+            .prepare_add_members(&mls_group_id, key_package_events)
             .map_err(DaemonPrepareError::Prepare)
     }
 

@@ -56,7 +56,9 @@ use pika_marmot_runtime::call_runtime::{
 use pika_marmot_runtime::conversation::{
     ConversationEvent, RuntimeApplicationMessage, RuntimeGroupUpdate,
 };
-use pika_marmot_runtime::group::{create_group_and_plan_welcome_delivery, PlannedGroupCreation};
+use pika_marmot_runtime::group::{
+    create_group_and_plan_welcome_delivery, GroupWelcomeDeliveryPlan, PlannedGroupCreation,
+};
 use pika_marmot_runtime::membership::{EvolutionPublishStatus, PreparedMembershipEvolution};
 #[cfg(test)]
 pub(crate) use pika_marmot_runtime::message::TYPING_INDICATOR_KIND;
@@ -3926,28 +3928,37 @@ impl AppCore {
                 }
             }
         };
-        let PlannedGroupCreation {
-            group,
-            welcome_delivery,
-        } = group_result;
+        self.finish_planned_group_creation(group_result, network_enabled, group_relays.clone());
+    }
 
-        // App create is intentionally eager/local here: the group is refreshed
-        // into local state immediately, while welcome delivery continues in the
-        // background as a best-effort side effect.
-        if network_enabled {
-            if let Some(plan) = welcome_delivery {
-                self.publish_welcomes_to_peers(
-                    plan.recipients,
-                    plan.welcome_rumors,
-                    group_relays.clone(),
-                );
-            }
+    fn publish_group_welcome_delivery_if_enabled(
+        &mut self,
+        welcome_delivery: Option<GroupWelcomeDeliveryPlan>,
+        network_enabled: bool,
+        relays: Vec<RelayUrl>,
+    ) {
+        if !network_enabled {
+            return;
         }
+        if let Some(plan) = welcome_delivery {
+            self.publish_welcomes_to_peers(plan.recipients, plan.welcome_rumors, relays);
+        }
+    }
 
-        // Refresh state + subscriptions + navigate.
+    fn finish_planned_group_creation(
+        &mut self,
+        planned: PlannedGroupCreation,
+        network_enabled: bool,
+        welcome_relays: Vec<RelayUrl>,
+    ) {
+        self.publish_group_welcome_delivery_if_enabled(
+            planned.welcome_delivery,
+            network_enabled,
+            welcome_relays,
+        );
+
         self.refresh_all_from_storage();
-
-        let chat_id = hex::encode(group.nostr_group_id);
+        let chat_id = hex::encode(planned.group.nostr_group_id);
         self.open_chat_screen(&chat_id);
         self.refresh_current_chat(&chat_id);
         self.emit_router();
@@ -4208,39 +4219,19 @@ impl AppCore {
                     return;
                 }
             };
-            let PlannedGroupCreation {
-                group,
-                welcome_delivery,
-            } = group_result;
-
-            // Deliver welcomes to all peers.
-            if network_enabled {
-                let mut welcome_relays = peer_relays;
-                for r in candidate_kp_relays {
-                    if !welcome_relays.contains(&r) {
-                        welcome_relays.push(r);
-                    }
+            let mut welcome_relays = peer_relays;
+            for r in candidate_kp_relays {
+                if !welcome_relays.contains(&r) {
+                    welcome_relays.push(r);
                 }
-                for r in group_relays {
-                    if !welcome_relays.contains(&r) {
-                        welcome_relays.push(r);
-                    }
-                }
-                if let Some(plan) = welcome_delivery {
-                    self.publish_welcomes_to_peers(
-                        plan.recipients,
-                        plan.welcome_rumors,
-                        welcome_relays.clone(),
-                    );
+            }
+            for r in group_relays {
+                if !welcome_relays.contains(&r) {
+                    welcome_relays.push(r);
                 }
             }
 
-            self.refresh_all_from_storage();
-            let chat_id = hex::encode(group.nostr_group_id);
-            self.open_chat_screen(&chat_id);
-            self.refresh_current_chat(&chat_id);
-            self.emit_router();
-            self.set_busy(|b| b.creating_chat = false);
+            self.finish_planned_group_creation(group_result, network_enabled, welcome_relays);
         }
     }
 
@@ -5347,12 +5338,7 @@ impl AppCore {
                         }
                     };
 
-                    self.refresh_all_from_storage();
-                    let chat_id = hex::encode(planned.group.nostr_group_id);
-                    self.open_chat_screen(&chat_id);
-                    self.refresh_current_chat(&chat_id);
-                    self.emit_router();
-                    self.set_busy(|b| b.creating_chat = false);
+                    self.finish_planned_group_creation(planned, network_enabled, group_relays);
                     return;
                 }
 
@@ -7673,10 +7659,12 @@ mod tests {
 
     mod group_key_packages {
         use super::*;
+        use crate::core::DEFAULT_GROUP_DESCRIPTION;
         use crate::mdk_support::open_mdk;
         use crate::updates::InternalEvent;
         use mdk_core::prelude::{GroupId, NostrGroupConfigData};
         use nostr_sdk::prelude::*;
+        use pika_marmot_runtime::group::create_group_and_plan_welcome_delivery;
         use pika_marmot_runtime::membership::PreparedMembershipEvolution;
 
         /// Creates a core with a real MDK session and a group already in storage,
@@ -7838,6 +7826,54 @@ mod tests {
                     .iter()
                     .any(|s| matches!(s, Screen::Chat { .. })),
                 "app create-group should still navigate immediately without waiting for welcome delivery"
+            );
+            assert!(core.state.toast.is_none());
+        }
+
+        #[test]
+        fn app_group_create_follow_through_uses_shared_planned_group_result() {
+            let (mut core, _chat_id, _keys, _gid) = make_core_with_group();
+            core.state.busy.creating_chat = true;
+            let before_group_count = core.session.as_ref().expect("session").groups.len();
+
+            let peer = Keys::generate();
+            let kp_event = make_peer_key_package(&peer);
+            let planned = {
+                let sess = core.session.as_ref().expect("session");
+                let config = NostrGroupConfigData {
+                    name: "Planned group".to_string(),
+                    description: DEFAULT_GROUP_DESCRIPTION.to_string(),
+                    image_hash: None,
+                    image_key: None,
+                    image_nonce: None,
+                    relays: core.default_relays(),
+                    admins: vec![sess.pubkey, peer.public_key()],
+                };
+                create_group_and_plan_welcome_delivery(
+                    &sess.pubkey,
+                    &sess.mdk,
+                    vec![kp_event],
+                    config,
+                    &[peer.public_key()],
+                )
+                .expect("create group and plan welcome delivery")
+            };
+
+            core.finish_planned_group_creation(planned, false, vec![]);
+
+            assert!(!core.state.busy.creating_chat);
+            assert_eq!(
+                core.session.as_ref().expect("session").groups.len(),
+                before_group_count + 1,
+                "shared planned group result should still materialize the local group"
+            );
+            assert!(
+                core.state
+                    .router
+                    .screen_stack
+                    .iter()
+                    .any(|s| matches!(s, Screen::Chat { .. })),
+                "app follow-through should still navigate from the planned group result"
             );
             assert!(core.state.toast.is_none());
         }

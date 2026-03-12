@@ -694,7 +694,6 @@ jobs:
             echo ""
             cat "$RUNNER_TEMP/pikaci-shadow-summary.md"
           } >> "$GITHUB_STEP_SUMMARY"
-
   summarize-pikaci-shadow-lanes:
     if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
     needs:

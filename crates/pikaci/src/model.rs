@@ -149,6 +149,7 @@ pub enum StagedLinuxRustLane {
     AgentContractsMicrovmTests,
     AgentContractsServerAgentApi,
     AgentContractsCoreNip98,
+    AgentContractsDeterministicHttp,
     NotificationsServerPackageTests,
     RmpInitSmokeCi,
     PikachatPackageTests,
@@ -172,7 +173,10 @@ impl StagedLinuxRustLane {
             Self::AgentContractsControlPlaneUnit
             | Self::AgentContractsMicrovmTests
             | Self::AgentContractsServerAgentApi
-            | Self::AgentContractsCoreNip98 => StagedLinuxRustTarget::PreMergeAgentContracts,
+            | Self::AgentContractsCoreNip98
+            | Self::AgentContractsDeterministicHttp => {
+                StagedLinuxRustTarget::PreMergeAgentContracts
+            }
             Self::NotificationsServerPackageTests => StagedLinuxRustTarget::PreMergeNotifications,
             Self::RmpInitSmokeCi => StagedLinuxRustTarget::PreMergeRmp,
             Self::PikachatPackageTests
@@ -227,6 +231,9 @@ impl StagedLinuxRustLane {
             }
             Self::AgentContractsCoreNip98 => {
                 "/staged/linux-rust/workspace-build/bin/run-core-agent-nip98-test"
+            }
+            Self::AgentContractsDeterministicHttp => {
+                "/staged/linux-rust/workspace-build/bin/run-agent-http-deterministic-tests"
             }
             Self::NotificationsServerPackageTests => {
                 "/staged/linux-rust/workspace-build/bin/run-pika-server-package-tests"
@@ -437,7 +444,7 @@ mod tests {
 
     #[test]
     fn agent_contract_lane_uses_agent_contracts_workspace_outputs() {
-        let lane = StagedLinuxRustLane::AgentContractsServerAgentApi;
+        let lane = StagedLinuxRustLane::AgentContractsDeterministicHttp;
 
         assert_eq!(
             lane.workspace_deps_output_name(),
@@ -449,7 +456,7 @@ mod tests {
         );
         assert_eq!(
             lane.execute_wrapper_command(),
-            "/staged/linux-rust/workspace-build/bin/run-server-agent-api-tests"
+            "/staged/linux-rust/workspace-build/bin/run-agent-http-deterministic-tests"
         );
     }
 

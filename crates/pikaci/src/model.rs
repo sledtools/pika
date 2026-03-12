@@ -388,6 +388,15 @@ pub enum PreparedOutputInvocationMode {
 #[cfg(test)]
 mod tests {
     use super::{GuestCommand, JobSpec, StagedLinuxRustLane, StagedLinuxRustTarget};
+    use std::fs;
+    use std::path::Path;
+
+    fn workspace_root() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+    }
 
     #[test]
     fn agent_contract_jobs_map_to_staged_linux_rust_lanes() {
@@ -543,6 +552,33 @@ mod tests {
         );
         assert_eq!(lane.target(), StagedLinuxRustTarget::PreMergeRmp);
         assert_eq!(config.shadow_recipe, "pre-merge-rmp-shadow");
+    }
+
+    #[test]
+    fn strict_remote_helper_supports_all_staged_workspace_installables() {
+        let helper =
+            fs::read_to_string(workspace_root().join("scripts/pika-build-run-workspace-deps.sh"))
+                .expect("read strict staged remote helper");
+
+        for target in [
+            StagedLinuxRustTarget::PreMergePikaRust,
+            StagedLinuxRustTarget::PreMergeAgentContracts,
+            StagedLinuxRustTarget::PreMergeNotifications,
+            StagedLinuxRustTarget::PreMergeRmp,
+            StagedLinuxRustTarget::PreMergePikachatRust,
+        ] {
+            let config = target.config();
+            assert!(
+                helper.contains(config.workspace_deps_installable),
+                "strict staged remote helper must allow {}",
+                config.workspace_deps_installable
+            );
+            assert!(
+                helper.contains(config.workspace_build_installable),
+                "strict staged remote helper must allow {}",
+                config.workspace_build_installable
+            );
+        }
     }
 }
 

@@ -99,7 +99,7 @@ fi
 cd "$repo_root"
 
 case "$installable" in
-  .#ci.x86_64-linux.workspaceDeps|.#ci.x86_64-linux.workspaceBuild|.#ci.x86_64-linux.agentContractsWorkspaceDeps|.#ci.x86_64-linux.agentContractsWorkspaceBuild|.#ci.x86_64-linux.pikachatWorkspaceDeps|.#ci.x86_64-linux.pikachatWorkspaceBuild)
+  .#ci.x86_64-linux.workspaceDeps|.#ci.x86_64-linux.workspaceBuild|.#ci.x86_64-linux.agentContractsWorkspaceDeps|.#ci.x86_64-linux.agentContractsWorkspaceBuild|.#ci.x86_64-linux.notificationsWorkspaceDeps|.#ci.x86_64-linux.notificationsWorkspaceBuild|.#ci.x86_64-linux.pikachatWorkspaceDeps|.#ci.x86_64-linux.pikachatWorkspaceBuild)
     ;;
   *)
     echo "error: strict staged remote helper only supports the staged x86_64-linux workspaceDeps/workspaceBuild installables" >&2

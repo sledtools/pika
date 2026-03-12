@@ -51,12 +51,21 @@ fn build_context(
     builder.build()
 }
 
+const PIKACHAT_BIN_ENV: &str = "PIKAHUT_TEST_PIKACHAT_BIN";
+
 fn pikachat_spec(root: &Path, args: &[String], capture: &str) -> CommandSpec {
-    CommandSpec::cargo()
-        .cwd(root)
-        .args(["run", "-q", "-p", "pikachat", "--"])
-        .args(args.iter().cloned())
-        .capture_name(capture)
+    if let Ok(binary) = std::env::var(PIKACHAT_BIN_ENV) {
+        CommandSpec::new(binary)
+            .cwd(root)
+            .args(args.iter().cloned())
+            .capture_name(capture)
+    } else {
+        CommandSpec::cargo()
+            .cwd(root)
+            .args(["run", "-q", "-p", "pikachat", "--"])
+            .args(args.iter().cloned())
+            .capture_name(capture)
+    }
 }
 
 fn run_pikachat_ok(
@@ -163,13 +172,7 @@ pub async fn run_scenario(args: ScenarioRequest) -> Result<ScenarioRunOutput> {
     ];
     scenario_args.extend(args.extra_args);
 
-    let output = runner.run(
-        &CommandSpec::cargo()
-            .cwd(&root)
-            .args(["run", "-q", "-p", "pikachat", "--"])
-            .args(scenario_args)
-            .capture_name("pikachat-scenario"),
-    )?;
+    let output = runner.run(&pikachat_spec(&root, &scenario_args, "pikachat-scenario"))?;
 
     let mut result = ScenarioRunOutput::completed(context.state_dir().to_path_buf())
         .with_artifact(output.stdout_path.clone())

@@ -58,6 +58,7 @@ jobs:
             pikachat:
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - 'cmd/pika-relay/**'
               - 'flake.nix'
               - 'flake.lock'
               - 'nix/**'
@@ -66,8 +67,10 @@ jobs:
               - '.github/workflows/pre-merge.yml'
               - 'cli/**'
               - 'crates/pikaci/**'
+              - 'crates/pika-agent-control-plane/**'
               - 'crates/pika-desktop/**'
               - 'crates/pika-agent-protocol/**'
+              - 'crates/hypernote-protocol/**'
               - 'crates/pikahut/**'
               - 'crates/pikachat-sidecar/**'
               - 'crates/pika-marmot-runtime/**'

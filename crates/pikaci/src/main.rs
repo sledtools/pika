@@ -418,6 +418,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
             &[
                 "Cargo.toml",
                 "Cargo.lock",
+                "cmd/pika-relay/**",
                 "cli/**",
                 "flake.nix",
                 "flake.lock",
@@ -425,7 +426,9 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "justfile",
                 ".github/workflows/pre-merge.yml",
                 "crates/pikaci/**",
+                "crates/pika-agent-control-plane/**",
                 "crates/pika-desktop/**",
+                "crates/hypernote-protocol/**",
                 "crates/pikachat-sidecar/**",
                 "crates/pikahut/**",
                 "crates/pika-agent-protocol/**",

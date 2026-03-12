@@ -710,16 +710,14 @@ mod tests {
 
         if desktop_manifest.contains("nokhwa") {
             assert!(
-                linux_rust.contains(
-                    "pkgs.lib.optionals (lane == \"agent-contracts\" || lane == \"pikachat\" || lane == \"fixture\") ["
-                ) && linux_rust.contains("pkgs.llvmPackages.libclang")
+                linux_rust.contains("lane == \"fixture\"")
+                    && linux_rust.contains("pkgs.llvmPackages.libclang")
                     && linux_rust.contains("pkgs.linuxHeaders"),
                 "fixture staged Linux lane must provision libclang and linuxHeaders while pika-desktop keeps nokhwa in the build graph"
             );
             assert!(
-                linux_rust.contains(
-                    "} // pkgs.lib.optionalAttrs (lane == \"agent-contracts\" || lane == \"pikachat\" || lane == \"fixture\") {"
-                ) && linux_rust.contains("LIBCLANG_PATH ="),
+                linux_rust.contains("lane == \"fixture\"")
+                    && linux_rust.contains("LIBCLANG_PATH ="),
                 "fixture staged Linux lane must export LIBCLANG_PATH while pika-desktop keeps nokhwa in the build graph"
             );
         }

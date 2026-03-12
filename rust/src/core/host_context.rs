@@ -138,9 +138,8 @@ impl<'a> AppHostContext<'a> {
         chat_id: &str,
         key_package_events: &[Event],
     ) -> anyhow::Result<PreparedMembershipEvolution> {
-        let group = self.lookup_joined_group_snapshot(chat_id)?;
         self.commands()
-            .prepare_add_members(&group.mls_group_id, key_package_events)
+            .prepare_add_members_for_nostr_group_id(chat_id, key_package_events)
     }
 
     pub(super) fn prepare_evolution(

@@ -211,30 +211,6 @@ impl<'a> DaemonHostContext<'a> {
             .map(|_| ())
     }
 
-    async fn publish_group_event(
-        &self,
-        nostr_group_id: &str,
-        kind: Kind,
-        content: String,
-        label: &str,
-    ) -> anyhow::Result<()> {
-        let mls_group_id = self.resolve_group(nostr_group_id)?;
-        let rumor = EventBuilder::new(kind, content).build(self.keys.public_key());
-        self.sign_and_publish_rumor(&mls_group_id, rumor, label)
-            .await?;
-        Ok(())
-    }
-
-    pub(super) async fn publish_call_payload(
-        &self,
-        nostr_group_id: &str,
-        payload_json: String,
-        label: &str,
-    ) -> anyhow::Result<()> {
-        self.publish_group_event(nostr_group_id, CALL_SIGNAL_KIND, payload_json, label)
-            .await
-    }
-
     pub(super) fn prepare_outbound_action(
         &self,
         nostr_group_id: &str,
@@ -255,12 +231,11 @@ impl<'a> DaemonHostContext<'a> {
         nostr_group_id: &str,
         key_package_events: &[Event],
     ) -> Result<PreparedMembershipEvolution, DaemonPrepareError> {
-        let group = self
-            .queries()
-            .lookup_joined_group_snapshot(nostr_group_id)
+        let mls_group_id = self
+            .resolve_group(nostr_group_id)
             .map_err(DaemonPrepareError::BadGroup)?;
         self.commands()
-            .prepare_add_members(&group.mls_group_id, key_package_events)
+            .prepare_add_members(&mls_group_id, key_package_events)
             .map_err(DaemonPrepareError::Prepare)
     }
 

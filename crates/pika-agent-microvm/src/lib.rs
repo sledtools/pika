@@ -32,6 +32,7 @@ pub const DEFAULT_OPENCLAW_GATEWAY_PORT: u16 = 18789;
 pub const DEFAULT_DAEMON_STATE_DIR: &str = "/root/pika-agent/state";
 pub const DEFAULT_OPENCLAW_STATE_DIR: &str = "/root/pika-agent/openclaw";
 pub const DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN: &str = "http://openclaw.localhost:19401";
+const DEFAULT_OPENCLAW_TRUSTED_PROXIES: &[&str] = &["127.0.0.1", "::1"];
 
 const DEFAULT_CREATE_VM_TIMEOUT_SECS: u64 = 60;
 const MIN_CREATE_VM_TIMEOUT_SECS: u64 = 10;
@@ -1129,14 +1130,18 @@ fn openclaw_gateway_config(relay_urls: &[String], startup_plan: &GuestStartupPla
     // surface sees the same daemon launch settings.
     let entry_config = channel_config.clone();
     let control_ui_allowed_origins = openclaw_control_ui_allowed_origins();
+    // Managed OpenClaw is always opened through the platform's proxy + token handoff.
+    // Skip guest-local per-browser pairing, but still require shared token auth.
     serde_json::to_string_pretty(&json!({
         "gateway": {
             "mode": "local",
             "bind": "loopback",
             "port": DEFAULT_OPENCLAW_GATEWAY_PORT,
             "controlUi": {
+                "allowInsecureAuth": true,
                 "allowedOrigins": control_ui_allowed_origins,
             },
+            "trustedProxies": DEFAULT_OPENCLAW_TRUSTED_PROXIES,
         },
         "plugins": {
             "enabled": true,
@@ -2178,6 +2183,14 @@ done
             serde_json::json!([DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN])
         );
         assert_eq!(
+            openclaw_json["gateway"]["controlUi"]["allowInsecureAuth"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            openclaw_json["gateway"]["trustedProxies"],
+            serde_json::json!(["127.0.0.1", "::1"])
+        );
+        assert_eq!(
             openclaw_json["channels"]["pikachat-openclaw"]["daemonBackend"],
             "native"
         );
@@ -2246,6 +2259,14 @@ done
             serde_json::json!([DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN])
         );
         assert_eq!(
+            openclaw_json["gateway"]["controlUi"]["allowInsecureAuth"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            openclaw_json["gateway"]["trustedProxies"],
+            serde_json::json!(["127.0.0.1", "::1"])
+        );
+        assert_eq!(
             openclaw_json["channels"]["pikachat-openclaw"]["daemonBackend"],
             "acp"
         );
@@ -2288,6 +2309,14 @@ done
                 DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN,
                 "https://openclaw.api.pikachat.org"
             ])
+        );
+        assert_eq!(
+            openclaw_json["gateway"]["controlUi"]["allowInsecureAuth"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            openclaw_json["gateway"]["trustedProxies"],
+            serde_json::json!(["127.0.0.1", "::1"])
         );
     }
 

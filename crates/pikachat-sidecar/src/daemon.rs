@@ -22,9 +22,7 @@ use pika_marmot_runtime::call_runtime::{
     PendingOutgoingCall,
 };
 use pika_marmot_runtime::conversation::ConversationEvent;
-use pika_marmot_runtime::group::{
-    CreatedGroup, create_group_and_plan_welcome_delivery, publish_group_welcome_delivery,
-};
+use pika_marmot_runtime::group::{CreatedGroup, create_group_and_publish_welcomes};
 use pika_marmot_runtime::message::{
     CALL_SIGNAL_KIND, MessageClassification, classify_message as classify_shared_message,
 };
@@ -206,34 +204,22 @@ where
     const INIT_GROUP_BUILD_WELCOME_MARKER: &str = "init_group_build_welcome";
     let expires =
         Timestamp::from_secs(Timestamp::now().as_secs() + INIT_GROUP_WELCOME_EXPIRATION_SECS);
-    let planned = create_group_and_plan_welcome_delivery(
-        &keys.public_key(),
+    create_group_and_publish_welcomes(
+        keys,
         mdk,
         vec![peer_kp],
         config,
         &[peer_pubkey],
+        vec![Tag::expiration(expires)],
+        publish_giftwrap,
     )
-    .context("init_group")?;
-    let published_welcomes = match planned.welcome_delivery.as_ref() {
-        Some(plan) => match publish_group_welcome_delivery(
-            keys,
-            plan,
-            vec![Tag::expiration(expires)],
-            publish_giftwrap,
-        )
-        .await
-        {
-            Ok(published_welcomes) => published_welcomes,
-            Err(err) if chain_has_message(&err, "build welcome giftwrap") => {
-                return Err(err.context(INIT_GROUP_BUILD_WELCOME_MARKER));
-            }
-            Err(err) => return Err(err.context("init_group")),
-        },
-        None => Vec::new(),
-    };
-    Ok(CreatedGroup {
-        group: planned.group,
-        published_welcomes,
+    .await
+    .map_err(|err| {
+        if chain_has_message(&err, "build welcome giftwrap") {
+            err.context(INIT_GROUP_BUILD_WELCOME_MARKER)
+        } else {
+            err.context("init_group")
+        }
     })
 }
 
@@ -5381,7 +5367,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn init_group_uses_shared_group_plan_and_publish_helpers() {
+    async fn init_group_uses_shared_group_create_and_publish_helper() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();

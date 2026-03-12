@@ -544,10 +544,9 @@ struct LocalOutgoing {
 struct PendingMediaSend {
     chat_id: String,
     caption: String,
-    upload: EncryptedMediaUpload,
+    prepared: pika_marmot_runtime::media::PreparedMediaUpload,
     account_pubkey: String,
     temp_rumor_id: String,
-    encrypted_data: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -563,9 +562,60 @@ struct PendingMediaBatchSend {
 #[derive(Debug, Clone)]
 struct BatchMediaItem {
     request_id: String,
-    upload: EncryptedMediaUpload,
-    encrypted_data: Vec<u8>,
-    uploaded_blob: Option<pika_marmot_runtime::media::UploadedBlob>,
+    prepared: pika_marmot_runtime::media::PreparedMediaUpload,
+    completed_upload: Option<pika_marmot_runtime::media::RuntimeMediaUploadResult>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingMediaUploadTask {
+    request_id: String,
+    prepared: pika_marmot_runtime::media::PreparedMediaUpload,
+}
+
+impl PendingMediaUploadTask {
+    fn expected_hash_hex(&self) -> String {
+        hex::encode(self.prepared.upload.encrypted_hash)
+    }
+}
+
+impl PendingMediaSend {
+    fn upload_task(&self, request_id: &str) -> PendingMediaUploadTask {
+        PendingMediaUploadTask {
+            request_id: request_id.to_string(),
+            prepared: self.prepared.clone(),
+        }
+    }
+}
+
+impl PendingMediaBatchSend {
+    fn restart_pending_upload(&mut self) -> Option<PendingMediaUploadTask> {
+        let restart_idx = self
+            .items
+            .iter()
+            .position(|item| item.completed_upload.is_none())?;
+        self.next_upload_index = restart_idx + 1;
+        Some(self.items[restart_idx].upload_task())
+    }
+
+    fn next_pending_upload(&mut self) -> Option<PendingMediaUploadTask> {
+        while self.next_upload_index < self.items.len() {
+            let next_idx = self.next_upload_index;
+            self.next_upload_index += 1;
+            if self.items[next_idx].completed_upload.is_none() {
+                return Some(self.items[next_idx].upload_task());
+            }
+        }
+        None
+    }
+}
+
+impl BatchMediaItem {
+    fn upload_task(&self) -> PendingMediaUploadTask {
+        PendingMediaUploadTask {
+            request_id: self.request_id.clone(),
+            prepared: self.prepared.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -5484,157 +5534,7 @@ impl AppCore {
                     return;
                 }
 
-                // Check if this is a pending media upload retry.
-                if let Some((request_id, encrypted_data, upload_mime, expected_hash_hex)) = self
-                    .pending_media_sends
-                    .iter()
-                    .find(|(_, p)| p.chat_id == chat_id && p.temp_rumor_id == message_id)
-                    .map(|(k, p)| {
-                        (
-                            k.clone(),
-                            p.encrypted_data.clone(),
-                            p.upload.mime_type.clone(),
-                            hex::encode(p.upload.encrypted_hash),
-                        )
-                    })
-                {
-                    if !self.network_enabled() {
-                        self.toast("Network disabled");
-                        return;
-                    }
-                    let Some(sess) = self.session.as_ref() else {
-                        return;
-                    };
-                    let Some(local_keys) = sess.local_keys.clone() else {
-                        self.toast("Media upload requires local key signer");
-                        return;
-                    };
-
-                    // Reset delivery to Pending, set upload_progress to 0.
-                    self.delivery_overrides
-                        .entry(chat_id.clone())
-                        .or_default()
-                        .insert(message_id.clone(), MessageDeliveryState::Pending);
-                    if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
-                        if let Some(entry) = outbox.get_mut(&message_id) {
-                            if let Some(attachment) = entry.media.first_mut() {
-                                attachment.upload_progress = Some(0.0);
-                            }
-                        }
-                    }
-                    let mid = message_id.clone();
-                    if !self.mutate_current_chat_messages(&chat_id, |msgs| {
-                        if let Some(msg) = msgs.iter_mut().find(|m| m.id == mid) {
-                            msg.delivery = MessageDeliveryState::Pending;
-                            if let Some(att) = msg.media.first_mut() {
-                                att.upload_progress = Some(0.0);
-                            }
-                            true
-                        } else {
-                            false
-                        }
-                    }) {
-                        self.refresh_current_chat_if_open(&chat_id);
-                    }
-                    self.refresh_chat_list_from_storage();
-                    let blossom_servers = self.blossom_servers();
-
-                    self.spawn_media_upload(
-                        request_id,
-                        blossom_servers,
-                        encrypted_data,
-                        upload_mime,
-                        expected_hash_hex,
-                        local_keys,
-                    );
-                    return;
-                }
-
-                // Check if this is a pending batch media upload retry.
-                if let Some((
-                    batch_id,
-                    first_request_id,
-                    first_encrypted_data,
-                    first_upload_mime,
-                    first_expected_hash,
-                )) = self
-                    .pending_media_batch_sends
-                    .iter()
-                    .find(|(_, b)| b.chat_id == chat_id && b.temp_rumor_id == message_id)
-                    .and_then(|(k, b)| {
-                        // Find the first un-uploaded item; if all are done, skip this path.
-                        let idx = b
-                            .items
-                            .iter()
-                            .position(|item| item.uploaded_blob.is_none())?;
-                        Some((
-                            k.clone(),
-                            b.items[idx].request_id.clone(),
-                            b.items[idx].encrypted_data.clone(),
-                            b.items[idx].upload.mime_type.clone(),
-                            hex::encode(b.items[idx].upload.encrypted_hash),
-                        ))
-                    })
-                {
-                    if !self.network_enabled() {
-                        self.toast("Network disabled");
-                        return;
-                    }
-                    let Some(sess) = self.session.as_ref() else {
-                        return;
-                    };
-                    let Some(local_keys) = sess.local_keys.clone() else {
-                        self.toast("Media upload requires local key signer");
-                        return;
-                    };
-
-                    // Reset delivery to Pending, set upload_progress to 0 for all attachments.
-                    self.delivery_overrides
-                        .entry(chat_id.clone())
-                        .or_default()
-                        .insert(message_id.clone(), MessageDeliveryState::Pending);
-                    if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
-                        if let Some(entry) = outbox.get_mut(&message_id) {
-                            for att in &mut entry.media {
-                                att.upload_progress = Some(0.0);
-                            }
-                        }
-                    }
-                    // Update next_upload_index to restart from the first un-uploaded item.
-                    if let Some(batch) = self.pending_media_batch_sends.get_mut(&batch_id) {
-                        if let Some(restart_idx) = batch
-                            .items
-                            .iter()
-                            .position(|item| item.uploaded_blob.is_none())
-                        {
-                            batch.next_upload_index = restart_idx + 1;
-                        }
-                    }
-                    let mid = message_id.clone();
-                    if !self.mutate_current_chat_messages(&chat_id, |msgs| {
-                        if let Some(msg) = msgs.iter_mut().find(|m| m.id == mid) {
-                            msg.delivery = MessageDeliveryState::Pending;
-                            for att in &mut msg.media {
-                                att.upload_progress = Some(0.0);
-                            }
-                            true
-                        } else {
-                            false
-                        }
-                    }) {
-                        self.refresh_current_chat_if_open(&chat_id);
-                    }
-                    self.refresh_chat_list_from_storage();
-                    let blossom_servers = self.blossom_servers();
-
-                    self.spawn_media_upload(
-                        first_request_id,
-                        blossom_servers,
-                        first_encrypted_data,
-                        first_upload_mime,
-                        first_expected_hash,
-                        local_keys,
-                    );
+                if self.retry_pending_chat_media(&chat_id, &message_id) {
                     return;
                 }
 
@@ -6657,10 +6557,52 @@ mod tests {
                 alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 giftwrap_sub: None,
                 group_sub: None,
-                groups: std::collections::HashMap::new(),
+                groups: std::collections::HashMap::from([(
+                    chat_id.clone(),
+                    crate::core::GroupIndexEntry {
+                        mls_group_id: group_id.clone(),
+                        is_group: true,
+                        group_name: Some("Test".to_string()),
+                        self_is_admin: true,
+                        members: vec![],
+                    },
+                )]),
             });
 
             (core, chat_id, creator, group_id)
+        }
+
+        fn test_media_attachment() -> crate::state::ChatMediaAttachment {
+            crate::state::ChatMediaAttachment {
+                original_hash_hex: "original-hash".to_string(),
+                encrypted_hash_hex: None,
+                url: String::new(),
+                mime_type: "text/plain".to_string(),
+                filename: "file.txt".to_string(),
+                kind: crate::state::ChatMediaKind::File,
+                width: None,
+                height: None,
+                nonce_hex: String::new(),
+                scheme_version: String::new(),
+                local_path: None,
+                upload_progress: None,
+                blurhash: None,
+            }
+        }
+
+        fn pending_media_outbox(
+            sender_pubkey: &str,
+            attachments: Vec<crate::state::ChatMediaAttachment>,
+        ) -> crate::core::LocalOutgoing {
+            crate::core::LocalOutgoing {
+                content: "caption".to_string(),
+                timestamp: 1,
+                sender_pubkey: sender_pubkey.to_string(),
+                reply_to_message_id: None,
+                seq: 1,
+                media: attachments,
+                kind: Kind::ChatMessage,
+            }
         }
 
         /// Construct a test Message for use in MessageProcessingResult::ApplicationMessage.
@@ -7210,10 +7152,9 @@ mod tests {
                 crate::core::PendingMediaSend {
                     chat_id: chat_id.clone(),
                     caption: "caption".to_string(),
-                    upload: prepared.upload,
+                    prepared,
                     account_pubkey: keys.public_key().to_hex(),
                     temp_rumor_id: temp_rumor_id.clone(),
-                    encrypted_data: prepared.encrypted_data,
                 },
             );
             core.delivery_overrides
@@ -7262,10 +7203,9 @@ mod tests {
                 crate::core::PendingMediaSend {
                     chat_id: chat_id.clone(),
                     caption: "caption".to_string(),
-                    upload: prepared.upload,
+                    prepared,
                     account_pubkey: keys.public_key().to_hex(),
                     temp_rumor_id: temp_rumor_id.clone(),
-                    encrypted_data: prepared.encrypted_data,
                 },
             );
             core.delivery_overrides
@@ -7302,7 +7242,7 @@ mod tests {
         }
 
         #[test]
-        fn app_batch_media_upload_orchestration_uses_shared_uploaded_blob_state() {
+        fn app_batch_media_upload_orchestration_uses_shared_completed_upload_state() {
             let (mut core, chat_id, keys, group_id) = make_core_with_group();
             let first = core
                 .host_context()
@@ -7339,15 +7279,13 @@ mod tests {
                     items: vec![
                         crate::core::BatchMediaItem {
                             request_id: first_request_id.clone(),
-                            upload: first.upload,
-                            encrypted_data: first.encrypted_data,
-                            uploaded_blob: None,
+                            prepared: first,
+                            completed_upload: None,
                         },
                         crate::core::BatchMediaItem {
                             request_id: second_request_id,
-                            upload: second.upload,
-                            encrypted_data: second.encrypted_data,
-                            uploaded_blob: None,
+                            prepared: second,
+                            completed_upload: None,
                         },
                     ],
                     next_upload_index: 2,
@@ -7372,14 +7310,15 @@ mod tests {
             assert_eq!(batch.items.len(), 2);
             assert_eq!(
                 batch.items[0]
-                    .uploaded_blob
+                    .completed_upload
                     .as_ref()
-                    .expect("first uploaded blob")
+                    .expect("first completed upload")
+                    .uploaded_blob
                     .uploaded_url,
                 "https://example.com/blob-1"
             );
             assert!(
-                batch.items[1].uploaded_blob.is_none(),
+                batch.items[1].completed_upload.is_none(),
                 "later batch items should remain pending"
             );
         }
@@ -7421,15 +7360,13 @@ mod tests {
                     items: vec![
                         crate::core::BatchMediaItem {
                             request_id: first_request_id.clone(),
-                            upload: first.upload,
-                            encrypted_data: first.encrypted_data,
-                            uploaded_blob: None,
+                            prepared: first,
+                            completed_upload: None,
                         },
                         crate::core::BatchMediaItem {
                             request_id: "batch-request-2".to_string(),
-                            upload: second.upload,
-                            encrypted_data: second.encrypted_data,
-                            uploaded_blob: None,
+                            prepared: second,
+                            completed_upload: None,
                         },
                     ],
                     next_upload_index: 2,
@@ -7460,7 +7397,7 @@ mod tests {
                 .pending_media_batch_sends
                 .get(&batch_id)
                 .expect("pending batch should remain");
-            assert!(batch.items[0].uploaded_blob.is_none());
+            assert!(batch.items[0].completed_upload.is_none());
             assert!(matches!(
                 core.delivery_overrides
                     .get(&chat_id)
@@ -7468,6 +7405,188 @@ mod tests {
                 Some(crate::state::MessageDeliveryState::Failed { reason })
                     if reason == "Upload failed: hash mismatch"
             ));
+        }
+
+        #[test]
+        fn retry_message_restarts_pending_single_media_upload_from_shared_prepared_state() {
+            let (mut core, chat_id, keys, group_id) = make_core_with_group();
+            let request_id = "retry-single-request".to_string();
+            let temp_rumor_id = "retry-single-temp".to_string();
+            let prepared = core
+                .host_context()
+                .expect("host context")
+                .prepare_upload(
+                    &group_id,
+                    b"retry single media",
+                    Some("text/plain"),
+                    Some("retry-single.txt"),
+                )
+                .expect("prepare upload");
+
+            core.pending_media_sends.insert(
+                request_id.clone(),
+                crate::core::PendingMediaSend {
+                    chat_id: chat_id.clone(),
+                    caption: "caption".to_string(),
+                    prepared,
+                    account_pubkey: keys.public_key().to_hex(),
+                    temp_rumor_id: temp_rumor_id.clone(),
+                },
+            );
+            core.local_outbox
+                .entry(chat_id.clone())
+                .or_default()
+                .insert(
+                    temp_rumor_id.clone(),
+                    pending_media_outbox(
+                        &keys.public_key().to_hex(),
+                        vec![test_media_attachment()],
+                    ),
+                );
+            core.delivery_overrides
+                .entry(chat_id.clone())
+                .or_default()
+                .insert(
+                    temp_rumor_id.clone(),
+                    crate::state::MessageDeliveryState::Failed {
+                        reason: "Upload failed: offline".to_string(),
+                    },
+                );
+
+            core.handle_action(crate::AppAction::RetryMessage {
+                chat_id: chat_id.clone(),
+                message_id: temp_rumor_id.clone(),
+            });
+
+            assert!(matches!(
+                core.delivery_overrides
+                    .get(&chat_id)
+                    .and_then(|m| m.get(&temp_rumor_id)),
+                Some(crate::state::MessageDeliveryState::Pending)
+            ));
+            assert_eq!(
+                core.local_outbox
+                    .get(&chat_id)
+                    .and_then(|outbox| outbox.get(&temp_rumor_id))
+                    .and_then(|entry| entry.media.first())
+                    .and_then(|attachment| attachment.upload_progress),
+                Some(0.0)
+            );
+            assert!(core.pending_media_sends.contains_key(&request_id));
+        }
+
+        #[test]
+        fn retry_message_resumes_pending_batch_media_upload_from_first_incomplete_item() {
+            let (mut core, chat_id, keys, group_id) = make_core_with_group();
+            let first = core
+                .host_context()
+                .expect("host context")
+                .prepare_upload(
+                    &group_id,
+                    b"first batch retry",
+                    Some("text/plain"),
+                    Some("first.txt"),
+                )
+                .expect("prepare first upload");
+            let first_completed = core
+                .host_context()
+                .expect("host context")
+                .complete_media_upload_operation(
+                    &group_id,
+                    chat_id.clone(),
+                    &first.upload,
+                    pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(
+                        pika_marmot_runtime::media::UploadedBlob {
+                            blossom_server: "https://example.com".to_string(),
+                            uploaded_url: "https://example.com/blob-1".to_string(),
+                            descriptor_sha256_hex: hex::encode(first.upload.encrypted_hash),
+                        },
+                    ),
+                )
+                .into_media_upload_result()
+                .expect("completed media upload")
+                .result;
+            let second = core
+                .host_context()
+                .expect("host context")
+                .prepare_upload(
+                    &group_id,
+                    b"second batch retry",
+                    Some("text/plain"),
+                    Some("second.txt"),
+                )
+                .expect("prepare second upload");
+
+            let batch_id = "retry-batch".to_string();
+            let temp_rumor_id = "retry-batch-temp".to_string();
+            core.pending_media_batch_sends.insert(
+                batch_id.clone(),
+                crate::core::PendingMediaBatchSend {
+                    chat_id: chat_id.clone(),
+                    caption: "caption".to_string(),
+                    temp_rumor_id: temp_rumor_id.clone(),
+                    account_pubkey: keys.public_key().to_hex(),
+                    items: vec![
+                        crate::core::BatchMediaItem {
+                            request_id: "retry-batch-request-1".to_string(),
+                            prepared: first,
+                            completed_upload: Some(first_completed),
+                        },
+                        crate::core::BatchMediaItem {
+                            request_id: "retry-batch-request-2".to_string(),
+                            prepared: second,
+                            completed_upload: None,
+                        },
+                    ],
+                    next_upload_index: 0,
+                },
+            );
+            core.local_outbox
+                .entry(chat_id.clone())
+                .or_default()
+                .insert(
+                    temp_rumor_id.clone(),
+                    pending_media_outbox(
+                        &keys.public_key().to_hex(),
+                        vec![test_media_attachment(), test_media_attachment()],
+                    ),
+                );
+            core.delivery_overrides
+                .entry(chat_id.clone())
+                .or_default()
+                .insert(
+                    temp_rumor_id.clone(),
+                    crate::state::MessageDeliveryState::Failed {
+                        reason: "Upload failed: offline".to_string(),
+                    },
+                );
+
+            core.handle_action(crate::AppAction::RetryMessage {
+                chat_id: chat_id.clone(),
+                message_id: temp_rumor_id.clone(),
+            });
+
+            let batch = core
+                .pending_media_batch_sends
+                .get(&batch_id)
+                .expect("pending batch should remain");
+            assert_eq!(batch.next_upload_index, 2);
+            assert!(batch.items[0].completed_upload.is_some());
+            assert!(batch.items[1].completed_upload.is_none());
+            assert!(matches!(
+                core.delivery_overrides
+                    .get(&chat_id)
+                    .and_then(|m| m.get(&temp_rumor_id)),
+                Some(crate::state::MessageDeliveryState::Pending)
+            ));
+            assert!(core
+                .local_outbox
+                .get(&chat_id)
+                .and_then(|outbox| outbox.get(&temp_rumor_id))
+                .expect("pending outbox batch")
+                .media
+                .iter()
+                .all(|attachment| attachment.upload_progress == Some(0.0)));
         }
 
         #[test]

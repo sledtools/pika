@@ -1011,7 +1011,7 @@ jobs:
           key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
           path: target
 
-      - run: OPENCLAW_DIR=openclaw nix develop .#default -c just openclaw-pikachat-e2e
+      - run: OPENCLAW_DIR=openclaw nix develop .#default -c just pre-merge-pikachat-openclaw-e2e
 
   check-agent-contracts:
     name: legacy check-agent-contracts (advisory)

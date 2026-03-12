@@ -35,10 +35,10 @@ let
       pkgs.alsa-lib
       pkgs.openssl
       pkgs.postgresql
-    ] ++ pkgs.lib.optionals (lane == "agent-contracts" || lane == "pikachat") [
+    ] ++ pkgs.lib.optionals (lane == "pika-core" || lane == "agent-contracts" || lane == "pikachat") [
       pkgs.llvmPackages.libclang
       pkgs.linuxHeaders
-    ] ++ pkgs.lib.optionals (lane == "agent-contracts" || lane == "pikachat") [
+    ] ++ pkgs.lib.optionals (lane == "pika-core" || lane == "agent-contracts" || lane == "pikachat") [
       pkgs.xorg.libX11
       pkgs.xorg.libXcursor
       pkgs.xorg.libXi
@@ -49,7 +49,7 @@ let
       pkgs.mesa
       pkgs.vulkan-loader
     ];
-  } // pkgs.lib.optionalAttrs (lane == "agent-contracts" || lane == "pikachat") {
+  } // pkgs.lib.optionalAttrs (lane == "pika-core" || lane == "agent-contracts" || lane == "pikachat") {
     LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
     BINDGEN_EXTRA_CLANG_ARGS = builtins.concatStringsSep " " [
       "-I${pkgs.linuxHeaders}/include"
@@ -758,7 +758,9 @@ let
         cat >"$out/bin/run-pika-core-lib-app-flows-tests" <<'EOF'
         #!${pkgs.bash}/bin/bash
         set -euo pipefail
-        exec "$(dirname "$0")/run-pika-core-test-manifest" pika-core-lib-app-flows.manifest
+        root="$(dirname "$0")"
+        "$root/run-pika-core-test-manifest" pika-core-lib-tests.manifest
+        exec "$root/run-pika-core-test-manifest" pika-core-lib-app-flows.manifest
         EOF
         cat >"$out/bin/run-pika-core-messaging-e2e-tests" <<'EOF'
         #!${pkgs.bash}/bin/bash

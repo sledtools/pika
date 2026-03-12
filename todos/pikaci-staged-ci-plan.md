@@ -1155,3 +1155,29 @@ We have at least one important Linux Rust lane where:
       - finish or intentionally split the remaining non-`pikaci` portions of `check-pika`,
       - choose the first sensible Linux-only slice inside `check-pikachat`,
       - and leave `check-fixture` / `check-pikachat-openclaw-e2e` for later only if they still resist a narrower, more explicit lane boundary.
+  - the next aggressive slice finished the Linux-only `check-pikachat` gap by pulling the already-reviewed staged migration into this branch:
+    - `pre-merge-pikachat-rust` now runs under the same staged Linux remote-authoritative template as the other migrated families,
+    - the lane has dedicated `pikachatWorkspaceDeps` / `pikachatWorkspaceBuild` outputs built from the full Rust workspace snapshot/lockfile,
+    - the staged wrappers cover the package tests plus the deterministic/OpenClaw selectors without guest-time Cargo rebuilds,
+    - and the lane is now wired into GitHub as `shadow-pikaci-pre-merge-pikachat-rust` in the same non-gating summary/debug-bundle path as the other staged Linux shadows,
+    - which moves the Linux-required coverage picture to `5 / 7` families with `pikaci` coverage:
+      - full: `check-agent-contracts`, `check-notifications`, `check-rmp`, Linux-only `check-pikachat`
+      - partial: `check-pika`
+      - deferred: `check-fixture`,
+  - the next completion question is therefore no longer “can `pikaci` cover Linux?” but “what exactly still blocks flipping Linux required/advisory polarity?”:
+    - fresh GitHub shadow evidence for `pre-merge-pika-rust` now shows the real remaining `check-pika` gap is not Android/docs/desktop ceremony,
+    - it is pass/fail parity: the staged `pre-merge-pika-rust` lane was green while `check-pika` still failed on `cargo test -p pika_core --lib --tests` for:
+      - `core::tests::handle_message_processing::app_host_context_prepares_outbound_action_via_shared_command_boundary`
+      - `core::tests::handle_message_processing::app_send_preparation_uses_shared_command_boundary`,
+    - that means the staged Linux Rust lane was still missing the `pika_core` lib-test binary even though it already covered `app_flows` and the messaging/group-profile integration binaries,
+    - the aggressive finish strategy is therefore:
+      - treat `check-fixture` as an explicit temporary carve-out instead of holding the whole Linux migration hostage,
+      - close the last meaningful `check-pika` parity gap by making `pre-merge-pika-rust` run the staged `pika_core` lib-test manifest before the existing app-flows manifest,
+      - then use real PR shadow parity/runtime evidence to decide whether `pre-merge-pika-rust` is ready to replace the Linux portion of `check-pika` while fixture remains legacy/advisory,
+    - that parity fix is now implemented in the staged wrapper itself:
+      - `/staged/linux-rust/workspace-build/bin/run-pika-core-lib-app-flows-tests` runs `pika-core-lib-tests.manifest` first and then `pika-core-lib-app-flows.manifest`,
+      - so the staged `pre-merge-pika-rust` lane now matches the legacy `cargo test -p pika_core --lib --tests` contract much more closely without broadening into another new lane,
+    - after that change, the credible “Linux support done enough to switch” definition is:
+      - all practical Linux-required families under `pikaci`,
+      - `check-fixture` explicitly carved out as the only temporary legacy Linux exception,
+      - and `pre-merge-pika-rust` showing no further pass/fail parity mismatches against the legacy `check-pika` Rust portion across real shadow runs.

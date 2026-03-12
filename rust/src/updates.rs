@@ -63,9 +63,7 @@ pub enum InternalEvent {
     },
     ChatMediaUploadCompleted {
         request_id: String,
-        uploaded_url: Option<String>,
-        descriptor_sha256_hex: Option<String>,
-        error: Option<String>,
+        status: pika_marmot_runtime::runtime::MediaUploadStatus,
     },
     ChatMediaDownloadFetched {
         request_id: String,

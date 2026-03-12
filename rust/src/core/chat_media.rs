@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use ::image::GenericImageView as _;
 use base64::Engine;
 use mdk_core::encrypted_media::types::MediaReference;
-use pika_marmot_runtime::media::{upload_encrypted_blob, UploadedBlob, MAX_CHAT_MEDIA_BYTES};
+use pika_marmot_runtime::media::{upload_encrypted_blob, MAX_CHAT_MEDIA_BYTES};
 use sha2::{Digest, Sha256};
 
 use crate::state::{ChatMediaAttachment, ChatMediaKind, MediaGalleryItem, MediaGalleryState};
@@ -358,7 +358,7 @@ fn finalize_chat_media_upload(
     runtime_for_mdk(mdk).finish_upload(
         group_id,
         upload,
-        UploadedBlob {
+        pika_marmot_runtime::media::UploadedBlob {
             blossom_server: "app-local".to_string(),
             uploaded_url,
             descriptor_sha256_hex,
@@ -1299,7 +1299,7 @@ impl AppCore {
                     request_id,
                     upload,
                     encrypted_data,
-                    uploaded_url: None,
+                    uploaded_blob: None,
                 });
             }
         }
@@ -1361,15 +1361,13 @@ impl AppCore {
             let event = match result {
                 Ok(uploaded) => InternalEvent::ChatMediaUploadCompleted {
                     request_id,
-                    uploaded_url: Some(uploaded.uploaded_url),
-                    descriptor_sha256_hex: Some(uploaded.descriptor_sha256_hex),
-                    error: None,
+                    status: pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(uploaded),
                 },
                 Err(e) => InternalEvent::ChatMediaUploadCompleted {
                     request_id,
-                    uploaded_url: None,
-                    descriptor_sha256_hex: None,
-                    error: Some(e.to_string()),
+                    status: pika_marmot_runtime::runtime::MediaUploadStatus::UploadFailed(
+                        e.to_string(),
+                    ),
                 },
             };
             let _ = tx.send(CoreMsg::Internal(Box::new(event)));
@@ -1379,9 +1377,7 @@ impl AppCore {
     pub(super) fn handle_chat_media_upload_completed(
         &mut self,
         request_id: String,
-        uploaded_url: Option<String>,
-        descriptor_sha256_hex: Option<String>,
-        error: Option<String>,
+        status: pika_marmot_runtime::runtime::MediaUploadStatus,
     ) {
         // Check if this request belongs to a batch upload.
         let batch_key = self
@@ -1391,42 +1387,25 @@ impl AppCore {
             .map(|(k, _)| k.clone());
 
         if let Some(batch_id) = batch_key {
-            self.handle_batch_upload_completed(
-                batch_id,
-                request_id,
-                uploaded_url,
-                descriptor_sha256_hex,
-                error,
-            );
+            self.handle_batch_upload_completed(batch_id, request_id, status);
             return;
         }
 
-        // --- Single-item upload path (unchanged) ---
+        // --- Single-item upload path ---
 
-        if let Some(e) = &error {
+        if let pika_marmot_runtime::runtime::MediaUploadStatus::UploadFailed(e) = &status {
             // On failure: keep PendingMediaSend for retry, mark as Failed.
             let Some(pending) = self.pending_media_sends.get(&request_id) else {
                 return;
             };
             let chat_id = pending.chat_id.clone();
             let temp_rumor_id = pending.temp_rumor_id.clone();
-            let operation = match self
-                .session
-                .as_ref()
-                .and_then(|sess| sess.groups.get(&chat_id).map(|group| (sess, group)))
-            {
-                Some((sess, group)) => sess.host_context().complete_media_upload_operation(
-                    &group.mls_group_id,
-                    chat_id.clone(),
-                    &pending.upload,
-                    pika_marmot_runtime::runtime::MediaUploadStatus::UploadFailed(e.clone()),
-                ),
-                None => pika_marmot_runtime::runtime::RuntimeOperationEvent::media_upload_failed(
+            let operation =
+                pika_marmot_runtime::runtime::RuntimeOperationEvent::media_upload_failed(
                     chat_id.clone(),
                     &pending.upload,
                     e.clone(),
-                ),
-            };
+                );
             let upload_error = match operation.into_media_upload_result() {
                 Ok(_) => "unexpected successful media upload result".to_string(),
                 Err(error) => error,
@@ -1468,25 +1447,6 @@ impl AppCore {
             s.refresh_current_chat_if_open(&pending.chat_id);
             s.refresh_chat_list_from_storage();
         };
-        let fail_media_upload_validation = |s: &mut Self, reason: &str| {
-            cleanup_optimistic(s);
-            s.toast(format!("Media upload failed: {reason}"));
-        };
-
-        let Some(uploaded_url) = uploaded_url else {
-            fail_media_upload_validation(self, "missing upload URL");
-            return;
-        };
-        let Some(descriptor_hash) = descriptor_sha256_hex else {
-            fail_media_upload_validation(self, "missing uploaded hash");
-            return;
-        };
-
-        let expected_hash_hex = hex::encode(pending.upload.encrypted_hash);
-        if !descriptor_hash.eq_ignore_ascii_case(&expected_hash_hex) {
-            fail_media_upload_validation(self, "uploaded hash mismatch");
-            return;
-        }
 
         // Remove the temporary outbox entry and delivery override + refresh UI.
         cleanup_optimistic(self);
@@ -1499,15 +1459,12 @@ impl AppCore {
             return;
         };
 
+        let expected_hash_hex = hex::encode(pending.upload.encrypted_hash);
         let operation = sess.host_context().complete_media_upload_operation(
             &group.mls_group_id,
             pending.chat_id.clone(),
             &pending.upload,
-            pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(UploadedBlob {
-                blossom_server: "app-local".to_string(),
-                uploaded_url,
-                descriptor_sha256_hex: descriptor_hash,
-            }),
+            status,
         );
         let completed = match operation.into_media_upload_result() {
             Ok(completed) => completed.result,
@@ -1561,11 +1518,9 @@ impl AppCore {
         &mut self,
         batch_id: String,
         request_id: String,
-        uploaded_url: Option<String>,
-        descriptor_sha256_hex: Option<String>,
-        error: Option<String>,
+        status: pika_marmot_runtime::runtime::MediaUploadStatus,
     ) {
-        if let Some(e) = &error {
+        if let pika_marmot_runtime::runtime::MediaUploadStatus::UploadFailed(e) = &status {
             // On batch item failure: mark entire message as Failed, keep batch for retry.
             let Some(batch) = self.pending_media_batch_sends.get(&batch_id) else {
                 return;
@@ -1594,14 +1549,7 @@ impl AppCore {
             return;
         }
 
-        let Some(uploaded_url) = uploaded_url else {
-            return;
-        };
-        let Some(descriptor_hash) = descriptor_sha256_hex else {
-            return;
-        };
-
-        // Find the item index and validate hash.
+        // Find the item index and store the shared upload status.
         let Some(batch) = self.pending_media_batch_sends.get(&batch_id) else {
             return;
         };
@@ -1613,33 +1561,14 @@ impl AppCore {
             Some(idx) => idx,
             None => return,
         };
-        let expected_hash_hex = hex::encode(batch.items[item_idx].upload.encrypted_hash);
-        if !descriptor_hash.eq_ignore_ascii_case(&expected_hash_hex) {
-            // Hash mismatch — treat as failure.
-            let chat_id = batch.chat_id.clone();
-            let temp_rumor_id = batch.temp_rumor_id.clone();
-            if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
-                if let Some(entry) = outbox.get_mut(&temp_rumor_id) {
-                    for att in &mut entry.media {
-                        att.upload_progress = None;
-                    }
-                }
-            }
-            let delivery = MessageDeliveryState::Failed {
-                reason: "Upload failed: hash mismatch".to_string(),
-            };
-            self.delivery_overrides
-                .entry(chat_id.clone())
-                .or_default()
-                .insert(temp_rumor_id.clone(), delivery.clone());
-            self.fail_delivery_or_refresh(&chat_id, &temp_rumor_id, delivery);
-            self.refresh_chat_list_from_storage();
-            return;
-        }
 
         // Store success on the item.
         let batch = self.pending_media_batch_sends.get_mut(&batch_id).unwrap();
-        batch.items[item_idx].uploaded_url = Some(uploaded_url.clone());
+        let pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(uploaded_blob) = status
+        else {
+            return;
+        };
+        batch.items[item_idx].uploaded_blob = Some(uploaded_blob);
         let chat_id = batch.chat_id.clone();
         let temp_rumor_id = batch.temp_rumor_id.clone();
 
@@ -1653,7 +1582,7 @@ impl AppCore {
         }
 
         // Check if all items are uploaded.
-        let all_done = batch.items.iter().all(|item| item.uploaded_url.is_some());
+        let all_done = batch.items.iter().all(|item| item.uploaded_blob.is_some());
 
         if !all_done {
             // Spawn upload for next un-uploaded item.
@@ -1738,15 +1667,19 @@ impl AppCore {
                 .items
                 .iter()
                 .map(|item| {
-                    let completed = sess.host_context().finish_upload(
-                        &group.mls_group_id,
-                        &item.upload,
-                        UploadedBlob {
-                            blossom_server: "app-local".to_string(),
-                            uploaded_url: item.uploaded_url.as_deref().unwrap().to_string(),
-                            descriptor_sha256_hex: hex::encode(item.upload.encrypted_hash),
-                        },
-                    );
+                    let completed = sess
+                        .host_context()
+                        .complete_media_upload_operation(
+                            &group.mls_group_id,
+                            batch.chat_id.clone(),
+                            &item.upload,
+                            pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(
+                                item.uploaded_blob.clone().expect("uploaded blob"),
+                            ),
+                        )
+                        .into_media_upload_result()
+                        .expect("completed media upload")
+                        .result;
                     UploadedMedia {
                         imeta_tag: completed.imeta_tag,
                         reference: completed.reference,

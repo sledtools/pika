@@ -395,7 +395,7 @@ Daemon host target:
 - duplicate Marmot business logic is removed subsystem by subsystem
 
 Current thin-host slice:
-- single-item media send/upload completion in app and daemon now unwraps shared media upload operation results via runtime-owned helpers instead of host-local `match` trees
+- single-item media send/upload completion in app and daemon now unwraps shared media upload operation results via runtime-owned helpers instead of host-local `match` trees, and the app’s larger media workflow now carries shared `MediaUploadStatus` / `UploadedBlob` state through batch upload orchestration and unwraps shared media upload operation results at final batch publish time instead of flattening upload results into ad hoc URL/hash plumbing and re-running `finish_upload(...)` locally
 - app also drops the dead inline `media_upload_failed(...)/match` ceremony for local validation failures; batch orchestration, upload execution, file staging, and protocol formatting stay host-local
 - fresh outbound message send/publish in app and daemon now unwraps shared outbound publish operation results via runtime-owned helpers instead of host-local tuple or nested-match translation; retry send and other send policies stay host-local
 - call signal publish handling in app and daemon now unwraps shared call signal publish operation results via runtime-owned helpers instead of host-local match trees, including all real daemon `InviteCall` / `AcceptCall` / `RejectCall` / `EndCall` publish flows; actual call worker/media ownership, protocol mapping, and retry/orchestration stay host-local

@@ -565,7 +565,7 @@ struct BatchMediaItem {
     request_id: String,
     upload: EncryptedMediaUpload,
     encrypted_data: Vec<u8>,
-    uploaded_url: Option<String>,
+    uploaded_blob: Option<pika_marmot_runtime::media::UploadedBlob>,
 }
 
 #[derive(Debug, Clone)]
@@ -3342,17 +3342,9 @@ impl AppCore {
             InternalEvent::CallSignalPublishOperation { operation } => {
                 self.handle_runtime_operation_event(operation)
             }
-            InternalEvent::ChatMediaUploadCompleted {
-                request_id,
-                uploaded_url,
-                descriptor_sha256_hex,
-                error,
-            } => self.handle_chat_media_upload_completed(
-                request_id,
-                uploaded_url,
-                descriptor_sha256_hex,
-                error,
-            ),
+            InternalEvent::ChatMediaUploadCompleted { request_id, status } => {
+                self.handle_chat_media_upload_completed(request_id, status)
+            }
             InternalEvent::ChatMediaDownloadFetched {
                 request_id,
                 encrypted_data,
@@ -5574,7 +5566,7 @@ impl AppCore {
                         let idx = b
                             .items
                             .iter()
-                            .position(|item| item.uploaded_url.is_none())?;
+                            .position(|item| item.uploaded_blob.is_none())?;
                         Some((
                             k.clone(),
                             b.items[idx].request_id.clone(),
@@ -5613,7 +5605,7 @@ impl AppCore {
                         if let Some(restart_idx) = batch
                             .items
                             .iter()
-                            .position(|item| item.uploaded_url.is_none())
+                            .position(|item| item.uploaded_blob.is_none())
                         {
                             batch.next_upload_index = restart_idx + 1;
                         }
@@ -7234,9 +7226,9 @@ mod tests {
 
             core.handle_chat_media_upload_completed(
                 request_id.clone(),
-                None,
-                None,
-                Some("offline".to_string()),
+                pika_marmot_runtime::runtime::MediaUploadStatus::UploadFailed(
+                    "offline".to_string(),
+                ),
             );
 
             assert!(core.pending_media_sends.contains_key(&request_id));
@@ -7247,6 +7239,89 @@ mod tests {
                 Some(crate::state::MessageDeliveryState::Failed { reason })
                     if reason == "Upload failed: offline"
             ));
+        }
+
+        #[test]
+        fn app_batch_media_upload_orchestration_uses_shared_uploaded_blob_state() {
+            let (mut core, chat_id, keys, group_id) = make_core_with_group();
+            let first = core
+                .host_context()
+                .expect("host context")
+                .prepare_upload(
+                    &group_id,
+                    b"first batch upload",
+                    Some("text/plain"),
+                    Some("first.txt"),
+                )
+                .expect("prepare first upload");
+            let first_hash = hex::encode(first.upload.encrypted_hash);
+            let second = core
+                .host_context()
+                .expect("host context")
+                .prepare_upload(
+                    &group_id,
+                    b"second batch upload",
+                    Some("text/plain"),
+                    Some("second.txt"),
+                )
+                .expect("prepare second upload");
+
+            let batch_id = "batch-1".to_string();
+            let first_request_id = "batch-request-1".to_string();
+            let second_request_id = "batch-request-2".to_string();
+            core.pending_media_batch_sends.insert(
+                batch_id.clone(),
+                crate::core::PendingMediaBatchSend {
+                    chat_id: chat_id.clone(),
+                    caption: "caption".to_string(),
+                    temp_rumor_id: "temp-batch".to_string(),
+                    account_pubkey: keys.public_key().to_hex(),
+                    items: vec![
+                        crate::core::BatchMediaItem {
+                            request_id: first_request_id.clone(),
+                            upload: first.upload,
+                            encrypted_data: first.encrypted_data,
+                            uploaded_blob: None,
+                        },
+                        crate::core::BatchMediaItem {
+                            request_id: second_request_id,
+                            upload: second.upload,
+                            encrypted_data: second.encrypted_data,
+                            uploaded_blob: None,
+                        },
+                    ],
+                    next_upload_index: 2,
+                },
+            );
+
+            core.handle_chat_media_upload_completed(
+                first_request_id,
+                pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(
+                    pika_marmot_runtime::media::UploadedBlob {
+                        blossom_server: "https://example.com".to_string(),
+                        uploaded_url: "https://example.com/blob-1".to_string(),
+                        descriptor_sha256_hex: first_hash,
+                    },
+                ),
+            );
+
+            let batch = core
+                .pending_media_batch_sends
+                .get(&batch_id)
+                .expect("pending batch should remain");
+            assert_eq!(batch.items.len(), 2);
+            assert_eq!(
+                batch.items[0]
+                    .uploaded_blob
+                    .as_ref()
+                    .expect("first uploaded blob")
+                    .uploaded_url,
+                "https://example.com/blob-1"
+            );
+            assert!(
+                batch.items[1].uploaded_blob.is_none(),
+                "later batch items should remain pending"
+            );
         }
 
         #[test]

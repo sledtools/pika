@@ -13,6 +13,7 @@ Targets:
   pre-merge-agent-contracts
   pre-merge-pikachat-rust
   pre-merge-notifications
+  pre-merge-fixture-rust
   pre-merge-rmp
 
 Commands:

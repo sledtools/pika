@@ -487,10 +487,9 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 staged_linux_rust_lane: None,
             }],
         }),
-        "pre-merge-fixture-rust" => Ok(TargetSpec {
-            id: "pre-merge-fixture-rust",
-            description: "Run the VM-backed Rust tests from the fixture lane",
-            filters: &[
+        "pre-merge-fixture-rust" => Ok(staged_linux_target_spec(
+            StagedLinuxRustTarget::PreMergeFixtureRust,
+            &[
                 "Cargo.toml",
                 "Cargo.lock",
                 "flake.nix",
@@ -499,13 +498,19 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "justfile",
                 ".github/workflows/pre-merge.yml",
                 "crates/pikaci/**",
+                "crates/hypernote-protocol/**",
+                "crates/pika-agent-control-plane/**",
+                "crates/pika-desktop/**",
                 "crates/pikahut/**",
                 "crates/pika-marmot-runtime/**",
+                "crates/pika-media/**",
                 "crates/pika-relay-profiles/**",
+                "crates/pika-tls/**",
                 "cmd/pika-relay/**",
+                "rust/**",
             ],
-            jobs: fixture_rust_jobs(),
-        }),
+            fixture_rust_jobs(),
+        )),
         "android-sdk-probe" => Ok(TargetSpec {
             id: "android-sdk-probe",
             description: "Verify Android SDK tooling is available inside a Linux guest",
@@ -1046,7 +1051,7 @@ fn fixture_rust_jobs() -> Vec<JobSpec> {
         timeout_secs: 1800,
         writable_workspace: false,
         guest_command: GuestCommand::PackageTests { package: "pikahut" },
-        staged_linux_rust_lane: None,
+        staged_linux_rust_lane: Some(StagedLinuxRustLane::FixturePikahutPackageTests),
     }]
 }
 
@@ -1483,6 +1488,18 @@ mod tests {
         assert_eq!(
             target.jobs[0].staged_linux_rust_lane(),
             Some(StagedLinuxRustLane::NotificationsServerPackageTests)
+        );
+        assert_eq!(target.jobs[0].runner_kind(), RunnerKind::MicrovmRemote);
+    }
+
+    #[test]
+    fn pre_merge_fixture_rust_target_uses_staged_linux_lane() {
+        let target = target_spec("pre-merge-fixture-rust").expect("fixture target");
+
+        assert_eq!(target.jobs.len(), 1);
+        assert_eq!(
+            target.jobs[0].staged_linux_rust_lane(),
+            Some(StagedLinuxRustLane::FixturePikahutPackageTests)
         );
         assert_eq!(target.jobs[0].runner_kind(), RunnerKind::MicrovmRemote);
     }

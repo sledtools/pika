@@ -123,6 +123,7 @@ pub enum StagedLinuxRustTarget {
     PreMergePikaRust,
     PreMergeAgentContracts,
     PreMergeNotifications,
+    PreMergeFixtureRust,
     PreMergeRmp,
     PreMergePikachatRust,
 }
@@ -151,6 +152,7 @@ pub enum StagedLinuxRustLane {
     AgentContractsCoreNip98,
     AgentContractsDeterministicHttp,
     NotificationsServerPackageTests,
+    FixturePikahutPackageTests,
     RmpInitSmokeCi,
     PikachatPackageTests,
     PikachatSidecarPackageTests,
@@ -178,6 +180,7 @@ impl StagedLinuxRustLane {
                 StagedLinuxRustTarget::PreMergeAgentContracts
             }
             Self::NotificationsServerPackageTests => StagedLinuxRustTarget::PreMergeNotifications,
+            Self::FixturePikahutPackageTests => StagedLinuxRustTarget::PreMergeFixtureRust,
             Self::RmpInitSmokeCi => StagedLinuxRustTarget::PreMergeRmp,
             Self::PikachatPackageTests
             | Self::PikachatSidecarPackageTests
@@ -238,6 +241,9 @@ impl StagedLinuxRustLane {
             Self::NotificationsServerPackageTests => {
                 "/staged/linux-rust/workspace-build/bin/run-pika-server-package-tests"
             }
+            Self::FixturePikahutPackageTests => {
+                "/staged/linux-rust/workspace-build/bin/run-pikahut-package-tests"
+            }
             Self::RmpInitSmokeCi => "/staged/linux-rust/workspace-build/bin/run-rmp-init-smoke-ci",
             Self::PikachatPackageTests => {
                 "/staged/linux-rust/workspace-build/bin/run-pikachat-package-tests"
@@ -279,6 +285,7 @@ impl StagedLinuxRustTarget {
             "pre-merge-pika-rust" => Some(Self::PreMergePikaRust),
             "pre-merge-agent-contracts" => Some(Self::PreMergeAgentContracts),
             "pre-merge-notifications" => Some(Self::PreMergeNotifications),
+            "pre-merge-fixture-rust" => Some(Self::PreMergeFixtureRust),
             "pre-merge-rmp" => Some(Self::PreMergeRmp),
             "pre-merge-pikachat-rust" => Some(Self::PreMergePikachatRust),
             _ => None,
@@ -322,6 +329,18 @@ impl StagedLinuxRustTarget {
                 workspace_deps_installable: ".#ci.x86_64-linux.notificationsWorkspaceDeps",
                 workspace_build_installable: ".#ci.x86_64-linux.notificationsWorkspaceBuild",
                 shadow_recipe: "pre-merge-notifications-shadow",
+            },
+            Self::PreMergeFixtureRust => StagedLinuxRustTargetConfig {
+                target_id: "pre-merge-fixture-rust",
+                target_description: "Run the VM-backed Rust tests from the fixture lane",
+                shared_prepare_node_prefix: "fixture-linux-rust",
+                shared_prepare_description: "fixture staged Linux Rust lane",
+                workspace_deps_output_name: "ci.x86_64-linux.fixtureWorkspaceDeps",
+                workspace_build_output_name: "ci.x86_64-linux.fixtureWorkspaceBuild",
+                workspace_output_system: "x86_64-linux",
+                workspace_deps_installable: ".#ci.x86_64-linux.fixtureWorkspaceDeps",
+                workspace_build_installable: ".#ci.x86_64-linux.fixtureWorkspaceBuild",
+                shadow_recipe: "",
             },
             Self::PreMergeRmp => StagedLinuxRustTargetConfig {
                 target_id: "pre-merge-rmp",
@@ -479,6 +498,24 @@ mod tests {
     }
 
     #[test]
+    fn fixture_lane_uses_fixture_workspace_outputs() {
+        let lane = StagedLinuxRustLane::FixturePikahutPackageTests;
+
+        assert_eq!(
+            lane.workspace_deps_output_name(),
+            "ci.x86_64-linux.fixtureWorkspaceDeps"
+        );
+        assert_eq!(
+            lane.workspace_build_output_name(),
+            "ci.x86_64-linux.fixtureWorkspaceBuild"
+        );
+        assert_eq!(
+            lane.execute_wrapper_command(),
+            "/staged/linux-rust/workspace-build/bin/run-pikahut-package-tests"
+        );
+    }
+
+    #[test]
     fn pikachat_lane_uses_pikachat_workspace_outputs() {
         let lane = StagedLinuxRustLane::OpenclawAudioEcho;
 
@@ -518,6 +555,25 @@ mod tests {
         assert_eq!(
             StagedLinuxRustLane::NotificationsServerPackageTests.target(),
             StagedLinuxRustTarget::PreMergeNotifications
+        );
+
+        let fixture = StagedLinuxRustTarget::from_target_id("pre-merge-fixture-rust")
+            .expect("fixture target");
+        let fixture_config = fixture.config();
+
+        assert_eq!(fixture_config.target_id, "pre-merge-fixture-rust");
+        assert_eq!(
+            fixture_config.workspace_deps_installable,
+            ".#ci.x86_64-linux.fixtureWorkspaceDeps"
+        );
+        assert_eq!(
+            fixture_config.workspace_build_installable,
+            ".#ci.x86_64-linux.fixtureWorkspaceBuild"
+        );
+        assert_eq!(fixture_config.shadow_recipe, "");
+        assert_eq!(
+            StagedLinuxRustLane::FixturePikahutPackageTests.target(),
+            StagedLinuxRustTarget::PreMergeFixtureRust
         );
 
         let pikachat = StagedLinuxRustTarget::from_target_id("pre-merge-pikachat-rust")
@@ -574,6 +630,7 @@ mod tests {
             StagedLinuxRustTarget::PreMergePikaRust,
             StagedLinuxRustTarget::PreMergeAgentContracts,
             StagedLinuxRustTarget::PreMergeNotifications,
+            StagedLinuxRustTarget::PreMergeFixtureRust,
             StagedLinuxRustTarget::PreMergeRmp,
             StagedLinuxRustTarget::PreMergePikachatRust,
         ] {

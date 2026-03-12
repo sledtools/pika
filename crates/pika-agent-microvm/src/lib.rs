@@ -2228,18 +2228,6 @@ done
             serde_json::json!(["127.0.0.1", "::1"])
         );
         assert_eq!(
-            openclaw_json["gateway"]["controlUi"]["allowInsecureAuth"],
-            serde_json::json!(true)
-        );
-        assert_eq!(
-            openclaw_json["gateway"]["controlUi"]["dangerouslyDisableDeviceAuth"],
-            serde_json::json!(true)
-        );
-        assert_eq!(
-            openclaw_json["gateway"]["trustedProxies"],
-            serde_json::json!(["127.0.0.1", "::1"])
-        );
-        assert_eq!(
             openclaw_json["channels"]["pikachat-openclaw"]["daemonBackend"],
             "native"
         );
@@ -2309,18 +2297,6 @@ done
                 DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN,
                 DEFAULT_OPENCLAW_CONTROL_UI_HTTPS_ORIGIN
             ])
-        );
-        assert_eq!(
-            openclaw_json["gateway"]["controlUi"]["allowInsecureAuth"],
-            serde_json::json!(true)
-        );
-        assert_eq!(
-            openclaw_json["gateway"]["controlUi"]["dangerouslyDisableDeviceAuth"],
-            serde_json::json!(true)
-        );
-        assert_eq!(
-            openclaw_json["gateway"]["trustedProxies"],
-            serde_json::json!(["127.0.0.1", "::1"])
         );
         assert_eq!(
             openclaw_json["gateway"]["controlUi"]["allowInsecureAuth"],

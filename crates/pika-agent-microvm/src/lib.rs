@@ -1131,7 +1131,12 @@ fn openclaw_gateway_config(relay_urls: &[String], startup_plan: &GuestStartupPla
     let entry_config = channel_config.clone();
     let control_ui_allowed_origins = openclaw_control_ui_allowed_origins();
     // Managed OpenClaw is always opened through the platform's proxy + token handoff.
-    // Skip guest-local per-browser pairing, but still require shared token auth.
+    // Keep shared token auth, but disable guest-local browser device pairing because
+    // the platform session + launch ticket is the intended security boundary here.
+    //
+    // Current OpenClaw builds require dangerouslyDisableDeviceAuth for this managed
+    // launch flow; keep allowInsecureAuth alongside it for older/local flows that
+    // still key off token-only Control UI auth.
     serde_json::to_string_pretty(&json!({
         "gateway": {
             "mode": "local",
@@ -1139,6 +1144,7 @@ fn openclaw_gateway_config(relay_urls: &[String], startup_plan: &GuestStartupPla
             "port": DEFAULT_OPENCLAW_GATEWAY_PORT,
             "controlUi": {
                 "allowInsecureAuth": true,
+                "dangerouslyDisableDeviceAuth": true,
                 "allowedOrigins": control_ui_allowed_origins,
             },
             "trustedProxies": DEFAULT_OPENCLAW_TRUSTED_PROXIES,
@@ -2187,6 +2193,10 @@ done
             serde_json::json!(true)
         );
         assert_eq!(
+            openclaw_json["gateway"]["controlUi"]["dangerouslyDisableDeviceAuth"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
             openclaw_json["gateway"]["trustedProxies"],
             serde_json::json!(["127.0.0.1", "::1"])
         );
@@ -2263,6 +2273,10 @@ done
             serde_json::json!(true)
         );
         assert_eq!(
+            openclaw_json["gateway"]["controlUi"]["dangerouslyDisableDeviceAuth"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
             openclaw_json["gateway"]["trustedProxies"],
             serde_json::json!(["127.0.0.1", "::1"])
         );
@@ -2312,6 +2326,10 @@ done
         );
         assert_eq!(
             openclaw_json["gateway"]["controlUi"]["allowInsecureAuth"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            openclaw_json["gateway"]["controlUi"]["dangerouslyDisableDeviceAuth"],
             serde_json::json!(true)
         );
         assert_eq!(

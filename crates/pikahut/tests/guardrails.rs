@@ -699,10 +699,150 @@ fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<(
             "agent_contracts workflow filter must include crates/pika-desktop/** while host-side pikahut selectors depend on pika-desktop"
         );
     }
+    if recipe.iter().any(|line| {
+        line.contains("cargo run -q -p pikachat") || line.contains("cargo run -p pikachat")
+    }) {
+        let cli_manifest = fs::read_to_string(root.join("cli/Cargo.toml"))?;
+        for (dependency_name, filter_path) in [
+            ("pika-agent-protocol", "crates/pika-agent-protocol/**"),
+            ("pikachat-sidecar", "crates/pikachat-sidecar/**"),
+            ("hypernote-protocol", "crates/hypernote-protocol/**"),
+        ] {
+            if cli_manifest.contains(dependency_name) {
+                assert!(
+                    agent_filter.contains(filter_path),
+                    "agent_contracts workflow filter must include {filter_path} while host-side pikachat selectors depend on {dependency_name}"
+                );
+            }
+        }
+    }
     assert!(
         agent_filter.contains("cli/**"),
         "agent_contracts workflow filter must include cli/** while the lane keeps agent_http_cli_new selectors"
     );
+
+    Ok(())
+}
+
+#[test]
+fn pre_merge_notifications_filter_tracks_checked_in_lane_surface() -> Result<()> {
+    let root = workspace_root();
+    let workflow = fs::read_to_string(root.join(".github/workflows/pre-merge.yml"))?;
+    let notifications_filter = extract_paths_filter_entries(&workflow, "notifications");
+    let notifications_filter: HashSet<_> = notifications_filter.into_iter().collect();
+    let checks = fs::read_to_string(root.join("just/checks.just"))?;
+    let justfile = fs::read_to_string(root.join("justfile"))?;
+    let alias_target = extract_just_alias_target(&justfile, "pre-merge-notifications");
+    assert_eq!(
+        alias_target.as_deref(),
+        Some("checks::pre-merge-notifications"),
+        "justfile must keep pre-merge-notifications routed through checks::pre-merge-notifications for this workflow guardrail"
+    );
+    assert!(
+        notifications_filter.contains("just/checks.just"),
+        "notifications workflow filter must include just/checks.just because pre-merge-notifications is defined there"
+    );
+
+    let recipe = extract_just_recipe_body(&checks, "pre-merge-notifications");
+    assert!(
+        !recipe.is_empty(),
+        "checks.just must keep a checked-in pre-merge-notifications recipe body"
+    );
+    if recipe
+        .iter()
+        .any(|line| line.contains("pikaci-remote-fulfill-pre-merge-notifications"))
+    {
+        let remote_alias_target =
+            extract_just_alias_target(&justfile, "pikaci-remote-fulfill-pre-merge-notifications");
+        assert_eq!(
+            remote_alias_target.as_deref(),
+            Some("infra::pikaci-remote-fulfill-pre-merge-notifications"),
+            "justfile must keep the Apple remote notifications helper routed through infra::pikaci-remote-fulfill-pre-merge-notifications for this workflow guardrail"
+        );
+        assert!(
+            notifications_filter.contains("just/infra.just"),
+            "notifications workflow filter must include just/infra.just while the lane reaches the Apple remote helper through the infra module"
+        );
+
+        let infra = fs::read_to_string(root.join("just/infra.just"))?;
+        let remote_recipe =
+            extract_just_recipe_body(&infra, "pikaci-remote-fulfill-pre-merge-notifications");
+        assert!(
+            !remote_recipe.is_empty(),
+            "just/infra.just must keep a checked-in pikaci-remote-fulfill-pre-merge-notifications recipe body"
+        );
+        if remote_recipe
+            .iter()
+            .any(|line| line.contains("scripts/pikaci-staged-linux-remote.sh"))
+        {
+            assert!(
+                notifications_filter.contains("scripts/pikaci-staged-linux-remote.sh"),
+                "notifications workflow filter must include scripts/pikaci-staged-linux-remote.sh while the Apple remote helper runs through that checked-in script"
+            );
+        }
+    }
+
+    let pikaci = fs::read_to_string(root.join("crates/pikaci/src/main.rs"))?;
+    let rust_lane_filters = extract_pikaci_target_filters(&pikaci, "pre-merge-notifications");
+    assert!(
+        !rust_lane_filters.is_empty(),
+        "pikaci main.rs must keep pre-merge-notifications filters discoverable"
+    );
+
+    let missing_from_workflow: Vec<_> = rust_lane_filters
+        .iter()
+        .filter(|entry| !notifications_filter.contains(entry.as_str()))
+        .cloned()
+        .collect();
+    assert!(
+        missing_from_workflow.is_empty(),
+        "notifications workflow filter must cover the checked-in pre-merge-notifications dependency surface; missing: {:?}",
+        missing_from_workflow
+    );
+
+    let server_manifest = fs::read_to_string(root.join("crates/pika-server/Cargo.toml"))?;
+    for (dependency_name, filter_path) in [
+        (
+            "pika-agent-control-plane",
+            "crates/pika-agent-control-plane/**",
+        ),
+        ("pika-agent-microvm", "crates/pika-agent-microvm/**"),
+        ("pika-test-utils", "crates/pika-test-utils/**"),
+    ] {
+        if server_manifest.contains(dependency_name) {
+            assert!(
+                rust_lane_filters.iter().any(|entry| entry == filter_path),
+                "pre-merge-notifications pikaci target filters must include {filter_path} while pika-server keeps dependency {dependency_name}"
+            );
+            assert!(
+                notifications_filter.contains(filter_path),
+                "notifications workflow filter must include {filter_path} while pika-server keeps dependency {dependency_name}"
+            );
+        }
+    }
+
+    let recipe_text = recipe.join("\n");
+    if recipe_text.contains("cargo clippy -p pika-server")
+        || recipe_text.contains("cargo test -p pika-server")
+    {
+        assert!(
+            notifications_filter.contains("crates/pika-server/**"),
+            "notifications workflow filter must include crates/pika-server/** while the lane runs pika-server checks"
+        );
+    }
+    if recipe_text.contains("cargo run -q -p pikahut -- up --profile postgres") {
+        assert!(
+            notifications_filter.contains("crates/pikahut/**"),
+            "notifications workflow filter must include crates/pikahut/** while the lane runs the local pikahut postgres fixture wrapper"
+        );
+        let pikahut_manifest = fs::read_to_string(root.join("crates/pikahut/Cargo.toml"))?;
+        if pikahut_manifest.contains("pika-desktop") {
+            assert!(
+                notifications_filter.contains("crates/pika-desktop/**"),
+                "notifications workflow filter must include crates/pika-desktop/** while the local pikahut wrapper depends on pika-desktop"
+            );
+        }
+    }
 
     Ok(())
 }

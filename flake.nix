@@ -98,18 +98,13 @@
         ];
       };
       ciPikaCoreWorkspaceSrc = ciLinuxPkgs.runCommand "ci-pika-core-workspace-src" { } ''
-        mkdir -p "$out/cli"
-        mkdir -p "$out/config"
         mkdir -p "$out/crates"
         mkdir -p "$out/pikachat-openclaw/openclaw/extensions"
         cp ${./VERSION} "$out/VERSION"
-        cp -R ${./cli}/. "$out/cli"
-        cp -R ${./config}/. "$out/config"
         cp -R ${ciPikaCoreRustSrc}/rust "$out/rust"
         chmod -R u+w "$out/rust"
         rm -f "$out/rust/.pikaci-review-trigger"
         cp -R ${./crates/hypernote-protocol} "$out/crates/hypernote-protocol"
-        cp -R ${./crates/pika-agent-protocol} "$out/crates/pika-agent-protocol"
         cp -R ${./crates/pika-agent-control-plane} "$out/crates/pika-agent-control-plane"
         cp -R ${./crates/pika-agent-microvm} "$out/crates/pika-agent-microvm"
         cp -R ${./crates/pika-desktop} "$out/crates/pika-desktop"
@@ -120,7 +115,6 @@
         cp -R ${./crates/pika-test-utils} "$out/crates/pika-test-utils"
         cp -R ${./crates/pika-tls} "$out/crates/pika-tls"
         cp -R ${./crates/pikahut} "$out/crates/pikahut"
-        cp -R ${./crates/pikachat-sidecar} "$out/crates/pikachat-sidecar"
         cp -R ${./pikachat-openclaw/openclaw/extensions/pikachat-openclaw} \
           "$out/pikachat-openclaw/openclaw/extensions/pikachat-openclaw"
         cp ${./nix/ci/pika-core-workspace/Cargo.toml} "$out/Cargo.toml"
@@ -830,6 +824,9 @@ EOF
           notificationsLane = import ./nix/ci/linux-rust.nix (reducedStagedLinuxRustArgs // {
             lane = "notifications";
           });
+          fixtureLane = import ./nix/ci/linux-rust.nix (reducedStagedLinuxRustArgs // {
+            lane = "fixture";
+          });
           rmpLane = import ./nix/ci/linux-rust.nix {
             pkgs = ciLinuxPkgs;
             crane = crane;
@@ -847,6 +844,8 @@ EOF
           pikachatWorkspaceBuild = pikachatLane.workspaceBuild;
           notificationsWorkspaceDeps = notificationsLane.workspaceDeps;
           notificationsWorkspaceBuild = notificationsLane.workspaceBuild;
+          fixtureWorkspaceDeps = fixtureLane.workspaceDeps;
+          fixtureWorkspaceBuild = fixtureLane.workspaceBuild;
           rmpWorkspaceDeps = rmpLane.workspaceDeps;
           rmpWorkspaceBuild = rmpLane.workspaceBuild;
         };

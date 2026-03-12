@@ -7897,7 +7897,15 @@ mod tests {
             });
 
             assert!(!core.state.busy.creating_chat);
-            assert_eq!(core.state.toast.as_deref(), Some("Chat not found"));
+            let toast = core
+                .state
+                .toast
+                .as_deref()
+                .expect("toast after unknown chat_id");
+            assert!(
+                toast.starts_with("Add members failed:"),
+                "expected 'Add members failed' toast, got: {toast}"
+            );
         }
 
         #[test]

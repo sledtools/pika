@@ -30,7 +30,8 @@ use pika_marmot_runtime::message::{
 };
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
 use pika_marmot_runtime::runtime::{
-    BootstrappedRuntimeSession, InboundRelayEvent, InboundRelaySeenCache, MarmotRuntime,
+    BootstrappedRuntimeSession, CallSignalPublishKind, CallSignalPublishStatus, InboundRelayEvent,
+    InboundRelaySeenCache, MarmotRuntime, PublishedCallSignal,
     RuntimeApplicationMessageInterpretation, RuntimeConversationEventInterpretation,
     RuntimeSessionOpenRequest, RuntimeWelcomeInboxSubscriptionIntent, bootstrap_runtime_session,
     classify_inbound_relay_event, subscribe_group_messages_individual, subscribe_welcome_inbox,
@@ -661,6 +662,50 @@ async fn send_call_invite_with_retry(
         }
     }
     unreachable!("attempt loop must return");
+}
+
+fn call_signal_publish_status(
+    wrapper_event_id: EventId,
+    publish_result: anyhow::Result<()>,
+) -> CallSignalPublishStatus {
+    match publish_result {
+        Ok(()) => CallSignalPublishStatus::Published { wrapper_event_id },
+        Err(err) => CallSignalPublishStatus::PublishFailed {
+            wrapper_event_id,
+            error: format!("{err:#}"),
+        },
+    }
+}
+
+fn complete_daemon_call_signal_publish_result(
+    host: &DaemonHostContext<'_>,
+    kind: CallSignalPublishKind,
+    nostr_group_id_hex: String,
+    prepared: pika_marmot_runtime::call_runtime::PreparedCallSignal,
+    publish_status: CallSignalPublishStatus,
+) -> Result<PublishedCallSignal, String> {
+    host.complete_call_signal_publish_operation(kind, nostr_group_id_hex, prepared, publish_status)
+        .into_call_signal_publish_result()
+}
+
+async fn publish_signed_call_signal_result(
+    host: &DaemonHostContext<'_>,
+    kind: CallSignalPublishKind,
+    nostr_group_id_hex: String,
+    prepared: pika_marmot_runtime::call_runtime::PreparedCallSignal,
+    signed: &Event,
+    label: &str,
+) -> Result<PublishedCallSignal, String> {
+    complete_daemon_call_signal_publish_result(
+        host,
+        kind,
+        nostr_group_id_hex,
+        prepared,
+        call_signal_publish_status(
+            signed.id,
+            host.publish_signed_call_payload(signed, label).await,
+        ),
+    )
 }
 
 fn call_audio_track_spec(session: &CallSessionParams) -> Option<&CallTrackSpec> {
@@ -2964,34 +3009,17 @@ pub async fn daemon_main(
                                 }
                             };
 
-                        let publish_status = match send_call_invite_with_retry(
+                        match complete_daemon_call_signal_publish_result(
                             &host,
-                            &signed_invite,
-                            &call_id,
-                            3,
-                        )
-                        .await
-                        {
-                            Ok(()) => {
-                                pika_marmot_runtime::runtime::CallSignalPublishStatus::Published {
-                                    wrapper_event_id: signed_invite.id,
-                                }
-                            }
-                            Err(e) => {
-                                pika_marmot_runtime::runtime::CallSignalPublishStatus::PublishFailed {
-                                    wrapper_event_id: signed_invite.id,
-                                    error: format!("{e:#}"),
-                                }
-                            }
-                        };
-                        let operation = host.complete_call_signal_publish_operation(
-                            pika_marmot_runtime::runtime::CallSignalPublishKind::Invite,
+                            CallSignalPublishKind::Invite,
                             nostr_group_id.clone(),
                             prepared_invite,
-                            publish_status,
-                        );
-
-                        match operation.into_call_signal_publish_result() {
+                            call_signal_publish_status(
+                                signed_invite.id,
+                                send_call_invite_with_retry(&host, &signed_invite, &call_id, 3)
+                                    .await,
+                            ),
+                        ) {
                             Ok(result) => {
                                 pending_outgoing_call_invites.insert(call_id.clone(), pending);
                                 let _ = reply_tx.send(out_ok(
@@ -3027,43 +3055,65 @@ pub async fn daemon_main(
                             Err(err) => {
                                 if let Ok(signal) =
                                     host.prepare_reject_call_signal(&invite.call_id, "auth_failed")
+                                    && let Ok(signed) = host
+                                        .sign_call_payload(&invite.target_id, signal.payload_json.clone())
                                 {
-                                    let _ = host
-                                        .publish_call_payload(
-                                            &invite.target_id,
-                                            signal.payload_json,
-                                            "call_reject_auth_failed",
-                                        )
-                                        .await;
+                                    let _ = publish_signed_call_signal_result(
+                                        &host,
+                                        CallSignalPublishKind::Reject,
+                                        invite.target_id.clone(),
+                                        signal,
+                                        &signed,
+                                        "call_reject_auth_failed",
+                                    )
+                                    .await;
                                 }
                                 let _ = reply_tx.send(out_error(request_id, "auth_failed", err));
                                 continue;
                             }
                         };
-
-                        match host
-                            .publish_call_payload(
-                                &invite.target_id,
-                                prepared.signal.payload_json,
-                                "call_accept",
-                            )
-                            .await
+                        let signed_accept =
+                            match host.sign_call_payload(&invite.target_id, prepared.signal.payload_json.clone()) {
+                                Ok(signed) => signed,
+                                Err(e) => {
+                                    let _ = reply_tx.send(out_error(
+                                        request_id,
+                                        "runtime_error",
+                                        format!("sign call accept failed: {e:#}"),
+                                    ));
+                                    continue;
+                                }
+                            };
+                        let pika_marmot_runtime::call_runtime::PreparedAcceptedCall {
+                            incoming,
+                            signal,
+                            media_crypto,
+                        } = prepared;
+                        let published = match publish_signed_call_signal_result(
+                            &host,
+                            CallSignalPublishKind::Accept,
+                            invite.target_id.clone(),
+                            signal,
+                            &signed_accept,
+                            "call_accept",
+                        )
+                        .await
                         {
-                            Ok(()) => {}
-                            Err(e) => {
-                                let _ = reply_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
+                            Ok(result) => result,
+                            Err(error) => {
+                                let _ = reply_tx.send(out_error(request_id, "publish_failed", error));
                                 continue;
                             }
-                        }
+                        };
 
-                        let mode = active_call_mode(&prepared.incoming.session);
+                        let mode = active_call_mode(&incoming.session);
                         let worker = match mode {
                             ActiveCallMode::Audio => {
                                 if echo_mode_enabled() {
                                     match start_echo_worker(
-                                        &prepared.incoming.call_id,
-                                        &prepared.incoming.session,
-                                        prepared.media_crypto.clone(),
+                                        &incoming.call_id,
+                                        &incoming.session,
+                                        media_crypto.clone(),
                                         out_tx.clone(),
                                     ) {
                                         Ok(v) => v,
@@ -3078,9 +3128,9 @@ pub async fn daemon_main(
                                     }
                                 } else {
                                     match start_stt_worker(
-                                        &prepared.incoming.call_id,
-                                        &prepared.incoming.session,
-                                        prepared.media_crypto.clone(),
+                                        &incoming.call_id,
+                                        &incoming.session,
+                                        media_crypto.clone(),
                                         out_tx.clone(),
                                         call_evt_tx.clone(),
                                     ) {
@@ -3097,9 +3147,9 @@ pub async fn daemon_main(
                                 }
                             }
                             ActiveCallMode::Data => match start_data_worker(
-                                &prepared.incoming.call_id,
-                                &prepared.incoming.session,
-                                prepared.media_crypto.clone(),
+                                &incoming.call_id,
+                                &incoming.session,
+                                media_crypto.clone(),
                                 call_evt_tx.clone(),
                             ) {
                                 Ok(v) => v,
@@ -3115,11 +3165,11 @@ pub async fn daemon_main(
                         };
 
                         active_call = Some(ActiveCall {
-                            call_id: prepared.incoming.call_id.clone(),
-                            nostr_group_id: invite.target_id.clone(),
-                            session: prepared.incoming.session.clone(),
+                            call_id: published.call_id.clone(),
+                            nostr_group_id: published.nostr_group_id_hex.clone(),
+                            session: incoming.session.clone(),
                             mode,
-                            media_crypto: prepared.media_crypto,
+                            media_crypto,
                             next_voice_seq: 0,
                             next_data_seq: 0,
                             worker,
@@ -3136,12 +3186,12 @@ pub async fn daemon_main(
                             );
                         }
                         let _ = reply_tx.send(out_ok(request_id, Some(json!({
-                            "call_id": prepared.incoming.call_id,
-                            "nostr_group_id": invite.target_id,
+                            "call_id": published.call_id,
+                            "nostr_group_id": published.nostr_group_id_hex,
                         }))));
                         let _ = out_tx.send(OutMsg::CallSessionStarted {
-                            call_id: prepared.incoming.call_id,
-                            nostr_group_id: invite.target_id,
+                            call_id: published.call_id,
+                            nostr_group_id: published.nostr_group_id_hex,
                             from_pubkey: invite.from_pubkey_hex,
                         });
                     }
@@ -3166,15 +3216,36 @@ pub async fn daemon_main(
                                 continue;
                             }
                         };
-                        match host
-                            .publish_call_payload(&invite.target_id, signal.payload_json, "call_reject")
-                            .await
+                        let signed_reject =
+                            match host.sign_call_payload(&invite.target_id, signal.payload_json.clone()) {
+                                Ok(signed) => signed,
+                                Err(e) => {
+                                    let _ = reply_tx.send(out_error(
+                                        request_id,
+                                        "runtime_error",
+                                        format!("sign call reject failed: {e:#}"),
+                                    ));
+                                    continue;
+                                }
+                            };
+                        match publish_signed_call_signal_result(
+                            &host,
+                            CallSignalPublishKind::Reject,
+                            invite.target_id.clone(),
+                            signal,
+                            &signed_reject,
+                            "call_reject",
+                        )
+                        .await
                         {
-                            Ok(()) => {
-                                let _ = reply_tx.send(out_ok(request_id, Some(json!({ "call_id": invite.call_id }))));
+                            Ok(result) => {
+                                let _ = reply_tx.send(out_ok(
+                                    request_id,
+                                    Some(json!({ "call_id": result.call_id })),
+                                ));
                             }
-                            Err(e) => {
-                                let _ = reply_tx.send(out_error(request_id, "publish_failed", format!("{e:#}")));
+                            Err(error) => {
+                                let _ = reply_tx.send(out_error(request_id, "publish_failed", error));
                             }
                         }
                     }
@@ -3195,14 +3266,18 @@ pub async fn daemon_main(
                         }
 
                         if let Ok(signal) = host.prepare_end_call_signal(&call_id, &reason)
+                            && let Ok(signed) = host
+                                .sign_call_payload(&current.nostr_group_id, signal.payload_json.clone())
                         {
-                            let _ = host
-                                .publish_call_payload(
-                                    &current.nostr_group_id,
-                                    signal.payload_json,
-                                    "call_end",
-                                )
-                                .await;
+                            let _ = publish_signed_call_signal_result(
+                                &host,
+                                CallSignalPublishKind::End,
+                                current.nostr_group_id.clone(),
+                                signal,
+                                &signed,
+                                "call_end",
+                            )
+                            .await;
                         }
                         current.worker.stop().await;
                         let _ = reply_tx.send(out_ok(request_id, Some(json!({ "call_id": call_id }))));
@@ -3887,13 +3962,22 @@ pub async fn daemon_main(
                                                     rejected.call_id, rejected.reason_code, err
                                                 );
                                             }
-                                            let _ = host
-                                                .publish_call_payload(
+                                            if let Ok(signed) = host
+                                                .sign_call_payload(
                                                     &nostr_group_id,
-                                                    rejected.signal.payload_json,
+                                                    rejected.signal.payload_json.clone(),
+                                                )
+                                            {
+                                                let _ = publish_signed_call_signal_result(
+                                                    &host,
+                                                    CallSignalPublishKind::Reject,
+                                                    nostr_group_id.clone(),
+                                                    rejected.signal,
+                                                    &signed,
                                                     label,
                                                 )
                                                 .await;
+                                            }
                                         }
                                         InboundCallSignalOutcome::IncomingInvite(invite) => {
                                             pending_call_invites
@@ -4618,29 +4702,60 @@ mod tests {
         let wrapper_event_id =
             EventId::from_hex("3333333333333333333333333333333333333333333333333333333333333333")
                 .expect("event id");
-
-        let operation = host.complete_call_signal_publish_operation(
-            pika_marmot_runtime::runtime::CallSignalPublishKind::Invite,
-            "deadbeef".to_string(),
-            pika_marmot_runtime::call_runtime::PreparedCallSignal {
-                call_id: "550e8400-e29b-41d4-a716-446655440017".to_string(),
-                payload_json: "{\"type\":\"call.invite\"}".to_string(),
-            },
-            pika_marmot_runtime::runtime::CallSignalPublishStatus::Published { wrapper_event_id },
-        );
-        let operation_id = operation.operation_id();
-        let result = operation
-            .into_call_signal_publish_result()
+        for (kind, payload_json) in [
+            (CallSignalPublishKind::Invite, "{\"type\":\"call.invite\"}"),
+            (CallSignalPublishKind::Accept, "{\"type\":\"call.accept\"}"),
+            (CallSignalPublishKind::Reject, "{\"type\":\"call.reject\"}"),
+            (CallSignalPublishKind::End, "{\"type\":\"call.end\"}"),
+        ] {
+            let result = complete_daemon_call_signal_publish_result(
+                &host,
+                kind,
+                "deadbeef".to_string(),
+                pika_marmot_runtime::call_runtime::PreparedCallSignal {
+                    call_id: "550e8400-e29b-41d4-a716-446655440017".to_string(),
+                    payload_json: payload_json.to_string(),
+                },
+                CallSignalPublishStatus::Published { wrapper_event_id },
+            )
             .expect("completed call signal publish");
 
-        assert_eq!(operation_id, wrapper_event_id);
-        assert_eq!(
-            result.kind,
-            pika_marmot_runtime::runtime::CallSignalPublishKind::Invite
-        );
-        assert_eq!(result.nostr_group_id_hex, "deadbeef");
-        assert_eq!(result.call_id, "550e8400-e29b-41d4-a716-446655440017");
-        assert_eq!(result.wrapper_event_id, wrapper_event_id);
+            assert_eq!(result.kind, kind);
+            assert_eq!(result.nostr_group_id_hex, "deadbeef");
+            assert_eq!(result.call_id, "550e8400-e29b-41d4-a716-446655440017");
+            assert_eq!(result.wrapper_event_id, wrapper_event_id);
+        }
+    }
+
+    #[test]
+    fn daemon_call_signal_publish_failure_uses_shared_runtime_event_boundary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mdk = crate::open_mdk(dir.path()).expect("open mdk");
+        let keys = Keys::generate();
+        let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let host = test_host(&mdk, &keys, &client, &relay_urls);
+        let wrapper_event_id =
+            EventId::from_hex("4444444444444444444444444444444444444444444444444444444444444444")
+                .expect("event id");
+
+        let error = complete_daemon_call_signal_publish_result(
+            &host,
+            CallSignalPublishKind::Accept,
+            "deadbeef".to_string(),
+            pika_marmot_runtime::call_runtime::PreparedCallSignal {
+                call_id: "550e8400-e29b-41d4-a716-446655440018".to_string(),
+                payload_json: "{\"type\":\"call.accept\"}".to_string(),
+            },
+            CallSignalPublishStatus::PublishFailed {
+                wrapper_event_id,
+                error: "offline".to_string(),
+            },
+        )
+        .expect_err("failed call signal publish");
+
+        assert_eq!(error, "offline");
     }
 
     #[test]

@@ -675,7 +675,6 @@ mod tests {
             }
         }
     }
-
     #[test]
     fn linux_fixture_lane_provisions_bindgen_for_desktop_camera_dependencies() {
         let linux_rust = fs::read_to_string(workspace_root().join("nix/ci/linux-rust.nix"))

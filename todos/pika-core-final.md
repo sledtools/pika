@@ -399,6 +399,7 @@ Current thin-host slice:
 - app also drops the dead inline `media_upload_failed(...)/match` ceremony for local validation failures; batch orchestration, upload execution, file staging, and protocol formatting stay host-local
 - fresh outbound message send/publish in app and daemon now unwraps shared outbound publish operation results via runtime-owned helpers instead of host-local tuple or nested-match translation; retry send and other send policies stay host-local
 - call signal publish handling in app and daemon now unwraps shared call signal publish operation results via runtime-owned helpers instead of host-local match trees; actual call worker/media ownership, protocol mapping, and retry/orchestration stay host-local
+- add-members publish/finalize handling now unwraps shared membership operation results directly, and membership prep now resolves joined-group context through shared runtime commands instead of duplicated host-side group lookup; welcome delivery execution policy remains host-local
 
 Only later:
 - formalize `pikad`

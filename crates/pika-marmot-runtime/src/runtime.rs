@@ -254,6 +254,13 @@ impl RuntimeOperationEvent {
         }
     }
 
+    pub fn into_membership_evolution_result(self) -> Result<MembershipUpdateResult, String> {
+        match self {
+            Self::MembershipEvolution(event) => event.into_result(),
+            other => Err(format!("unexpected membership evolution result: {other:?}")),
+        }
+    }
+
     pub fn into_outbound_conversation_publish_result(
         self,
     ) -> Result<PublishedConversationAction, String> {
@@ -300,6 +307,13 @@ impl MembershipEvolutionOperationEvent {
             Self::Failed {
                 nostr_group_id_hex, ..
             } => nostr_group_id_hex,
+        }
+    }
+
+    pub fn into_result(self) -> Result<MembershipUpdateResult, String> {
+        match self {
+            Self::Completed { result, .. } => Ok(result),
+            Self::Failed { error, .. } => Err(error),
         }
     }
 }
@@ -879,6 +893,16 @@ impl<'a> RuntimeCommands<'a> {
         MembershipRuntime::new(self.mdk).prepare_add_members(mls_group_id, key_package_events)
     }
 
+    pub fn prepare_add_members_for_nostr_group_id(
+        &self,
+        nostr_group_id_hex: &str,
+        key_package_events: &[Event],
+    ) -> Result<PreparedMembershipEvolution> {
+        let group =
+            RuntimeQueries::new(self.mdk).lookup_joined_group_snapshot(nostr_group_id_hex)?;
+        self.prepare_add_members(&group.mls_group_id, key_package_events)
+    }
+
     pub fn prepare_evolution(
         &self,
         mls_group_id: GroupId,
@@ -1442,6 +1466,15 @@ impl<'a> MarmotRuntime<'a> {
     ) -> Result<PreparedMembershipEvolution> {
         self.commands()
             .prepare_add_members(mls_group_id, key_package_events)
+    }
+
+    pub fn prepare_add_members_for_nostr_group_id(
+        &self,
+        nostr_group_id_hex: &str,
+        key_package_events: &[Event],
+    ) -> Result<PreparedMembershipEvolution> {
+        self.commands()
+            .prepare_add_members_for_nostr_group_id(nostr_group_id_hex, key_package_events)
     }
 
     pub fn prepare_evolution(
@@ -3057,24 +3090,18 @@ mod tests {
 
         let event = commands
             .complete_membership_evolution_operation(prepared, EvolutionPublishStatus::Published);
+        let completed_id = event.operation_id();
+        let result = event
+            .into_membership_evolution_result()
+            .expect("completed membership evolution");
 
-        match event {
-            RuntimeOperationEvent::MembershipEvolution(
-                MembershipEvolutionOperationEvent::Completed {
-                    operation_id: completed_id,
-                    result,
-                },
-            ) => {
-                assert_eq!(completed_id, operation_id);
-                assert_eq!(
-                    result.nostr_group_id_hex,
-                    hex::encode(created.group.nostr_group_id)
-                );
-                assert_eq!(result.added_pubkeys, vec![peer_keys.public_key()]);
-                assert!(result.merge_error.is_none());
-            }
-            other => panic!("expected completed membership operation event, got {other:?}"),
-        }
+        assert_eq!(completed_id, operation_id);
+        assert_eq!(
+            result.nostr_group_id_hex,
+            hex::encode(created.group.nostr_group_id)
+        );
+        assert_eq!(result.added_pubkeys, vec![peer_keys.public_key()]);
+        assert!(result.merge_error.is_none());
     }
 
     #[test]
@@ -3118,25 +3145,18 @@ mod tests {
             prepared,
             EvolutionPublishStatus::PublishFailed("relay down".to_string()),
         );
+        let failed_id = event.operation_id();
+        let nostr_group_id_hex = event.nostr_group_id_hex().to_string();
+        let error = event
+            .into_membership_evolution_result()
+            .expect_err("failed membership evolution");
 
-        match event {
-            RuntimeOperationEvent::MembershipEvolution(
-                MembershipEvolutionOperationEvent::Failed {
-                    operation_id: failed_id,
-                    nostr_group_id_hex,
-                    error,
-                    ..
-                },
-            ) => {
-                assert_eq!(failed_id, operation_id);
-                assert_eq!(
-                    nostr_group_id_hex,
-                    hex::encode(created.group.nostr_group_id)
-                );
-                assert_eq!(error, "relay down");
-            }
-            other => panic!("expected failed membership operation event, got {other:?}"),
-        }
+        assert_eq!(failed_id, operation_id);
+        assert_eq!(
+            nostr_group_id_hex,
+            hex::encode(created.group.nostr_group_id)
+        );
+        assert_eq!(error, "relay down");
     }
 
     #[test]

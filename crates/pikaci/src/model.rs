@@ -123,6 +123,7 @@ pub enum StagedLinuxRustTarget {
     PreMergePikaRust,
     PreMergeAgentContracts,
     PreMergeNotifications,
+    PreMergeFixtureRust,
     PreMergeRmp,
     PreMergePikachatRust,
 }
@@ -151,6 +152,7 @@ pub enum StagedLinuxRustLane {
     AgentContractsCoreNip98,
     AgentContractsDeterministicHttp,
     NotificationsServerPackageTests,
+    FixturePikahutPackageTests,
     RmpInitSmokeCi,
     PikachatPackageTests,
     PikachatSidecarPackageTests,
@@ -178,6 +180,7 @@ impl StagedLinuxRustLane {
                 StagedLinuxRustTarget::PreMergeAgentContracts
             }
             Self::NotificationsServerPackageTests => StagedLinuxRustTarget::PreMergeNotifications,
+            Self::FixturePikahutPackageTests => StagedLinuxRustTarget::PreMergeFixtureRust,
             Self::RmpInitSmokeCi => StagedLinuxRustTarget::PreMergeRmp,
             Self::PikachatPackageTests
             | Self::PikachatSidecarPackageTests
@@ -238,6 +241,9 @@ impl StagedLinuxRustLane {
             Self::NotificationsServerPackageTests => {
                 "/staged/linux-rust/workspace-build/bin/run-pika-server-package-tests"
             }
+            Self::FixturePikahutPackageTests => {
+                "/staged/linux-rust/workspace-build/bin/run-pikahut-package-tests"
+            }
             Self::RmpInitSmokeCi => "/staged/linux-rust/workspace-build/bin/run-rmp-init-smoke-ci",
             Self::PikachatPackageTests => {
                 "/staged/linux-rust/workspace-build/bin/run-pikachat-package-tests"
@@ -279,6 +285,7 @@ impl StagedLinuxRustTarget {
             "pre-merge-pika-rust" => Some(Self::PreMergePikaRust),
             "pre-merge-agent-contracts" => Some(Self::PreMergeAgentContracts),
             "pre-merge-notifications" => Some(Self::PreMergeNotifications),
+            "pre-merge-fixture-rust" => Some(Self::PreMergeFixtureRust),
             "pre-merge-rmp" => Some(Self::PreMergeRmp),
             "pre-merge-pikachat-rust" => Some(Self::PreMergePikachatRust),
             _ => None,
@@ -322,6 +329,18 @@ impl StagedLinuxRustTarget {
                 workspace_deps_installable: ".#ci.x86_64-linux.notificationsWorkspaceDeps",
                 workspace_build_installable: ".#ci.x86_64-linux.notificationsWorkspaceBuild",
                 shadow_recipe: "pre-merge-notifications-shadow",
+            },
+            Self::PreMergeFixtureRust => StagedLinuxRustTargetConfig {
+                target_id: "pre-merge-fixture-rust",
+                target_description: "Run the VM-backed Rust tests from the fixture lane",
+                shared_prepare_node_prefix: "fixture-linux-rust",
+                shared_prepare_description: "fixture staged Linux Rust lane",
+                workspace_deps_output_name: "ci.x86_64-linux.fixtureWorkspaceDeps",
+                workspace_build_output_name: "ci.x86_64-linux.fixtureWorkspaceBuild",
+                workspace_output_system: "x86_64-linux",
+                workspace_deps_installable: ".#ci.x86_64-linux.fixtureWorkspaceDeps",
+                workspace_build_installable: ".#ci.x86_64-linux.fixtureWorkspaceBuild",
+                shadow_recipe: "",
             },
             Self::PreMergeRmp => StagedLinuxRustTargetConfig {
                 target_id: "pre-merge-rmp",
@@ -479,6 +498,24 @@ mod tests {
     }
 
     #[test]
+    fn fixture_lane_uses_fixture_workspace_outputs() {
+        let lane = StagedLinuxRustLane::FixturePikahutPackageTests;
+
+        assert_eq!(
+            lane.workspace_deps_output_name(),
+            "ci.x86_64-linux.fixtureWorkspaceDeps"
+        );
+        assert_eq!(
+            lane.workspace_build_output_name(),
+            "ci.x86_64-linux.fixtureWorkspaceBuild"
+        );
+        assert_eq!(
+            lane.execute_wrapper_command(),
+            "/staged/linux-rust/workspace-build/bin/run-pikahut-package-tests"
+        );
+    }
+
+    #[test]
     fn pikachat_lane_uses_pikachat_workspace_outputs() {
         let lane = StagedLinuxRustLane::OpenclawAudioEcho;
 
@@ -518,6 +555,25 @@ mod tests {
         assert_eq!(
             StagedLinuxRustLane::NotificationsServerPackageTests.target(),
             StagedLinuxRustTarget::PreMergeNotifications
+        );
+
+        let fixture = StagedLinuxRustTarget::from_target_id("pre-merge-fixture-rust")
+            .expect("fixture target");
+        let fixture_config = fixture.config();
+
+        assert_eq!(fixture_config.target_id, "pre-merge-fixture-rust");
+        assert_eq!(
+            fixture_config.workspace_deps_installable,
+            ".#ci.x86_64-linux.fixtureWorkspaceDeps"
+        );
+        assert_eq!(
+            fixture_config.workspace_build_installable,
+            ".#ci.x86_64-linux.fixtureWorkspaceBuild"
+        );
+        assert_eq!(fixture_config.shadow_recipe, "");
+        assert_eq!(
+            StagedLinuxRustLane::FixturePikahutPackageTests.target(),
+            StagedLinuxRustTarget::PreMergeFixtureRust
         );
 
         let pikachat = StagedLinuxRustTarget::from_target_id("pre-merge-pikachat-rust")
@@ -574,6 +630,7 @@ mod tests {
             StagedLinuxRustTarget::PreMergePikaRust,
             StagedLinuxRustTarget::PreMergeAgentContracts,
             StagedLinuxRustTarget::PreMergeNotifications,
+            StagedLinuxRustTarget::PreMergeFixtureRust,
             StagedLinuxRustTarget::PreMergeRmp,
             StagedLinuxRustTarget::PreMergePikachatRust,
         ] {
@@ -587,6 +644,59 @@ mod tests {
                 helper.contains(config.workspace_build_installable),
                 "strict staged remote helper must allow {}",
                 config.workspace_build_installable
+            );
+        }
+    }
+
+    #[test]
+    fn reduced_staged_workspace_snapshot_covers_workspace_members() {
+        let root = workspace_root();
+        let workspace_manifest =
+            fs::read_to_string(root.join("nix/ci/pika-core-workspace/Cargo.toml"))
+                .expect("read reduced staged workspace manifest");
+        let flake = fs::read_to_string(root.join("flake.nix")).expect("read flake");
+
+        for (member, required_snippet) in [
+            ("cli", "cp -R ${./cli}/. \"$out/cli\""),
+            (
+                "crates/pika-agent-protocol",
+                "cp -R ${./crates/pika-agent-protocol} \"$out/crates/pika-agent-protocol\"",
+            ),
+            (
+                "crates/pikachat-sidecar",
+                "cp -R ${./crates/pikachat-sidecar} \"$out/crates/pikachat-sidecar\"",
+            ),
+        ] {
+            if workspace_manifest.contains(&format!("\"{member}\"")) {
+                assert!(
+                    flake.contains(required_snippet),
+                    "flake.nix must snapshot {member} into ciPikaCoreWorkspaceSrc while nix/ci/pika-core-workspace/Cargo.toml keeps it as a workspace member"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn linux_fixture_lane_provisions_bindgen_for_desktop_camera_dependencies() {
+        let linux_rust = fs::read_to_string(workspace_root().join("nix/ci/linux-rust.nix"))
+            .expect("read linux-rust.nix");
+        let desktop_manifest =
+            fs::read_to_string(workspace_root().join("crates/pika-desktop/Cargo.toml"))
+                .expect("read pika-desktop Cargo.toml");
+
+        if desktop_manifest.contains("nokhwa") {
+            assert!(
+                linux_rust.contains(
+                    "pkgs.lib.optionals (lane == \"agent-contracts\" || lane == \"pikachat\" || lane == \"fixture\") ["
+                ) && linux_rust.contains("pkgs.llvmPackages.libclang")
+                    && linux_rust.contains("pkgs.linuxHeaders"),
+                "fixture staged Linux lane must provision libclang and linuxHeaders while pika-desktop keeps nokhwa in the build graph"
+            );
+            assert!(
+                linux_rust.contains(
+                    "} // pkgs.lib.optionalAttrs (lane == \"agent-contracts\" || lane == \"pikachat\" || lane == \"fixture\") {"
+                ) && linux_rust.contains("LIBCLANG_PATH ="),
+                "fixture staged Linux lane must export LIBCLANG_PATH while pika-desktop keeps nokhwa in the build graph"
             );
         }
     }

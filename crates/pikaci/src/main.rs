@@ -487,25 +487,50 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 staged_linux_rust_lane: None,
             }],
         }),
-        "pre-merge-fixture-rust" => Ok(TargetSpec {
-            id: "pre-merge-fixture-rust",
-            description: "Run the VM-backed Rust tests from the fixture lane",
-            filters: &[
+        "pre-merge-fixture-rust" => Ok(staged_linux_target_spec(
+            StagedLinuxRustTarget::PreMergeFixtureRust,
+            &[
                 "Cargo.toml",
                 "Cargo.lock",
                 "flake.nix",
                 "flake.lock",
                 "nix/**",
                 "justfile",
+                "just/agent.just",
+                "just/checks.just",
+                "just/infra.just",
                 ".github/workflows/pre-merge.yml",
+                "docs/testing/ci-selectors.md",
+                "docs/testing/integration-matrix.md",
+                "docs/testing/wrapper-deprecation-policy.md",
+                "cli/Cargo.toml",
                 "crates/pikaci/**",
+                "crates/hypernote-protocol/**",
+                "crates/pika-agent-control-plane/**",
+                "crates/pika-agent-microvm/Cargo.toml",
+                "crates/pika-desktop/**",
                 "crates/pikahut/**",
                 "crates/pika-marmot-runtime/**",
+                "crates/pika-media/**",
                 "crates/pika-relay-profiles/**",
+                "crates/pika-server/Cargo.toml",
+                "crates/pika-tls/**",
+                "pikachat-openclaw/scripts/run-openclaw-e2e.sh",
+                "pikachat-openclaw/scripts/run-scenario.sh",
                 "cmd/pika-relay/**",
+                "rust/**",
+                "rust/tests/e2e_calls.rs",
+                "scripts/agent-chat-demo.sh",
+                "scripts/agent-demo.sh",
+                "scripts/demo-agent-microvm.sh",
+                "tools/cli-smoke",
+                "tools/interop-rust-baseline",
+                "tools/primal-ios-interop-nightly",
+                "tools/ui-e2e-local",
+                "tools/ui-e2e-public",
             ],
-            jobs: fixture_rust_jobs(),
-        }),
+            fixture_rust_jobs(),
+        )),
         "android-sdk-probe" => Ok(TargetSpec {
             id: "android-sdk-probe",
             description: "Verify Android SDK tooling is available inside a Linux guest",
@@ -1046,7 +1071,7 @@ fn fixture_rust_jobs() -> Vec<JobSpec> {
         timeout_secs: 1800,
         writable_workspace: false,
         guest_command: GuestCommand::PackageTests { package: "pikahut" },
-        staged_linux_rust_lane: None,
+        staged_linux_rust_lane: Some(StagedLinuxRustLane::FixturePikahutPackageTests),
     }]
 }
 
@@ -1483,6 +1508,18 @@ mod tests {
         assert_eq!(
             target.jobs[0].staged_linux_rust_lane(),
             Some(StagedLinuxRustLane::NotificationsServerPackageTests)
+        );
+        assert_eq!(target.jobs[0].runner_kind(), RunnerKind::MicrovmRemote);
+    }
+
+    #[test]
+    fn pre_merge_fixture_rust_target_uses_staged_linux_lane() {
+        let target = target_spec("pre-merge-fixture-rust").expect("fixture target");
+
+        assert_eq!(target.jobs.len(), 1);
+        assert_eq!(
+            target.jobs[0].staged_linux_rust_lane(),
+            Some(StagedLinuxRustLane::FixturePikahutPackageTests)
         );
         assert_eq!(target.jobs[0].runner_kind(), RunnerKind::MicrovmRemote);
     }

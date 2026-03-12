@@ -104,6 +104,13 @@ Working assumptions:
    - `pre-merge-pikachat-rust` passed end-to-end on the staged remote-authoritative path as run `20260312T035354Z-00c1af97`, and the lane is now eligible for the same non-gating shadow treatment as the other staged Linux families
    - the non-gating shadow wiring for `pre-merge-pikachat-rust` is now in the same GitHub summary/debug-bundle path as the other staged Linux shadows; the only local shadow verification failure during this slice was a transient SSH `255` during concurrent `pika-build` redeploy, not a lane-logic failure
    - updated Linux-required coverage picture under `pikaci`: `5 / 7` families have coverage, with `check-agent-contracts`, `check-notifications`, `check-rmp`, and the Linux-only `check-pikachat` slice now full, `check-pika` still partial, and `check-fixture` still intentionally deferred behind its intrinsically broad/uncached package boundary
+11. Slice 12 moved `pre-merge-fixture-rust` onto the staged Linux target model:
+   - `crates/pikaci/src/model.rs` now defines a real `PreMergeFixtureRust` target plus the explicit `FixturePikahutPackageTests` staged-lane identity
+   - `crates/pikaci/src/main.rs` now defines `pre-merge-fixture-rust` through `staged_linux_target_spec(...)` instead of a bespoke unstaged `TargetSpec`, and its `pikahut-package-tests` job now records a staged Linux lane
+   - the staged Linux workspace config now includes dedicated `fixtureWorkspaceDeps` / `fixtureWorkspaceBuild` outputs built from the reduced Rust workspace snapshot, with a prepared-output wrapper for staged `pikahut` package-test execution
+   - the checked-in blocking `pre-merge-fixture` recipe now routes its Rust test segment through `pre-merge-fixture-rust`, and the workflow filter now covers that staged target plus the checked-in `pikahut` guardrail/doc surfaces the lane actually reads
+   - the strict staged remote helper and remote-authoritative entrypoint now treat `pre-merge-fixture-rust` as a first-class staged target instead of an implicit special case
+   - that leaves `pre-merge-rmp` normalization and Apple-host execution/ownership follow-up as the next lane-definition cleanups, rather than another bespoke Rust-lane conversion
 ## Progress Update
 
 Completed on 2026-03-10:
@@ -208,13 +215,13 @@ Verified in the repo today:
    - Android and iOS local UI selector lanes are still intentionally hand-picked subsets rather than obviously intentional “full suite” contracts
 
 5. Workflow change-detection and recipe ownership still do not line up cleanly everywhere.
-   - Slice 6 fixed the `check-pikachat` path-filter gap by including `crates/pikahut/**` for the `pikachat` lane.
-   - Slice 7 made the Apple Silicon `pre-merge-pikachat` split explicit, and Slice 8 aligned `agent_contracts` with the same workflow-vs-lane truth standard.
-   - Slice 9 aligned `notifications` with the same workflow-vs-lane truth standard and also closed the tiny residual host-side `pikachat` dependency gap in `agent_contracts`.
-   - `fixture` is now the last obvious remaining staged/shadow lane that still relies on duplicated filter truth without a lane-specific guardrail.
-   - The next root-CI cleanup should consume that remaining `fixture` lane-filter contract mismatch before deeper Apple-host execution work.
-   - Recent staged-Linux rollout work is also creating the same mixed-mode shape in other Apple Silicon lanes such as `pre-merge-pika`, `pre-merge-agent-contracts`, and `pre-merge-fixture`, where remote/staged Rust execution is followed by host-side checks in `just/checks.just`.
-   - After `pre-merge-pikachat`, we should decide whether those lane splits also need explicit checked-in contracts instead of accumulating more inline branch logic.
+  - Slice 6 fixed the `check-pikachat` path-filter gap by including `crates/pikahut/**` for the `pikachat` lane.
+  - Slice 7 made the Apple Silicon `pre-merge-pikachat` split explicit, and Slice 8 aligned `agent_contracts` with the same workflow-vs-lane truth standard.
+  - Slice 9 aligned `notifications` with the same workflow-vs-lane truth standard and also closed the tiny residual host-side `pikachat` dependency gap in `agent_contracts`.
+  - `fixture` filter-alignment work is now done, and `pre-merge-fixture-rust` is now on the staged Linux target model too.
+  - The next root-CI cleanup should consume either `pre-merge-rmp` staged-lane normalization or the Apple-host execution/ownership follow-up instead of another filter-only pass.
+  - Recent staged-Linux rollout work is also creating the same mixed-mode shape in other Apple Silicon lanes such as `pre-merge-pika`, `pre-merge-agent-contracts`, and `pre-merge-fixture`, where remote/staged Rust execution is followed by host-side checks in `just/checks.just`.
+  - After `pre-merge-pikachat`, we should decide whether those lane splits also need explicit checked-in contracts instead of accumulating more inline branch logic.
 
 6. “E2E” means too many different things.
    - deterministic local fixture-backed behavior
@@ -356,6 +363,11 @@ Updated recommendation after Slice 10:
 1. `pre-merge-pikachat-rust` now uses the staged Linux target model with full-workspace inputs and prepared-output wrappers for the selected `pikahut` coverage, including the staged desktop `VERSION` input, the OpenClaw peer binary path, and the daemon-boundary `pikachat` binary override, so `pikaci` is the checked-in source of truth for one more pre-merge Rust lane contract.
 2. `pre-merge-fixture-rust` is now the obvious next staged-lane cleanup if we want the same authority/runner model for the last bespoke Rust lane.
 3. The Apple-host execution/ownership follow-up for `pre-merge-pikachat-apple-followup` should stay queued behind that `fixture` staged-lane cleanup.
+4. Keep lane coverage stable and avoid reopening workflow-filter gardening as the main event.
+Updated recommendation after Slice 12:
+1. `pre-merge-fixture-rust` now uses the staged Linux target model with dedicated `fixtureWorkspaceDeps` / `fixtureWorkspaceBuild` outputs and a prepared-output `pikahut` package-test wrapper, and the checked-in blocking fixture lane/filter now route through that staged target instead of bypassing it on Linux.
+2. `pre-merge-rmp` is now the clearest remaining staged-lane normalization candidate if we want the same target-model authority across the pre-merge Rust lanes.
+3. The Apple-host execution/ownership follow-up for `pre-merge-pikachat-apple-followup` remains queued behind that `rmp` normalization work unless a concrete host-execution blocker overtakes it.
 4. Keep lane coverage stable and avoid reopening workflow-filter gardening as the main event.
 Default bias:
 1. Keep the `pikahut` selector contract when practical.

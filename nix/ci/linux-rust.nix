@@ -15,6 +15,8 @@ let
       "pika-linux-rust-pikachat-workspace"
     else if lane == "notifications" then
       "pika-linux-rust-notifications-workspace"
+    else if lane == "fixture" then
+      "pika-linux-rust-fixture-workspace"
     else if lane == "rmp" then
       "pika-linux-rust-rmp-workspace"
     else
@@ -35,10 +37,10 @@ let
       pkgs.alsa-lib
       pkgs.openssl
       pkgs.postgresql
-    ] ++ pkgs.lib.optionals (lane == "pika-core" || lane == "agent-contracts" || lane == "pikachat") [
+    ] ++ pkgs.lib.optionals (lane == "pika-core" || lane == "agent-contracts" || lane == "pikachat" || lane == "fixture") [
       pkgs.llvmPackages.libclang
       pkgs.linuxHeaders
-    ] ++ pkgs.lib.optionals (lane == "pika-core" || lane == "agent-contracts" || lane == "pikachat") [
+    ] ++ pkgs.lib.optionals (lane == "pika-core" || lane == "agent-contracts" || lane == "pikachat" || lane == "fixture") [
       pkgs.xorg.libX11
       pkgs.xorg.libXcursor
       pkgs.xorg.libXi
@@ -49,7 +51,7 @@ let
       pkgs.mesa
       pkgs.vulkan-loader
     ];
-  } // pkgs.lib.optionalAttrs (lane == "pika-core" || lane == "agent-contracts" || lane == "pikachat") {
+  } // pkgs.lib.optionalAttrs (lane == "pika-core" || lane == "agent-contracts" || lane == "pikachat" || lane == "fixture") {
     LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
     BINDGEN_EXTRA_CLANG_ARGS = builtins.concatStringsSep " " [
       "-I${pkgs.linuxHeaders}/include"
@@ -366,6 +368,40 @@ let
           }
 
           manifest_from_targets "$PIKACI_PIKA_SERVER_PACKAGE_TESTS_MANIFEST" pika-server
+        ''
+      else if lane == "fixture" then
+        ''
+          export PIKACI_PIKAHUT_PACKAGE_TESTS_MANIFEST="$TMPDIR/pikahut-package-tests.manifest"
+          cargoJobs="''${CARGO_BUILD_JOBS:-''${NIX_BUILD_CORES:-}}"
+          case "$cargoJobs" in
+            ""|0)
+              cargoJobs="$(${pkgs.coreutils}/bin/nproc)"
+              ;;
+          esac
+          echo "[pikaci] building fixture lane with cargo jobs=$cargoJobs" >&2
+          target_root="''${CARGO_TARGET_DIR:-target}"
+          target_root_abs="$(pwd)/$target_root/"
+
+          capture_manifest() {
+            local cargo_build_log="$1"
+            local manifest_path="$2"
+            ${pkgs.jq}/bin/jq -r --arg target_root "$target_root/" --arg target_root_abs "$target_root_abs" '
+              select(.reason == "compiler-artifact" and .executable != null)
+              | (.executable | sub("^" + $target_root_abs; "") | sub("^" + $target_root; ""))
+            ' <"$cargo_build_log" >"$manifest_path"
+            sort -u -o "$manifest_path" "$manifest_path"
+            if [ ! -s "$manifest_path" ]; then
+              echo "missing staged fixture manifest output for $manifest_path" >&2
+              cat "$cargo_build_log" >&2
+              exit 1
+            fi
+          }
+
+          cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+          cargo test --locked -j "$cargoJobs" -p pikahut \
+            --no-run \
+            --message-format json-render-diagnostics >"$cargoBuildLog"
+          capture_manifest "$cargoBuildLog" "$PIKACI_PIKAHUT_PACKAGE_TESTS_MANIFEST"
         ''
       else if lane == "rmp" then
         ''
@@ -863,6 +899,64 @@ let
           done <"$manifest"
           EOF
           chmod +x "$out/bin/run-pika-server-package-tests"
+        ''
+      else if lane == "fixture" then
+        ''
+          target_root="''${CARGO_TARGET_DIR:-target}"
+          mkdir -p "$out/bin" "$out/share/pikaci" "$out/target"
+          cp "$PIKACI_PIKAHUT_PACKAGE_TESTS_MANIFEST" \
+            "$out/share/pikaci/pikahut-package-tests.manifest"
+
+          copy_target_relative() {
+            local relative="$1"
+            if [ ! -e "$target_root/$relative" ]; then
+              echo "missing staged fixture runtime artifact at $target_root/$relative" >&2
+              exit 1
+            fi
+            (
+              cd "$target_root"
+              cp --parents -P "$relative" "$out/target"
+            )
+          }
+
+          while IFS= read -r relative; do
+            [ -n "$relative" ] || continue
+            copy_target_relative "$relative"
+          done <"$PIKACI_PIKAHUT_PACKAGE_TESTS_MANIFEST"
+
+          if [ -d "$target_root/debug/deps" ]; then
+            while IFS= read -r shared_object; do
+              copy_target_relative "''${shared_object#$target_root/}"
+            done < <(
+              find "$target_root/debug/deps" -maxdepth 1 -type f \
+                \( -name '*.so' -o -name '*.so.*' \) \
+                | sort
+            )
+          fi
+
+          cat >"$out/bin/run-pikahut-package-tests" <<'EOF'
+          #!${pkgs.bash}/bin/bash
+          set -euo pipefail
+
+          root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
+          manifest="$root/share/pikaci/pikahut-package-tests.manifest"
+          if [ ! -s "$manifest" ]; then
+            echo "missing staged pikahut package test manifest at $manifest" >&2
+            exit 1
+          fi
+
+          if [ -f /workspace/snapshot/Cargo.toml ]; then
+            export PIKAHUT_TEST_WORKSPACE_ROOT=/workspace/snapshot
+            cd "$PIKAHUT_TEST_WORKSPACE_ROOT"
+          fi
+
+          while IFS= read -r relative; do
+            [ -n "$relative" ] || continue
+            echo "[pikaci] running staged pikahut test binary $relative"
+            "$root/target/$relative" --nocapture
+          done <"$manifest"
+          EOF
+          chmod +x "$out/bin/run-pikahut-package-tests"
         ''
       else if lane == "rmp" then
         ''

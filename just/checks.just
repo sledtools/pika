@@ -157,11 +157,7 @@ pre-merge-fixture:
     #!/usr/bin/env bash
     set -euo pipefail
     cargo clippy -p pikahut -- -D warnings
-    if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-        nix run .#pikaci -- run pre-merge-fixture-rust
-    else
-        cargo test -p pikahut
-    fi
+    nix run .#pikaci -- run pre-merge-fixture-rust
     SD="$(mktemp -d /tmp/pikahut-smoke.XXXXXX)"
     cleanup() { cargo run -q -p pikahut -- down --state-dir "$SD" 2>/dev/null || true; rm -rf "$SD"; }
     trap cleanup EXIT

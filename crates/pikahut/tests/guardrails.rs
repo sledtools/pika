@@ -668,11 +668,14 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
     let linux_rust = fs::read_to_string(root.join("nix/ci/linux-rust.nix"))?;
     let deterministic =
         fs::read_to_string(root.join("crates/pikahut/src/testing/scenarios/deterministic.rs"))?;
+    let openclaw =
+        fs::read_to_string(root.join("crates/pikahut/src/testing/scenarios/openclaw.rs"))?;
     let integration_deterministic =
         fs::read_to_string(root.join("crates/pikahut/tests/integration_deterministic.rs"))?;
     let config = fs::read_to_string(root.join("crates/pikahut/src/config.rs"))?;
     if lane_keeps_relay_backed_selectors {
         let run_scenario_body = extract_rust_function_body(&deterministic, "run_scenario");
+        let plugin_filter = "pikachat-openclaw/**";
         assert!(
             rust_lane_filters.contains("cmd/pika-relay/**"),
             "pre-merge-pikachat-rust filters must include cmd/pika-relay/** while relay-backed deterministic selectors stay in-lane"
@@ -682,6 +685,14 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
             "pikachat workflow filter must include cmd/pika-relay/** while relay-backed deterministic selectors stay in-lane"
         );
         assert!(
+            rust_lane_filters.contains(plugin_filter),
+            "pre-merge-pikachat-rust filters must include {plugin_filter} while the deterministic OpenClaw scenarios stay in-lane"
+        );
+        assert!(
+            pikachat_filter.contains(plugin_filter),
+            "pikachat workflow filter must include {plugin_filter} while the deterministic OpenClaw scenarios stay in-lane"
+        );
+        assert!(
             deterministic.contains("PIKAHUT_TEST_PIKACHAT_BIN"),
             "pikahut deterministic helpers must keep the staged pikachat binary override while relay-backed selectors stay in-lane"
         );
@@ -689,6 +700,10 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
             run_scenario_body
                 .contains("pikachat_spec(&root, &scenario_args, \"pikachat-scenario\")"),
             "relay-backed deterministic scenarios must keep routing through pikachat_spec while staged pikachat selectors stay in-lane"
+        );
+        assert!(
+            openclaw.contains("pikachat-openclaw/openclaw/extensions/pikachat-openclaw"),
+            "relay-backed deterministic OpenClaw scenarios must keep resolving the checked-in plugin tree while those selectors stay in-lane"
         );
         assert!(
             linux_rust.contains("export PIKAHUT_TEST_PIKACHAT_BIN=\"$root/bin/pikachat\""),

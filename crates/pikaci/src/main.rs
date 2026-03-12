@@ -425,6 +425,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "nix/**",
                 "justfile",
                 ".github/workflows/pre-merge.yml",
+                "pikachat-openclaw/**",
                 "crates/pikaci/**",
                 "crates/pika-agent-control-plane/**",
                 "crates/pika-desktop/**",

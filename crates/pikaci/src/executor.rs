@@ -218,8 +218,17 @@ fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOut
         &format!("[pikaci] host-local command: {command}"),
     )?;
 
-    let mut cmd = Command::new("/bin/bash");
-    cmd.args(["--noprofile", "--norc", "-lc", &command])
+    let host_local_mode = host_local_command_mode(ctx);
+    append_line(
+        &ctx.host_log_path,
+        &format!(
+            "[pikaci] host-local execution environment: {}",
+            host_local_mode
+        ),
+    )?;
+
+    let mut cmd = Command::new(host_local_mode.program());
+    cmd.args(host_local_mode.args(&command))
         .current_dir(&ctx.workspace_snapshot_dir)
         .env("ARTIFACTS", &artifacts_dir)
         .env("CARGO_HOME", &ctx.shared_cargo_home_dir)
@@ -312,6 +321,64 @@ fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOut
         exit_code: Some(exit_code),
         message,
     })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum HostLocalCommandMode {
+    DirectShell,
+    NixDevelop { shell: String },
+}
+
+impl HostLocalCommandMode {
+    fn program(&self) -> &str {
+        match self {
+            Self::DirectShell => "/bin/bash",
+            Self::NixDevelop { .. } => "nix",
+        }
+    }
+
+    fn args(&self, command: &str) -> Vec<String> {
+        match self {
+            Self::DirectShell => vec![
+                "--noprofile".to_string(),
+                "--norc".to_string(),
+                "-lc".to_string(),
+                command.to_string(),
+            ],
+            Self::NixDevelop { shell } => vec![
+                "develop".to_string(),
+                format!("path:./#{shell}"),
+                "-c".to_string(),
+                "/bin/bash".to_string(),
+                "--noprofile".to_string(),
+                "--norc".to_string(),
+                "-lc".to_string(),
+                command.to_string(),
+            ],
+        }
+    }
+}
+
+impl std::fmt::Display for HostLocalCommandMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DirectShell => write!(f, "direct shell"),
+            Self::NixDevelop { shell } => write!(f, "nix develop path:./#{shell}"),
+        }
+    }
+}
+
+fn host_local_command_mode(ctx: &HostContext) -> HostLocalCommandMode {
+    if std::env::var_os("IN_NIX_SHELL").is_some()
+        || !ctx.workspace_snapshot_dir.join("flake.nix").is_file()
+    {
+        HostLocalCommandMode::DirectShell
+    } else {
+        HostLocalCommandMode::NixDevelop {
+            shell: std::env::var("PIKACI_HOST_LOCAL_NIX_SHELL")
+                .unwrap_or_else(|_| "default".to_string()),
+        }
+    }
 }
 
 fn acquire_host_local_cache_lock(
@@ -2556,10 +2623,10 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        GuestFlakePaths, HostContext, REMOTE_MICROVM_VIRTIOFS_SOCKETS, RemoteMicrovmContext,
-        build_remote_microvm_launch_command, builders_supports_aarch64_linux,
+        GuestFlakePaths, HostContext, HostLocalCommandMode, REMOTE_MICROVM_VIRTIOFS_SOCKETS,
+        RemoteMicrovmContext, build_remote_microvm_launch_command, builders_supports_aarch64_linux,
         ensure_staged_linux_rust_lane_matches_vfkit_guest, guest_runner_config_for,
-        render_guest_flake, render_local_guest_flake, run_job_on_runner,
+        host_local_command_mode, render_guest_flake, render_local_guest_flake, run_job_on_runner,
         staged_linux_remote_defaults, staged_linux_remote_snapshot_dir, vfkit_socket_path,
     };
     use crate::model::{GuestCommand, JobSpec, RunStatus, RunnerKind};
@@ -3119,6 +3186,95 @@ mod tests {
         assert!(workspace_dir.join("cache-sentinel").is_file());
         let host_log = std::fs::read_to_string(&ctx.host_log_path).expect("read host log");
         assert!(host_log.contains("reused unchanged snapshot"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn host_local_command_mode_uses_nix_develop_outside_nix_shell_when_flake_exists() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-host-local-mode-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let workspace_dir = root.join("workspace");
+        std::fs::create_dir_all(&workspace_dir).expect("create workspace dir");
+        std::fs::write(workspace_dir.join("flake.nix"), "{ }").expect("write flake");
+
+        let ctx = HostContext {
+            source_root: root.clone(),
+            workspace_snapshot_dir: workspace_dir,
+            host_local_cache_dir: None,
+            workspace_source_dir: None,
+            workspace_source_content_hash: None,
+            workspace_read_only: true,
+            job_dir: root.join("job"),
+            host_log_path: root.join("job/host.log"),
+            guest_log_path: root.join("job/artifacts/guest.log"),
+            shared_cargo_home_dir: root.join("cargo-home"),
+            shared_target_dir: root.join("target"),
+            staged_linux_rust_workspace_deps_dir: None,
+            staged_linux_rust_workspace_build_dir: None,
+        };
+        let old_in_nix_shell = std::env::var_os("IN_NIX_SHELL");
+        unsafe {
+            std::env::remove_var("IN_NIX_SHELL");
+        }
+
+        let mode = host_local_command_mode(&ctx);
+
+        match old_in_nix_shell {
+            Some(value) => unsafe { std::env::set_var("IN_NIX_SHELL", value) },
+            None => unsafe { std::env::remove_var("IN_NIX_SHELL") },
+        }
+
+        assert_eq!(
+            mode,
+            HostLocalCommandMode::NixDevelop {
+                shell: "default".to_string()
+            }
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn host_local_command_mode_uses_direct_shell_inside_nix_shell() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-host-local-direct-mode-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let workspace_dir = root.join("workspace");
+        std::fs::create_dir_all(&workspace_dir).expect("create workspace dir");
+        std::fs::write(workspace_dir.join("flake.nix"), "{ }").expect("write flake");
+
+        let ctx = HostContext {
+            source_root: root.clone(),
+            workspace_snapshot_dir: workspace_dir,
+            host_local_cache_dir: None,
+            workspace_source_dir: None,
+            workspace_source_content_hash: None,
+            workspace_read_only: true,
+            job_dir: root.join("job"),
+            host_log_path: root.join("job/host.log"),
+            guest_log_path: root.join("job/artifacts/guest.log"),
+            shared_cargo_home_dir: root.join("cargo-home"),
+            shared_target_dir: root.join("target"),
+            staged_linux_rust_workspace_deps_dir: None,
+            staged_linux_rust_workspace_build_dir: None,
+        };
+        let old_in_nix_shell = std::env::var_os("IN_NIX_SHELL");
+        unsafe {
+            std::env::set_var("IN_NIX_SHELL", "1");
+        }
+
+        let mode = host_local_command_mode(&ctx);
+
+        match old_in_nix_shell {
+            Some(value) => unsafe { std::env::set_var("IN_NIX_SHELL", value) },
+            None => unsafe { std::env::remove_var("IN_NIX_SHELL") },
+        }
+
+        assert_eq!(mode, HostLocalCommandMode::DirectShell);
 
         let _ = std::fs::remove_dir_all(root);
     }

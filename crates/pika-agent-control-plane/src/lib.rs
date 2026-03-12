@@ -379,6 +379,8 @@ pub struct SpawnerVmResponse {
     pub id: String,
     #[serde(default = "default_spawner_vm_status")]
     pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_kind: Option<MicrovmAgentKind>,
     #[serde(default)]
     #[serde(alias = "guest_service_ready")]
     pub startup_probe_satisfied: bool,
@@ -419,6 +421,13 @@ pub struct SpawnerVmBackupStatus {
     pub latest_successful_backup_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observed_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SpawnerOpenClawLaunchAuth {
+    pub vm_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway_auth_token: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -846,6 +855,7 @@ mod tests {
             "guest_ready": false
         }))
         .expect("decode vm response");
+        assert_eq!(decoded.agent_kind, None);
         assert!(decoded.startup_probe_satisfied);
         assert!(!decoded.guest_ready);
     }

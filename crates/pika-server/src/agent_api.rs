@@ -136,6 +136,7 @@ pub(crate) struct ManagedEnvironmentStatus {
     pub row: Option<AgentInstance>,
     pub app_state: Option<AgentAppState>,
     pub startup_phase: Option<AgentStartupPhase>,
+    pub runtime_kind: Option<MicrovmAgentKind>,
     pub environment_exists: bool,
     pub status_copy: String,
 }
@@ -581,6 +582,7 @@ fn normalize_loaded_agent_row(
 struct RefreshedAgentStatus {
     row: AgentInstance,
     startup_phase: AgentStartupPhase,
+    runtime_kind: Option<MicrovmAgentKind>,
 }
 
 async fn refresh_agent_from_spawner(
@@ -592,6 +594,7 @@ async fn refresh_agent_from_spawner(
         return Ok(RefreshedAgentStatus {
             startup_phase: startup_phase_from_row_phase(&row.phase)
                 .unwrap_or(AgentStartupPhase::Requested),
+            runtime_kind: None,
             row,
         });
     };
@@ -608,6 +611,7 @@ async fn refresh_agent_from_spawner(
             return Ok(RefreshedAgentStatus {
                 startup_phase: startup_phase_from_row_phase(&row.phase)
                     .unwrap_or(AgentStartupPhase::ProvisioningVm),
+                runtime_kind: None,
                 row,
             });
         }
@@ -630,6 +634,7 @@ async fn refresh_agent_from_spawner(
                 return Ok(RefreshedAgentStatus {
                     row,
                     startup_phase: AgentStartupPhase::Failed,
+                    runtime_kind: None,
                 });
             }
             let errored = conn
@@ -664,6 +669,7 @@ async fn refresh_agent_from_spawner(
             return Ok(RefreshedAgentStatus {
                 row: errored,
                 startup_phase: AgentStartupPhase::Failed,
+                runtime_kind: None,
             });
         }
         Err(err) => {
@@ -677,6 +683,7 @@ async fn refresh_agent_from_spawner(
             return Ok(RefreshedAgentStatus {
                 startup_phase: startup_phase_from_row_phase(&row.phase)
                     .unwrap_or(AgentStartupPhase::ProvisioningVm),
+                runtime_kind: None,
                 row,
             });
         }
@@ -685,7 +692,11 @@ async fn refresh_agent_from_spawner(
     let next_phase = phase_from_spawner_vm(&vm);
     let startup_phase = startup_phase_from_spawner_vm(&vm);
     if row.phase == next_phase && row.vm_id.as_deref() == Some(vm.id.as_str()) {
-        return Ok(RefreshedAgentStatus { row, startup_phase });
+        return Ok(RefreshedAgentStatus {
+            row,
+            startup_phase,
+            runtime_kind: vm.agent_kind,
+        });
     }
 
     let updated = AgentInstance::update_phase(conn, &row.agent_id, next_phase, Some(&vm.id))
@@ -696,6 +707,7 @@ async fn refresh_agent_from_spawner(
     Ok(RefreshedAgentStatus {
         row: updated,
         startup_phase,
+        runtime_kind: vm.agent_kind,
     })
 }
 
@@ -714,6 +726,7 @@ pub(crate) async fn load_managed_environment_status(
             row: None,
             app_state: None,
             startup_phase: None,
+            runtime_kind: None,
             environment_exists: false,
             status_copy: managed_environment_status_copy(None, None),
         });
@@ -730,6 +743,7 @@ pub(crate) async fn load_managed_environment_status(
         row: Some(refreshed.row),
         app_state,
         startup_phase: Some(refreshed.startup_phase),
+        runtime_kind: refreshed.runtime_kind,
     })
 }
 
@@ -813,33 +827,16 @@ pub(crate) async fn load_launchable_managed_environment(
             AgentApiError::from_code(AgentApiErrorCode::InvalidRequest).with_request_id(request_id)
         );
     }
+    if status.runtime_kind != Some(MicrovmAgentKind::Openclaw) {
+        return Err(
+            AgentApiError::from_code(AgentApiErrorCode::InvalidRequest).with_request_id(request_id)
+        );
+    }
     Ok(ManagedEnvironmentHandle {
         owner_npub: row.owner_npub,
         agent_id: row.agent_id,
         vm_id,
     })
-}
-
-pub(crate) fn load_current_ready_managed_environment(
-    state: &State,
-    owner_npub: &str,
-    request_id: &str,
-) -> Result<Option<ManagedEnvironmentHandle>, AgentApiError> {
-    let mut conn = state.db_pool.get().map_err(|_| {
-        AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
-    })?;
-    let row = load_visible_agent_row(&mut conn, owner_npub)
-        .map_err(|err| err.with_request_id(request_id.to_string()))?;
-    Ok(row.and_then(|row| {
-        (row.phase == AGENT_PHASE_READY)
-            .then_some(row)
-            .and_then(|row| row.vm_id.clone().map(|vm_id| (row, vm_id)))
-            .map(|(row, vm_id)| ManagedEnvironmentHandle {
-                owner_npub: row.owner_npub,
-                agent_id: row.agent_id,
-                vm_id,
-            })
-    }))
 }
 
 pub(crate) fn spawner_base_url(request_id: &str) -> Result<String, AgentApiError> {
@@ -2233,6 +2230,7 @@ mod tests {
             phase_from_spawner_vm(&SpawnerVmResponse {
                 id: "vm-1".to_string(),
                 status: "running".to_string(),
+                agent_kind: None,
                 startup_probe_satisfied: true,
                 guest_ready: true,
             }),
@@ -2242,6 +2240,7 @@ mod tests {
             phase_from_spawner_vm(&SpawnerVmResponse {
                 id: "vm-1".to_string(),
                 status: "running".to_string(),
+                agent_kind: None,
                 startup_probe_satisfied: true,
                 guest_ready: false,
             }),
@@ -2251,6 +2250,7 @@ mod tests {
             phase_from_spawner_vm(&SpawnerVmResponse {
                 id: "vm-1".to_string(),
                 status: "failed".to_string(),
+                agent_kind: None,
                 startup_probe_satisfied: false,
                 guest_ready: false,
             }),
@@ -2264,6 +2264,7 @@ mod tests {
             startup_phase_from_spawner_vm(&SpawnerVmResponse {
                 id: "vm-1".to_string(),
                 status: "starting".to_string(),
+                agent_kind: None,
                 startup_probe_satisfied: false,
                 guest_ready: false,
             }),
@@ -2273,6 +2274,7 @@ mod tests {
             startup_phase_from_spawner_vm(&SpawnerVmResponse {
                 id: "vm-1".to_string(),
                 status: "running".to_string(),
+                agent_kind: None,
                 startup_probe_satisfied: false,
                 guest_ready: false,
             }),
@@ -2282,6 +2284,7 @@ mod tests {
             startup_phase_from_spawner_vm(&SpawnerVmResponse {
                 id: "vm-1".to_string(),
                 status: "running".to_string(),
+                agent_kind: None,
                 startup_probe_satisfied: true,
                 guest_ready: false,
             }),

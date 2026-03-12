@@ -8,8 +8,8 @@ use pika_agent_control_plane::{
     GuestServiceLaunch, GuestServiceReadinessCheck, GuestStartupArtifacts, GuestStartupPlan,
     MicrovmAgentBackend, MicrovmAgentKind, MicrovmProvisionParams,
     SpawnerCreateVmRequest as CreateVmRequest,
-    SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerVmBackupStatus,
-    SpawnerVmResponse as VmResponse,
+    SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerOpenClawLaunchAuth,
+    SpawnerVmBackupStatus, SpawnerVmResponse as VmResponse,
 };
 use serde_json::json;
 
@@ -31,6 +31,9 @@ pub const DEFAULT_OPENCLAW_EXEC_COMMAND: &str = "/opt/runtime-artifacts/openclaw
 pub const DEFAULT_OPENCLAW_GATEWAY_PORT: u16 = 18789;
 pub const DEFAULT_DAEMON_STATE_DIR: &str = "/root/pika-agent/state";
 pub const DEFAULT_OPENCLAW_STATE_DIR: &str = "/root/pika-agent/openclaw";
+pub const DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN: &str = "http://openclaw.localhost:19401";
+pub const DEFAULT_OPENCLAW_CONTROL_UI_HTTPS_ORIGIN: &str = "https://openclaw.localhost:19401";
+const DEFAULT_OPENCLAW_TRUSTED_PROXIES: &[&str] = &["127.0.0.1", "::1"];
 
 const DEFAULT_CREATE_VM_TIMEOUT_SECS: u64 = 60;
 const MIN_CREATE_VM_TIMEOUT_SECS: u64 = 10;
@@ -38,6 +41,7 @@ const DELETE_VM_TIMEOUT: Duration = Duration::from_secs(30);
 const RECOVER_VM_TIMEOUT: Duration = Duration::from_secs(60);
 const GET_VM_TIMEOUT: Duration = Duration::from_secs(10);
 const GET_VM_BACKUP_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
+const GET_OPENCLAW_LAUNCH_AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_ID_HEADER: &str = "x-request-id";
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -291,6 +295,49 @@ impl MicrovmSpawnerClient {
         resp.json()
             .await
             .context("decode get vm backup status response")
+    }
+
+    pub async fn get_openclaw_launch_auth(
+        &self,
+        vm_id: &str,
+    ) -> anyhow::Result<SpawnerOpenClawLaunchAuth> {
+        self.get_openclaw_launch_auth_with_request_id(vm_id, None)
+            .await
+    }
+
+    pub async fn get_openclaw_launch_auth_with_request_id(
+        &self,
+        vm_id: &str,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<SpawnerOpenClawLaunchAuth> {
+        let url = format!("{}/vms/{vm_id}/openclaw/launch-auth", self.base_url);
+        let resp = with_request_id(
+            self.client
+                .get(&url)
+                .timeout(GET_OPENCLAW_LAUNCH_AUTH_TIMEOUT),
+            request_id,
+        )
+        .send()
+        .await
+        .context("send get openclaw launch auth request")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let upstream_request_id = response_request_id(resp.headers());
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "{}",
+                upstream_error_message(
+                    "get openclaw launch auth",
+                    Some(vm_id),
+                    status,
+                    upstream_request_id.as_deref(),
+                    &text
+                )
+            );
+        }
+        resp.json()
+            .await
+            .context("decode get openclaw launch auth response")
     }
 }
 
@@ -1083,12 +1130,22 @@ fn openclaw_gateway_config(relay_urls: &[String], startup_plan: &GuestStartupPla
     // Keep the plugin entry config and channel config identical so either OpenClaw
     // surface sees the same daemon launch settings.
     let entry_config = channel_config.clone();
+    let mut gateway_config = json!({
+        "mode": "local",
+        "bind": "loopback",
+        "port": DEFAULT_OPENCLAW_GATEWAY_PORT,
+    });
+    gateway_config
+        .as_object_mut()
+        .expect("openclaw gateway config object")
+        .extend(
+            managed_openclaw_gateway_security_config()
+                .as_object()
+                .expect("managed OpenClaw security config object")
+                .clone(),
+        );
     serde_json::to_string_pretty(&json!({
-        "gateway": {
-            "mode": "local",
-            "bind": "loopback",
-            "port": DEFAULT_OPENCLAW_GATEWAY_PORT,
-        },
+        "gateway": gateway_config,
         "plugins": {
             "enabled": true,
             "allow": ["pikachat-openclaw"],
@@ -1110,6 +1167,41 @@ fn openclaw_gateway_config(relay_urls: &[String], startup_plan: &GuestStartupPla
         }
     }))
     .expect("serialize openclaw config")
+}
+
+fn managed_openclaw_gateway_security_config() -> serde_json::Value {
+    let control_ui_allowed_origins = openclaw_control_ui_allowed_origins();
+    // Managed OpenClaw is launched through the platform's authenticated dashboard,
+    // ticket handoff, and scoped UI session. Guest device pairing is intentionally
+    // disabled for this allowlisted flow because the platform boundary is the
+    // intended security control, not direct guest-local browser trust.
+    json!({
+        "controlUi": {
+            "allowInsecureAuth": true,
+            "dangerouslyDisableDeviceAuth": true,
+            "allowedOrigins": control_ui_allowed_origins,
+        },
+        "trustedProxies": DEFAULT_OPENCLAW_TRUSTED_PROXIES,
+    })
+}
+
+fn openclaw_control_ui_allowed_origins() -> Vec<String> {
+    let mut origins = vec![
+        DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN.to_string(),
+        DEFAULT_OPENCLAW_CONTROL_UI_HTTPS_ORIGIN.to_string(),
+    ];
+    if let Ok(raw) = std::env::var("PIKA_OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS") {
+        for origin in raw
+            .split(',')
+            .map(str::trim)
+            .filter(|origin| !origin.is_empty())
+        {
+            if !origins.iter().any(|existing| existing == origin) {
+                origins.push(origin.to_string());
+            }
+        }
+    }
+    origins
 }
 
 fn openclaw_extension_files() -> BTreeMap<String, String> {
@@ -1213,6 +1305,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
+    use std::sync::{Mutex, OnceLock};
     use std::time::Duration as StdDuration;
     use std::time::Instant;
 
@@ -1227,6 +1320,36 @@ mod tests {
         SucceedsAfterRetry,
         SucceedsAfterReadinessRecovery,
         TimesOut { expected_reason: &'static str },
+    }
+
+    fn openclaw_origin_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct OpenClawOriginEnvGuard {
+        prior: Option<String>,
+    }
+
+    impl OpenClawOriginEnvGuard {
+        fn set(value: &str) -> Self {
+            let prior = std::env::var("PIKA_OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS").ok();
+            unsafe {
+                std::env::set_var("PIKA_OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS", value);
+            }
+            Self { prior }
+        }
+    }
+
+    impl Drop for OpenClawOriginEnvGuard {
+        fn drop(&mut self) {
+            match self.prior.as_deref() {
+                Some(prior) => unsafe {
+                    std::env::set_var("PIKA_OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS", prior)
+                },
+                None => unsafe { std::env::remove_var("PIKA_OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS") },
+            }
+        }
     }
 
     fn write_executable(path: &Path, body: &str) {
@@ -1558,7 +1681,7 @@ done
             KeypackagePublishOutcome::TimesOut { .. } => {
                 command
                     .env("PIKA_TEST_PUBLISH_ALWAYS_FAIL", "1")
-                    .env("PIKA_AGENT_READY_TIMEOUT_SECS", "2");
+                    .env("PIKA_AGENT_READY_TIMEOUT_SECS", "5");
             }
         }
 
@@ -1678,7 +1801,16 @@ done
                 let _ = child.wait().expect("wait for autostart script shutdown");
             }
             KeypackagePublishOutcome::TimesOut { expected_reason } => {
-                poll_until(StdDuration::from_secs(5), || failed_marker_path.exists());
+                poll_until(StdDuration::from_secs(10), || {
+                    read_counter(&publish_count_path) >= 1 || failed_marker_path.exists()
+                });
+                let publish_count = read_counter(&publish_count_path);
+                assert!(
+                    publish_count >= 1,
+                    "timeout harness should reach keypackage publish before failing; failed marker contents: {}",
+                    fs::read_to_string(&failed_marker_path).unwrap_or_default()
+                );
+                let status = child.wait().expect("wait for autostart script failure");
                 assert!(
                     !ready_marker_path.exists(),
                     "ready marker must stay absent when keypackage publish never succeeds"
@@ -1687,9 +1819,8 @@ done
                     fs::read_to_string(&failed_marker_path).expect("read failed marker");
                 assert!(
                     failed_marker.contains(expected_reason),
-                    "failed marker should report the dedicated keypackage publish timeout reason"
+                    "failed marker should report the dedicated keypackage publish timeout reason; got {failed_marker}"
                 );
-                let status = child.wait().expect("wait for autostart script failure");
                 assert!(
                     !status.success(),
                     "autostart script should exit non-zero when keypackage publication times out"
@@ -2023,6 +2154,10 @@ done
 
     #[test]
     fn build_create_vm_request_includes_openclaw_native_payload() {
+        let _lock = openclaw_origin_env_lock()
+            .lock()
+            .expect("lock openclaw origin env");
+        let _env = OpenClawOriginEnvGuard::set("");
         let keys = Keys::generate();
         let bot_keys = Keys::generate();
         let req = build_create_vm_request(
@@ -2074,6 +2209,25 @@ done
             serde_json::Value::Number(DEFAULT_OPENCLAW_GATEWAY_PORT.into())
         );
         assert_eq!(
+            openclaw_json["gateway"]["controlUi"]["allowedOrigins"],
+            serde_json::json!([
+                DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN,
+                DEFAULT_OPENCLAW_CONTROL_UI_HTTPS_ORIGIN
+            ])
+        );
+        assert_eq!(
+            openclaw_json["gateway"]["controlUi"]["allowInsecureAuth"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            openclaw_json["gateway"]["controlUi"]["dangerouslyDisableDeviceAuth"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            openclaw_json["gateway"]["trustedProxies"],
+            serde_json::json!(["127.0.0.1", "::1"])
+        );
+        assert_eq!(
             openclaw_json["channels"]["pikachat-openclaw"]["daemonBackend"],
             "native"
         );
@@ -2089,6 +2243,10 @@ done
 
     #[test]
     fn build_create_vm_request_includes_openclaw_acp_payload() {
+        let _lock = openclaw_origin_env_lock()
+            .lock()
+            .expect("lock openclaw origin env");
+        let _env = OpenClawOriginEnvGuard::set("");
         let keys = Keys::generate();
         let bot_keys = Keys::generate();
         let req = build_create_vm_request(
@@ -2134,6 +2292,25 @@ done
         let openclaw_json: serde_json::Value =
             serde_json::from_str(openclaw_config).expect("parse openclaw config");
         assert_eq!(
+            openclaw_json["gateway"]["controlUi"]["allowedOrigins"],
+            serde_json::json!([
+                DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN,
+                DEFAULT_OPENCLAW_CONTROL_UI_HTTPS_ORIGIN
+            ])
+        );
+        assert_eq!(
+            openclaw_json["gateway"]["controlUi"]["allowInsecureAuth"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            openclaw_json["gateway"]["controlUi"]["dangerouslyDisableDeviceAuth"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            openclaw_json["gateway"]["trustedProxies"],
+            serde_json::json!(["127.0.0.1", "::1"])
+        );
+        assert_eq!(
             openclaw_json["channels"]["pikachat-openclaw"]["daemonBackend"],
             "acp"
         );
@@ -2144,6 +2321,51 @@ done
         assert_eq!(
             openclaw_json["channels"]["pikachat-openclaw"]["daemonAcpCwd"],
             "/root/pika-agent/acp"
+        );
+    }
+
+    #[test]
+    fn openclaw_gateway_config_includes_env_control_ui_origin_overrides() {
+        let _lock = openclaw_origin_env_lock()
+            .lock()
+            .expect("lock openclaw origin env");
+        let _env = OpenClawOriginEnvGuard::set("https://openclaw.api.pikachat.org");
+        let keys = Keys::generate();
+        let bot_keys = Keys::generate();
+        let req = build_create_vm_request(
+            &keys.public_key(),
+            &["wss://relay-a.example.com".to_string()],
+            &bot_keys.secret_key().to_secret_hex(),
+            &bot_keys.public_key().to_hex(),
+            &ResolvedMicrovmParams {
+                spawner_url: DEFAULT_SPAWNER_URL.to_string(),
+                kind: ResolvedMicrovmAgentKind::Openclaw,
+                backend: ResolvedMicrovmAgentBackend::Native,
+            },
+        );
+
+        let openclaw_config = req.guest_autostart.files[OPENCLAW_CONFIG_PATH].as_str();
+        let openclaw_json: serde_json::Value =
+            serde_json::from_str(openclaw_config).expect("parse openclaw config");
+        assert_eq!(
+            openclaw_json["gateway"]["controlUi"]["allowedOrigins"],
+            serde_json::json!([
+                DEFAULT_OPENCLAW_CONTROL_UI_ORIGIN,
+                DEFAULT_OPENCLAW_CONTROL_UI_HTTPS_ORIGIN,
+                "https://openclaw.api.pikachat.org"
+            ])
+        );
+        assert_eq!(
+            openclaw_json["gateway"]["controlUi"]["allowInsecureAuth"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            openclaw_json["gateway"]["controlUi"]["dangerouslyDisableDeviceAuth"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            openclaw_json["gateway"]["trustedProxies"],
+            serde_json::json!(["127.0.0.1", "::1"])
         );
     }
 
@@ -2361,6 +2583,33 @@ done
         assert_eq!(
             captured.headers.get(REQUEST_ID_HEADER).map(String::as_str),
             Some("req-backup-123")
+        );
+        assert!(captured.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_openclaw_launch_auth_contract_request_shape() {
+        let (base_url, rx) = spawn_one_shot_server(
+            "200 OK",
+            r#"{"vm_id":"vm-123","gateway_auth_token":"launch-token-123"}"#,
+        );
+        let client = MicrovmSpawnerClient::new(base_url);
+
+        let auth = client
+            .get_openclaw_launch_auth_with_request_id("vm-123", Some("req-launch-auth-123"))
+            .await
+            .expect("get launch auth succeeds");
+        assert_eq!(auth.vm_id, "vm-123");
+        assert_eq!(auth.gateway_auth_token.as_deref(), Some("launch-token-123"));
+
+        let captured = rx
+            .recv_timeout(StdDuration::from_secs(2))
+            .expect("captured request");
+        assert_eq!(captured.method, "GET");
+        assert_eq!(captured.path, "/vms/vm-123/openclaw/launch-auth");
+        assert_eq!(
+            captured.headers.get(REQUEST_ID_HEADER).map(String::as_str),
+            Some("req-launch-auth-123")
         );
         assert!(captured.body.is_empty());
     }

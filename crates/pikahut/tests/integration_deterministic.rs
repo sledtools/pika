@@ -26,10 +26,12 @@ use pikahut::testing::{
 mod support;
 
 fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+    pikahut::config::find_workspace_root().unwrap_or_else(|_| {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+    })
 }
 
 fn env_opt(name: &str) -> Option<String> {
@@ -53,6 +55,19 @@ fn pikachat_command_spec(args: &[&str], capture: &str) -> CommandSpec {
     }
     .args(args.iter().copied())
     .capture_name(capture)
+}
+
+fn staged_test_binary_spec(
+    env_name: &str,
+    test_name: &str,
+    capture_name: &str,
+) -> Option<CommandSpec> {
+    env_path(env_name).map(|binary| {
+        CommandSpec::new(binary.to_string_lossy().to_string())
+            .cwd(workspace_root())
+            .args([test_name, "--exact", "--nocapture"])
+            .capture_name(capture_name)
+    })
 }
 
 fn cli_smoke_request(with_media: bool) -> CliSmokeRequest {
@@ -367,8 +382,13 @@ fn post_rebase_invalid_event_rejection_boundary() -> Result<()> {
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
     let runner = CommandRunner::new(&context);
-    runner.run(
-        &CommandSpec::cargo()
+    let spec = staged_test_binary_spec(
+        "PIKAHUT_TEST_PIKA_CORE_E2E_MESSAGING_BIN",
+        "call_invite_with_invalid_relay_auth_is_rejected",
+        "regression-invalid-event-rejection",
+    )
+    .unwrap_or_else(|| {
+        CommandSpec::cargo()
             .cwd(workspace_root())
             .args([
                 "test",
@@ -380,8 +400,9 @@ fn post_rebase_invalid_event_rejection_boundary() -> Result<()> {
                 "--",
                 "--nocapture",
             ])
-            .capture_name("regression-invalid-event-rejection"),
-    )?;
+            .capture_name("regression-invalid-event-rejection")
+    });
+    runner.run(&spec)?;
     context.mark_success();
     Ok(())
 }
@@ -393,8 +414,13 @@ fn post_rebase_logout_session_convergence_boundary() -> Result<()> {
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
     let runner = CommandRunner::new(&context);
-    runner.run(
-        &CommandSpec::cargo()
+    let spec = staged_test_binary_spec(
+        "PIKAHUT_TEST_PIKA_CORE_APP_FLOWS_BIN",
+        "logout_resets_state",
+        "regression-logout-session-convergence",
+    )
+    .unwrap_or_else(|| {
+        CommandSpec::cargo()
             .cwd(workspace_root())
             .args([
                 "test",
@@ -406,8 +432,9 @@ fn post_rebase_logout_session_convergence_boundary() -> Result<()> {
                 "--",
                 "--nocapture",
             ])
-            .capture_name("regression-logout-session-convergence"),
-    )?;
+            .capture_name("regression-logout-session-convergence")
+    });
+    runner.run(&spec)?;
     context.mark_success();
     Ok(())
 }

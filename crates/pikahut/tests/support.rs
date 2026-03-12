@@ -836,16 +836,21 @@ fn path_arg(path: &Path) -> String {
     path.to_string_lossy().to_string()
 }
 
-fn pikachat_binary(context: &TestContext) -> Result<PathBuf> {
-    let binary = std::env::var("PIKACHAT_BIN")
+fn env_path_var(key: &str) -> Option<PathBuf> {
+    std::env::var(key)
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+fn pikachat_binary(context: &TestContext) -> Result<PathBuf> {
+    let binary = env_path_var("PIKAHUT_TEST_PIKACHAT_BIN")
+        .or_else(|| env_path_var("PIKACHAT_BIN"))
         .unwrap_or_else(|| context.workspace_root().join("target/debug/pikachat"));
     if !binary.exists() {
         bail!(
-            "pikachat binary not found at {}. Build it with `cargo build -p pikachat` or set PIKACHAT_BIN",
+            "pikachat binary not found at {}. Set PIKAHUT_TEST_PIKACHAT_BIN/PIKACHAT_BIN or build it with `cargo build -p pikachat`",
             binary.display()
         );
     }

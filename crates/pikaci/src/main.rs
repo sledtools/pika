@@ -413,20 +413,23 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
             ],
             notification_jobs(),
         )),
-        "pre-merge-pikachat-rust" => Ok(TargetSpec {
-            id: "pre-merge-pikachat-rust",
-            description: "Run the VM-backed Rust tests from the pikachat lane",
-            filters: &[
+        "pre-merge-pikachat-rust" => Ok(staged_linux_target_spec(
+            StagedLinuxRustTarget::PreMergePikachatRust,
+            &[
                 "Cargo.toml",
                 "Cargo.lock",
+                "cmd/pika-relay/**",
                 "cli/**",
                 "flake.nix",
                 "flake.lock",
                 "nix/**",
                 "justfile",
                 ".github/workflows/pre-merge.yml",
+                "pikachat-openclaw/**",
                 "crates/pikaci/**",
+                "crates/pika-agent-control-plane/**",
                 "crates/pika-desktop/**",
+                "crates/hypernote-protocol/**",
                 "crates/pikachat-sidecar/**",
                 "crates/pikahut/**",
                 "crates/pika-agent-protocol/**",
@@ -437,8 +440,8 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "crates/pika-tls/**",
                 "rust/**",
             ],
-            jobs: pikachat_rust_jobs(),
-        }),
+            pikachat_rust_jobs(),
+        )),
         "pikachat-ui-e2e-local-desktop" => Ok(TargetSpec {
             id: "pikachat-ui-e2e-local-desktop",
             description: "Run the pikahut ui_e2e_local_desktop test in a vfkit guest",
@@ -941,7 +944,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::PackageTests {
                 package: "pikachat",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikachatPackageTests),
         },
         JobSpec {
             id: "pikachat-sidecar-package-tests",
@@ -951,7 +954,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "PIKACHAT_TTS_FIXTURE=1 cargo test -p pikachat-sidecar -- --nocapture",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikachatSidecarPackageTests),
         },
         JobSpec {
             id: "pika-desktop-package-tests",
@@ -961,7 +964,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::PackageTests {
                 package: "pika-desktop",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikachatDesktopPackageTests),
         },
         JobSpec {
             id: "pikachat-cli-smoke-local",
@@ -971,7 +974,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikachatCliSmokeLocal),
         },
         JobSpec {
             id: "pikachat-post-rebase-invalid-event",
@@ -981,7 +984,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic post_rebase_invalid_event_rejection_boundary -- --ignored --nocapture",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikachatPostRebaseInvalidEvent),
         },
         JobSpec {
             id: "pikachat-post-rebase-logout-session",
@@ -991,7 +994,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic post_rebase_logout_session_convergence_boundary -- --ignored --nocapture",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikachatPostRebaseLogoutSession),
         },
         JobSpec {
             id: "openclaw-invite-and-chat",
@@ -1001,7 +1004,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat -- --ignored --nocapture",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::OpenclawInviteAndChat),
         },
         JobSpec {
             id: "openclaw-invite-and-chat-rust-bot",
@@ -1011,7 +1014,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat_rust_bot -- --ignored --nocapture",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::OpenclawInviteAndChatRustBot),
         },
         JobSpec {
             id: "openclaw-invite-and-chat-daemon",
@@ -1021,7 +1024,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat_daemon -- --ignored --nocapture",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::OpenclawInviteAndChatDaemon),
         },
         JobSpec {
             id: "openclaw-audio-echo",
@@ -1031,7 +1034,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic openclaw_scenario_audio_echo -- --ignored --nocapture",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::OpenclawAudioEcho),
         },
     ]
 }
@@ -1494,6 +1497,31 @@ mod tests {
             Some(StagedLinuxRustLane::RmpInitSmokeCi)
         );
         assert_eq!(target.jobs[0].runner_kind(), RunnerKind::MicrovmRemote);
+    }
+
+    #[test]
+    fn pre_merge_pikachat_rust_target_uses_staged_linux_lanes() {
+        let target = target_spec("pre-merge-pikachat-rust").expect("pikachat target");
+
+        assert_eq!(target.jobs.len(), 10);
+        assert_eq!(
+            target.jobs[0].staged_linux_rust_lane(),
+            Some(StagedLinuxRustLane::PikachatPackageTests)
+        );
+        assert_eq!(
+            target.jobs[3].staged_linux_rust_lane(),
+            Some(StagedLinuxRustLane::PikachatCliSmokeLocal)
+        );
+        assert_eq!(
+            target.jobs[9].staged_linux_rust_lane(),
+            Some(StagedLinuxRustLane::OpenclawAudioEcho)
+        );
+        assert!(
+            target
+                .jobs
+                .iter()
+                .all(|job| job.runner_kind() == RunnerKind::MicrovmRemote)
+        );
     }
 
     #[test]

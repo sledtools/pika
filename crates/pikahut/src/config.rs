@@ -9,6 +9,7 @@ pub const DEFAULT_RELAY_PORT: u16 = DEFAULT_PORT_BASE; // 19400
 pub const DEFAULT_SERVER_PORT: u16 = DEFAULT_PORT_BASE + 1; // 19401
 pub const DEFAULT_MOQ_PORT: u16 = DEFAULT_PORT_BASE + 2; // 19402
 pub const DEFAULT_STATE_DIR: &str = ".pikahut";
+pub const TEST_WORKSPACE_ROOT_ENV: &str = "PIKAHUT_TEST_WORKSPACE_ROOT";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -255,24 +256,55 @@ fn resolve_udp_port(preferred: u16) -> Result<u16> {
     Ok(socket.local_addr()?.port())
 }
 
+fn contains_workspace_manifest(dir: &std::path::Path) -> bool {
+    let candidate = dir.join("Cargo.toml");
+    if !candidate.exists() {
+        return false;
+    }
+
+    std::fs::read_to_string(candidate)
+        .map(|content| content.contains("[workspace]"))
+        .unwrap_or(false)
+}
+
+fn compile_time_workspace_root() -> Option<PathBuf> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = root.canonicalize().unwrap_or(root);
+    contains_workspace_manifest(&root).then_some(root)
+}
+
 /// Walk up from CWD looking for the workspace Cargo.toml (contains [workspace]).
 pub fn find_workspace_root() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os(TEST_WORKSPACE_ROOT_ENV).filter(|value| !value.is_empty())
+    {
+        let root = PathBuf::from(path);
+        if contains_workspace_manifest(&root) {
+            return Ok(root);
+        }
+        bail!(
+            "workspace root override {} does not contain a workspace Cargo.toml",
+            root.display()
+        );
+    }
+
     let mut dir = std::env::current_dir()?;
     loop {
-        let candidate = dir.join("Cargo.toml");
-        if candidate.exists() {
-            let content = std::fs::read_to_string(&candidate).unwrap_or_default();
-            if content.contains("[workspace]") {
-                return Ok(dir);
-            }
+        if contains_workspace_manifest(&dir) {
+            return Ok(dir);
         }
         if !dir.pop() {
-            bail!(
-                "could not find workspace Cargo.toml walking up from {}",
-                std::env::current_dir()?.display()
-            );
+            break;
         }
     }
+
+    if let Some(root) = compile_time_workspace_root() {
+        return Ok(root);
+    }
+
+    bail!(
+        "could not find workspace Cargo.toml walking up from {}",
+        std::env::current_dir()?.display()
+    );
 }
 
 /// Resolve the state directory. If no explicit path is given, defaults to
@@ -291,6 +323,44 @@ pub fn resolve_state_dir(state_dir: Option<PathBuf>) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct ScopedEnvVar {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl ScopedEnvVar {
+        fn set(key: &'static str, value: &std::path::Path) -> Self {
+            let previous = std::env::var_os(key);
+            // SAFETY: config tests serialize env mutations with env_lock().
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                // SAFETY: config tests serialize env mutations with env_lock().
+                unsafe {
+                    std::env::set_var(self.key, previous);
+                }
+            } else {
+                // SAFETY: config tests serialize env mutations with env_lock().
+                unsafe {
+                    std::env::remove_var(self.key);
+                }
+            }
+        }
+    }
 
     #[test]
     fn profile_parse_valid() {
@@ -403,5 +473,20 @@ timeout_secs = 120
         drop(probe);
         let chosen = resolve_udp_port(preferred).expect("resolve udp preferred port");
         assert_eq!(chosen, preferred);
+    }
+
+    #[test]
+    fn workspace_root_uses_test_override() {
+        let _guard = env_lock().lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[workspace]\nmembers = []\n",
+        )
+        .unwrap();
+        let _override = ScopedEnvVar::set(TEST_WORKSPACE_ROOT_ENV, temp.path());
+
+        let root = find_workspace_root().unwrap();
+        assert_eq!(root, temp.path());
     }
 }

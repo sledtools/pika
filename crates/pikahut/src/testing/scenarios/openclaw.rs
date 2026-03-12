@@ -18,6 +18,27 @@ use super::artifacts::{self, CommandOutcomeRecord};
 use super::common::{pick_free_port, resolve_openclaw_dir, tail_lines};
 use super::types::{OpenclawE2eRequest, ScenarioRunOutput};
 
+const PIKACHAT_BIN_ENV: &str = "PIKAHUT_TEST_PIKACHAT_BIN";
+
+fn pikachat_peer_spec(
+    root: &Path,
+    binary: &str,
+    relay_url: &str,
+    state_dir: &Path,
+    peer_pubkey: &str,
+) -> CommandSpec {
+    CommandSpec::new(binary)
+        .cwd(root)
+        .args(["scenario", "invite-and-chat-peer", "--relay"])
+        .arg(relay_url.to_string())
+        .args([
+            "--state-dir".to_string(),
+            state_dir.to_string_lossy().to_string(),
+        ])
+        .args(["--peer-pubkey".to_string(), peer_pubkey.to_string()])
+        .capture_name("openclaw-invite-and-chat-peer")
+}
+
 fn build_context(state_dir: Option<std::path::PathBuf>) -> Result<TestContext> {
     let mut builder =
         TestContext::builder("openclaw-e2e").artifact_policy(ArtifactPolicy::PreserveOnFailure);
@@ -151,18 +172,25 @@ pub async fn run_openclaw_e2e(args: OpenclawE2eRequest) -> Result<ScenarioRunOut
     let runner = CommandRunner::new(&context);
     let mut command_outcomes = Vec::new();
 
-    let build_cmd = runner.run(
-        &CommandSpec::cargo()
-            .cwd(&root)
-            .args(["build", "--manifest-path"])
-            .arg(root.join("Cargo.toml").to_string_lossy().to_string())
-            .args(["-p", "pikachat"])
-            .capture_name("openclaw-build-pikachat"),
-    )?;
-    command_outcomes.push(CommandOutcomeRecord::from_output(
-        "openclaw-build-pikachat",
-        &build_cmd,
-    ));
+    let sidecar_cmd = if let Ok(binary) = std::env::var(PIKACHAT_BIN_ENV) {
+        binary
+    } else {
+        let build_cmd = runner.run(
+            &CommandSpec::cargo()
+                .cwd(&root)
+                .args(["build", "--manifest-path"])
+                .arg(root.join("Cargo.toml").to_string_lossy().to_string())
+                .args(["-p", "pikachat"])
+                .capture_name("openclaw-build-pikachat"),
+        )?;
+        command_outcomes.push(CommandOutcomeRecord::from_output(
+            "openclaw-build-pikachat",
+            &build_cmd,
+        ));
+        root.join("target/debug/pikachat")
+            .to_string_lossy()
+            .to_string()
+    };
 
     if super::common::command_exists("pnpm") {
         let pnpm_cmd = runner.run(
@@ -195,10 +223,6 @@ pub async fn run_openclaw_e2e(args: OpenclawE2eRequest) -> Result<ScenarioRunOut
         std::process::id()
     );
 
-    let sidecar_cmd = root
-        .join("target/debug/pikachat")
-        .to_string_lossy()
-        .to_string();
     let sidecar_args = vec![
         "daemon".to_string(),
         "--relay".to_string(),
@@ -294,24 +318,13 @@ pub async fn run_openclaw_e2e(args: OpenclawE2eRequest) -> Result<ScenarioRunOut
         }
     };
 
-    let scenario_run = runner.run(
-        &CommandSpec::cargo()
-            .cwd(&root)
-            .args(["run", "--manifest-path"])
-            .arg(root.join("Cargo.toml").to_string_lossy().to_string())
-            .args([
-                "-p",
-                "pikachat",
-                "--",
-                "scenario",
-                "invite-and-chat-peer",
-                "--relay",
-            ])
-            .arg(relay_url.clone())
-            .args(["--state-dir", &context.state_dir().to_string_lossy()])
-            .args(["--peer-pubkey", &peer_pubkey])
-            .capture_name("openclaw-invite-and-chat-peer"),
-    );
+    let scenario_run = runner.run(&pikachat_peer_spec(
+        &root,
+        &sidecar_cmd,
+        &relay_url,
+        context.state_dir(),
+        &peer_pubkey,
+    ));
 
     let scenario_output = match scenario_run {
         Ok(output) => output,

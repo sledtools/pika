@@ -11,6 +11,8 @@ let
       "pika-linux-rust-workspace"
     else if lane == "agent-contracts" then
       "pika-linux-rust-agent-contracts-workspace"
+    else if lane == "pikachat" then
+      "pika-linux-rust-pikachat-workspace"
     else if lane == "notifications" then
       "pika-linux-rust-notifications-workspace"
     else if lane == "rmp" then
@@ -36,6 +38,7 @@ let
     ] ++ pkgs.lib.optionals (lane == "agent-contracts") [
       pkgs.llvmPackages.libclang
       pkgs.linuxHeaders
+    ] ++ pkgs.lib.optionals (lane == "agent-contracts" || lane == "pikachat") [
       pkgs.xorg.libX11
       pkgs.xorg.libXcursor
       pkgs.xorg.libXi
@@ -377,6 +380,104 @@ let
 
           cargo check --locked -j "$cargoJobs" -p rmp-template-core >/dev/null
           cargo check --locked -j "$cargoJobs" -p rmp-template-core_desktop_iced >/dev/null
+        ''
+      else if lane == "pikachat" then
+        ''
+          export PIKACI_PIKACHAT_BIN="$TMPDIR/pikachat-bin"
+          export PIKACI_PIKACHAT_PACKAGE_TESTS_MANIFEST="$TMPDIR/pikachat-package-tests.manifest"
+          export PIKACI_PIKACHAT_SIDECAR_PACKAGE_TESTS_MANIFEST="$TMPDIR/pikachat-sidecar-package-tests.manifest"
+          export PIKACI_PIKA_DESKTOP_PACKAGE_TESTS_MANIFEST="$TMPDIR/pika-desktop-package-tests.manifest"
+          export PIKACI_PIKAHUT_INTEGRATION_DETERMINISTIC_MANIFEST="$TMPDIR/pikahut-integration-deterministic.manifest"
+          export PIKACI_PIKA_CORE_E2E_MESSAGING_BIN="$TMPDIR/pika-core-e2e-messaging-bin"
+          export PIKACI_PIKA_CORE_APP_FLOWS_BIN="$TMPDIR/pika-core-app-flows-bin"
+          cargoJobs="''${CARGO_BUILD_JOBS:-''${NIX_BUILD_CORES:-}}"
+          case "$cargoJobs" in
+            ""|0)
+              cargoJobs="$(${pkgs.coreutils}/bin/nproc)"
+              ;;
+          esac
+          echo "[pikaci] building pikachat lane with cargo jobs=$cargoJobs" >&2
+          target_root="''${CARGO_TARGET_DIR:-target}"
+          target_root_abs="$(pwd)/$target_root/"
+
+          capture_manifest() {
+            local cargo_build_log="$1"
+            local manifest_path="$2"
+            ${pkgs.jq}/bin/jq -r --arg target_root "$target_root/" --arg target_root_abs "$target_root_abs" '
+              select(.reason == "compiler-artifact" and .executable != null)
+              | (.executable | sub("^" + $target_root_abs; "") | sub("^" + $target_root; ""))
+            ' <"$cargo_build_log" >"$manifest_path"
+            sort -u -o "$manifest_path" "$manifest_path"
+            if [ ! -s "$manifest_path" ]; then
+              echo "missing staged pikachat manifest output for $manifest_path" >&2
+              cat "$cargo_build_log" >&2
+              exit 1
+            fi
+          }
+
+          capture_binary() {
+            local cargo_build_log="$1"
+            local binary_path="$2"
+            local target_name="$3"
+            ${pkgs.jq}/bin/jq -r --arg target_name "$target_name" '
+              select(
+                .reason == "compiler-artifact"
+                and .target.name == $target_name
+                and .executable != null
+              )
+              | .executable
+            ' <"$cargo_build_log" | head -n1 >"$binary_path"
+            if [ ! -s "$binary_path" ]; then
+              echo "missing staged pikachat binary output for $binary_path" >&2
+              cat "$cargo_build_log" >&2
+              exit 1
+            fi
+          }
+
+          cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+          cargo build --locked -j "$cargoJobs" -p pikachat \
+            --bin pikachat \
+            --message-format json-render-diagnostics >"$cargoBuildLog"
+          capture_binary "$cargoBuildLog" "$PIKACI_PIKACHAT_BIN" "pikachat"
+
+          cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+          cargo test --locked -j "$cargoJobs" -p pikachat \
+            --no-run \
+            --message-format json-render-diagnostics >"$cargoBuildLog"
+          capture_manifest "$cargoBuildLog" "$PIKACI_PIKACHAT_PACKAGE_TESTS_MANIFEST"
+
+          cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+          PIKACHAT_TTS_FIXTURE=1 cargo test --locked -j "$cargoJobs" -p pikachat-sidecar \
+            --no-run \
+            --message-format json-render-diagnostics >"$cargoBuildLog"
+          capture_manifest "$cargoBuildLog" "$PIKACI_PIKACHAT_SIDECAR_PACKAGE_TESTS_MANIFEST"
+
+          cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+          cargo test --locked -j "$cargoJobs" -p pika-desktop \
+            --no-run \
+            --message-format json-render-diagnostics >"$cargoBuildLog"
+          capture_manifest "$cargoBuildLog" "$PIKACI_PIKA_DESKTOP_PACKAGE_TESTS_MANIFEST"
+
+          cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+          cargo test --locked -j "$cargoJobs" -p pikahut \
+            --test integration_deterministic \
+            --no-run \
+            --message-format json-render-diagnostics >"$cargoBuildLog"
+          capture_manifest "$cargoBuildLog" "$PIKACI_PIKAHUT_INTEGRATION_DETERMINISTIC_MANIFEST"
+
+          cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+          cargo test --locked -j "$cargoJobs" -p pika_core \
+            --test e2e_messaging \
+            --no-run \
+            --message-format json-render-diagnostics >"$cargoBuildLog"
+          capture_binary "$cargoBuildLog" "$PIKACI_PIKA_CORE_E2E_MESSAGING_BIN" "e2e_messaging"
+
+          cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+          cargo test --locked -j "$cargoJobs" -p pika_core \
+            --test app_flows \
+            --no-run \
+            --message-format json-render-diagnostics >"$cargoBuildLog"
+          capture_binary "$cargoBuildLog" "$PIKACI_PIKA_CORE_APP_FLOWS_BIN" "app_flows"
         ''
       else
         ''
@@ -723,7 +824,7 @@ let
           target_root="''${CARGO_TARGET_DIR:-target}"
           target_root_abs="$(pwd)/$target_root/"
           mkdir -p "$out/bin" "$out/share/pikaci" "$out/target"
-
+          
           copy_target_relative() {
             local relative="$1"
             if [ ! -e "$target_root/$relative" ]; then
@@ -799,6 +900,199 @@ CFG
             check_generated_project "$tmp/rmp-iced" -p rmp-iced_core_desktop_iced
             echo "ok: rmp init ci smoke passed"
           ''} "$out/bin/run-rmp-init-smoke-ci"
+        ''
+      else if lane == "pikachat" then
+        ''
+          target_root="''${CARGO_TARGET_DIR:-target}"
+          mkdir -p "$out/bin" "$out/share/pikaci" "$out/target"
+          cp "$PIKACI_PIKACHAT_PACKAGE_TESTS_MANIFEST" \
+            "$out/share/pikaci/pikachat-package-tests.manifest"
+          cp "$PIKACI_PIKACHAT_SIDECAR_PACKAGE_TESTS_MANIFEST" \
+            "$out/share/pikaci/pikachat-sidecar-package-tests.manifest"
+          cp "$PIKACI_PIKA_DESKTOP_PACKAGE_TESTS_MANIFEST" \
+            "$out/share/pikaci/pika-desktop-package-tests.manifest"
+          cp "$PIKACI_PIKAHUT_INTEGRATION_DETERMINISTIC_MANIFEST" \
+            "$out/share/pikaci/pikahut-integration-deterministic.manifest"
+          target_root_abs="$(pwd)/$target_root/"
+
+          copy_target_relative() {
+            local relative="$1"
+            if [ ! -e "$target_root/$relative" ]; then
+              echo "missing staged pikachat runtime artifact at $target_root/$relative" >&2
+              exit 1
+            fi
+            (
+              cd "$target_root"
+              cp --parents -P "$relative" "$out/target"
+            )
+          }
+
+          install_staged_binary() {
+            local manifest_path="$1"
+            local output_name="$2"
+            local executable_path
+            executable_path="$(cat "$manifest_path")"
+            local relative
+            case "$executable_path" in
+              "$target_root_abs"*)
+                relative="''${executable_path#$target_root_abs}"
+                ;;
+              "$target_root"*)
+                relative="''${executable_path#$target_root/}"
+                ;;
+              *)
+                relative="$executable_path"
+                ;;
+            esac
+            copy_target_relative "$relative"
+            ln -s "../target/$relative" "$out/bin/$output_name"
+          }
+
+          staged_runtime_manifest="$TMPDIR/pikachat-staged-runtime.manifest"
+          cat \
+            "$PIKACI_PIKACHAT_PACKAGE_TESTS_MANIFEST" \
+            "$PIKACI_PIKACHAT_SIDECAR_PACKAGE_TESTS_MANIFEST" \
+            "$PIKACI_PIKA_DESKTOP_PACKAGE_TESTS_MANIFEST" \
+            "$PIKACI_PIKAHUT_INTEGRATION_DETERMINISTIC_MANIFEST" \
+            | sort -u >"$staged_runtime_manifest"
+
+          while IFS= read -r relative; do
+            [ -n "$relative" ] || continue
+            copy_target_relative "$relative"
+          done <"$staged_runtime_manifest"
+
+          if [ -d "$target_root/debug/deps" ]; then
+            while IFS= read -r shared_object; do
+              copy_target_relative "''${shared_object#$target_root/}"
+            done < <(
+              find "$target_root/debug/deps" -maxdepth 1 -type f \
+                \( -name '*.so' -o -name '*.so.*' \) \
+                | sort
+            )
+          fi
+
+          install_staged_binary "$PIKACI_PIKACHAT_BIN" "pikachat"
+          install_staged_binary "$PIKACI_PIKA_CORE_E2E_MESSAGING_BIN" "pika-core-e2e-messaging"
+          install_staged_binary "$PIKACI_PIKA_CORE_APP_FLOWS_BIN" "pika-core-app-flows"
+          ${pkgs.lib.optionalString (pikaRelayPkg != null) ''
+          ln -s ${pikaRelayPkg}/bin/pika-relay "$out/bin/pika-relay"
+          ''}
+
+          cat >"$out/bin/run-staged-test-manifest" <<'EOF'
+          #!${pkgs.bash}/bin/bash
+          set -euo pipefail
+
+          if [ "$#" -lt 1 ]; then
+            echo "usage: $(basename "$0") <manifest> [test-binary-args...]" >&2
+            exit 1
+          fi
+
+          root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
+          manifest="$root/share/pikaci/$1"
+          shift
+          if [ ! -s "$manifest" ]; then
+            echo "missing staged test manifest at $manifest" >&2
+            exit 1
+          fi
+
+          while IFS= read -r relative; do
+            [ -n "$relative" ] || continue
+            echo "[pikaci] running staged test binary $relative"
+            "$root/target/$relative" "$@"
+          done <"$manifest"
+          EOF
+          cat >"$out/bin/run-pikahut-integration-deterministic" <<'EOF'
+          #!${pkgs.bash}/bin/bash
+          set -euo pipefail
+
+          if [ "$#" -ne 1 ]; then
+            echo "usage: $(basename "$0") <selector>" >&2
+            exit 1
+          fi
+
+          root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
+          if [ -f /workspace/snapshot/Cargo.toml ]; then
+            export PIKAHUT_TEST_WORKSPACE_ROOT=/workspace/snapshot
+            cd "$PIKAHUT_TEST_WORKSPACE_ROOT"
+          fi
+          export PIKAHUT_TEST_PIKACHAT_BIN="$root/bin/pikachat"
+          export PIKAHUT_TEST_PIKA_CORE_E2E_MESSAGING_BIN="$root/bin/pika-core-e2e-messaging"
+          export PIKAHUT_TEST_PIKA_CORE_APP_FLOWS_BIN="$root/bin/pika-core-app-flows"
+          if [ -x "$root/bin/pika-relay" ]; then
+            export PIKA_FIXTURE_RELAY_CMD="$root/bin/pika-relay"
+          fi
+
+          exec "$(dirname "$0")/run-staged-test-manifest" \
+            pikahut-integration-deterministic.manifest \
+            "$1" \
+            --exact \
+            --ignored \
+            --nocapture
+          EOF
+          cat >"$out/bin/run-pikachat-package-tests" <<'EOF'
+          #!${pkgs.bash}/bin/bash
+          set -euo pipefail
+          exec "$(dirname "$0")/run-staged-test-manifest" pikachat-package-tests.manifest --nocapture
+          EOF
+          cat >"$out/bin/run-pikachat-sidecar-package-tests" <<'EOF'
+          #!${pkgs.bash}/bin/bash
+          set -euo pipefail
+          export PIKACHAT_TTS_FIXTURE=1
+          exec "$(dirname "$0")/run-staged-test-manifest" pikachat-sidecar-package-tests.manifest --nocapture
+          EOF
+          cat >"$out/bin/run-pika-desktop-package-tests" <<'EOF'
+          #!${pkgs.bash}/bin/bash
+          set -euo pipefail
+          exec "$(dirname "$0")/run-staged-test-manifest" pika-desktop-package-tests.manifest --nocapture
+          EOF
+          cat >"$out/bin/run-pikachat-cli-smoke-local" <<'EOF'
+          #!${pkgs.bash}/bin/bash
+          set -euo pipefail
+          exec "$(dirname "$0")/run-pikahut-integration-deterministic" cli_smoke_local
+          EOF
+          cat >"$out/bin/run-pikachat-post-rebase-invalid-event" <<'EOF'
+          #!${pkgs.bash}/bin/bash
+          set -euo pipefail
+          exec "$(dirname "$0")/run-pikahut-integration-deterministic" post_rebase_invalid_event_rejection_boundary
+          EOF
+          cat >"$out/bin/run-pikachat-post-rebase-logout-session" <<'EOF'
+          #!${pkgs.bash}/bin/bash
+          set -euo pipefail
+          exec "$(dirname "$0")/run-pikahut-integration-deterministic" post_rebase_logout_session_convergence_boundary
+          EOF
+          cat >"$out/bin/run-openclaw-invite-and-chat" <<'EOF'
+          #!${pkgs.bash}/bin/bash
+          set -euo pipefail
+          exec "$(dirname "$0")/run-pikahut-integration-deterministic" openclaw_scenario_invite_and_chat
+          EOF
+          cat >"$out/bin/run-openclaw-invite-and-chat-rust-bot" <<'EOF'
+          #!${pkgs.bash}/bin/bash
+          set -euo pipefail
+          exec "$(dirname "$0")/run-pikahut-integration-deterministic" openclaw_scenario_invite_and_chat_rust_bot
+          EOF
+          cat >"$out/bin/run-openclaw-invite-and-chat-daemon" <<'EOF'
+          #!${pkgs.bash}/bin/bash
+          set -euo pipefail
+          exec "$(dirname "$0")/run-pikahut-integration-deterministic" openclaw_scenario_invite_and_chat_daemon
+          EOF
+          cat >"$out/bin/run-openclaw-audio-echo" <<'EOF'
+          #!${pkgs.bash}/bin/bash
+          set -euo pipefail
+          exec "$(dirname "$0")/run-pikahut-integration-deterministic" openclaw_scenario_audio_echo
+          EOF
+          chmod +x \
+            "$out/bin/run-staged-test-manifest" \
+            "$out/bin/run-pikahut-integration-deterministic" \
+            "$out/bin/run-pikachat-package-tests" \
+            "$out/bin/run-pikachat-sidecar-package-tests" \
+            "$out/bin/run-pika-desktop-package-tests" \
+            "$out/bin/run-pikachat-cli-smoke-local" \
+            "$out/bin/run-pikachat-post-rebase-invalid-event" \
+            "$out/bin/run-pikachat-post-rebase-logout-session" \
+            "$out/bin/run-openclaw-invite-and-chat" \
+            "$out/bin/run-openclaw-invite-and-chat-rust-bot" \
+            "$out/bin/run-openclaw-invite-and-chat-daemon" \
+            "$out/bin/run-openclaw-audio-echo"
         ''
       else
         ''

@@ -141,6 +141,41 @@ fn extract_just_recipe_body(text: &str, recipe_name: &str) -> Vec<String> {
     body
 }
 
+fn extract_rust_function_body(text: &str, function_name: &str) -> String {
+    let signature = format!("fn {function_name}(");
+    let Some(start) = text.find(&signature) else {
+        return String::new();
+    };
+    let Some(open_offset) = text[start..].find('{') else {
+        return String::new();
+    };
+
+    let mut depth = 0usize;
+    let mut body_start = None;
+    for (idx, ch) in text[start + open_offset..].char_indices() {
+        match ch {
+            '{' => {
+                depth += 1;
+                if depth == 1 {
+                    body_start = Some(start + open_offset + idx + 1);
+                }
+            }
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    if let Some(body_start) = body_start {
+                        return text[body_start..start + open_offset + idx].to_string();
+                    }
+                    return String::new();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    String::new()
+}
+
 fn extract_shell_if_then_branch(recipe_body: &[String], condition_fragment: &str) -> Vec<String> {
     let mut in_branch = false;
     let mut branch = Vec::new();
@@ -540,15 +575,36 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
     );
 
     let pikaci = fs::read_to_string(root.join("crates/pikaci/src/main.rs"))?;
-    let rust_lane_filters = extract_pikaci_target_filters(&pikaci, "pre-merge-pikachat-rust");
+    let rust_lane_filters: HashSet<_> =
+        extract_pikaci_target_filters(&pikaci, "pre-merge-pikachat-rust")
+            .into_iter()
+            .collect();
+    let flake = fs::read_to_string(root.join("flake.nix"))?;
     assert!(
         !rust_lane_filters.is_empty(),
         "pikaci main.rs must keep pre-merge-pikachat-rust filters discoverable"
     );
+    assert!(
+        flake.contains("pikachatStagedLinuxRustArgs = commonStagedLinuxRustArgs // {"),
+        "flake.nix must keep a dedicated staged source config for the pikachat lane"
+    );
+    assert!(
+        flake.contains("src = ciRustWorkspaceSrc;"),
+        "pikachat staged source must use the full Rust workspace snapshot so cli and sidecar members stay buildable"
+    );
+    assert!(
+        flake.contains("cargoLock = ./Cargo.lock;"),
+        "pikachat staged source must use the full workspace lockfile"
+    );
+    assert!(
+        flake.contains("./VERSION"),
+        "pikachat staged source must include the repo-root VERSION file while staged desktop package tests stay in-lane"
+    );
 
     let missing_from_workflow: Vec<_> = rust_lane_filters
-        .into_iter()
-        .filter(|entry| !pikachat_filter.contains(entry))
+        .iter()
+        .filter(|entry| !pikachat_filter.contains(entry.as_str()))
+        .cloned()
         .collect();
     assert!(
         missing_from_workflow.is_empty(),
@@ -570,6 +626,161 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
             "pikachat workflow filter must include pikachat-openclaw/** while the Apple host follow-up runs the channel behavior test"
         );
     }
+
+    let cli_manifest = fs::read_to_string(root.join("cli/Cargo.toml"))?;
+    for (dependency_name, filter_path) in [
+        ("pika-agent-protocol", "crates/pika-agent-protocol/**"),
+        (
+            "pika-agent-control-plane",
+            "crates/pika-agent-control-plane/**",
+        ),
+        ("pikachat-sidecar", "crates/pikachat-sidecar/**"),
+        ("hypernote-protocol", "crates/hypernote-protocol/**"),
+    ] {
+        if cli_manifest.contains(dependency_name) {
+            assert!(
+                rust_lane_filters.contains(filter_path),
+                "pre-merge-pikachat-rust filters must include {filter_path} while cli/Cargo.toml keeps the direct {dependency_name} dependency"
+            );
+            assert!(
+                pikachat_filter.contains(filter_path),
+                "pikachat workflow filter must include {filter_path} while cli/Cargo.toml keeps the direct {dependency_name} dependency"
+            );
+        }
+    }
+    if cli_manifest.contains("pika-test-utils") {
+        assert!(
+            rust_lane_filters.contains("crates/pika-test-utils/**"),
+            "pre-merge-pikachat-rust filters must include crates/pika-test-utils/** while cli/Cargo.toml keeps the shared test dependency"
+        );
+        assert!(
+            pikachat_filter.contains("crates/pika-test-utils/**"),
+            "pikachat workflow filter must include crates/pika-test-utils/** while cli/Cargo.toml keeps the shared test dependency"
+        );
+    }
+
+    let pikachat_jobs = extract_rust_function_body(&pikaci, "pikachat_rust_jobs");
+    let lane_keeps_relay_backed_selectors = [
+        "cli_smoke_local",
+        "openclaw_scenario_invite_and_chat",
+        "openclaw_scenario_invite_and_chat_rust_bot",
+        "openclaw_scenario_invite_and_chat_daemon",
+        "openclaw_scenario_audio_echo",
+    ]
+    .iter()
+    .any(|selector| pikachat_jobs.contains(selector));
+    let linux_rust = fs::read_to_string(root.join("nix/ci/linux-rust.nix"))?;
+    let deterministic =
+        fs::read_to_string(root.join("crates/pikahut/src/testing/scenarios/deterministic.rs"))?;
+    let openclaw =
+        fs::read_to_string(root.join("crates/pikahut/src/testing/scenarios/openclaw.rs"))?;
+    let support = fs::read_to_string(root.join("crates/pikahut/tests/support.rs"))?;
+    let integration_deterministic =
+        fs::read_to_string(root.join("crates/pikahut/tests/integration_deterministic.rs"))?;
+    let config = fs::read_to_string(root.join("crates/pikahut/src/config.rs"))?;
+    if lane_keeps_relay_backed_selectors {
+        let run_scenario_body = extract_rust_function_body(&deterministic, "run_scenario");
+        let plugin_filter = "pikachat-openclaw/**";
+        assert!(
+            rust_lane_filters.contains("cmd/pika-relay/**"),
+            "pre-merge-pikachat-rust filters must include cmd/pika-relay/** while relay-backed deterministic selectors stay in-lane"
+        );
+        assert!(
+            pikachat_filter.contains("cmd/pika-relay/**"),
+            "pikachat workflow filter must include cmd/pika-relay/** while relay-backed deterministic selectors stay in-lane"
+        );
+        assert!(
+            rust_lane_filters.contains(plugin_filter),
+            "pre-merge-pikachat-rust filters must include {plugin_filter} while the deterministic OpenClaw scenarios stay in-lane"
+        );
+        assert!(
+            pikachat_filter.contains(plugin_filter),
+            "pikachat workflow filter must include {plugin_filter} while the deterministic OpenClaw scenarios stay in-lane"
+        );
+        assert!(
+            deterministic.contains("PIKAHUT_TEST_PIKACHAT_BIN"),
+            "pikahut deterministic helpers must keep the staged pikachat binary override while relay-backed selectors stay in-lane"
+        );
+        assert!(
+            support.contains("env_path_var(\"PIKAHUT_TEST_PIKACHAT_BIN\")"),
+            "pikahut daemon-boundary support must prefer the staged pikachat binary override while that selector stays in-lane"
+        );
+        assert!(
+            run_scenario_body
+                .contains("pikachat_spec(&root, &scenario_args, \"pikachat-scenario\")"),
+            "relay-backed deterministic scenarios must keep routing through pikachat_spec while staged pikachat selectors stay in-lane"
+        );
+        assert!(
+            openclaw.contains("pikachat-openclaw/openclaw/extensions/pikachat-openclaw"),
+            "relay-backed deterministic OpenClaw scenarios must keep resolving the checked-in plugin tree while those selectors stay in-lane"
+        );
+        assert!(
+            openclaw.contains("CommandSpec::new(binary)")
+                && openclaw.contains(".capture_name(\"openclaw-invite-and-chat-peer\")"),
+            "OpenClaw peer coverage must keep running through a direct pikachat binary spec while staged pikachat selectors stay in-lane"
+        );
+        assert!(
+            linux_rust.contains("export PIKAHUT_TEST_PIKACHAT_BIN=\"$root/bin/pikachat\""),
+            "staged pikachat wrapper must export PIKAHUT_TEST_PIKACHAT_BIN while relay-backed selectors stay in-lane"
+        );
+        assert!(
+            linux_rust.contains("export PIKA_FIXTURE_RELAY_CMD=\"$root/bin/pika-relay\""),
+            "staged pikachat wrapper must export PIKA_FIXTURE_RELAY_CMD while relay-backed selectors stay in-lane"
+        );
+        assert!(
+            linux_rust.contains("export PIKAHUT_TEST_WORKSPACE_ROOT=/workspace/snapshot"),
+            "staged pikachat wrapper must export PIKAHUT_TEST_WORKSPACE_ROOT while prepared selector execution still depends on workspace discovery"
+        );
+        assert!(
+            linux_rust.contains("cd \"$PIKAHUT_TEST_WORKSPACE_ROOT\""),
+            "staged pikachat wrapper must enter the staged workspace root before running deterministic selectors"
+        );
+        assert!(
+            config.contains(
+                "pub const TEST_WORKSPACE_ROOT_ENV: &str = \"PIKAHUT_TEST_WORKSPACE_ROOT\";"
+            ),
+            "pikahut config must keep the staged workspace-root override env while prepared selector execution depends on it"
+        );
+        assert!(
+            integration_deterministic
+                .contains("pikahut::config::find_workspace_root().unwrap_or_else(|_|"),
+            "integration_deterministic must resolve workspace root from runtime config before falling back to compile-time paths"
+        );
+    }
+
+    let lane_keeps_pika_core_regression_boundaries = [
+        "post_rebase_invalid_event_rejection_boundary",
+        "post_rebase_logout_session_convergence_boundary",
+    ]
+    .iter()
+    .any(|selector| pikachat_jobs.contains(selector));
+    if lane_keeps_pika_core_regression_boundaries {
+        assert!(
+            integration_deterministic.contains("PIKAHUT_TEST_PIKA_CORE_E2E_MESSAGING_BIN"),
+            "pikahut deterministic regressions must keep the staged pika_core e2e_messaging override while those boundaries stay in-lane"
+        );
+        assert!(
+            integration_deterministic.contains("PIKAHUT_TEST_PIKA_CORE_APP_FLOWS_BIN"),
+            "pikahut deterministic regressions must keep the staged pika_core app_flows override while those boundaries stay in-lane"
+        );
+        assert!(
+            linux_rust.contains(
+                "export PIKAHUT_TEST_PIKA_CORE_E2E_MESSAGING_BIN=\"$root/bin/pika-core-e2e-messaging\""
+            ),
+            "staged pikachat wrapper must export PIKAHUT_TEST_PIKA_CORE_E2E_MESSAGING_BIN while that boundary stays in-lane"
+        );
+        assert!(
+            linux_rust.contains(
+                "export PIKAHUT_TEST_PIKA_CORE_APP_FLOWS_BIN=\"$root/bin/pika-core-app-flows\""
+            ),
+            "staged pikachat wrapper must export PIKAHUT_TEST_PIKA_CORE_APP_FLOWS_BIN while that boundary stays in-lane"
+        );
+    }
+
+    assert!(
+        !pikachat_jobs.contains("openclaw_gateway_e2e"),
+        "pre-merge-pikachat-rust must keep OpenClaw coverage on the deterministic selector path, not the heavy integration_openclaw lane"
+    );
 
     Ok(())
 }
@@ -699,9 +910,23 @@ fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<(
             "agent_contracts workflow filter must include crates/pika-desktop/** while host-side pikahut selectors depend on pika-desktop"
         );
     }
-    if recipe.iter().any(|line| {
-        line.contains("cargo run -q -p pikachat") || line.contains("cargo run -p pikachat")
-    }) {
+    let integration_deterministic =
+        fs::read_to_string(root.join("crates/pikahut/tests/integration_deterministic.rs"))?;
+    let selected_agent_http_cli_selectors = [
+        "agent_http_cli_new_local",
+        "agent_http_cli_new_idempotent_local",
+        "agent_http_cli_new_me_recover_local",
+    ];
+    let lane_keeps_host_side_pikachat_shellouts = selected_agent_http_cli_selectors
+        .iter()
+        .filter(|selector| {
+            selector_refs.contains(&format!("integration_deterministic::{selector}"))
+        })
+        .map(|selector| extract_rust_function_body(&integration_deterministic, selector))
+        .any(|body| {
+            body.contains("\"run\",") && body.contains("\"-p\",") && body.contains("\"pikachat\",")
+        });
+    if lane_keeps_host_side_pikachat_shellouts {
         let cli_manifest = fs::read_to_string(root.join("cli/Cargo.toml"))?;
         for (dependency_name, filter_path) in [
             ("pika-agent-protocol", "crates/pika-agent-protocol/**"),

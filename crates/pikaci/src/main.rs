@@ -442,6 +442,78 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
             ],
             pikachat_rust_jobs(),
         )),
+        "pre-merge-pikachat-openclaw-e2e" => Ok(TargetSpec {
+            id: "pre-merge-pikachat-openclaw-e2e",
+            description: "Run the heavy OpenClaw gateway end-to-end scenario on a host-local Linux runner",
+            filters: &[],
+            jobs: vec![JobSpec {
+                id: "pikachat-openclaw-gateway-e2e",
+                description: "Run the heavy OpenClaw gateway end-to-end scenario on a host-local Linux runner",
+                timeout_secs: 3600,
+                writable_workspace: true,
+                guest_command: GuestCommand::HostShellCommand {
+                    command: "cargo test -p pikahut --test integration_openclaw openclaw_gateway_e2e -- --ignored --nocapture",
+                },
+                staged_linux_rust_lane: None,
+            }],
+        }),
+        "pre-merge-pika-followup" => Ok(TargetSpec {
+            id: "pre-merge-pika-followup",
+            description: "Run the non-Rust follow-up checks for the Pika pre-merge lane on a host-local Linux runner",
+            filters: &[],
+            jobs: vec![
+                JobSpec {
+                    id: "pika-android-test-compile",
+                    description: "Compile Android instrumentation test Kotlin for the Pika app on a host-local Linux runner",
+                    timeout_secs: 3600,
+                    writable_workspace: true,
+                    guest_command: GuestCommand::HostShellCommand {
+                        command: "cd android && ./gradlew :app:compileDebugAndroidTestKotlin",
+                    },
+                    staged_linux_rust_lane: None,
+                },
+                JobSpec {
+                    id: "pikachat-build",
+                    description: "Build pikachat on a host-local Linux runner",
+                    timeout_secs: 1800,
+                    writable_workspace: true,
+                    guest_command: GuestCommand::HostShellCommand {
+                        command: "cargo build -p pikachat",
+                    },
+                    staged_linux_rust_lane: None,
+                },
+                JobSpec {
+                    id: "pika-desktop-check",
+                    description: "Run desktop-check on a host-local Linux runner",
+                    timeout_secs: 1800,
+                    writable_workspace: true,
+                    guest_command: GuestCommand::HostShellCommand {
+                        command: "just desktop-check",
+                    },
+                    staged_linux_rust_lane: None,
+                },
+                JobSpec {
+                    id: "pika-actionlint",
+                    description: "Run actionlint on a host-local Linux runner",
+                    timeout_secs: 600,
+                    writable_workspace: false,
+                    guest_command: GuestCommand::HostShellCommand {
+                        command: "actionlint",
+                    },
+                    staged_linux_rust_lane: None,
+                },
+                JobSpec {
+                    id: "pika-doc-contracts",
+                    description: "Run docs and justfile contract checks on a host-local Linux runner",
+                    timeout_secs: 900,
+                    writable_workspace: true,
+                    guest_command: GuestCommand::HostShellCommand {
+                        command: "npx --yes @justinmoon/agent-tools check-docs && npx --yes @justinmoon/agent-tools check-justfile",
+                    },
+                    staged_linux_rust_lane: None,
+                },
+            ],
+        }),
         "pre-merge-pikachat-apple-followup" => Ok(TargetSpec {
             id: "pre-merge-pikachat-apple-followup",
             description: "Run the Apple-host pikachat follow-up after the staged Linux Rust lane",
@@ -1091,14 +1163,37 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
 }
 
 fn fixture_rust_jobs() -> Vec<JobSpec> {
-    vec![JobSpec {
-        id: "pikahut-package-tests",
-        description: "Run pikahut package tests in a vfkit guest",
-        timeout_secs: 1800,
-        writable_workspace: false,
-        guest_command: GuestCommand::PackageTests { package: "pikahut" },
-        staged_linux_rust_lane: Some(StagedLinuxRustLane::FixturePikahutPackageTests),
-    }]
+    vec![
+        JobSpec {
+            id: "pikahut-clippy",
+            description: "Run pikahut clippy checks on a host-local Linux runner",
+            timeout_secs: 1800,
+            writable_workspace: true,
+            guest_command: GuestCommand::HostShellCommand {
+                command: "cargo clippy -p pikahut -- -D warnings",
+            },
+            staged_linux_rust_lane: None,
+        },
+        JobSpec {
+            id: "fixture-relay-smoke",
+            description: "Exercise the relay-profile pikahut smoke flow on a host-local Linux runner",
+            timeout_secs: 300,
+            writable_workspace: true,
+            guest_command: GuestCommand::HostShellCommand {
+                command: concat!(
+                    "set -euo pipefail; ",
+                    "SD=\"$(mktemp -d /tmp/pikahut-smoke.XXXXXX)\"; ",
+                    "cleanup() { cargo run -q -p pikahut -- down --state-dir \"$SD\" 2>/dev/null || true; rm -rf \"$SD\"; }; ",
+                    "trap cleanup EXIT; ",
+                    "cargo run -q -p pikahut -- up --profile relay --background --state-dir \"$SD\" --relay-port 0 >/dev/null; ",
+                    "cargo run -q -p pikahut -- wait --state-dir \"$SD\" --timeout 30; ",
+                    "cargo run -q -p pikahut -- status --state-dir \"$SD\" --json | python3 -c ",
+                    "\"import json,sys; d=json.load(sys.stdin); assert d.get('relay_url'), f'relay_url missing: {d}'\"",
+                ),
+            },
+            staged_linux_rust_lane: None,
+        },
+    ]
 }
 
 fn pikachat_apple_followup_jobs() -> Vec<JobSpec> {
@@ -1587,12 +1682,11 @@ mod tests {
     fn pre_merge_fixture_rust_target_uses_staged_linux_lane() {
         let target = target_spec("pre-merge-fixture-rust").expect("fixture target");
 
-        assert_eq!(target.jobs.len(), 1);
-        assert_eq!(
-            target.jobs[0].staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::FixturePikahutPackageTests)
-        );
-        assert_eq!(target.jobs[0].runner_kind(), RunnerKind::MicrovmRemote);
+        assert_eq!(target.jobs.len(), 2);
+        assert_eq!(target.jobs[0].staged_linux_rust_lane(), None);
+        assert_eq!(target.jobs[0].runner_kind(), RunnerKind::HostLocal);
+        assert_eq!(target.jobs[1].staged_linux_rust_lane(), None);
+        assert_eq!(target.jobs[1].runner_kind(), RunnerKind::HostLocal);
     }
 
     #[test]
@@ -1632,6 +1726,35 @@ mod tests {
                 .jobs
                 .iter()
                 .all(|job| job.runner_kind() == RunnerKind::MicrovmRemote)
+        );
+    }
+
+    #[test]
+    fn pre_merge_pikachat_openclaw_e2e_target_uses_host_local_runner() {
+        let target =
+            target_spec("pre-merge-pikachat-openclaw-e2e").expect("pikachat openclaw target");
+
+        assert_eq!(target.jobs.len(), 1);
+        assert_eq!(target.jobs[0].staged_linux_rust_lane(), None);
+        assert_eq!(target.jobs[0].runner_kind(), RunnerKind::HostLocal);
+    }
+
+    #[test]
+    fn pre_merge_pika_followup_target_uses_host_local_runner() {
+        let target = target_spec("pre-merge-pika-followup").expect("pika followup target");
+
+        assert_eq!(target.jobs.len(), 5);
+        assert!(
+            target
+                .jobs
+                .iter()
+                .all(|job| job.staged_linux_rust_lane().is_none())
+        );
+        assert!(
+            target
+                .jobs
+                .iter()
+                .all(|job| job.runner_kind() == RunnerKind::HostLocal)
         );
     }
 

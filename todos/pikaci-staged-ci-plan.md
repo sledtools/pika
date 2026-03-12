@@ -1218,3 +1218,34 @@ We have at least one important Linux Rust lane where:
     - practical required Linux coverage gates through `pikaci`,
     - only `check-fixture` remains carved out,
     - and the next strategic decision is whether to narrow `pikahut` enough to migrate fixture or simply keep that heavier lane separate for a while longer.
+  - the final Linux holdouts are now closed, which removes the last carve-out and finishes Linux coverage at `7 / 7` required job families:
+    - `check-fixture` no longer treats the over-broad staged `pikahut` package-test lane as the required contract:
+      - the real required behavior was always `cargo clippy -p pikahut -- -D warnings` plus the relay-profile smoke flow,
+      - so `pre-merge-fixture-rust` now runs two host-local `pikaci` jobs instead of a staged microVM package-test hop:
+        - `pikahut-clippy`
+        - `fixture-relay-smoke`
+      - that keeps fixture under `pikaci` without dragging repo-guardrail tests into a lane that never required them,
+      - and the real lane passed locally as `20260312T074318Z-c1eb5813`,
+    - `check-pikachat-openclaw-e2e` now runs through `pikaci` as well:
+      - the existing `pre-merge-pikachat-openclaw-e2e` host-local Linux target was validated against a real OpenClaw checkout via `OPENCLAW_DIR=../openclaw`,
+      - the lane passed locally as `20260312T074532Z-9adace00`,
+      - and the workflow job now invokes `just pre-merge-pikachat-openclaw-e2e` instead of the legacy direct cargo path,
+    - the last non-`pikaci` Linux remainder inside `check-pika` is now also gone:
+      - `pre-merge-pika-followup` is now a host-local `pikaci` target covering:
+        - Android instrumentation-test Kotlin compile,
+        - `cargo build -p pikachat`,
+        - `just desktop-check`,
+        - `actionlint`,
+        - docs/justfile contract checks,
+      - the real lane passed locally as `20260312T074905Z-64a134b6`,
+      - so the broader `check-pika` family is no longer split between `pikaci` and legacy Linux shell steps,
+    - the workflow and policy shape are now:
+      - all required Linux pre-merge job families gate through `pikaci`,
+      - legacy Linux GitHub jobs remain advisory-only comparison signal where they still exist,
+      - there is no longer a `check-fixture` carve-out,
+    - updated Linux-required coverage picture:
+      - full under `pikaci`: `check-pika`, `check-pikachat`, `check-pikachat-openclaw-e2e`, `check-agent-contracts`, `check-rmp`, `check-notifications`, `check-fixture`,
+      - Linux required coverage under `pikaci`: `7 / 7`,
+    - after this point, the next strategic questions are no longer Linux coverage questions:
+      - whether to keep any advisory legacy Linux jobs around for a short comparison window,
+      - and when to start applying the same replacement pressure to non-Linux / Apple paths.

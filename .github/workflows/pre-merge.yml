@@ -198,7 +198,7 @@ jobs:
               - 'tools/ui-e2e-public'
 
   check-pika:
-    name: check-pika-followup
+    name: check-pika-followup (pikaci)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.pika == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
@@ -939,9 +939,8 @@ jobs:
             echo
             echo "### Linux CI Policy"
             echo
-            echo "- Covered Linux families now gate through the <code>pikaci</code> lanes above."
-            echo "- <code>check-pika-followup</code> remains the required non-<code>pikaci</code> remainder of the broader Pika pre-merge family."
-            echo "- <code>check-fixture</code> remains the only temporary legacy Linux carve-out."
+            echo "- All required Linux pre-merge families now gate through <code>pikaci</code>."
+            echo "- Legacy Linux GitHub jobs remain advisory only while we watch parity and flake rate."
           } >> "$GITHUB_STEP_SUMMARY"
 
   check-pikachat:
@@ -977,6 +976,7 @@ jobs:
       - run: nix develop .#default -c just pre-merge-pikachat
 
   check-pikachat-openclaw-e2e:
+    name: check-pikachat-openclaw-e2e (pikaci)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.pikachat_openclaw_e2e == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
@@ -1010,7 +1010,7 @@ jobs:
           key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
           path: target
 
-      - run: OPENCLAW_DIR=openclaw nix develop .#default -c just openclaw-pikachat-e2e
+      - run: OPENCLAW_DIR=openclaw nix develop .#default -c just pre-merge-pikachat-openclaw-e2e
 
   check-agent-contracts:
     name: legacy check-agent-contracts (advisory)
@@ -1103,7 +1103,7 @@ jobs:
       - run: nix develop .#default -c just pre-merge-notifications
 
   check-fixture:
-    name: check-fixture (legacy carve-out)
+    name: check-fixture (pikaci)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.fixture == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404

@@ -223,6 +223,7 @@ alias pre-merge-notifications-shadow := checks::pre-merge-notifications-shadow
 alias pre-merge-agent-contracts-shadow := checks::pre-merge-agent-contracts-shadow
 alias pre-merge-rmp-shadow := checks::pre-merge-rmp-shadow
 alias pre-merge-pikachat-rust-shadow := checks::pre-merge-pikachat-rust-shadow
+alias pre-merge-pikachat-openclaw-e2e := checks::pre-merge-pikachat-openclaw-e2e
 alias pre-merge-notifications := checks::pre-merge-notifications
 alias pre-merge-pikachat := checks::pre-merge-pikachat
 alias pre-merge-agent-contracts := checks::pre-merge-agent-contracts

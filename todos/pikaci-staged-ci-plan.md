@@ -1181,6 +1181,7 @@ We have at least one important Linux Rust lane where:
       - the staged `pika-core-lib-tests.manifest` was still explicitly including helper binaries like `interop_openclaw_voice`, `kp_debug`, `interop_rustbot_baseline`, and `nostr_connect_tap`,
       - which meant the guest wrapper ran a non-test binary with `--nocapture` after the real `pika_core --lib --tests` suite had already passed,
       - the fix is to make `pika-core-lib-tests.manifest` match the actual legacy `cargo test -p pika_core --lib --tests` surface again by staging only the `pika_core` lib-test harness there,
+      - and to keep `pika-core-lib-app-flows.manifest` scoped to `app_flows` only, so the staged wrapper does not execute the `pika_core` lib-test harness a second time,
     - after that manifest fix:
       - the exact local legacy parity command, `cargo test -p pika_core --lib --tests -- --skip paging_loads_older_messages_in_pages`, passes cleanly on the rebased tip,
       - a fresh staged `pre-merge-pika-rust` rerun has cleared the earlier rebased-source/libclang regressions and is back at real remote execution on the same tip,

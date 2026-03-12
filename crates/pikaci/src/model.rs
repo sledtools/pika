@@ -123,6 +123,7 @@ pub enum StagedLinuxRustTarget {
     PreMergePikaRust,
     PreMergeAgentContracts,
     PreMergeNotifications,
+    PreMergeRmp,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -148,6 +149,7 @@ pub enum StagedLinuxRustLane {
     AgentContractsServerAgentApi,
     AgentContractsCoreNip98,
     NotificationsServerPackageTests,
+    RmpInitSmokeCi,
 }
 
 impl StagedLinuxRustLane {
@@ -161,6 +163,7 @@ impl StagedLinuxRustLane {
             | Self::AgentContractsServerAgentApi
             | Self::AgentContractsCoreNip98 => StagedLinuxRustTarget::PreMergeAgentContracts,
             Self::NotificationsServerPackageTests => StagedLinuxRustTarget::PreMergeNotifications,
+            Self::RmpInitSmokeCi => StagedLinuxRustTarget::PreMergeRmp,
         }
     }
 
@@ -207,6 +210,7 @@ impl StagedLinuxRustLane {
             Self::NotificationsServerPackageTests => {
                 "/staged/linux-rust/workspace-build/bin/run-pika-server-package-tests"
             }
+            Self::RmpInitSmokeCi => "/staged/linux-rust/workspace-build/bin/run-rmp-init-smoke-ci",
         }
     }
 }
@@ -217,6 +221,7 @@ impl StagedLinuxRustTarget {
             "pre-merge-pika-rust" => Some(Self::PreMergePikaRust),
             "pre-merge-agent-contracts" => Some(Self::PreMergeAgentContracts),
             "pre-merge-notifications" => Some(Self::PreMergeNotifications),
+            "pre-merge-rmp" => Some(Self::PreMergeRmp),
             _ => None,
         }
     }
@@ -245,7 +250,7 @@ impl StagedLinuxRustTarget {
                 workspace_output_system: "x86_64-linux",
                 workspace_deps_installable: ".#ci.x86_64-linux.agentContractsWorkspaceDeps",
                 workspace_build_installable: ".#ci.x86_64-linux.agentContractsWorkspaceBuild",
-                shadow_recipe: "",
+                shadow_recipe: "pre-merge-agent-contracts-shadow",
             },
             Self::PreMergeNotifications => StagedLinuxRustTargetConfig {
                 target_id: "pre-merge-notifications",
@@ -258,6 +263,18 @@ impl StagedLinuxRustTarget {
                 workspace_deps_installable: ".#ci.x86_64-linux.notificationsWorkspaceDeps",
                 workspace_build_installable: ".#ci.x86_64-linux.notificationsWorkspaceBuild",
                 shadow_recipe: "pre-merge-notifications-shadow",
+            },
+            Self::PreMergeRmp => StagedLinuxRustTargetConfig {
+                target_id: "pre-merge-rmp",
+                target_description: "Run the VM-backed pre-merge RMP lane",
+                shared_prepare_node_prefix: "rmp-linux-rust",
+                shared_prepare_description: "rmp staged Linux Rust lane",
+                workspace_deps_output_name: "ci.x86_64-linux.rmpWorkspaceDeps",
+                workspace_build_output_name: "ci.x86_64-linux.rmpWorkspaceBuild",
+                workspace_output_system: "x86_64-linux",
+                workspace_deps_installable: ".#ci.x86_64-linux.rmpWorkspaceDeps",
+                workspace_build_installable: ".#ci.x86_64-linux.rmpWorkspaceBuild",
+                shadow_recipe: "pre-merge-rmp-shadow",
             },
         }
     }
@@ -401,6 +418,27 @@ mod tests {
             StagedLinuxRustLane::NotificationsServerPackageTests.target(),
             StagedLinuxRustTarget::PreMergeNotifications
         );
+    }
+
+    #[test]
+    fn rmp_lane_uses_rmp_workspace_outputs() {
+        let lane = StagedLinuxRustLane::RmpInitSmokeCi;
+        let config = lane.target().config();
+
+        assert_eq!(
+            lane.workspace_deps_output_name(),
+            "ci.x86_64-linux.rmpWorkspaceDeps"
+        );
+        assert_eq!(
+            lane.workspace_build_output_name(),
+            "ci.x86_64-linux.rmpWorkspaceBuild"
+        );
+        assert_eq!(
+            lane.execute_wrapper_command(),
+            "/staged/linux-rust/workspace-build/bin/run-rmp-init-smoke-ci"
+        );
+        assert_eq!(lane.target(), StagedLinuxRustTarget::PreMergeRmp);
+        assert_eq!(config.shadow_recipe, "pre-merge-rmp-shadow");
     }
 }
 

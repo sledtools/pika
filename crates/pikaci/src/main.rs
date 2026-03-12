@@ -1035,7 +1035,7 @@ fn fixture_rust_jobs() -> Vec<JobSpec> {
 fn rmp_jobs() -> Vec<JobSpec> {
     vec![JobSpec {
         id: "rmp-init-smoke-ci",
-        description: "Run the RMP init smoke checks in a vfkit guest",
+        description: "Run the RMP init smoke checks in a remote Linux microVM",
         timeout_secs: 1800,
         writable_workspace: false,
         guest_command: GuestCommand::ShellCommand {
@@ -1059,7 +1059,7 @@ fn rmp_jobs() -> Vec<JobSpec> {
                 "echo 'ok: rmp init ci smoke passed'"
             ),
         },
-        staged_linux_rust_lane: None,
+        staged_linux_rust_lane: Some(StagedLinuxRustLane::RmpInitSmokeCi),
     }]
 }
 
@@ -1459,6 +1459,18 @@ mod tests {
         assert_eq!(
             target.jobs[0].staged_linux_rust_lane(),
             Some(StagedLinuxRustLane::NotificationsServerPackageTests)
+        );
+        assert_eq!(target.jobs[0].runner_kind(), RunnerKind::MicrovmRemote);
+    }
+
+    #[test]
+    fn pre_merge_rmp_target_uses_staged_linux_lane() {
+        let target = target_spec("pre-merge-rmp").expect("rmp target");
+
+        assert_eq!(target.jobs.len(), 1);
+        assert_eq!(
+            target.jobs[0].staged_linux_rust_lane(),
+            Some(StagedLinuxRustLane::RmpInitSmokeCi)
         );
         assert_eq!(target.jobs[0].runner_kind(), RunnerKind::MicrovmRemote);
     }

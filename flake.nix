@@ -118,6 +118,14 @@
         cp ${./nix/ci/pika-core-workspace/Cargo.toml} "$out/Cargo.toml"
         cp ${./nix/ci/pika-core-workspace/Cargo.lock} "$out/Cargo.lock"
       '';
+      ciRmpWorkspaceSrc = ciLinuxPkgs.runCommand "ci-rmp-workspace-src" { } ''
+        mkdir -p "$out/crates"
+        cp -R ${./crates/rmp-cli} "$out/crates/rmp-cli"
+        cp -R ${./crates/pika-relay-profiles} "$out/crates/pika-relay-profiles"
+        cp ${./nix/ci/rmp-workspace/Cargo.toml} "$out/Cargo.toml"
+        cp ${./nix/ci/rmp-workspace/Cargo.lock} "$out/Cargo.lock"
+        cp -R ${./nix/ci/rmp-workspace/rmp-template} "$out/rmp-template"
+      '';
       mkPikaciSrc = lib: lib.fileset.toSource {
         root = ./.;
         fileset = lib.fileset.unions [
@@ -803,6 +811,14 @@ EOF
           notificationsLane = import ./nix/ci/linux-rust.nix (commonStagedLinuxRustArgs // {
             lane = "notifications";
           });
+          rmpLane = import ./nix/ci/linux-rust.nix {
+            pkgs = ciLinuxPkgs;
+            crane = crane;
+            src = ciRmpWorkspaceSrc;
+            cargoLock = ./nix/ci/rmp-workspace/Cargo.lock;
+            outputHashes = { };
+            lane = "rmp";
+          };
         in
         pikaCoreLane
         // {
@@ -810,6 +826,8 @@ EOF
           agentContractsWorkspaceBuild = agentContractsLane.workspaceBuild;
           notificationsWorkspaceDeps = notificationsLane.workspaceDeps;
           notificationsWorkspaceBuild = notificationsLane.workspaceBuild;
+          rmpWorkspaceDeps = rmpLane.workspaceDeps;
+          rmpWorkspaceBuild = rmpLane.workspaceBuild;
         };
 
       ci.aarch64-linux = import ./nix/ci/linux-rust.nix {

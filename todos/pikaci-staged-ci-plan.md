@@ -1085,13 +1085,14 @@ We have at least one important Linux Rust lane where:
       | `check-pikachat` | `just pre-merge-pikachat` | none | deterministic CLI/OpenClaw coverage still depends on a broader mixed lane shape | choose a narrower Linux-first sublane before attempting full migration |
       | `check-pikachat-openclaw-e2e` | dedicated workflow job in `.github/workflows/pre-merge.yml` | none | depends on external OpenClaw repo checkout and broader integration shape | defer until simpler Linux lanes are under `pikaci` |
       | `check-agent-contracts` | `just pre-merge-agent-contracts` | partial | extra deterministic `pikahut` tests still run outside the staged Rust/Linux sublane | keep shadowing the migrated Rust sublane; decide later whether the remainder belongs in `pikaci` |
-      | `check-rmp` | `just pre-merge-rmp` | none | staged Rust prepare looks lightweight, but the generated template checks still resolve crates live inside the guest | either stage/template-vendor those generated-project deps or explicitly accept guest network for this lane |
+      | `check-rmp` | `just pre-merge-rmp` | full | shadow evidence, not plumbing, is now the blocker after the generated template checks were made offline/self-contained | gather shadow CI parity/runtime data toward promotion |
       | `check-notifications` | `just pre-merge-notifications` | full | shadow evidence, not plumbing, is now the only blocker | keep gathering PR shadow data toward promotion |
       | `check-fixture` | `just pre-merge-fixture` | none | the obvious Rust-only sublane (`pre-merge-fixture-rust`) is package-bound to `pikahut`, which pulls essentially the full desktop/media/runtime stack | deprioritize this until we either split a much narrower fixture sublane or accept a much heavier staged lane |
 
-    - by required Linux job-family count, staged Linux shadow coverage is still `3 / 7`:
+    - by required Linux job-family count, staged Linux shadow coverage is now `4 / 7`:
       - `check-pika` partial via `pre-merge-pika-rust`
       - `check-agent-contracts` partial via `pre-merge-agent-contracts`
+      - `check-rmp` full via `pre-merge-rmp`
       - `check-notifications` full via `pre-merge-notifications`
     - this slice re-opened `pre-merge-fixture-rust` and treated the earlier `~1724`-derivation warning as a diagnosis problem, not a decision by itself:
       - the first live remote-authoritative attempt (`20260311T224857Z-5fc10438`) still failed before execute because the experimental fixture branch in `nix/ci/linux-rust.nix` had a malformed nested conditional,
@@ -1117,27 +1118,26 @@ We have at least one important Linux Rust lane where:
       - keep `check-fixture` on the legacy path for now,
       - only revisit it after splitting a materially narrower fixture-specific sublane out of `pikahut` or accepting a heavier Linux template on purpose,
       - and switch the next aggressive coverage-closing target to `check-rmp`, whose `rmp-cli` closure is dramatically smaller and should exercise the staged Linux template without dragging the desktop/media stack along,
-    - this slice then attempted that `check-rmp` migration for real instead of treating it as another hypothetical target:
+    - the next slice then finished that `check-rmp` migration for real instead of treating it as another hypothetical target:
       - the chosen slice was the existing single-job `pre-merge-rmp` Rust/Linux smoke lane (`rmp-init-smoke-ci`),
       - the underlying `rmp-cli` package graph stayed small at roughly `105` Cargo packages, which is dramatically narrower than fixture (`895`) and narrower even than `pika-server` (`409`),
-      - the staged remote-authoritative prepare shape itself looked healthy:
-        - `nix build --dry-run --no-link .#ci.x86_64-linux.rmpWorkspaceDeps .#ci.x86_64-linux.rmpWorkspaceBuild` came out to roughly `173` derivations,
-        - the remote-authoritative run `./scripts/pikaci-staged-linux-remote.sh run pre-merge-rmp` realized both staged outputs successfully on `pika-build`,
+      - the staged remote-authoritative prepare shape stayed healthy after implementation:
+        - `nix build --dry-run --no-link .#ci.x86_64-linux.rmpWorkspaceDeps .#ci.x86_64-linux.rmpWorkspaceBuild` grew to roughly `750` derivations once the full generated-template dependency set was staged,
+        - but the real remote-authoritative run `./scripts/pikaci-staged-linux-remote.sh run pre-merge-rmp` still realized both staged outputs successfully on `pika-build`,
         - and the remote microVM runner booted cleanly all the way to guest command execution,
-      - the first real blocker was therefore not staged prepare size, not remote fulfillment, and not microVM runtime:
-        - inside the guest, the generated `rmp init` template projects still run plain `cargo check`,
-        - the first template check immediately tried to fetch `https://index.crates.io/config.json`,
-        - guest DNS/network resolution failed, and the lane exited with `test command exited with 101` on run `20260311T232009Z-3a063ffb`,
-      - that means the current `check-rmp` blocker is a staged contract gap, not a closure-size problem:
-        - `rmp-cli` itself is a good fit for the staged template,
-        - but the generated template projects are not yet covered by the staged vendor/dependency set,
-        - so the lane is still implicitly relying on live guest-time Cargo resolution for `flume`, `uniffi`, `iced`, and the rest of the generated template dependency graph,
-      - the decision from this evidence is:
-        - keep `check-rmp` as the right next coverage-closing target,
-        - but do not add it to shadow CI yet,
-        - and make the next slice explicitly about staging or otherwise making the generated-template Cargo dependency set available offline in the guest before retrying the migration,
+      - the real blocker turned out to be specific and fixable inside the staged `rmp` payload:
+        - the generated `rmp init` template projects were still running plain `cargo check` in the guest against live `crates.io`,
+        - so the first real run failed on `https://index.crates.io/config.json` resolution before it could validate the generated template output,
+        - the fix was to stage a narrow `nix/ci/rmp-workspace` vendor/dependency set for the generated templates, carry Crane's `cargoVendorDir` into `rmpWorkspaceBuild`, and have the guest wrapper copy the staged Cargo config into a writable temporary `CARGO_HOME` and force `cargo check --offline`,
+      - after that fix, the lane passed for real under `pikaci`:
+        - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-rmp` passed end-to-end as run `20260311T235935Z-92b0b4fc`,
+        - the generated templates (`mobile-no-iced`, `all`, `android`, `ios`, `iced`) all completed their offline guest-side checks,
+        - and `check-rmp` is now a real staged Linux coverage slice rather than just the next candidate,
+      - because that run was clean, the lane was also added to GitHub in non-gating shadow mode:
+        - `.github/workflows/pre-merge.yml` now exposes `shadow-pikaci-pre-merge-rmp`,
+        - it uses the canonical `nix develop .#default -c just pre-merge-rmp-shadow` path,
+        - and it feeds the same summary/debug bundle flow as the other staged Linux shadow lanes,
     - after this slice, what still remains before `pikaci` can own all required Linux pre-merge coverage is explicit:
       - finish or intentionally split the remaining non-`pikaci` portions of `check-pika` and `check-agent-contracts`,
-      - finish the `check-rmp` migration by removing guest-time Cargo network dependence for generated template checks,
       - choose the first sensible Linux-only slice inside `check-pikachat`,
       - and leave `check-fixture` / `check-pikachat-openclaw-e2e` for later only if they still resist a narrower, more explicit lane boundary.

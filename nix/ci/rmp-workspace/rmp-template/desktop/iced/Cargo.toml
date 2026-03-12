@@ -1,0 +1,9 @@
+[package]
+name = "rmp-template-core_desktop_iced"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+rmp-template-core = { path = "../../rust" }
+iced = { workspace = true }

@@ -569,12 +569,136 @@ jobs:
             cat "$RUNNER_TEMP/pikaci-shadow-summary.md"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  shadow-pikaci-pre-merge-rmp:
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.rmp == 'true'
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    outputs:
+      result: ${{ steps.shadow.outputs.result }}
+      exit_code: ${{ steps.shadow.outputs.exit_code }}
+      run_id: ${{ steps.metadata.outputs.run_id }}
+      run_status: ${{ steps.metadata.outputs.run_status }}
+      run_duration_seconds: ${{ steps.metadata.outputs.run_duration_seconds }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          path: /nix
+      - name: Fix /nix ownership
+        run: |
+          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
+            sudo chown -R "$(id -u):$(id -g)" /nix
+          fi
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
+          path: ~/.cargo
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
+          path: target
+
+      - name: Run advisory staged Linux rmp shadow lane
+        id: shadow
+        env:
+          PIKA_BUILD_SSH_KEY: ${{ secrets.PIKA_BUILD_SSH_KEY }}
+          PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST: ${{ vars.PIKA_BUILD_SSH_HOST }}
+        run: |
+          set +e
+          exit_code=0
+          previous_run_id="$(
+            find .pikaci/runs -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null \
+              | LC_ALL=C sort -r \
+              | head -n1 \
+              || true
+          )"
+          previous_run_created_at=""
+          if [ -n "$previous_run_id" ] && [ -f ".pikaci/runs/$previous_run_id/run.json" ]; then
+            previous_run_created_at="$(
+              python3 -c 'import json, pathlib, sys; run = json.loads(pathlib.Path(".pikaci/runs", sys.argv[1], "run.json").read_text()); print(run.get("created_at", ""))' "$previous_run_id"
+            )"
+          fi
+
+          if [ -z "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}" ]; then
+            echo "error: set repository variable PIKA_BUILD_SSH_HOST for the staged Linux rmp shadow lane" >&2
+            exit_code=2
+          elif [ -z "${PIKA_BUILD_SSH_KEY:-}" ]; then
+            echo "error: set repository secret PIKA_BUILD_SSH_KEY for the staged Linux rmp shadow lane" >&2
+            exit_code=2
+          else
+            mkdir -p "$HOME/.ssh"
+            chmod 700 "$HOME/.ssh"
+            host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
+            ssh-keyscan -H "$host" >> "$HOME/.ssh/known_hosts"
+            chmod 600 "$HOME/.ssh/known_hosts"
+
+            eval "$(ssh-agent -s)"
+            trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
+            ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
+
+            nix develop .#default -c just pre-merge-rmp-shadow
+            exit_code=$?
+          fi
+
+          if [ "$exit_code" -eq 0 ]; then
+            result=success
+          else
+            result=failure
+            echo "::warning::Advisory staged Linux rmp shadow lane failed with exit code $exit_code"
+          fi
+
+          {
+            echo "result=$result"
+            echo "exit_code=$exit_code"
+            echo "previous_run_id=$previous_run_id"
+            echo "previous_run_created_at=$previous_run_created_at"
+          } >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Collect shadow lane metadata
+        if: always()
+        id: metadata
+        run: |
+          python3 scripts/pikaci-shadow-summary.py \
+            --target-id pre-merge-rmp \
+            --min-created-at-exclusive "${{ steps.shadow.outputs.previous_run_created_at }}" \
+            --allow-missing \
+            --github-output "$GITHUB_OUTPUT" \
+            --markdown-out "$RUNNER_TEMP/pikaci-shadow-summary.md" \
+            --artifact-dir "$RUNNER_TEMP/pikaci-shadow-artifact"
+
+      - name: Upload shadow lane debug bundle
+        if: always() && steps.metadata.outputs.run_id != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: ${{ runner.temp }}/pikaci-shadow-artifact
+          if-no-files-found: error
+
+      - name: Summarize shadow lane
+        if: always()
+        run: |
+          {
+            echo "- command: \`nix develop .#default -c just pre-merge-rmp-shadow\`"
+            echo "- result: \`${{ steps.shadow.outputs.result }}\`"
+            echo "- exit code: \`${{ steps.shadow.outputs.exit_code }}\`"
+            echo "- host: \`${{ vars.PIKA_BUILD_SSH_HOST || 'unset' }}\`"
+            echo "- artifact: \`${{ steps.metadata.outputs.artifact_name || 'none' }}\`"
+            echo ""
+            cat "$RUNNER_TEMP/pikaci-shadow-summary.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   summarize-pikaci-shadow-lanes:
     if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
     needs:
       - shadow-pikaci-pre-merge-pika-rust
       - shadow-pikaci-pre-merge-notifications
       - shadow-pikaci-pre-merge-agent-contracts
+      - shadow-pikaci-pre-merge-rmp
     runs-on: ubuntu-latest
     steps:
       - name: Summarize advisory staged Linux shadow lanes
@@ -637,6 +761,13 @@ jobs:
               "${{ needs.shadow-pikaci-pre-merge-agent-contracts.outputs.run_status }}" \
               "${{ needs.shadow-pikaci-pre-merge-agent-contracts.outputs.run_duration_seconds }}" \
               "${{ needs.shadow-pikaci-pre-merge-agent-contracts.outputs.run_id }}"
+            lane_row \
+              "pre-merge-rmp" \
+              "${{ needs.shadow-pikaci-pre-merge-rmp.result }}" \
+              "${{ needs.shadow-pikaci-pre-merge-rmp.outputs.result }}" \
+              "${{ needs.shadow-pikaci-pre-merge-rmp.outputs.run_status }}" \
+              "${{ needs.shadow-pikaci-pre-merge-rmp.outputs.run_duration_seconds }}" \
+              "${{ needs.shadow-pikaci-pre-merge-rmp.outputs.run_id }}"
             echo
             echo "### Promotion Readiness"
             echo

@@ -57,6 +57,11 @@ pre-merge-agent-contracts-shadow:
     just pikaci-remote-fulfill-pre-merge-agent-contracts
     echo "pre-merge-agent-contracts-shadow complete"
 
+# Advisory shadow CI lane for the staged Linux RMP remote microVM path.
+pre-merge-rmp-shadow:
+    just pikaci-remote-fulfill-pre-merge-rmp
+    echo "pre-merge-rmp-shadow complete"
+
 # CI-safe pre-merge for the notification server lane.
 pre-merge-notifications:
     #!/usr/bin/env bash
@@ -124,7 +129,7 @@ pre-merge-rmp:
     #!/usr/bin/env bash
     set -euo pipefail
     if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-        nix run .#pikaci -- run pre-merge-rmp
+        just pikaci-remote-fulfill-pre-merge-rmp
     else
         just rmp-init-smoke-ci
     fi

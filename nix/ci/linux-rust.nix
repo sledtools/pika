@@ -13,6 +13,8 @@ let
       "pika-linux-rust-agent-contracts-workspace"
     else if lane == "notifications" then
       "pika-linux-rust-notifications-workspace"
+    else if lane == "rmp" then
+      "pika-linux-rust-rmp-workspace"
     else
       throw "unsupported staged Linux Rust lane `${lane}`";
 
@@ -319,6 +321,36 @@ let
 
           manifest_from_targets "$PIKACI_PIKA_SERVER_PACKAGE_TESTS_MANIFEST" pika-server
         ''
+      else if lane == "rmp" then
+        ''
+          export PIKACI_RMP_EXECUTABLE="$TMPDIR/rmp-executable"
+          cargoJobs="''${CARGO_BUILD_JOBS:-''${NIX_BUILD_CORES:-}}"
+          case "$cargoJobs" in
+            ""|0)
+              cargoJobs="$(${pkgs.coreutils}/bin/nproc)"
+              ;;
+          esac
+          echo "[pikaci] building rmp lane with cargo jobs=$cargoJobs" >&2
+          target_root="''${CARGO_TARGET_DIR:-target}"
+          target_root_abs="$(pwd)/$target_root/"
+
+          cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+          cargo build --locked -j "$cargoJobs" -p rmp-cli \
+            --bin rmp \
+            --message-format json-render-diagnostics >"$cargoBuildLog"
+          ${pkgs.jq}/bin/jq -r '
+            select(.reason == "compiler-artifact" and .target.name == "rmp" and .executable != null)
+            | .executable
+          ' <"$cargoBuildLog" | head -n1 >"$PIKACI_RMP_EXECUTABLE"
+          if [ ! -s "$PIKACI_RMP_EXECUTABLE" ]; then
+            echo "missing staged rmp executable" >&2
+            cat "$cargoBuildLog" >&2
+            exit 1
+          fi
+
+          cargo check --locked -j "$cargoJobs" -p rmp-template-core >/dev/null
+          cargo check --locked -j "$cargoJobs" -p rmp-template-core_desktop_iced >/dev/null
+        ''
       else
         ''
         export PIKACI_AGENT_CONTRACTS_TEST_EXECUTABLES="$TMPDIR/agent-contracts-test-executables.tsv"
@@ -617,6 +649,88 @@ let
           done <"$manifest"
           EOF
           chmod +x "$out/bin/run-pika-server-package-tests"
+        ''
+      else if lane == "rmp" then
+        ''
+          target_root="''${CARGO_TARGET_DIR:-target}"
+          target_root_abs="$(pwd)/$target_root/"
+          mkdir -p "$out/bin" "$out/share/pikaci" "$out/target"
+
+          copy_target_relative() {
+            local relative="$1"
+            if [ ! -e "$target_root/$relative" ]; then
+              echo "missing staged rmp runtime artifact at $target_root/$relative" >&2
+              exit 1
+            fi
+            (
+              cd "$target_root"
+              cp --parents -P "$relative" "$out/target"
+            )
+          }
+
+          rmp_executable="$(cat "$PIKACI_RMP_EXECUTABLE")"
+          case "$rmp_executable" in
+            "$target_root_abs"*)
+              rmp_relative="''${rmp_executable#$target_root_abs}"
+              ;;
+            "$target_root"*)
+              rmp_relative="''${rmp_executable#$target_root/}"
+              ;;
+            *)
+              echo "unexpected staged rmp executable path: $rmp_executable" >&2
+              exit 1
+              ;;
+          esac
+          copy_target_relative "$rmp_relative"
+          ln -s "../target/$rmp_relative" "$out/bin/rmp"
+
+          cp -R "$cargoVendorDir" "$out/share/pikaci/rmp-vendor"
+
+          cp ${pkgs.writeShellScript "run-rmp-init-smoke-ci" ''
+            set -euo pipefail
+
+            root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
+            bin="$root/bin/rmp"
+            tmp="$(mktemp -d "''${TMPDIR:-/tmp}/rmp-init-smoke-ci.XXXXXX")"
+            cargo_home="$(mktemp -d "''${TMPDIR:-/tmp}/rmp-cargo-home.XXXXXX")"
+            target="$tmp/target"
+            cleanup() {
+              rm -rf "$tmp" "$cargo_home"
+            }
+            trap cleanup EXIT
+
+            cp "$root/share/pikaci/rmp-vendor/config.toml" "$cargo_home/config.toml"
+            chmod u+w "$cargo_home/config.toml"
+            cat >>"$cargo_home/config.toml" <<CFG
+
+[net]
+offline = true
+CFG
+
+            check_generated_project() {
+              local project_dir="$1"
+              shift || true
+              (
+                cd "$project_dir"
+                CARGO_HOME="$cargo_home" \
+                CARGO_NET_OFFLINE=true \
+                CARGO_TARGET_DIR="$target" \
+                cargo check --offline "$@" >/dev/null
+              )
+            }
+
+            "$bin" init "$tmp/rmp-mobile-no-iced" --yes --org 'com.example' --no-iced --json >/dev/null
+            check_generated_project "$tmp/rmp-mobile-no-iced"
+            "$bin" init "$tmp/rmp-all" --yes --org 'com.example' --json >/dev/null
+            check_generated_project "$tmp/rmp-all"
+            "$bin" init "$tmp/rmp-android" --yes --org 'com.example' --no-ios --json >/dev/null
+            check_generated_project "$tmp/rmp-android"
+            "$bin" init "$tmp/rmp-ios" --yes --org 'com.example' --no-android --json >/dev/null
+            check_generated_project "$tmp/rmp-ios"
+            "$bin" init "$tmp/rmp-iced" --yes --org 'com.example' --no-ios --no-android --iced --json >/dev/null
+            check_generated_project "$tmp/rmp-iced" -p rmp-iced_core_desktop_iced
+            echo "ok: rmp init ci smoke passed"
+          ''} "$out/bin/run-rmp-init-smoke-ci"
         ''
       else
         ''

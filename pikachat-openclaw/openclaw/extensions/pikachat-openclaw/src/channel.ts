@@ -16,15 +16,10 @@ import {
 } from "./types.js";
 import { buildPikachatDaemonLaunchSpec } from "./daemon-launch.js";
 import { PikachatDaemonClient } from "./sidecar.js";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-/**
- * Transcribe a WAV audio chunk using openclaw's media-understanding framework
- * via runtime.stt.transcribeAudioFile. Falls back to direct OpenAI-compatible
- * fetch if the runtime method is not available (older openclaw versions).
- */
 async function transcribeAudioChunk(params: {
   audioPath: string;
   runtime: ReturnType<typeof getPikachatRuntime>;
@@ -34,52 +29,10 @@ async function transcribeAudioChunk(params: {
 }): Promise<string | undefined> {
   const { audioPath, runtime, log, accountId, callId } = params;
   const cfg = runtime.config.loadConfig();
-
-  // Prefer runtime.stt if available (openclaw >= 2026.2.x with STT support)
-  const stt = (runtime as any).stt;
-  if (stt?.transcribeAudioFile) {
-    const result = await stt.transcribeAudioFile({ filePath: audioPath, cfg });
-    const text = result?.text?.trim();
-    if (text) {
-      log?.info?.(`[${accountId}] transcribed call_id=${callId} text_len=${text.length}`);
-    }
-    return text || undefined;
-  }
-
-  // Fallback: direct fetch to OpenAI-compatible endpoint
-  log?.debug?.(`[${accountId}] runtime.stt not available, using direct fetch fallback`);
-  const apiKey = process.env.OPENAI_API_KEY?.trim() ?? process.env.GROQ_API_KEY?.trim();
-  if (!apiKey) {
-    log?.warn?.(`[${accountId}] no STT provider configured (set OPENAI_API_KEY or upgrade openclaw for runtime.stt) call_id=${callId}`);
-    return undefined;
-  }
-
-  const isGroq = !process.env.OPENAI_API_KEY?.trim() && !!process.env.GROQ_API_KEY?.trim();
-  const baseUrl = isGroq ? "https://api.groq.com/openai/v1" : "https://api.openai.com/v1";
-  const model = isGroq ? "whisper-large-v3-turbo" : "gpt-4o-mini-transcribe";
-
-  const wavBuffer = readFileSync(audioPath);
-  const formData = new FormData();
-  formData.append("file", new Blob([wavBuffer], { type: "audio/wav" }), "audio.wav");
-  formData.append("model", model);
-  formData.append("response_format", "json");
-
-  const resp = await fetch(`${baseUrl}/audio/transcriptions`, {
-    method: "POST",
-    headers: { "Authorization": `Bearer ${apiKey}` },
-    body: formData,
-    signal: AbortSignal.timeout(30_000),
-  });
-
-  if (!resp.ok) {
-    const body = await resp.text().catch(() => "");
-    throw new Error(`STT failed status=${resp.status} body=${body.slice(0, 200)}`);
-  }
-
-  const json: any = await resp.json();
-  const text = typeof json.text === "string" ? json.text.trim() : "";
+  const result = await runtime.stt.transcribeAudioFile({ filePath: audioPath, cfg });
+  const text = result?.text?.trim();
   if (text) {
-    log?.info?.(`[${accountId}] transcribed call_id=${callId} provider=${isGroq ? "groq" : "openai"} model=${model} text_len=${text.length}`);
+    log?.info?.(`[${accountId}] transcribed call_id=${callId} text_len=${text.length}`);
   }
   return text || undefined;
 }

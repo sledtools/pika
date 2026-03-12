@@ -336,6 +336,20 @@ pub(super) fn resolve_mime_type(mime_type: &str, filename: &str) -> String {
     }
 }
 
+fn validate_uploaded_blob_hash(
+    upload: &EncryptedMediaUpload,
+    uploaded_blob: pika_marmot_runtime::media::UploadedBlob,
+) -> Result<pika_marmot_runtime::media::UploadedBlob, &'static str> {
+    let expected_hash_hex = hex::encode(upload.encrypted_hash);
+    if !uploaded_blob
+        .descriptor_sha256_hex
+        .eq_ignore_ascii_case(&expected_hash_hex)
+    {
+        return Err("uploaded hash mismatch");
+    }
+    Ok(uploaded_blob)
+}
+
 #[cfg(test)]
 fn prepare_chat_media_upload(
     mdk: &PikaMdk,
@@ -1448,24 +1462,47 @@ impl AppCore {
             s.refresh_chat_list_from_storage();
         };
 
+        let pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(uploaded_blob) = status
+        else {
+            return;
+        };
+        let uploaded_blob = match validate_uploaded_blob_hash(&pending.upload, uploaded_blob) {
+            Ok(uploaded_blob) => uploaded_blob,
+            Err(reason) => {
+                cleanup_optimistic(self);
+                self.toast(format!("Media upload failed: {reason}"));
+                return;
+            }
+        };
+
+        let group_id = match self.session.as_ref().and_then(|sess| {
+            sess.groups
+                .get(&pending.chat_id)
+                .map(|group| group.mls_group_id.clone())
+        }) {
+            Some(group_id) => group_id,
+            None => {
+                cleanup_optimistic(self);
+                self.toast("Chat not found");
+                return;
+            }
+        };
+
         // Remove the temporary outbox entry and delivery override + refresh UI.
         cleanup_optimistic(self);
 
-        let Some(sess) = self.session.as_mut() else {
-            return;
-        };
-        let Some(group) = sess.groups.get(&pending.chat_id).cloned() else {
-            self.toast("Chat not found");
-            return;
-        };
-
         let expected_hash_hex = hex::encode(pending.upload.encrypted_hash);
-        let operation = sess.host_context().complete_media_upload_operation(
-            &group.mls_group_id,
-            pending.chat_id.clone(),
-            &pending.upload,
-            status,
-        );
+        let operation = self
+            .session
+            .as_ref()
+            .expect("session should exist while completing media upload")
+            .host_context()
+            .complete_media_upload_operation(
+                &group_id,
+                pending.chat_id.clone(),
+                &pending.upload,
+                pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(uploaded_blob),
+            );
         let completed = match operation.into_media_upload_result() {
             Ok(completed) => completed.result,
             Err(error) => {
@@ -1564,13 +1601,36 @@ impl AppCore {
 
         // Store success on the item.
         let batch = self.pending_media_batch_sends.get_mut(&batch_id).unwrap();
+        let chat_id = batch.chat_id.clone();
+        let temp_rumor_id = batch.temp_rumor_id.clone();
         let pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(uploaded_blob) = status
         else {
             return;
         };
+        let uploaded_blob =
+            match validate_uploaded_blob_hash(&batch.items[item_idx].upload, uploaded_blob) {
+                Ok(uploaded_blob) => uploaded_blob,
+                Err(_) => {
+                    if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {
+                        if let Some(entry) = outbox.get_mut(&temp_rumor_id) {
+                            for att in &mut entry.media {
+                                att.upload_progress = None;
+                            }
+                        }
+                    }
+                    let delivery = MessageDeliveryState::Failed {
+                        reason: "Upload failed: hash mismatch".to_string(),
+                    };
+                    self.delivery_overrides
+                        .entry(chat_id.clone())
+                        .or_default()
+                        .insert(temp_rumor_id.clone(), delivery.clone());
+                    self.fail_delivery_or_refresh(&chat_id, &temp_rumor_id, delivery);
+                    self.refresh_chat_list_from_storage();
+                    return;
+                }
+            };
         batch.items[item_idx].uploaded_blob = Some(uploaded_blob);
-        let chat_id = batch.chat_id.clone();
-        let temp_rumor_id = batch.temp_rumor_id.clone();
 
         // Update outbox attachment progress for this item (mark as done).
         if let Some(outbox) = self.local_outbox.get_mut(&chat_id) {

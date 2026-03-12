@@ -7242,6 +7242,66 @@ mod tests {
         }
 
         #[test]
+        fn app_media_upload_mismatched_uploaded_hash_still_fails_validation() {
+            let (mut core, chat_id, keys, group_id) = make_core_with_group();
+            let request_id = "media-upload-request".to_string();
+            let temp_rumor_id = "temp-rumor".to_string();
+            let prepared = core
+                .host_context()
+                .expect("host context")
+                .prepare_upload(
+                    &group_id,
+                    b"hello from app media mismatch",
+                    Some("text/plain"),
+                    Some("app-mismatch.txt"),
+                )
+                .expect("prepare upload");
+
+            core.pending_media_sends.insert(
+                request_id.clone(),
+                crate::core::PendingMediaSend {
+                    chat_id: chat_id.clone(),
+                    caption: "caption".to_string(),
+                    upload: prepared.upload,
+                    account_pubkey: keys.public_key().to_hex(),
+                    temp_rumor_id: temp_rumor_id.clone(),
+                    encrypted_data: prepared.encrypted_data,
+                },
+            );
+            core.delivery_overrides
+                .entry(chat_id.clone())
+                .or_default()
+                .insert(
+                    temp_rumor_id.clone(),
+                    crate::state::MessageDeliveryState::Pending,
+                );
+
+            core.handle_chat_media_upload_completed(
+                request_id.clone(),
+                pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(
+                    pika_marmot_runtime::media::UploadedBlob {
+                        blossom_server: "https://example.com".to_string(),
+                        uploaded_url: "https://example.com/blob".to_string(),
+                        descriptor_sha256_hex:
+                            "0000000000000000000000000000000000000000000000000000000000000000"
+                                .to_string(),
+                    },
+                ),
+            );
+
+            assert!(!core.pending_media_sends.contains_key(&request_id));
+            assert_eq!(
+                core.state.toast.as_deref(),
+                Some("Media upload failed: uploaded hash mismatch")
+            );
+            assert!(core
+                .delivery_overrides
+                .get(&chat_id)
+                .and_then(|m| m.get(&temp_rumor_id))
+                .is_none());
+        }
+
+        #[test]
         fn app_batch_media_upload_orchestration_uses_shared_uploaded_blob_state() {
             let (mut core, chat_id, keys, group_id) = make_core_with_group();
             let first = core
@@ -7322,6 +7382,92 @@ mod tests {
                 batch.items[1].uploaded_blob.is_none(),
                 "later batch items should remain pending"
             );
+        }
+
+        #[test]
+        fn app_batch_media_upload_mismatched_uploaded_hash_marks_failed() {
+            let (mut core, chat_id, keys, group_id) = make_core_with_group();
+            let first = core
+                .host_context()
+                .expect("host context")
+                .prepare_upload(
+                    &group_id,
+                    b"first batch upload",
+                    Some("text/plain"),
+                    Some("first.txt"),
+                )
+                .expect("prepare first upload");
+            let second = core
+                .host_context()
+                .expect("host context")
+                .prepare_upload(
+                    &group_id,
+                    b"second batch upload",
+                    Some("text/plain"),
+                    Some("second.txt"),
+                )
+                .expect("prepare second upload");
+
+            let batch_id = "batch-1".to_string();
+            let first_request_id = "batch-request-1".to_string();
+            let temp_rumor_id = "temp-batch".to_string();
+            core.pending_media_batch_sends.insert(
+                batch_id.clone(),
+                crate::core::PendingMediaBatchSend {
+                    chat_id: chat_id.clone(),
+                    caption: "caption".to_string(),
+                    temp_rumor_id: temp_rumor_id.clone(),
+                    account_pubkey: keys.public_key().to_hex(),
+                    items: vec![
+                        crate::core::BatchMediaItem {
+                            request_id: first_request_id.clone(),
+                            upload: first.upload,
+                            encrypted_data: first.encrypted_data,
+                            uploaded_blob: None,
+                        },
+                        crate::core::BatchMediaItem {
+                            request_id: "batch-request-2".to_string(),
+                            upload: second.upload,
+                            encrypted_data: second.encrypted_data,
+                            uploaded_blob: None,
+                        },
+                    ],
+                    next_upload_index: 2,
+                },
+            );
+            core.delivery_overrides
+                .entry(chat_id.clone())
+                .or_default()
+                .insert(
+                    temp_rumor_id.clone(),
+                    crate::state::MessageDeliveryState::Pending,
+                );
+
+            core.handle_chat_media_upload_completed(
+                first_request_id,
+                pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(
+                    pika_marmot_runtime::media::UploadedBlob {
+                        blossom_server: "https://example.com".to_string(),
+                        uploaded_url: "https://example.com/blob-1".to_string(),
+                        descriptor_sha256_hex:
+                            "0000000000000000000000000000000000000000000000000000000000000000"
+                                .to_string(),
+                    },
+                ),
+            );
+
+            let batch = core
+                .pending_media_batch_sends
+                .get(&batch_id)
+                .expect("pending batch should remain");
+            assert!(batch.items[0].uploaded_blob.is_none());
+            assert!(matches!(
+                core.delivery_overrides
+                    .get(&chat_id)
+                    .and_then(|m| m.get(&temp_rumor_id)),
+                Some(crate::state::MessageDeliveryState::Failed { reason })
+                    if reason == "Upload failed: hash mismatch"
+            ));
         }
 
         #[test]

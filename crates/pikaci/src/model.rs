@@ -647,6 +647,34 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn reduced_staged_workspace_snapshot_covers_workspace_members() {
+        let root = workspace_root();
+        let workspace_manifest =
+            fs::read_to_string(root.join("nix/ci/pika-core-workspace/Cargo.toml"))
+                .expect("read reduced staged workspace manifest");
+        let flake = fs::read_to_string(root.join("flake.nix")).expect("read flake");
+
+        for (member, required_snippet) in [
+            ("cli", "cp -R ${./cli}/. \"$out/cli\""),
+            (
+                "crates/pika-agent-protocol",
+                "cp -R ${./crates/pika-agent-protocol} \"$out/crates/pika-agent-protocol\"",
+            ),
+            (
+                "crates/pikachat-sidecar",
+                "cp -R ${./crates/pikachat-sidecar} \"$out/crates/pikachat-sidecar\"",
+            ),
+        ] {
+            if workspace_manifest.contains(&format!("\"{member}\"")) {
+                assert!(
+                    flake.contains(required_snippet),
+                    "flake.nix must snapshot {member} into ciPikaCoreWorkspaceSrc while nix/ci/pika-core-workspace/Cargo.toml keeps it as a workspace member"
+                );
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]

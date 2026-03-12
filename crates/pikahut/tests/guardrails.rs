@@ -68,6 +68,20 @@ fn extract_paths_filter_entries(workflow: &str, filter_name: &str) -> Vec<String
     entries
 }
 
+fn matches_filter(path: &str, pattern: &str) -> bool {
+    if let Some(prefix) = pattern.strip_suffix("/**") {
+        path == prefix || path.starts_with(&format!("{prefix}/"))
+    } else {
+        path == pattern
+    }
+}
+
+fn filter_covers_path<'a>(filters: impl IntoIterator<Item = &'a String>, path: &str) -> bool {
+    filters
+        .into_iter()
+        .any(|pattern| matches_filter(path, pattern))
+}
+
 fn extract_pikaci_target_filters(text: &str, target_name: &str) -> Vec<String> {
     let direct_marker = format!("\"{target_name}\" => Ok(TargetSpec {{");
     let staged_marker = format!("\"{target_name}\" => Ok(staged_linux_target_spec(");
@@ -139,6 +153,23 @@ fn extract_just_recipe_body(text: &str, recipe_name: &str) -> Vec<String> {
     }
 
     body
+}
+
+fn extract_root_join_paths(text: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    let needle = "root.join(\"";
+    let mut start = 0usize;
+
+    while let Some(offset) = text[start..].find(needle) {
+        let literal_start = start + offset + needle.len();
+        let Some(end_offset) = text[literal_start..].find("\")") else {
+            break;
+        };
+        paths.push(text[literal_start..literal_start + end_offset].to_string());
+        start = literal_start + end_offset + 2;
+    }
+
+    paths
 }
 
 fn extract_rust_function_body(text: &str, function_name: &str) -> String {
@@ -1069,6 +1100,98 @@ fn pre_merge_notifications_filter_tracks_checked_in_lane_surface() -> Result<()>
             assert!(
                 notifications_filter.contains("crates/pika-desktop/**"),
                 "notifications workflow filter must include crates/pika-desktop/** while the local pikahut wrapper depends on pika-desktop"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn pre_merge_fixture_filter_tracks_checked_in_lane_surface() -> Result<()> {
+    let root = workspace_root();
+    let workflow = fs::read_to_string(root.join(".github/workflows/pre-merge.yml"))?;
+    let fixture_filter = extract_paths_filter_entries(&workflow, "fixture");
+    let fixture_filter: HashSet<_> = fixture_filter.into_iter().collect();
+    let checks = fs::read_to_string(root.join("just/checks.just"))?;
+    let justfile = fs::read_to_string(root.join("justfile"))?;
+    let alias_target = extract_just_alias_target(&justfile, "pre-merge-fixture");
+    assert_eq!(
+        alias_target.as_deref(),
+        Some("checks::pre-merge-fixture"),
+        "justfile must keep pre-merge-fixture routed through checks::pre-merge-fixture for this workflow guardrail"
+    );
+    assert!(
+        fixture_filter.contains("just/checks.just"),
+        "fixture workflow filter must include just/checks.just because pre-merge-fixture is defined there"
+    );
+
+    let recipe = extract_just_recipe_body(&checks, "pre-merge-fixture");
+    assert!(
+        !recipe.is_empty(),
+        "checks.just must keep a checked-in pre-merge-fixture recipe body"
+    );
+    let recipe_text = recipe.join("\n");
+    assert!(
+        recipe_text.contains("nix run .#pikaci -- run pre-merge-fixture-rust"),
+        "pre-merge-fixture must keep routing its Rust test segment through pre-merge-fixture-rust so pikaci remains the checked-in authority for that lane"
+    );
+    assert!(
+        !recipe_text.contains("cargo test -p pikahut"),
+        "pre-merge-fixture must not bypass pre-merge-fixture-rust with a direct cargo test -p pikahut path"
+    );
+
+    let pikaci = fs::read_to_string(root.join("crates/pikaci/src/main.rs"))?;
+    let rust_lane_filters = extract_pikaci_target_filters(&pikaci, "pre-merge-fixture-rust");
+    assert!(
+        !rust_lane_filters.is_empty(),
+        "pikaci main.rs must keep pre-merge-fixture-rust filters discoverable"
+    );
+
+    let missing_from_workflow: Vec<_> = rust_lane_filters
+        .iter()
+        .filter(|entry| !fixture_filter.contains(entry.as_str()))
+        .cloned()
+        .collect();
+    assert!(
+        missing_from_workflow.is_empty(),
+        "fixture workflow filter must cover the checked-in pre-merge-fixture-rust dependency surface; missing: {:?}",
+        missing_from_workflow
+    );
+
+    let fixture_jobs = extract_rust_function_body(&pikaci, "fixture_rust_jobs");
+    if fixture_jobs.contains("PackageTests { package: \"pikahut\" }") {
+        let guardrails = fs::read_to_string(root.join("crates/pikahut/tests/guardrails.rs"))?;
+        for path in extract_root_join_paths(&guardrails) {
+            assert!(
+                filter_covers_path(rust_lane_filters.iter(), &path),
+                "pre-merge-fixture-rust filters must include {path} while the lane keeps pikahut package tests and guardrails.rs reads that checked-in path"
+            );
+            assert!(
+                filter_covers_path(fixture_filter.iter(), &path),
+                "fixture workflow filter must include {path} while the lane keeps pikahut package tests and guardrails.rs reads that checked-in path"
+            );
+        }
+    }
+
+    let reduced_workspace_manifest =
+        fs::read_to_string(root.join("nix/ci/pika-core-workspace/Cargo.toml"))?;
+    let flake = fs::read_to_string(root.join("flake.nix"))?;
+    for (member, required_snippet) in [
+        ("cli", "cp -R ${./cli}/. \"$out/cli\""),
+        (
+            "crates/pika-agent-protocol",
+            "cp -R ${./crates/pika-agent-protocol} \"$out/crates/pika-agent-protocol\"",
+        ),
+        (
+            "crates/pikachat-sidecar",
+            "cp -R ${./crates/pikachat-sidecar} \"$out/crates/pikachat-sidecar\"",
+        ),
+    ] {
+        if reduced_workspace_manifest.contains(&format!("\"{member}\"")) {
+            assert!(
+                flake.contains(required_snippet),
+                "flake.nix must snapshot {member} into ciPikaCoreWorkspaceSrc while pre-merge-fixture-rust still uses the reduced staged workspace"
             );
         }
     }

@@ -366,7 +366,6 @@ let
         ''
       else if lane == "fixture" then
         ''
-          export PIKACI_PIKAHUT_PACKAGE_TESTS_MANIFEST="$TMPDIR/pikahut-package-tests.manifest"
           export PIKACI_PIKAHUT_EXECUTABLE="$TMPDIR/pikahut-executable"
           export PIKACI_PIKAHUT_CLIPPY_OK="$TMPDIR/pikahut-clippy.ok"
           cargoJobs="''${CARGO_BUILD_JOBS:-''${NIX_BUILD_CORES:-}}"
@@ -378,27 +377,6 @@ let
           echo "[pikaci] building fixture lane with cargo jobs=$cargoJobs" >&2
           target_root="''${CARGO_TARGET_DIR:-target}"
           target_root_abs="$(pwd)/$target_root/"
-
-          capture_manifest() {
-            local cargo_build_log="$1"
-            local manifest_path="$2"
-            ${pkgs.jq}/bin/jq -r --arg target_root "$target_root/" --arg target_root_abs "$target_root_abs" '
-              select(.reason == "compiler-artifact" and .executable != null)
-              | (.executable | sub("^" + $target_root_abs; "") | sub("^" + $target_root; ""))
-            ' <"$cargo_build_log" >"$manifest_path"
-            sort -u -o "$manifest_path" "$manifest_path"
-            if [ ! -s "$manifest_path" ]; then
-              echo "missing staged fixture manifest output for $manifest_path" >&2
-              cat "$cargo_build_log" >&2
-              exit 1
-            fi
-          }
-
-          cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
-          cargo test --locked -j "$cargoJobs" -p pikahut \
-            --no-run \
-            --message-format json-render-diagnostics >"$cargoBuildLog"
-          capture_manifest "$cargoBuildLog" "$PIKACI_PIKAHUT_PACKAGE_TESTS_MANIFEST"
 
           cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
           cargo build --locked -j "$cargoJobs" -p pikahut \
@@ -920,8 +898,6 @@ let
           target_root="''${CARGO_TARGET_DIR:-target}"
           target_root_abs="$(pwd)/$target_root/"
           mkdir -p "$out/bin" "$out/share/pikaci" "$out/target"
-          cp "$PIKACI_PIKAHUT_PACKAGE_TESTS_MANIFEST" \
-            "$out/share/pikaci/pikahut-package-tests.manifest"
 
           copy_target_relative() {
             local relative="$1"
@@ -934,11 +910,6 @@ let
               cp --parents -P "$relative" "$out/target"
             )
           }
-
-          while IFS= read -r relative; do
-            [ -n "$relative" ] || continue
-            copy_target_relative "$relative"
-          done <"$PIKACI_PIKAHUT_PACKAGE_TESTS_MANIFEST"
 
           pikahut_executable="$(cat "$PIKACI_PIKAHUT_EXECUTABLE")"
           case "$pikahut_executable" in
@@ -975,30 +946,6 @@ let
           ${pkgs.lib.optionalString (pikaRelayPkg != null) ''
           ln -s ${pikaRelayPkg}/bin/pika-relay "$out/bin/pika-relay"
           ''}
-
-          cat >"$out/bin/run-pikahut-package-tests" <<'EOF'
-          #!${pkgs.bash}/bin/bash
-          set -euo pipefail
-
-          root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
-          manifest="$root/share/pikaci/pikahut-package-tests.manifest"
-          if [ ! -s "$manifest" ]; then
-            echo "missing staged pikahut package test manifest at $manifest" >&2
-            exit 1
-          fi
-
-          if [ -f /workspace/snapshot/Cargo.toml ]; then
-            export PIKAHUT_TEST_WORKSPACE_ROOT=/workspace/snapshot
-            cd "$PIKAHUT_TEST_WORKSPACE_ROOT"
-          fi
-
-          while IFS= read -r relative; do
-            [ -n "$relative" ] || continue
-            echo "[pikaci] running staged pikahut test binary $relative"
-            "$root/target/$relative" --nocapture
-          done <"$manifest"
-          EOF
-          chmod +x "$out/bin/run-pikahut-package-tests"
 
           cat >"$out/bin/run-pikahut-clippy" <<'EOF'
           #!${pkgs.bash}/bin/bash

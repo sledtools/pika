@@ -457,6 +457,20 @@ fn post_rebase_logout_session_convergence_boundary() -> Result<()> {
 }
 
 #[test]
+#[ignore = "deterministic auth/session selector"]
+fn session_restore_after_restart_boundary() -> Result<()> {
+    // Keep the narrower persisted restore-state semantics in `rust/tests/app_flows.rs`; this
+    // selector owns the readable lifecycle contract that a user restarts the app, restores the
+    // same session, and lands back in the signed-in chat state they expect.
+    let mut context = TestContext::builder("session-restore-after-restart")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_restore_session_after_restart(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
 #[ignore = "nightly call-path regression selector"]
 fn call_over_local_moq_relay_boundary() -> Result<()> {
     let mut context = TestContext::builder("regression-call-over-local-moq-relay")

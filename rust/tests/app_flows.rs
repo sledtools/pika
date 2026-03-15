@@ -743,7 +743,9 @@ fn wipe_local_data_removes_persistent_files() {
 }
 
 #[test]
-fn restore_session_recovers_chat_history() {
+fn restore_session_recovers_persisted_chat_state() {
+    // `pikahut` now owns the broader restart-and-restore lifecycle contract. This test stays as
+    // the narrower single-app semantic owner for the restored Rust state underneath that flow.
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_string_lossy().to_string();
     write_config(&data_dir, true);
@@ -800,7 +802,7 @@ fn restore_session_recovers_chat_history() {
             .expect("missing AccountCreated update with nsec")
     };
 
-    // New process instance restores from the same encrypted per-identity DB.
+    // New process instance restores the same persisted Rust state from the encrypted DB.
     let app2 = FfiApp::new(data_dir, String::new(), String::new());
     app2.dispatch(AppAction::RestoreSession { nsec });
     wait_until(

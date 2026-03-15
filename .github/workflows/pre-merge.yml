@@ -983,17 +983,32 @@ jobs:
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-pikaci-cache-v1-${{ runner.os }}
-          path: .pikaci/cache
-      - name: Fix .pikaci ownership
+      - name: Run staged remote fixture lane
+        env:
+          PIKA_BUILD_SSH_KEY: ${{ secrets.PIKA_BUILD_SSH_KEY }}
+          PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST: ${{ vars.PIKA_BUILD_SSH_HOST }}
         run: |
-          if [ -d .pikaci ] && [ "$(stat -c %u .pikaci)" != "$(id -u)" ]; then
-            sudo chown "$(id -u):$(id -g)" .pikaci
+          set -euo pipefail
+          if [ -z "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}" ]; then
+            echo "error: set repository variable PIKA_BUILD_SSH_HOST for check-fixture" >&2
+            exit 2
+          fi
+          if [ -z "${PIKA_BUILD_SSH_KEY:-}" ]; then
+            echo "error: set repository secret PIKA_BUILD_SSH_KEY for check-fixture" >&2
+            exit 2
           fi
 
-      - run: ./scripts/pikaci-ci-run.sh pre-merge-fixture-rust
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
+          ssh-keyscan -H "$host" >> "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+          eval "$(ssh-agent -s)"
+          trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
+          ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
+
+          ./scripts/pikaci-staged-linux-remote.sh run pre-merge-fixture-rust
 
   pre-merge:
     if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))

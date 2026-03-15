@@ -160,6 +160,8 @@ pub enum StagedLinuxRustLane {
     AgentContractsCoreNip98,
     AgentContractsDeterministicHttp,
     NotificationsServerPackageTests,
+    FixturePikahutClippy,
+    FixtureRelaySmoke,
     FixturePikahutPackageTests,
     RmpInitSmokeCi,
     PikachatPackageTests,
@@ -188,7 +190,9 @@ impl StagedLinuxRustLane {
                 StagedLinuxRustTarget::PreMergeAgentContracts
             }
             Self::NotificationsServerPackageTests => StagedLinuxRustTarget::PreMergeNotifications,
-            Self::FixturePikahutPackageTests => StagedLinuxRustTarget::PreMergeFixtureRust,
+            Self::FixturePikahutClippy
+            | Self::FixtureRelaySmoke
+            | Self::FixturePikahutPackageTests => StagedLinuxRustTarget::PreMergeFixtureRust,
             Self::RmpInitSmokeCi => StagedLinuxRustTarget::PreMergeRmp,
             Self::PikachatPackageTests
             | Self::PikachatSidecarPackageTests
@@ -248,6 +252,12 @@ impl StagedLinuxRustLane {
             }
             Self::NotificationsServerPackageTests => {
                 "/staged/linux-rust/workspace-build/bin/run-pika-server-package-tests"
+            }
+            Self::FixturePikahutClippy => {
+                "/staged/linux-rust/workspace-build/bin/run-pikahut-clippy"
+            }
+            Self::FixtureRelaySmoke => {
+                "/staged/linux-rust/workspace-build/bin/run-fixture-relay-smoke"
             }
             Self::FixturePikahutPackageTests => {
                 "/staged/linux-rust/workspace-build/bin/run-pikahut-package-tests"
@@ -524,18 +534,31 @@ mod tests {
 
     #[test]
     fn fixture_lane_uses_fixture_workspace_outputs() {
-        let lane = StagedLinuxRustLane::FixturePikahutPackageTests;
+        for lane in [
+            StagedLinuxRustLane::FixturePikahutClippy,
+            StagedLinuxRustLane::FixtureRelaySmoke,
+            StagedLinuxRustLane::FixturePikahutPackageTests,
+        ] {
+            assert_eq!(
+                lane.workspace_deps_output_name(),
+                "ci.x86_64-linux.fixtureWorkspaceDeps"
+            );
+            assert_eq!(
+                lane.workspace_build_output_name(),
+                "ci.x86_64-linux.fixtureWorkspaceBuild"
+            );
+        }
 
         assert_eq!(
-            lane.workspace_deps_output_name(),
-            "ci.x86_64-linux.fixtureWorkspaceDeps"
+            StagedLinuxRustLane::FixturePikahutClippy.execute_wrapper_command(),
+            "/staged/linux-rust/workspace-build/bin/run-pikahut-clippy"
         );
         assert_eq!(
-            lane.workspace_build_output_name(),
-            "ci.x86_64-linux.fixtureWorkspaceBuild"
+            StagedLinuxRustLane::FixtureRelaySmoke.execute_wrapper_command(),
+            "/staged/linux-rust/workspace-build/bin/run-fixture-relay-smoke"
         );
         assert_eq!(
-            lane.execute_wrapper_command(),
+            StagedLinuxRustLane::FixturePikahutPackageTests.execute_wrapper_command(),
             "/staged/linux-rust/workspace-build/bin/run-pikahut-package-tests"
         );
     }
@@ -596,10 +619,13 @@ mod tests {
             ".#ci.x86_64-linux.fixtureWorkspaceBuild"
         );
         assert_eq!(fixture_config.shadow_recipe, "");
-        assert_eq!(
-            StagedLinuxRustLane::FixturePikahutPackageTests.target(),
-            StagedLinuxRustTarget::PreMergeFixtureRust
-        );
+        for lane in [
+            StagedLinuxRustLane::FixturePikahutClippy,
+            StagedLinuxRustLane::FixtureRelaySmoke,
+            StagedLinuxRustLane::FixturePikahutPackageTests,
+        ] {
+            assert_eq!(lane.target(), StagedLinuxRustTarget::PreMergeFixtureRust);
+        }
 
         let pikachat = StagedLinuxRustTarget::from_target_id("pre-merge-pikachat-rust")
             .expect("pikachat target");

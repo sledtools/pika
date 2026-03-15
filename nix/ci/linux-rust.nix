@@ -367,6 +367,8 @@ let
       else if lane == "fixture" then
         ''
           export PIKACI_PIKAHUT_PACKAGE_TESTS_MANIFEST="$TMPDIR/pikahut-package-tests.manifest"
+          export PIKACI_PIKAHUT_EXECUTABLE="$TMPDIR/pikahut-executable"
+          export PIKACI_PIKAHUT_CLIPPY_OK="$TMPDIR/pikahut-clippy.ok"
           cargoJobs="''${CARGO_BUILD_JOBS:-''${NIX_BUILD_CORES:-}}"
           case "$cargoJobs" in
             ""|0)
@@ -397,6 +399,24 @@ let
             --no-run \
             --message-format json-render-diagnostics >"$cargoBuildLog"
           capture_manifest "$cargoBuildLog" "$PIKACI_PIKAHUT_PACKAGE_TESTS_MANIFEST"
+
+          cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
+          cargo build --locked -j "$cargoJobs" -p pikahut \
+            --bin pikahut \
+            --message-format json-render-diagnostics >"$cargoBuildLog"
+          ${pkgs.jq}/bin/jq -r '
+            select(.reason == "compiler-artifact" and .target.name == "pikahut" and .executable != null)
+            | .executable
+          ' <"$cargoBuildLog" | head -n1 >"$PIKACI_PIKAHUT_EXECUTABLE"
+          if [ ! -s "$PIKACI_PIKAHUT_EXECUTABLE" ]; then
+            echo "missing staged pikahut executable" >&2
+            cat "$cargoBuildLog" >&2
+            exit 1
+          fi
+
+          cargo clippy --locked -j "$cargoJobs" -p pikahut -- -D warnings
+          printf '%s\n' "ok: pikahut clippy validated during staged workspace build" \
+            >"$PIKACI_PIKAHUT_CLIPPY_OK"
         ''
       else if lane == "rmp" then
         ''
@@ -898,6 +918,7 @@ let
       else if lane == "fixture" then
         ''
           target_root="''${CARGO_TARGET_DIR:-target}"
+          target_root_abs="$(pwd)/$target_root/"
           mkdir -p "$out/bin" "$out/share/pikaci" "$out/target"
           cp "$PIKACI_PIKAHUT_PACKAGE_TESTS_MANIFEST" \
             "$out/share/pikaci/pikahut-package-tests.manifest"
@@ -919,6 +940,28 @@ let
             copy_target_relative "$relative"
           done <"$PIKACI_PIKAHUT_PACKAGE_TESTS_MANIFEST"
 
+          pikahut_executable="$(cat "$PIKACI_PIKAHUT_EXECUTABLE")"
+          case "$pikahut_executable" in
+            "$target_root_abs"*)
+              pikahut_relative="''${pikahut_executable#$target_root_abs}"
+              ;;
+            "$target_root"*)
+              pikahut_relative="''${pikahut_executable#$target_root/}"
+              ;;
+            *)
+              echo "unexpected staged pikahut executable path: $pikahut_executable" >&2
+              exit 1
+              ;;
+          esac
+          copy_target_relative "$pikahut_relative"
+          ln -s "../target/$pikahut_relative" "$out/bin/pikahut"
+
+          if [ ! -s "$PIKACI_PIKAHUT_CLIPPY_OK" ]; then
+            echo "missing staged pikahut clippy marker" >&2
+            exit 1
+          fi
+          cp "$PIKACI_PIKAHUT_CLIPPY_OK" "$out/share/pikaci/pikahut-clippy.ok"
+
           if [ -d "$target_root/debug/deps" ]; then
             while IFS= read -r shared_object; do
               copy_target_relative "''${shared_object#$target_root/}"
@@ -928,6 +971,10 @@ let
                 | sort
             )
           fi
+
+          ${pkgs.lib.optionalString (pikaRelayPkg != null) ''
+          ln -s ${pikaRelayPkg}/bin/pika-relay "$out/bin/pika-relay"
+          ''}
 
           cat >"$out/bin/run-pikahut-package-tests" <<'EOF'
           #!${pkgs.bash}/bin/bash
@@ -952,6 +999,44 @@ let
           done <"$manifest"
           EOF
           chmod +x "$out/bin/run-pikahut-package-tests"
+
+          cat >"$out/bin/run-pikahut-clippy" <<'EOF'
+          #!${pkgs.bash}/bin/bash
+          set -euo pipefail
+
+          root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
+          marker="$root/share/pikaci/pikahut-clippy.ok"
+          if [ ! -s "$marker" ]; then
+            echo "missing staged pikahut clippy marker at $marker" >&2
+            exit 1
+          fi
+
+          cat "$marker"
+          EOF
+          chmod +x "$out/bin/run-pikahut-clippy"
+
+          cat >"$out/bin/run-fixture-relay-smoke" <<'EOF'
+          #!${pkgs.bash}/bin/bash
+          set -euo pipefail
+
+          root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
+          bin="$root/bin/pikahut"
+          if [ -x "$root/bin/pika-relay" ]; then
+            export PIKA_FIXTURE_RELAY_CMD="$root/bin/pika-relay"
+          fi
+          state_dir="$(mktemp -d /tmp/pikahut-smoke.XXXXXX)"
+          cleanup() {
+            "$bin" down --state-dir "$state_dir" 2>/dev/null || true
+            rm -rf "$state_dir"
+          }
+          trap cleanup EXIT
+
+          "$bin" up --profile relay --background --state-dir "$state_dir" --relay-port 0 >/dev/null
+          "$bin" wait --state-dir "$state_dir" --timeout 30
+          "$bin" status --state-dir "$state_dir" --json | ${pkgs.python3}/bin/python3 -c \
+            "import json,sys; d=json.load(sys.stdin); assert d.get('relay_url'), f'relay_url missing: {d}'"
+          EOF
+          chmod +x "$out/bin/run-fixture-relay-smoke"
         ''
       else if lane == "rmp" then
         ''

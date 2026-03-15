@@ -1210,6 +1210,24 @@ fn pre_merge_fixture_filter_tracks_checked_in_lane_surface() -> Result<()> {
     let reduced_workspace_manifest =
         fs::read_to_string(root.join("nix/ci/pika-core-workspace/Cargo.toml"))?;
     let flake = fs::read_to_string(root.join("flake.nix"))?;
+    let linux_rust = fs::read_to_string(root.join("nix/ci/linux-rust.nix"))?;
+    assert!(
+        linux_rust.contains("cargo clippy --locked -j \"$cargoJobs\" -p pikahut -- -D warnings"),
+        "staged fixture workspace build must validate pikahut clippy before remote execute so the microVM lane stays offline"
+    );
+    assert!(
+        linux_rust.contains("ln -s ${pikaRelayPkg}/bin/pika-relay \"$out/bin/pika-relay\""),
+        "staged fixture workspace build must install pika-relay for remote fixture smoke so the guest does not fall back to go build"
+    );
+    assert!(
+        linux_rust.contains("export PIKA_FIXTURE_RELAY_CMD=\"$root/bin/pika-relay\""),
+        "staged fixture relay smoke wrapper must export the staged pika-relay binary so the guest stays offline"
+    );
+    assert!(
+        linux_rust.contains("missing staged pikahut clippy marker at $marker"),
+        "staged fixture clippy wrapper must gate on the staged build marker instead of rerunning cargo clippy online in the guest"
+    );
+
     for (member, required_snippet) in [
         ("cli", "cp -R ${./cli}/. \"$out/cli\""),
         (

@@ -1365,3 +1365,29 @@ We have at least one important Linux Rust lane where:
       - and the remaining strategic questions are no longer Linux-migration cleanup:
         - when to start applying the same replacement pressure to non-Linux / Apple paths,
         - and whether later platform work wants a broader daemon/direct-push shape rather than more Linux-specific churn.
+    - the next Linux quality slice closed one of the remaining runtime-model inconsistencies too:
+      - `pre-merge-fixture-rust` was the best first remaining host-local Linux target to move, because it was already declared as a staged Linux Rust target, already had `fixtureWorkspaceDeps` / `fixtureWorkspaceBuild` outputs, and already had a staged-remote entrypoint surface in `scripts/pikaci-staged-linux-remote.sh`,
+      - the first live remote attempt on current tip proved the original blocker sharply:
+        - before this slice, `./scripts/pikaci-staged-linux-remote.sh run pre-merge-fixture-rust` still failed at the target contract boundary because the target mixed staged metadata with host-local jobs,
+        - after converting the jobs to staged remote lanes, the first real remote execute run (`20260315T220234Z-d166f441`) reached `microvm.nix` on `pika-build` but failed for two narrow reasons:
+          - `pikahut-clippy` still tried to run `cargo clippy` online inside the guest,
+          - and `fixture-relay-smoke` still let `pikahut` fall back to `go build pika-relay` inside the guest,
+      - the landable fix was to remove those guest-network assumptions instead of inventing another Linux executor:
+        - fixture workspace build now runs `cargo clippy -p pikahut -- -D warnings` during staged prepare and emits a checked marker consumed by the remote execute wrapper,
+        - fixture workspace build now also installs the staged `pika-relay` binary and the relay-smoke wrapper exports `PIKA_FIXTURE_RELAY_CMD="$root/bin/pika-relay"` so the guest never tries `go build`,
+        - a guardrail test now pins that offline staged-fixture contract in `crates/pikahut/tests/guardrails.rs`,
+      - the decisive rerun passed end to end on `pika-build`:
+        - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-fixture-rust`
+        - run `20260315T220937Z-8e956caf`
+        - `workspaceDeps` succeeded remotely on `pika-build`,
+        - `workspaceBuild` succeeded remotely on `pika-build`,
+        - `pikahut-clippy` passed under the remote `microvm.nix` guest,
+        - `fixture-relay-smoke` passed under the remote `microvm.nix` guest,
+      - that means `pre-merge-fixture-rust` no longer runs as `HostLocal` on the GitHub runner and now matches the existing staged remote microVM runtime model,
+      - remaining Linux runner-side execution after this slice:
+        - `pre-merge-pika-followup`,
+        - `pre-merge-pikachat-openclaw-e2e`,
+      - path to one Linux runtime model from here:
+        - keep choosing remaining Linux targets that can be reshaped into staged inputs plus remote microVM wrappers,
+        - reject guest-network and host-assumption leaks as migration blockers to stage away,
+        - and only stop when required Linux lanes no longer execute real workload as `HostLocal` on the GitHub runner.

@@ -1177,32 +1177,19 @@ fn fixture_rust_jobs() -> Vec<JobSpec> {
     vec![
         JobSpec {
             id: "pikahut-clippy",
-            description: "Run pikahut clippy checks on a host-local Linux runner",
+            description: "Run pikahut clippy checks in a remote Linux microVM",
             timeout_secs: 1800,
-            writable_workspace: true,
-            guest_command: GuestCommand::HostShellCommand {
-                command: "cargo clippy -p pikahut -- -D warnings",
-            },
-            staged_linux_rust_lane: None,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand { command: "ignored" },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::FixturePikahutClippy),
         },
         JobSpec {
             id: "fixture-relay-smoke",
-            description: "Exercise the relay-profile pikahut smoke flow on a host-local Linux runner",
+            description: "Exercise the relay-profile pikahut smoke flow in a remote Linux microVM",
             timeout_secs: 300,
-            writable_workspace: true,
-            guest_command: GuestCommand::HostShellCommand {
-                command: concat!(
-                    "set -euo pipefail; ",
-                    "SD=\"$(mktemp -d /tmp/pikahut-smoke.XXXXXX)\"; ",
-                    "cleanup() { cargo run -q -p pikahut -- down --state-dir \"$SD\" 2>/dev/null || true; rm -rf \"$SD\"; }; ",
-                    "trap cleanup EXIT; ",
-                    "cargo run -q -p pikahut -- up --profile relay --background --state-dir \"$SD\" --relay-port 0 >/dev/null; ",
-                    "cargo run -q -p pikahut -- wait --state-dir \"$SD\" --timeout 30; ",
-                    "cargo run -q -p pikahut -- status --state-dir \"$SD\" --json | python3 -c ",
-                    "\"import json,sys; d=json.load(sys.stdin); assert d.get('relay_url'), f'relay_url missing: {d}'\"",
-                ),
-            },
-            staged_linux_rust_lane: None,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand { command: "ignored" },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::FixtureRelaySmoke),
         },
     ]
 }
@@ -1694,10 +1681,16 @@ mod tests {
         let target = target_spec("pre-merge-fixture-rust").expect("fixture target");
 
         assert_eq!(target.jobs.len(), 2);
-        assert_eq!(target.jobs[0].staged_linux_rust_lane(), None);
-        assert_eq!(target.jobs[0].runner_kind(), RunnerKind::HostLocal);
-        assert_eq!(target.jobs[1].staged_linux_rust_lane(), None);
-        assert_eq!(target.jobs[1].runner_kind(), RunnerKind::HostLocal);
+        assert_eq!(
+            target.jobs[0].staged_linux_rust_lane(),
+            Some(StagedLinuxRustLane::FixturePikahutClippy)
+        );
+        assert_eq!(target.jobs[0].runner_kind(), RunnerKind::MicrovmRemote);
+        assert_eq!(
+            target.jobs[1].staged_linux_rust_lane(),
+            Some(StagedLinuxRustLane::FixtureRelaySmoke)
+        );
+        assert_eq!(target.jobs[1].runner_kind(), RunnerKind::MicrovmRemote);
     }
 
     #[test]

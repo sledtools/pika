@@ -1767,6 +1767,10 @@ done
                 if matches!(outcome, KeypackagePublishOutcome::TimesOut { .. }) {
                     command.env("PIKA_TEST_CURL_RESULTS", "1");
                 }
+                    );
+                if matches!(outcome, KeypackagePublishOutcome::TimesOut { .. }) {
+                    command.env("PIKA_TEST_CURL_RESULTS", "1");
+                }
             }
         }
 

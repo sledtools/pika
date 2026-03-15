@@ -913,8 +913,16 @@ fn paging_reveals_older_messages_until_history_is_exhausted() {
                 !current.can_load_older,
                 "earliest message should only appear once paging is exhausted"
             );
+            assert!(
+                current.messages.iter().any(|m| m.content == "m80"),
+                "paging should accumulate visible history instead of replacing the window"
+            );
             break;
         }
+        assert!(
+            current.can_load_older,
+            "paging exhausted before earliest message became visible"
+        );
 
         let oldest_id = current.messages.first().expect("oldest visible").id.clone();
         app.dispatch(AppAction::LoadOlderMessages {
@@ -926,10 +934,7 @@ fn paging_reveals_older_messages_until_history_is_exhausted() {
             app.state()
                 .current_chat
                 .as_ref()
-                .map(|c| {
-                    c.messages.first().map(|m| m.id.as_str()) != Some(oldest_id.as_str())
-                        || !c.can_load_older
-                })
+                .map(|c| c.messages.first().map(|m| m.id.as_str()) != Some(oldest_id.as_str()))
                 .unwrap_or(false)
         });
     }

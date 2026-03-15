@@ -34,9 +34,7 @@ pre-merge-pika: fmt clippy
     if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
         nix run .#pikaci -- run pre-merge-pika-rust
     else
-        # Keep the paging regression test available for manual/debug runs, but skip it in CI
-        # until the underlying timing flake is fixed.
-        cargo test -p pika_core --lib --tests -- --skip paging_loads_older_messages_in_pages
+        cargo test -p pika_core --lib --tests
     fi
     just pre-merge-pika-followup
     echo "pre-merge-pika complete"

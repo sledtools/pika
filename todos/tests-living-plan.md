@@ -193,7 +193,8 @@ Working assumptions:
 20. Slice 21 tackled the recurring paging flake in `rust/tests/app_flows.rs`:
    - the actual flake mechanism was that `paging_loads_older_messages_in_pages` tried to own exact page-count behavior (`50 -> 80 -> 81`) at the asynchronous `FfiApp` layer, where chat open + paging state is rebuilt through actor-driven projection and local outbox/storage merging
    - that made the test a brittle second owner of exact pagination metadata that the lower-level core test `app_message_history_loading_uses_shared_runtime_page_query` already covers more deterministically
-   - `rust/tests/app_flows.rs` now keeps the narrower end-user paging smoke in `paging_reveals_older_messages_until_history_is_exhausted`: opening a long chat starts near the newest messages, `LoadOlderMessages` reveals older history, and paging eventually reaches the earliest message with `can_load_older == false`
+   - `rust/tests/app_flows.rs` now keeps the narrower end-user paging smoke in `paging_reveals_older_messages_until_history_is_exhausted`: opening a long chat starts near the newest messages, `LoadOlderMessages` reveals older history without replacing already-visible messages, and paging eventually reaches the earliest message with `can_load_older == false`
+   - `just pre-merge-pika` no longer carries the stale skip for the removed test name, so the stabilized replacement now actually runs in the checked-in pre-merge recipe instead of changing CI behavior implicitly
    - this reduces the flake rather than inventing a larger harness rewrite; exact shared-runtime page counts stay owned below the `FfiApp` layer, while the app-facing test now asserts the contract users actually feel
 ## Progress Update
 
@@ -232,7 +233,7 @@ Verified in the repo today:
 4. Many important `pikahut` selectors are intentionally `#[ignore]` and only matter because CI lanes select them explicitly.
 
 5. Current pre-merge enforcement is spread across separate lanes:
-   - `pre-merge-pika`: `cargo test -p pika_core --lib --tests` plus Android instrumentation compilation, `pikachat` build, desktop build-check, and formatting/lint/docs/justfile checks; a follow-up CI slice should revisit the old paging skip now that the flaky exact-count test has been replaced by `paging_reveals_older_messages_until_history_is_exhausted`
+   - `pre-merge-pika`: `cargo test -p pika_core --lib --tests` plus Android instrumentation compilation, `pikachat` build, desktop build-check, and formatting/lint/docs/justfile checks; the old paging skip is now gone because the flaky exact-count owner was replaced by `paging_reveals_older_messages_until_history_is_exhausted`
    - `pre-merge-pikachat`: `pikachat` + `pikachat-sidecar` tests plus selected deterministic `pikahut` selectors
    - separate `agent-contracts`, `notifications`, `fixture`, `rmp`, and path-scoped heavy OpenClaw lanes
 

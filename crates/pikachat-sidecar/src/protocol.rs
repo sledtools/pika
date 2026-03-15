@@ -354,13 +354,6 @@ pub struct LeaveGroupResultOut {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct UpdateGroupProfileResultOut {
-    pub nostr_group_id: String,
-    pub name: String,
-    pub about: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GroupProfileOut {
     pub nostr_group_id: String,
     pub owner_pubkey: String,

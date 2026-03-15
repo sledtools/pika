@@ -76,12 +76,18 @@ Current `update_group_profile` scope is intentionally metadata-only:
 - it can set `name` / `about`
 - it preserves any existing `picture` from the latest self-authored group profile metadata
 - it does not let callers set or clear `picture` yet
+- it returns the same full profile shape as `get_group_profile`, including the carried-forward
+  `picture`
 
 Current group-profile read/write contract is intentionally keyed to the local user/admin view:
 
 - `get_group_profile` returns the latest self-authored group profile metadata if present
 - when no self-authored metadata exists yet, it falls back to joined-group summary `name` / `about`
+- in that fallback case, `picture_url: null` is the current implicit signal that no explicit
+  self-authored profile metadata has been seen yet
 - `upload_group_profile_image` preserves the current `name` / `about` and updates only `picture`
+- `upload_group_profile_image` accepts base64-in-JSON today; the 8 MB limit applies to decoded
+  image bytes, so wire payloads are larger because of base64 expansion
 
 The shared runtime already has most of the underlying membership machinery:
 

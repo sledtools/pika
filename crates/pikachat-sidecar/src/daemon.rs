@@ -59,8 +59,7 @@ use crate::call_audio::OpusToAudioPipeline;
 use crate::call_tts::synthesize_tts_pcm;
 use crate::protocol::{
     AddMembersResultOut, DaemonCmd, GroupMemberOut, GroupProfileOut, InCmd, LeaveGroupResultOut,
-    ListMembersResultOut, MediaAttachmentOut, OutMsg, RemoveMembersResultOut,
-    UpdateGroupProfileResultOut, out_error, out_ok,
+    ListMembersResultOut, MediaAttachmentOut, OutMsg, RemoveMembersResultOut, out_error, out_ok,
 };
 use host_context::{DaemonHostContext, DaemonPrepareError};
 
@@ -1139,7 +1138,7 @@ where
     };
 
     let (normalized_name, normalized_about, metadata_json) =
-        match build_group_profile_metadata(current_picture, name, about) {
+        match build_group_profile_metadata(current_picture.clone(), name, about) {
             Ok(built) => built,
             Err(err) => return out_error(request_id, err.code, err.message),
         };
@@ -1159,10 +1158,12 @@ where
         }
     };
 
-    let result = UpdateGroupProfileResultOut {
+    let result = GroupProfileOut {
         nostr_group_id,
+        owner_pubkey: local_pubkey.to_hex(),
         name: normalized_name,
         about: normalized_about,
+        picture_url: current_picture,
     };
     out_ok(
         request_id,
@@ -6157,7 +6158,6 @@ mod tests {
         )
         .await;
 
-        dbg!(&reply);
         let OutMsg::Ok {
             request_id,
             result: Some(result),
@@ -6571,14 +6571,19 @@ mod tests {
             panic!("expected successful update_group_profile reply");
         };
         assert_eq!(request_id.as_deref(), Some("req-profile"));
-        let result: UpdateGroupProfileResultOut =
+        let result: GroupProfileOut =
             serde_json::from_value(result).expect("deserialize update_group_profile result");
         assert_eq!(
             result.nostr_group_id,
             hex::encode(created.group.nostr_group_id)
         );
+        assert_eq!(result.owner_pubkey, inviter_keys.public_key().to_hex());
         assert_eq!(result.name, "New Name");
         assert_eq!(result.about, "New About");
+        assert_eq!(
+            result.picture_url.as_deref(),
+            Some("https://example.com/group.jpg")
+        );
     }
 
     #[tokio::test]

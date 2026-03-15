@@ -1,9 +1,12 @@
 use iced::widget::{button, column, container, image, mouse_area, row, text, Space};
 use iced::{border, Alignment, Background, Color, Element, Fill, Font, Length, Theme};
-use pika_core::{ChatMediaAttachment, ChatMediaKind, ChatMessage, MessageDeliveryState};
+use pika_core::{
+    ChatMediaAttachment, ChatMediaKind, ChatMessage, MessageDeliveryState, MessageSegment,
+};
 
 use super::avatar::{avatar_circle, AvatarCache};
 use super::conversation::Message;
+use super::markdown;
 use crate::design::{self, BubblePosition};
 use crate::icons;
 use crate::theme;
@@ -119,10 +122,8 @@ pub fn message_bubble<'a>(
         for attachment in &msg.media {
             bubble_content = bubble_content.push(media_attachment_view(attachment, &msg_id, true));
         }
-        if !msg.display_content.is_empty() {
-            bubble_content =
-                bubble_content.push(text(&msg.display_content).size(15).color(Color::WHITE));
-        }
+        bubble_content =
+            push_message_content(bubble_content, &msg.segments, &msg.display_content, true);
         bubble_content = bubble_content.push(timestamp_row(timestamp, &msg.delivery, true));
         let bubble = container(bubble_content)
             .padding([10, 14])
@@ -185,13 +186,8 @@ pub fn message_bubble<'a>(
         for attachment in &msg.media {
             bubble_content = bubble_content.push(media_attachment_view(attachment, &msg_id, false));
         }
-        if !msg.display_content.is_empty() {
-            bubble_content = bubble_content.push(
-                text(&msg.display_content)
-                    .size(15)
-                    .color(theme::text_primary()),
-            );
-        }
+        bubble_content =
+            push_message_content(bubble_content, &msg.segments, &msg.display_content, false);
         bubble_content = bubble_content.push(timestamp_row(timestamp, &msg.delivery, false));
 
         let bubble = container(bubble_content)
@@ -261,6 +257,54 @@ pub fn message_bubble<'a>(
         .on_enter(Message::HoverMessage(msg_id.clone()))
         .on_exit(Message::UnhoverMessage)
         .into()
+}
+
+/// Appends rendered message content (with markdown support) to a bubble column.
+///
+/// Uses the parsed `segments` from `pika_core` when available, falling back to
+/// `display_content`. Plain text without any markdown syntax is rendered as a
+/// simple `text()` widget for efficiency.
+fn push_message_content<'a>(
+    mut col: iced::widget::Column<'a, Message, Theme>,
+    segments: &'a [MessageSegment],
+    display_content: &'a str,
+    is_mine: bool,
+) -> iced::widget::Column<'a, Message, Theme> {
+    let text_color = if is_mine {
+        Color::WHITE
+    } else {
+        theme::text_primary()
+    };
+
+    // (text, is_markdown) — preserve the segment type so we don't re-check
+    // with has_markdown and risk misclassifying valid markdown content.
+    let parts: Vec<(&str, bool)> = if segments.is_empty() {
+        if display_content.is_empty() {
+            vec![]
+        } else {
+            vec![(display_content, markdown::has_markdown(display_content))]
+        }
+    } else {
+        segments
+            .iter()
+            .filter_map(|seg| match seg {
+                MessageSegment::Markdown { text } if !text.is_empty() => {
+                    Some((text.as_str(), true))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+
+    for (part, is_markdown) in parts {
+        if is_markdown {
+            col = col.push(markdown::render_markdown(part, text_color, is_mine));
+        } else {
+            col = col.push(text(part).size(15).color(text_color));
+        }
+    }
+
+    col
 }
 
 /// Renders a media attachment inside a message bubble.

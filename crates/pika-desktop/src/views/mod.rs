@@ -7,6 +7,7 @@ pub mod conversation;
 pub mod empty_state;
 pub mod group_info;
 pub mod group_profile;
+pub mod markdown;
 pub mod message_bubble;
 pub mod my_profile;
 pub mod new_chat;

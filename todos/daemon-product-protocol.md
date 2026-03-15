@@ -151,10 +151,10 @@ For example, “membership evolution” is a good domain PR. “random protocol 
 5. Keep request-level tests close to real daemon behavior.
 The confidence problem now is more about product surface coverage than shared-runtime coverage.
 
-## Immediate Gap: Broader Group Evolution
+## Remaining Gap: Broader Group Governance
 
-The membership MVP is now on the native daemon surface. The next value is the rest of the
-group-evolution product surface.
+The core group-management and group-observability MVP is now on the native daemon surface. The
+next value is narrower governance/product follow-through, not more basic group mutation wiring.
 
 ### What Exists Already
 
@@ -166,16 +166,22 @@ group-evolution product surface.
 
 ### What Is Missing
 
-- additional group-evolution mutations beyond membership add
-- broader daemon mapping for future group-update results/events
-- product decisions for profile updates, leaves, and removals
+- admin-role changes and any other governance mutations the product actually needs
+- any broader daemon mapping for future governance-specific events/results
+- product decisions for richer remote lifecycle observability beyond the current snapshot event
+  family
 
 ### Smallest Honest Product Surface
 
-The smallest honest membership surface is now shipped:
+The smallest honest group-management surface is now shipped:
 
 - `add_members`
 - `list_members`
+- `remove_members`
+- `leave_group`
+- `get_group_profile`
+- `update_group_profile`
+- `upload_group_profile_image`
 
 Current `add_members` shape:
 
@@ -240,8 +246,9 @@ What should remain daemon-local:
 After the membership/group-management MVP, the next most likely protocol candidates are:
 
 1. admin-role changes if product needs them
-2. richer group-update observability if product consumers need push state
-3. any broader group-profile policy only if product consumers need more than the current local-owner view
+2. remote welcome/join lifecycle observability if product consumers need push state there too
+3. any broader group-profile policy only if product consumers need more than the current
+   admin-authored view
 
 I would not start with all of these at once.
 
@@ -254,18 +261,20 @@ Current daemon events are good for:
 - group joined / group created
 - message received
 - call events
+- `group_updated` for local group mutations and honest inbound remote membership/profile changes
 
-But for richer group/product behavior, the likely missing event family is:
+The main remaining group-event gaps are narrower now:
 
-- group update / membership update
+- remote welcome/join lifecycle follow-through in the same event family
+- broader governance/admin-role eventing if product needs it
 
 I do **not** think we should invent a big event system first.
 
 The right sequencing is:
 
-1. add real request-level membership mutation
-2. see what explicit daemon event/result shape is actually needed
-3. add the smallest honest event/result surface after that
+1. keep the current snapshot-oriented `group_updated` family stable
+2. only add the next missing product event when a concrete consumer actually needs it
+3. avoid a generic daemon event bus unless the product surface truly forces it
 
 ## Test Strategy
 
@@ -283,7 +292,7 @@ Highest-value current request-level gaps:
 - `init_group` end-to-end daemon request path
 - `send_media` / `send_media_batch` request path
 - `invite_call` / `reject_call` / `end_call` request paths
-- broader future group-evolution request paths after membership MVP
+- any future governance/admin-role request paths if they land
 
 ## Suggested Implementation Order
 

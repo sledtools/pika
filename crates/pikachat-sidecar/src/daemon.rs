@@ -1052,8 +1052,14 @@ fn get_group_profile_result(
     let group = host
         .lookup_joined_group_snapshot(nostr_group_id)
         .map_err(|err| DaemonGroupProfileWorkflowError::bad_group(format!("{err:#}")))?;
+    let owner_candidates: Vec<PublicKey> = group
+        .member_snapshots
+        .iter()
+        .filter(|member| member.is_admin)
+        .map(|member| member.pubkey)
+        .collect();
     let snapshot = host
-        .lookup_group_profile_snapshot(nostr_group_id, local_pubkey)
+        .lookup_group_profile_snapshot_for_owners(nostr_group_id, &owner_candidates)
         .map_err(|err| DaemonGroupProfileWorkflowError::bad_group(format!("{err:#}")))?;
 
     let name = snapshot
@@ -1068,11 +1074,15 @@ fn get_group_profile_result(
         .and_then(|snapshot| trim_group_profile_field(snapshot.metadata.about.as_deref()))
         .unwrap_or_else(|| group.description.clone());
     let picture_url = snapshot
+        .as_ref()
         .and_then(|snapshot| trim_group_profile_field(snapshot.metadata.picture.as_deref()));
 
     Ok(GroupProfileOut {
         nostr_group_id: group.nostr_group_id_hex,
-        owner_pubkey: local_pubkey.to_hex(),
+        owner_pubkey: snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.owner_pubkey.to_hex())
+            .unwrap_or_else(|| local_pubkey.to_hex()),
         name,
         about,
         picture_url,
@@ -1108,6 +1118,109 @@ fn build_left_group_updated(nostr_group_id: &str) -> GroupUpdatedOut {
         members: Vec::new(),
         profile: None,
     }
+}
+
+fn infer_remote_membership_update_kind(
+    local_pubkey: &PublicKey,
+    before: Option<&pika_marmot_runtime::conversation::RuntimeJoinedGroupSnapshot>,
+    after: Option<&pika_marmot_runtime::conversation::RuntimeJoinedGroupSnapshot>,
+) -> Option<GroupUpdateKindOut> {
+    let before_contains_local = before.is_some_and(|snapshot| {
+        snapshot
+            .member_snapshots
+            .iter()
+            .any(|member| member.pubkey == *local_pubkey)
+    });
+    let after_contains_local = after.is_some_and(|snapshot| {
+        snapshot
+            .member_snapshots
+            .iter()
+            .any(|member| member.pubkey == *local_pubkey)
+    });
+
+    if before_contains_local && !after_contains_local {
+        return Some(GroupUpdateKindOut::Left);
+    }
+
+    let (Some(before), Some(after)) = (before, after) else {
+        return None;
+    };
+
+    let before_members: HashSet<PublicKey> = before
+        .member_snapshots
+        .iter()
+        .map(|member| member.pubkey)
+        .collect();
+    let after_members: HashSet<PublicKey> = after
+        .member_snapshots
+        .iter()
+        .map(|member| member.pubkey)
+        .collect();
+    let added = after_members.difference(&before_members).count();
+    let removed = before_members.difference(&after_members).count();
+
+    match (added > 0, removed > 0) {
+        (true, false) => Some(GroupUpdateKindOut::MembersAdded),
+        (false, true) => Some(GroupUpdateKindOut::MembersRemoved),
+        (true, true) => Some(if after.member_count() >= before.member_count() {
+            GroupUpdateKindOut::MembersAdded
+        } else {
+            GroupUpdateKindOut::MembersRemoved
+        }),
+        (false, false) => None,
+    }
+}
+
+fn emit_remote_group_commit_updated(
+    out_tx: &mpsc::UnboundedSender<OutMsg>,
+    event_sinks: &ProtocolEventSinks,
+    host: &DaemonHostContext<'_>,
+    local_pubkey: &PublicKey,
+    before: Option<&pika_marmot_runtime::conversation::RuntimeJoinedGroupSnapshot>,
+    nostr_group_id: &str,
+) -> bool {
+    let after = host.lookup_joined_group_snapshot(nostr_group_id).ok();
+    let Some(kind) = infer_remote_membership_update_kind(local_pubkey, before, after.as_ref())
+    else {
+        return false;
+    };
+
+    if kind == GroupUpdateKindOut::Left {
+        emit_left_group_updated(out_tx, event_sinks, nostr_group_id);
+        return true;
+    }
+
+    emit_group_updated_snapshot(
+        out_tx,
+        event_sinks,
+        GroupUpdatedEmission {
+            host,
+            local_pubkey,
+            kind,
+            nostr_group_id,
+            context: "remote_group_commit",
+        },
+    )
+}
+
+fn emit_remote_group_profile_updated(
+    out_tx: &mpsc::UnboundedSender<OutMsg>,
+    event_sinks: &ProtocolEventSinks,
+    host: &DaemonHostContext<'_>,
+    local_pubkey: &PublicKey,
+    nostr_group_id: &str,
+) -> bool {
+    emit_group_updated_snapshot(
+        out_tx,
+        event_sinks,
+        GroupUpdatedEmission {
+            host,
+            local_pubkey,
+            kind: GroupUpdateKindOut::ProfileUpdated,
+            nostr_group_id,
+            context: "remote_group_profile",
+        },
+    )
 }
 
 fn decode_group_profile_image(
@@ -1235,12 +1348,9 @@ where
     Publish: FnMut(PreparedConversationAction) -> PublishFut,
     PublishFut: Future<Output = anyhow::Result<EventId>>,
 {
-    let current_picture = match host.lookup_group_profile_snapshot(nostr_group_id, local_pubkey) {
-        Ok(snapshot) => snapshot.and_then(|snapshot| snapshot.metadata.picture),
-        Err(err) => {
-            let mapped = DaemonGroupProfileWorkflowError::bad_group(format!("{err:#}"));
-            return out_error(request_id, mapped.code, mapped.message);
-        }
+    let current_picture = match get_group_profile_result(host, local_pubkey, nostr_group_id) {
+        Ok(profile) => profile.picture_url,
+        Err(err) => return out_error(request_id, err.code, err.message),
     };
 
     let (normalized_name, normalized_about, metadata_json) =
@@ -5269,10 +5379,11 @@ pub async fn daemon_main(
                 }
 
                 let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
-                // Only process messages for subscriptions we created.
-                if !group_subs.contains_key(&subscription_id) {
+                let Some(subscribed_group_id) = group_subs.get(&subscription_id).cloned() else {
                     continue;
-                }
+                };
+                let before_group_snapshot =
+                    host.lookup_joined_group_snapshot(&subscribed_group_id).ok();
                 let inbound =
                     match classify_inbound_relay_event(&client, &mut seen_inbound, event).await {
                     Ok(Some(inbound)) => inbound,
@@ -5305,7 +5416,7 @@ pub async fn daemon_main(
                             warn!("[pikachat] drop message (sender not allowed) from={sender_hex}");
                             continue;
                         }
-                        let (classification, nostr_group_id, msg) = match interpreted {
+                        let (classification, nostr_group_id, msg, emit_profile_update) = match interpreted {
                             RuntimeApplicationMessageInterpretation::TypingIndicator { .. } => {
                                 continue;
                             }
@@ -5501,15 +5612,19 @@ pub async fn daemon_main(
                                     }
                                     continue;
                                 }
-                                (classification, nostr_group_id, msg)
+                                (classification, nostr_group_id, msg, false)
                             }
-                            RuntimeApplicationMessageInterpretation::Content { message }
-                            | RuntimeApplicationMessageInterpretation::GroupProfile {
-                                message,
-                            } => (
+                            RuntimeApplicationMessageInterpretation::Content { message } => (
                                 message.classification,
                                 message.nostr_group_id_hex,
                                 message.message,
+                                false,
+                            ),
+                            RuntimeApplicationMessageInterpretation::GroupProfile { message } => (
+                                message.classification,
+                                message.nostr_group_id_hex,
+                                message.message,
+                                true,
                             ),
                         };
                         let mut media: Vec<MediaAttachmentOut> = Vec::new();
@@ -5572,9 +5687,29 @@ pub async fn daemon_main(
                                 );
                             }
                         }
+                        if emit_profile_update {
+                            let _ = emit_remote_group_profile_updated(
+                                &out_tx,
+                                &protocol_event_sinks,
+                                &host,
+                                &keys.public_key(),
+                                &acp_nostr_group_id,
+                            );
+                        }
                     }
-                    RuntimeConversationEventInterpretation::GroupUpdate { .. }
-                    | RuntimeConversationEventInterpretation::NeedsFullRefresh { .. } => {}
+                    RuntimeConversationEventInterpretation::GroupUpdate { update, is_commit } => {
+                        if is_commit {
+                            let _ = emit_remote_group_commit_updated(
+                                &out_tx,
+                                &protocol_event_sinks,
+                                &host,
+                                &keys.public_key(),
+                                before_group_snapshot.as_ref(),
+                                &update.nostr_group_id_hex,
+                            );
+                        }
+                    }
+                    RuntimeConversationEventInterpretation::NeedsFullRefresh { .. } => {}
                 }
             }
         }
@@ -7072,6 +7207,261 @@ mod tests {
         assert_eq!(
             profile.picture_url.as_deref(),
             Some("https://example.com/group.jpg")
+        );
+    }
+
+    #[tokio::test]
+    async fn daemon_remote_membership_commit_emits_group_updated_snapshot() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let peer_dir = tempfile::tempdir().expect("peer tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let peer_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let peer_mdk = crate::open_mdk(peer_dir.path()).expect("open peer mdk");
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let created = inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData::new(
+                    "Daemon remote membership event".to_string(),
+                    "Remote commit".to_string(),
+                    None,
+                    None,
+                    None,
+                    relay_urls.clone(),
+                    vec![inviter_keys.public_key(), invitee_keys.public_key()],
+                ),
+            )
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
+
+        let welcome_rumor = created
+            .welcome_rumors
+            .into_iter()
+            .next()
+            .expect("welcome rumor");
+        let wrapper =
+            EventBuilder::gift_wrap(&inviter_keys, &invitee_keys.public_key(), welcome_rumor, [])
+                .await
+                .expect("build giftwrap");
+        crate::ingest_welcome_from_giftwrap(&invitee_mdk, &invitee_keys, &wrapper, |_| true)
+            .await
+            .expect("ingest welcome")
+            .expect("welcome should ingest");
+
+        let invitee_client = Client::builder().signer(invitee_keys.clone()).build();
+        let pending = invitee_mdk
+            .get_pending_welcomes(None)
+            .expect("get pending welcomes");
+        let welcome = pending.first().expect("pending welcome");
+        let mut seen_group_events = HashSet::new();
+        let accepted = accept_welcome_with_backfill(
+            &invitee_mdk,
+            &invitee_client,
+            &[],
+            welcome,
+            &mut seen_group_events,
+            |_| async { Ok(()) },
+        )
+        .await
+        .expect("accept welcome");
+
+        let invitee_host = test_host(&invitee_mdk, &invitee_keys, &invitee_client, &relay_urls);
+        let inviter_client = Client::builder().signer(inviter_keys.clone()).build();
+        let inviter_host = test_host(&inviter_mdk, &inviter_keys, &inviter_client, &relay_urls);
+        let peer_kp = make_key_package_event(&peer_mdk, &peer_keys);
+        let prepared = inviter_host
+            .prepare_add_members(&accepted.nostr_group_id_hex, &[peer_kp])
+            .expect("prepare add members");
+        let before_snapshot = invitee_host
+            .lookup_joined_group_snapshot(&accepted.nostr_group_id_hex)
+            .ok();
+        let processed = invitee_host
+            .process_classified_inbound_group_message(InboundRelayEvent::GroupMessage {
+                event: prepared.evolution_event.clone(),
+            })
+            .expect("process classified inbound group message")
+            .expect("processed inbound group message");
+        let interpreted = invitee_host.interpret_conversation_event(
+            processed
+                .into_conversation_event()
+                .expect("conversation event for remote commit"),
+        );
+
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel();
+        let event_sinks: ProtocolEventSinks = Arc::new(Mutex::new(Vec::new()));
+        match interpreted {
+            RuntimeConversationEventInterpretation::GroupUpdate { update, is_commit } => {
+                assert!(is_commit);
+                assert!(emit_remote_group_commit_updated(
+                    &out_tx,
+                    &event_sinks,
+                    &invitee_host,
+                    &invitee_keys.public_key(),
+                    before_snapshot.as_ref(),
+                    &update.nostr_group_id_hex,
+                ));
+            }
+            other => panic!("expected inbound commit group update, got {other:?}"),
+        }
+
+        let update = expect_group_updated(out_rx.try_recv().expect("group_updated event"));
+        assert_eq!(update.kind, GroupUpdateKindOut::MembersAdded);
+        assert_eq!(update.nostr_group_id, accepted.nostr_group_id_hex);
+        assert_eq!(update.member_count, Some(3));
+        assert_eq!(update.members.len(), 3);
+        assert_eq!(
+            update.profile.expect("profile").name,
+            "Daemon remote membership event"
+        );
+    }
+
+    #[tokio::test]
+    async fn daemon_remote_group_profile_message_emits_group_updated_snapshot() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let created = inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData::new(
+                    "Daemon remote profile event".to_string(),
+                    "Remote profile fallback".to_string(),
+                    None,
+                    None,
+                    None,
+                    relay_urls.clone(),
+                    vec![inviter_keys.public_key(), invitee_keys.public_key()],
+                ),
+            )
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
+
+        let welcome_rumor = created
+            .welcome_rumors
+            .into_iter()
+            .next()
+            .expect("welcome rumor");
+        let wrapper =
+            EventBuilder::gift_wrap(&inviter_keys, &invitee_keys.public_key(), welcome_rumor, [])
+                .await
+                .expect("build giftwrap");
+        crate::ingest_welcome_from_giftwrap(&invitee_mdk, &invitee_keys, &wrapper, |_| true)
+            .await
+            .expect("ingest welcome")
+            .expect("welcome should ingest");
+
+        let invitee_client = Client::builder().signer(invitee_keys.clone()).build();
+        let pending = invitee_mdk
+            .get_pending_welcomes(None)
+            .expect("get pending welcomes");
+        let welcome = pending.first().expect("pending welcome");
+        let mut seen_group_events = HashSet::new();
+        let accepted = accept_welcome_with_backfill(
+            &invitee_mdk,
+            &invitee_client,
+            &[],
+            welcome,
+            &mut seen_group_events,
+            |_| async { Ok(()) },
+        )
+        .await
+        .expect("accept welcome");
+
+        let profile_event = make_group_message_event(
+            &inviter_mdk,
+            &inviter_keys,
+            &created.group.mls_group_id,
+            Kind::Metadata,
+            r#"{"display_name":"Remote Name","about":"Remote About","picture":"https://example.com/remote.png"}"#,
+            Tags::new(),
+        );
+        let invitee_host = test_host(&invitee_mdk, &invitee_keys, &invitee_client, &relay_urls);
+        let processed = invitee_host
+            .process_classified_inbound_group_message(InboundRelayEvent::GroupMessage {
+                event: profile_event,
+            })
+            .expect("process classified inbound profile message")
+            .expect("processed inbound profile message");
+        let interpreted = invitee_host.interpret_conversation_event(
+            processed
+                .into_conversation_event()
+                .expect("conversation event for remote profile"),
+        );
+
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel();
+        let event_sinks: ProtocolEventSinks = Arc::new(Mutex::new(Vec::new()));
+        match interpreted {
+            RuntimeConversationEventInterpretation::Application { message } => {
+                match invitee_host.interpret_runtime_application_message(*message) {
+                    RuntimeApplicationMessageInterpretation::GroupProfile { message } => {
+                        assert!(emit_remote_group_profile_updated(
+                            &out_tx,
+                            &event_sinks,
+                            &invitee_host,
+                            &invitee_keys.public_key(),
+                            &message.nostr_group_id_hex,
+                        ));
+                    }
+                    other => panic!("expected remote group profile interpretation, got {other:?}"),
+                }
+            }
+            other => panic!("expected inbound application message, got {other:?}"),
+        }
+
+        let update = expect_group_updated(out_rx.try_recv().expect("group_updated event"));
+        assert_eq!(update.kind, GroupUpdateKindOut::ProfileUpdated);
+        assert_eq!(update.nostr_group_id, accepted.nostr_group_id_hex);
+        assert_eq!(update.member_count, Some(2));
+        assert_eq!(update.members.len(), 2);
+        let profile = update.profile.expect("profile");
+        assert_eq!(profile.owner_pubkey, inviter_keys.public_key().to_hex());
+        assert_eq!(profile.name, "Remote Name");
+        assert_eq!(profile.about, "Remote About");
+        assert_eq!(
+            profile.picture_url.as_deref(),
+            Some("https://example.com/remote.png")
+        );
+
+        let reply = handle_get_group_profile_request(
+            Some("req-remote-profile".to_string()),
+            &invitee_host,
+            &invitee_keys.public_key(),
+            &accepted.nostr_group_id_hex,
+        );
+        let OutMsg::Ok {
+            request_id,
+            result: Some(result),
+        } = reply
+        else {
+            panic!("expected successful get_group_profile reply");
+        };
+        assert_eq!(request_id.as_deref(), Some("req-remote-profile"));
+        let result: GroupProfileOut =
+            serde_json::from_value(result).expect("deserialize get_group_profile result");
+        assert_eq!(result.owner_pubkey, inviter_keys.public_key().to_hex());
+        assert_eq!(result.name, "Remote Name");
+        assert_eq!(result.about, "Remote About");
+        assert_eq!(
+            result.picture_url.as_deref(),
+            Some("https://example.com/remote.png")
         );
     }
 

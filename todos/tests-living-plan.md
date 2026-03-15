@@ -202,6 +202,12 @@ Working assumptions:
    - the timeout scenario now stays on the normal OpenClaw `http_get_ok` readiness path, forces deterministic curl success through the fake harness, and uses a short dedicated timeout window for the always-fail keypackage publish branch
    - the test now also asserts that the health-check path actually ran and that the failed marker reports the dedicated OpenClaw keypackage timeout rather than the service-health timeout
    - this should materially reduce the flake without broad harness work; if it recurs, the next step should be a smaller autostart-script harness unit, not another longer timeout on the mixed readiness path
+22. Slice 23 started the same ownership cleanup on the external-signer / bunker / Nostr Connect auth family:
+   - `crates/pikahut/tests/integration_deterministic.rs::nostr_connect_login_success_boundary` now gives the Nostr Connect success path a readable deterministic CI-facing owner instead of leaving it buried entirely in `rust/tests/app_flows.rs`
+   - `crates/pikahut/tests/support.rs` now drives that selector directly through `FfiApp` with deterministic mock signer bridges/connectors: Rust launches the raw `nostrconnect://...` URL with signer metadata/relay/secret, stays pending until the callback arrives, then finishes bunker bootstrap and lands signed in
+   - `rust/tests/app_flows.rs` now keeps the narrower callback-gating semantic owner in `begin_nostr_connect_login_waits_for_callback_before_bunker_connect` instead of also owning the fuller launch/URL/auth success contract
+   - Android `NostrConnectIntentTest` is now labeled honestly as intent/callback glue only, not the owner of Rust Nostr Connect handshake semantics; callback augmentation remains a native glue responsibility while Rust owns the pending/login state machine
+   - the remaining open edges in this family are the richer retry/reconnect/current-user-hint paths, not the basic success-path ownership split
 ## Progress Update
 
 Completed on 2026-03-10:

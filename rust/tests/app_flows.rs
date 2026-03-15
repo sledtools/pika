@@ -77,11 +77,6 @@ fn nostrconnect_client_pubkey(url: &str) -> Option<String> {
         .and_then(|parsed| parsed.host_str().map(ToString::to_string))
 }
 
-fn nostrconnect_metadata(url: &str) -> Option<serde_json::Value> {
-    let raw = query_param(url, "metadata")?;
-    serde_json::from_str(&raw).ok()
-}
-
 #[derive(Clone)]
 struct MockExternalSignerBridge {
     handshake_result: Arc<Mutex<ExternalSignerHandshakeResult>>,
@@ -1243,7 +1238,7 @@ fn begin_bunker_login_failure_shows_toast_and_clears_busy() {
 }
 
 #[test]
-fn begin_nostr_connect_login_launches_uri_and_logs_in() {
+fn begin_nostr_connect_login_waits_for_callback_before_bunker_connect() {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_string_lossy().to_string();
     write_config_with_external_signer(&data_dir, true, Some(true));
@@ -1271,10 +1266,12 @@ fn begin_nostr_connect_login_launches_uri_and_logs_in() {
         bridge.last_opened_url().is_some()
     });
 
-    // Rust should wait for the app callback before attempting the signer handshake.
+    // Keep the readable URL-launch + signed-in contract in the `pikahut` selector; this test
+    // stays as the narrower Rust owner that callback arrival gates the bunker handshake.
     assert!(matches!(app.state().auth, AuthState::LoggedOut));
     assert!(app.state().busy.logging_in);
     assert!(connector.last_bunker_uri().is_none());
+
     app.dispatch(AppAction::NostrConnectCallback {
         url: "pika://nostrconnect-return".into(),
     });
@@ -1286,26 +1283,6 @@ fn begin_nostr_connect_login_launches_uri_and_logs_in() {
     wait_until("nostrconnect logged in", Duration::from_secs(10), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
     });
-
-    let opened_url = bridge
-        .last_opened_url()
-        .expect("expected bridge open_url call");
-    assert!(opened_url.starts_with("nostrconnect://"));
-    assert!(opened_url.contains("secret="));
-    assert!(opened_url.contains("metadata="));
-    assert!(opened_url.contains("perms="));
-    assert!(opened_url.contains("relay="));
-    assert_eq!(query_param(&opened_url, "name").as_deref(), Some("Pika"));
-    assert_eq!(
-        query_param(&opened_url, "url").as_deref(),
-        Some("https://pikachat.org")
-    );
-    let metadata = nostrconnect_metadata(&opened_url).expect("metadata JSON");
-    assert_eq!(metadata.get("name").and_then(|v| v.as_str()), Some("Pika"));
-    assert_eq!(
-        metadata.get("url").and_then(|v| v.as_str()),
-        Some("https://pikachat.org")
-    );
     let connect_uri = connector
         .last_bunker_uri()
         .expect("expected bunker connect URI for signer bootstrap");

@@ -38,3 +38,4 @@ url = { workspace = true }
 [dev-dependencies]
 pika_core = { path = "../../rust" }
 rustls = { workspace = true }
+nostr-connect = { workspace = true }

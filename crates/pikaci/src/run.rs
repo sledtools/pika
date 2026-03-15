@@ -135,10 +135,9 @@ pub fn run_jobs_with_metadata(
 }
 
 fn snapshot_profile_for_jobs(jobs: &[JobSpec]) -> SnapshotProfile {
-    if !jobs.is_empty()
-        && jobs
-            .iter()
-            .all(|job| job.staged_linux_rust_lane().is_some())
+    if jobs
+        .iter()
+        .any(|job| job.staged_linux_rust_lane().is_some())
     {
         SnapshotProfile::StagedLinuxRust
     } else {
@@ -710,7 +709,7 @@ enum PrepareAction {
     },
     RemoteMicrovmRunner {
         job: JobSpec,
-        ctx: HostContext,
+        ctx: Box<HostContext>,
         log_paths: Vec<PathBuf>,
     },
 }
@@ -894,6 +893,7 @@ fn build_run_plan(
         let job_dir = prepared.jobs_dir.join(job.id);
         fs::create_dir_all(&job_dir).with_context(|| format!("create {}", job_dir.display()))?;
         let ctx = HostContext {
+            source_root: PathBuf::from(&snapshot.source_root),
             workspace_snapshot_dir: prepare_job_workspace(job, &snapshot.snapshot_dir, &job_dir)?,
             workspace_read_only: !job.writable_workspace,
             job_dir: job_dir.clone(),
@@ -1026,16 +1026,15 @@ fn build_run_plan(
             let prepare_node_id = format!("prepare-{}-runner", job.id);
             let installable = materialize_runner_flake(job, &ctx)?;
             let runner_description = match job.runner_kind() {
+                RunnerKind::HostLocal => unreachable!("host-local jobs skip Linux microvm runner"),
                 RunnerKind::VfkitLocal => format!("Build vfkit runner for `{}`", job.id),
                 RunnerKind::MicrovmRemote => {
                     format!("Build remote microvm runner for `{}`", job.id)
                 }
-                RunnerKind::HostLocal => {
-                    unreachable!("host-local jobs skip Linux microvm runner prepares")
-                }
                 RunnerKind::TartLocal => unreachable!("tart jobs skip Linux microvm runner"),
             };
             let action = match job.runner_kind() {
+                RunnerKind::HostLocal => unreachable!("host-local jobs skip Linux microvm runner"),
                 RunnerKind::VfkitLocal => PrepareAction::VfkitRunner {
                     installable: installable.clone(),
                     runner_link: ctx.job_dir.join("vm").join("runner"),
@@ -1043,12 +1042,9 @@ fn build_run_plan(
                 },
                 RunnerKind::MicrovmRemote => PrepareAction::RemoteMicrovmRunner {
                     job: job.clone(),
-                    ctx: ctx.clone(),
+                    ctx: Box::new(ctx.clone()),
                     log_paths: vec![ctx.host_log_path.clone()],
                 },
-                RunnerKind::HostLocal => {
-                    unreachable!("host-local jobs skip Linux microvm runner prepares")
-                }
                 RunnerKind::TartLocal => unreachable!("tart jobs skip Linux microvm runner"),
             };
             planned_prepares.push(PlannedPrepare {
@@ -3315,12 +3311,15 @@ fn resolve_run_prepared_output_consumer_kind_for_mode(
         ));
     }
     if jobs.is_empty()
-        || jobs
+        || !jobs
             .iter()
-            .any(|job| job.staged_linux_rust_lane().is_none())
+            .any(|job| job.staged_linux_rust_lane().is_some())
+        || jobs.iter().any(|job| {
+            job.staged_linux_rust_lane().is_none() && job.runner_kind() != RunnerKind::HostLocal
+        })
     {
         return Err(anyhow!(
-            "{STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV} requires staged Linux Rust jobs"
+            "{STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV} requires staged Linux Rust jobs, optionally mixed with host-local follow-up jobs"
         ));
     }
     Ok((
@@ -3554,7 +3553,7 @@ fn run_prepare_nodes(
                     node_id: prepare.node_id.clone(),
                     message: "missing remote microvm runner prepare log path".to_string(),
                 })?;
-                prepare_remote_microvm_runner(job, ctx, log_path).map_err(|err| {
+                prepare_remote_microvm_runner(job, ctx.as_ref(), log_path).map_err(|err| {
                     PrepareFailure {
                         node_id: prepare.node_id.clone(),
                         message: format!("{err:#}"),
@@ -3850,7 +3849,6 @@ mod tests {
         PreparedOutputResidency, PreparedOutputsRecord, RealizedPreparedOutputRecord,
         RunPlanRecord, RunRecord, RunStatus, StagedLinuxRustLane,
     };
-
     #[test]
     fn gc_runs_keeps_latest_run_directories() {
         let root = std::env::temp_dir().join(format!("pikaci-gc-test-{}", uuid::Uuid::new_v4()));

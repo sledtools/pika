@@ -38,12 +38,14 @@ pre-merge-pika: fmt clippy
         # until the underlying timing flake is fixed.
         cargo test -p pika_core --lib --tests -- --skip paging_loads_older_messages_in_pages
     fi
-    cd android && ./gradlew :app:compileDebugAndroidTestKotlin
-    cargo build -p pikachat
-    just desktop-check
-    actionlint
-    npx --yes @justinmoon/agent-tools check-docs
-    npx --yes @justinmoon/agent-tools check-justfile
+    just pre-merge-pika-followup
+    echo "pre-merge-pika complete"
+
+# The non-pikaci remainder of the Pika pre-merge lane.
+pre-merge-pika-followup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    nix run .#pikaci -- run pre-merge-pika-followup
     echo "pre-merge-pika complete"
 
 # Advisory shadow CI lane for the staged Linux Rust remote microVM path.
@@ -70,6 +72,22 @@ pre-merge-rmp-shadow:
 pre-merge-pikachat-rust-shadow:
     just pikaci-remote-fulfill-pre-merge-pikachat-rust
     echo "pre-merge-pikachat-rust-shadow complete"
+
+# CI-safe pre-merge for the heavy OpenClaw gateway E2E lane under pikaci.
+pre-merge-pikachat-openclaw-e2e:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ -n "${OPENCLAW_DIR:-}" ]]; then
+        export OPENCLAW_DIR="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$OPENCLAW_DIR")"
+    elif [[ -d openclaw ]]; then
+        export OPENCLAW_DIR="$PWD/openclaw"
+    fi
+    if [[ -n "${IN_NIX_SHELL:-}" ]]; then
+        cargo run -q -p pikaci --bin pikaci -- run pre-merge-pikachat-openclaw-e2e
+    else
+        nix run .#pikaci -- run pre-merge-pikachat-openclaw-e2e
+    fi
+    echo "pre-merge-pikachat-openclaw-e2e complete"
 
 # CI-safe pre-merge for the notification server lane.
 pre-merge-notifications:
@@ -152,14 +170,7 @@ pre-merge-apple-deterministic:
 pre-merge-fixture:
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo clippy -p pikahut -- -D warnings
     nix run .#pikaci -- run pre-merge-fixture-rust
-    SD="$(mktemp -d /tmp/pikahut-smoke.XXXXXX)"
-    cleanup() { cargo run -q -p pikahut -- down --state-dir "$SD" 2>/dev/null || true; rm -rf "$SD"; }
-    trap cleanup EXIT
-    cargo run -q -p pikahut -- up --profile relay --background --state-dir "$SD" --relay-port 0 >/dev/null
-    cargo run -q -p pikahut -- wait --state-dir "$SD" --timeout 30
-    cargo run -q -p pikahut -- status --state-dir "$SD" --json | python3 -c "import json,sys; d=json.load(sys.stdin); assert d.get('relay_url'), f'relay_url missing: {d}'"
     echo "pre-merge-fixture complete"
 
 # Single CI entrypoint for the whole repo.

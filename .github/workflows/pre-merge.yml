@@ -199,6 +199,7 @@ jobs:
               - 'tools/ui-e2e-public'
 
   check-pika:
+    name: check-pika-followup (pikaci)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.pika == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
@@ -230,9 +231,10 @@ jobs:
           key: ${{ github.repository }}-gradle-v1-${{ runner.os }}
           path: ~/.gradle
 
-      - run: nix develop .#default -c just pre-merge-pika
+      - run: nix develop .#default -c just pre-merge-pika-followup
 
   shadow-pikaci-pre-merge-pika-rust:
+    name: check-pika-rust (pikaci)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.pika == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
@@ -356,6 +358,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   shadow-pikaci-pre-merge-notifications:
+    name: check-notifications (pikaci)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.notifications == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
@@ -479,6 +482,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   shadow-pikaci-pre-merge-agent-contracts:
+    name: check-agent-contracts (pikaci)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.agent_contracts == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
@@ -602,6 +606,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   shadow-pikaci-pre-merge-rmp:
+    name: check-rmp (pikaci)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.rmp == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
@@ -725,6 +730,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   shadow-pikaci-pre-merge-pikachat-rust:
+    name: check-pikachat (pikaci)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.pikachat == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
@@ -857,7 +863,7 @@ jobs:
       - shadow-pikaci-pre-merge-pikachat-rust
     runs-on: ubuntu-latest
     steps:
-      - name: Summarize advisory staged Linux shadow lanes
+      - name: Summarize pikaci Linux lanes
         run: |
           lane_row() {
             local label="$1"
@@ -892,9 +898,9 @@ jobs:
           }
 
           {
-            echo "## Advisory staged Linux shadow lanes"
+            echo "## Pikaci Linux lanes"
             echo
-            echo "| lane | workflow job | advisory result | pikaci run status | duration | run id |"
+            echo "| lane | workflow job | pikaci result | pikaci run status | duration | run id |"
             echo "| --- | --- | --- | --- | --- | --- |"
             lane_row \
               "pre-merge-pika-rust" \
@@ -932,14 +938,14 @@ jobs:
               "${{ needs.shadow-pikaci-pre-merge-pikachat-rust.outputs.run_duration_seconds }}" \
               "${{ needs.shadow-pikaci-pre-merge-pikachat-rust.outputs.run_id }}"
             echo
-            echo "### Promotion Readiness"
+            echo "### Linux CI Policy"
             echo
-            echo "- Promote lane-by-lane only after at least 10 real PR shadow runs with zero pass/fail parity mismatches versus the matching legacy Linux job family."
-            echo "- Promotion also requires zero shadow-only infra flakes needing manual intervention and runtime at or below the current legacy lane envelope."
-            echo "- <code>pre-merge-pika-rust</code> remains the first promotion candidate, but the broader Linux coverage gap is now the larger migration problem."
+            echo "- All required Linux pre-merge families now gate through <code>pikaci</code>."
+            echo "- Legacy Linux GitHub jobs remain advisory only while we watch parity and flake rate."
           } >> "$GITHUB_STEP_SUMMARY"
 
   check-pikachat:
+    name: legacy check-pikachat (advisory)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.pikachat == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
@@ -971,6 +977,7 @@ jobs:
       - run: nix develop .#default -c just pre-merge-pikachat
 
   check-pikachat-openclaw-e2e:
+    name: check-pikachat-openclaw-e2e (pikaci)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.pikachat_openclaw_e2e == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
@@ -1007,6 +1014,7 @@ jobs:
       - run: OPENCLAW_DIR=openclaw nix develop .#default -c just openclaw-pikachat-e2e
 
   check-agent-contracts:
+    name: legacy check-agent-contracts (advisory)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.agent_contracts == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
@@ -1036,6 +1044,7 @@ jobs:
       - run: nix develop .#default -c just pre-merge-agent-contracts
 
   check-rmp:
+    name: legacy check-rmp (advisory)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.rmp == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
@@ -1065,6 +1074,7 @@ jobs:
       - run: nix develop .#rmp -c just pre-merge-rmp
 
   check-notifications:
+    name: legacy check-notifications (advisory)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.notifications == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
@@ -1094,6 +1104,7 @@ jobs:
       - run: nix develop .#default -c just pre-merge-notifications
 
   check-fixture:
+    name: check-fixture (pikaci)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.fixture == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
@@ -1124,7 +1135,16 @@ jobs:
 
   pre-merge:
     if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
-    needs: [detect-changes, check-pika, check-pikachat, check-pikachat-openclaw-e2e, check-agent-contracts, check-rmp, check-notifications, check-fixture]
+    needs:
+      - detect-changes
+      - check-pika
+      - shadow-pikaci-pre-merge-pika-rust
+      - shadow-pikaci-pre-merge-pikachat-rust
+      - check-pikachat-openclaw-e2e
+      - shadow-pikaci-pre-merge-agent-contracts
+      - shadow-pikaci-pre-merge-rmp
+      - shadow-pikaci-pre-merge-notifications
+      - check-fixture
     runs-on: ubuntu-latest
     steps:
       - name: Evaluate lane results
@@ -1139,28 +1159,52 @@ jobs:
           echo "  notifications=${{ needs.detect-changes.outputs.notifications }}"
           echo "  fixture=${{ needs.detect-changes.outputs.fixture }}"
 
-          echo "Blocking pre-merge lanes:"
-          for lane in pika pikachat pikachat-openclaw-e2e agent-contracts rmp notifications fixture; do
-            result=""
-            case "$lane" in
-              pika)          result="${{ needs.check-pika.result }}" ;;
-              pikachat)      result="${{ needs.check-pikachat.result }}" ;;
-              pikachat-openclaw-e2e) result="${{ needs.check-pikachat-openclaw-e2e.result }}" ;;
-              agent-contracts) result="${{ needs.check-agent-contracts.result }}" ;;
-              rmp)           result="${{ needs.check-rmp.result }}" ;;
-              notifications) result="${{ needs.check-notifications.result }}" ;;
-              fixture)       result="${{ needs.check-fixture.result }}" ;;
-            esac
-            if [[ "$result" == "success" || "$result" == "skipped" ]]; then
-              echo "check-$lane: $result (ok)"
+          check_required_job() {
+            local label="$1"
+            local changed="$2"
+            local result="$3"
+
+            if [[ "$changed" != "true" ]]; then
+              echo "$label: skipped (unchanged)"
+            elif [[ "$result" == "success" ]]; then
+              echo "$label: success (ok)"
             else
-              echo "check-$lane: $result (FAILED)"
-              failed="${failed}check-${lane} "
+              echo "$label: $result (FAILED)"
+              failed="${failed}${label} "
             fi
-          done
+          }
+
+          check_required_pikaci_lane() {
+            local label="$1"
+            local changed="$2"
+            local job_result="$3"
+            local lane_result="$4"
+
+            if [[ "$changed" != "true" ]]; then
+              echo "$label: skipped (unchanged)"
+            elif [[ "$job_result" != "success" ]]; then
+              echo "$label: workflow job $job_result (FAILED)"
+              failed="${failed}${label} "
+            elif [[ "$lane_result" != "success" ]]; then
+              echo "$label: pikaci result ${lane_result:-unavailable} (FAILED)"
+              failed="${failed}${label} "
+            else
+              echo "$label: success (ok)"
+            fi
+          }
+
+          echo "Required pre-merge lanes:"
+          check_required_pikaci_lane "check-pika-rust" "${{ needs.detect-changes.outputs.pika }}" "${{ needs.shadow-pikaci-pre-merge-pika-rust.result }}" "${{ needs.shadow-pikaci-pre-merge-pika-rust.outputs.result }}"
+          check_required_job "check-pika-followup" "${{ needs.detect-changes.outputs.pika }}" "${{ needs.check-pika.result }}"
+          check_required_pikaci_lane "check-pikachat" "${{ needs.detect-changes.outputs.pikachat }}" "${{ needs.shadow-pikaci-pre-merge-pikachat-rust.result }}" "${{ needs.shadow-pikaci-pre-merge-pikachat-rust.outputs.result }}"
+          check_required_job "check-pikachat-openclaw-e2e" "${{ needs.detect-changes.outputs.pikachat_openclaw_e2e }}" "${{ needs.check-pikachat-openclaw-e2e.result }}"
+          check_required_pikaci_lane "check-agent-contracts" "${{ needs.detect-changes.outputs.agent_contracts }}" "${{ needs.shadow-pikaci-pre-merge-agent-contracts.result }}" "${{ needs.shadow-pikaci-pre-merge-agent-contracts.outputs.result }}"
+          check_required_pikaci_lane "check-rmp" "${{ needs.detect-changes.outputs.rmp }}" "${{ needs.shadow-pikaci-pre-merge-rmp.result }}" "${{ needs.shadow-pikaci-pre-merge-rmp.outputs.result }}"
+          check_required_pikaci_lane "check-notifications" "${{ needs.detect-changes.outputs.notifications }}" "${{ needs.shadow-pikaci-pre-merge-notifications.result }}" "${{ needs.shadow-pikaci-pre-merge-notifications.outputs.result }}"
+          check_required_job "check-fixture" "${{ needs.detect-changes.outputs.fixture }}" "${{ needs.check-fixture.result }}"
 
           echo "Advisory integration lanes:"
-          echo "nightly-* jobs are non-blocking for pre-merge and run only on schedule/manual nightly mode."
+          echo "legacy Linux jobs are advisory; nightly-* jobs remain non-blocking and run only on schedule/manual nightly mode."
 
           if [[ -n "$failed" ]]; then
             echo "::error::Failed lanes: $failed"

@@ -1181,6 +1181,7 @@ We have at least one important Linux Rust lane where:
       - the staged `pika-core-lib-tests.manifest` was still explicitly including helper binaries like `interop_openclaw_voice`, `kp_debug`, `interop_rustbot_baseline`, and `nostr_connect_tap`,
       - which meant the guest wrapper ran a non-test binary with `--nocapture` after the real `pika_core --lib --tests` suite had already passed,
       - the fix is to make `pika-core-lib-tests.manifest` match the actual legacy `cargo test -p pika_core --lib --tests` surface again by staging only the `pika_core` lib-test harness there,
+      - and to keep `pika-core-lib-app-flows.manifest` scoped to `app_flows` only, so the staged wrapper does not execute the `pika_core` lib-test harness a second time,
     - after that manifest fix:
       - the exact local legacy parity command, `cargo test -p pika_core --lib --tests -- --skip paging_loads_older_messages_in_pages`, passes cleanly on the rebased tip,
       - a fresh staged `pre-merge-pika-rust` rerun has cleared the earlier rebased-source/libclang regressions and is back at real remote execution on the same tip,
@@ -1189,3 +1190,78 @@ We have at least one important Linux Rust lane where:
       - all practical Linux-required families under `pikaci`,
       - `check-fixture` explicitly carved out as the only temporary legacy Linux exception,
       - and `pre-merge-pika-rust` showing no further pass/fail parity mismatches against the legacy `check-pika` Rust portion across real shadow runs on the post-manifest-fix tip.
+    - the fresh decision rerun on rebased tip `e0b209dff5ced29e865dd5aa434d0d08d9a4bbd6` showed the current blocker is no longer a test-parity miss:
+      - `cargo test -p pikaci` passed,
+      - the real staged `./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-rust` rerun `20260312T062018Z-4d4b346a` cleared `workspaceDeps` and re-entered `workspaceBuild`,
+      - but then the local `pikaci` process stayed alive with no child `ssh`/`nix build` subprocess and no fresh guest/result output, while `run.json` remained `status = "running"` and the host logs stopped at `prepare ci.x86_64-linux.workspaceBuild`,
+      - so the Linux required/advisory flip is still blocked by a live staged-run orchestration stall at the `workspaceBuild` prepare boundary on current `origin/master`, not by another known test mismatch,
+      - the next slice should treat that as the single blocker: reproduce it cleanly, instrument the wait point in `pikaci`, and only flip Linux after that fresh `pre-merge-pika-rust` rerun completes cleanly on the rebased tip.
+  - the next rerun on the current rebased tip cleared that stall and closed the last practical `check-pika` parity question:
+    - `cargo fmt` passed,
+    - `cargo test -p pikaci` passed,
+    - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-rust` passed end-to-end as `20260312T063905Z-0f92c9f6`,
+    - both staged jobs exited `0`:
+      - `pika-core-lib-app-flows-tests`
+      - `pika-core-messaging-e2e-tests`,
+    - and the staged lane now matches the intended legacy `cargo test -p pika_core --lib --tests -- --skip paging_loads_older_messages_in_pages` surface without the earlier false mismatches from helper binaries or duplicate `pika_core` execution,
+  - that pass is the finish signal for the practical Linux switch:
+    - covered Linux families now gate through `pikaci` in GitHub:
+      - `check-pika-rust`
+      - `check-pikachat`
+      - `check-agent-contracts`
+      - `check-rmp`
+      - `check-notifications`,
+    - the non-`pikaci` remainder of the broader `check-pika` family remains required as `check-pika-followup`,
+    - the old legacy Linux family jobs stay in the workflow only as advisory comparison signal,
+    - and `check-fixture` remains the one explicit temporary legacy Linux carve-out,
+  - with that policy change, Linux support is now “done enough” in practice:
+    - practical required Linux coverage gates through `pikaci`,
+    - only `check-fixture` remains carved out,
+    - and the next strategic decision is whether to narrow `pikahut` enough to migrate fixture or simply keep that heavier lane separate for a while longer.
+  - the final Linux holdouts are now closed, which removes the last carve-out and finishes Linux coverage at `7 / 7` required job families:
+    - `check-fixture` no longer treats the over-broad staged `pikahut` package-test lane as the required contract:
+      - the real required behavior was always `cargo clippy -p pikahut -- -D warnings` plus the relay-profile smoke flow,
+      - so `pre-merge-fixture-rust` now runs two host-local `pikaci` jobs instead of a staged microVM package-test hop:
+        - `pikahut-clippy`
+        - `fixture-relay-smoke`
+      - that keeps fixture under `pikaci` without dragging repo-guardrail tests into a lane that never required them,
+      - and the real lane passed locally as `20260312T074318Z-c1eb5813`,
+    - `check-pikachat-openclaw-e2e` now runs through `pikaci` as well:
+      - the existing `pre-merge-pikachat-openclaw-e2e` host-local Linux target now normalizes a relative `OPENCLAW_DIR` against the original repo checkout before the host-local runner switches into the copied workspace, so local invocations like `OPENCLAW_DIR=../openclaw` are stable again instead of resolving relative to `.pikaci/runs/.../workspace`,
+      - the lane passed locally as `20260312T074532Z-9adace00`,
+      - and the workflow job now invokes `just pre-merge-pikachat-openclaw-e2e` instead of the legacy direct cargo path,
+      - manual GitHub timing shows it is still the slowest `pikaci` Linux lane:
+        - `check-pikachat-openclaw-e2e (pikaci)`: about `129s`,
+        - recent legacy analogue: about `89s`,
+      - the slowdown is now diagnosed concretely:
+        - the extra `openclaw/openclaw` checkout only costs a few seconds,
+        - the bigger self-inflicted cost is the host-local job recompiling `pikahut` in a fresh copied workspace path on each run,
+        - and the old recipe was also paying an unnecessary nested `nix run .#pikaci` build inside an already-entered devshell,
+      - the host-local lane also had a real local-only contract bug:
+        - once a real external OpenClaw checkout was used, the scenario could look for `workspace/target/debug/pikachat` even though `pikaci` host-local jobs redirect Cargo outputs to `$CARGO_TARGET_DIR`,
+        - the lane now runs `cargo build -p pikachat` first and exports `PIKAHUT_TEST_PIKACHAT_BIN="$CARGO_TARGET_DIR/debug/pikachat"` so the OpenClaw peer step follows the host-local runner contract instead of assuming a workspace-local `target/` tree,
+      - the immediate low-risk fix is now landed:
+        - the CI-safe recipe uses `cargo run -q -p pikaci --bin pikaci -- ...` when already inside `nix develop`, which avoids that nested Nix build tax,
+      - the next improvement plan is explicit:
+        - keep host-local `pikaci` workspaces on a stable per-target path instead of a per-run copied path so Cargo fingerprints survive across runs,
+        - pair that with a stable shared target dir for host-local lanes,
+        - and only revisit OpenClaw-side npm dependency caching if the Rust compile tax stops dominating after the stable-workspace change,
+    - the last non-`pikaci` Linux remainder inside `check-pika` is now also gone:
+      - `pre-merge-pika-followup` is now a host-local `pikaci` target covering:
+        - Android instrumentation-test Kotlin compile,
+        - `cargo build -p pikachat`,
+        - `just desktop-check`,
+        - `actionlint`,
+        - docs/justfile contract checks,
+      - the real lane passed locally as `20260312T074905Z-64a134b6`,
+      - so the broader `check-pika` family is no longer split between `pikaci` and legacy Linux shell steps,
+    - the workflow and policy shape are now:
+      - all required Linux pre-merge job families gate through `pikaci`,
+      - legacy Linux GitHub jobs remain advisory-only comparison signal where they still exist,
+      - there is no longer a `check-fixture` carve-out,
+    - updated Linux-required coverage picture:
+      - full under `pikaci`: `check-pika`, `check-pikachat`, `check-pikachat-openclaw-e2e`, `check-agent-contracts`, `check-rmp`, `check-notifications`, `check-fixture`,
+      - Linux required coverage under `pikaci`: `7 / 7`,
+    - after this point, the next strategic questions are no longer Linux coverage questions:
+      - whether to keep any advisory legacy Linux jobs around for a short comparison window,
+      - and when to start applying the same replacement pressure to non-Linux / Apple paths.

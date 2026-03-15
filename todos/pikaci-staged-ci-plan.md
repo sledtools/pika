@@ -1235,17 +1235,50 @@ We have at least one important Linux Rust lane where:
         - recent legacy analogue: about `89s`,
       - the slowdown is now diagnosed concretely:
         - the extra `openclaw/openclaw` checkout only costs a few seconds,
-        - the bigger self-inflicted cost is the host-local job recompiling `pikahut` in a fresh copied workspace path on each run,
+        - the bigger self-inflicted cost in the old host-local design was path churn that made Cargo think every rerun was a cold rerun:
+          - host-local jobs executed from a fresh copied workspace under `.pikaci/runs/<run-id>/...`,
+          - writable host-local jobs got a second per-job copied workspace path,
+          - and `CARGO_TARGET_DIR` also lived under `.pikaci/runs/<run-id>/cargo-target`,
         - and the old recipe was also paying an unnecessary nested `nix run .#pikaci` build inside an already-entered devshell,
       - the host-local lane also had a real local-only contract bug:
         - once a real external OpenClaw checkout was used, the scenario could look for `workspace/target/debug/pikachat` even though `pikaci` host-local jobs redirect Cargo outputs to `$CARGO_TARGET_DIR`,
         - the lane now runs `cargo build -p pikachat` first and exports `PIKAHUT_TEST_PIKACHAT_BIN="$CARGO_TARGET_DIR/debug/pikachat"` so the OpenClaw peer step follows the host-local runner contract instead of assuming a workspace-local `target/` tree,
-      - the immediate low-risk fix is now landed:
-        - the CI-safe recipe uses `cargo run -q -p pikaci --bin pikaci -- ...` when already inside `nix develop`, which avoids that nested Nix build tax,
-      - the next improvement plan is explicit:
-        - keep host-local `pikaci` workspaces on a stable per-target path instead of a per-run copied path so Cargo fingerprints survive across runs,
-        - pair that with a stable shared target dir for host-local lanes,
-        - and only revisit OpenClaw-side npm dependency caching if the Rust compile tax stops dominating after the stable-workspace change,
+      - the host-local redesign is now landed instead of staying as a plan:
+        - CI-safe invocation still uses `cargo run -q -p pikaci --bin pikaci -- ...` when already inside `nix develop`, so we keep the nested-Nix build tax out of the control path,
+        - but the bigger architectural change is inside `pikaci` itself:
+          - host-local jobs now keep stable per-target cached build roots under `.pikaci/cache/host-local/target-<target-id>/`,
+          - the stable cache root owns both `workspace/` and `cargo-target/`,
+          - host-local targets also keep a cached filtered source snapshot under that same stable cache root,
+          - `pikaci` now decides whether that cached snapshot is still valid from a fast git-aware source fingerprint instead of recomputing an exact full filtered-tree hash on every run,
+          - and the stable cached workspace only rematerializes when the cached snapshot's exact `content_hash` changes, so unchanged source snapshots no longer force either a fresh `.pikaci/runs/<run-id>/snapshot` tree or a workspace delete/re-copy before the host-local command starts,
+        - per-run logs, artifacts, and status records remain under `.pikaci/runs/<run-id>/jobs/...`, so mutable execution outputs stay ephemeral even though the build workspace path is now stable,
+      - the measured effect on the real `pre-merge-pikachat-openclaw-e2e` lane is now concrete:
+        - using `OPENCLAW_DIR=/Users/justin/code/openclaw`,
+        - after clearing only `.pikaci/cache/host-local/target-pre-merge-pikachat-openclaw-e2e` once to force a cold baseline,
+        - cold run `20260315T175930Z-4815e2ab`: `106.36s` wall,
+        - warm rerun `20260315T180121Z-b9e13178`: `38.16s` wall,
+        - warm rerun `20260315T180202Z-c9f37a33`: `37.86s` wall,
+        - inside the host-local job itself, those first warm reruns showed the Rust rebuild tax was basically gone:
+          - `cargo build -p pikachat`: `0.21s`,
+          - `cargo test -p pikahut --test integration_openclaw ...`: `0.27s` to `0.29s` compile,
+          - actual OpenClaw test body: about `8.12s`,
+        - that exposed the next real `pikaci` tax clearly:
+          - rebased baseline `20260315T183143Z-ec12e746`: `39.89s` wall with about `26.76s` before the host-local command even started,
+          - first content-aware workspace reuse helped only a little because cached-snapshot freshness still recomputed an exact filtered-tree hash every run,
+          - after switching cached-snapshot reuse to the fast source fingerprint and letting unchanged snapshots skip workspace rematerialization entirely, the unchanged reruns moved again:
+          - first rerun after the source change `20260315T184908Z-cd752879`: `39.64s` wall and one expected `0.115s` workspace rematerialization while the cache refreshed,
+          - unchanged rerun `20260315T184950Z-42813535`: `7.32s` wall with about `0.04s` before command start and about `7.10s` command runtime,
+          - unchanged rerun `20260315T185004Z-5fe66570`: `7.34s` wall with about `0.04s` before command start and about `7.11s` command runtime,
+          - those unchanged reruns log `host-local workspace reused unchanged snapshot in 0.000s`,
+          - and inside the command the remaining work is now basically the lane itself:
+          - `cargo build -p pikachat`: `0.19s`,
+          - `cargo test -p pikahut --test integration_openclaw ...`: `0.24s` compile,
+          - actual OpenClaw test body: `6.38s` to `6.40s`,
+      - the remaining performance debt after this redesign is no longer snapshot/workspace churn:
+        - the old warm-path overhead source that still remained after stable Cargo reuse was per-run host-local snapshot freshness checking and workspace rematerialization,
+        - that overhead is now effectively gone on unchanged reruns, with pre-command setup down from about `26.7s` to about `0.04s`,
+        - so the next biggest visible cost is the real lane runtime itself plus small fixed orchestration/post-run bookkeeping rather than self-inflicted workspace control-plane churn,
+        - and that is much closer to the eventual daemon/direct-push shape than the old copied-workspace design was,
     - the last non-`pikaci` Linux remainder inside `check-pika` is now also gone:
       - `pre-merge-pika-followup` is now a host-local `pikaci` target covering:
         - Android instrumentation-test Kotlin compile,

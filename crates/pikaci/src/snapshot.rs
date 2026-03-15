@@ -50,6 +50,90 @@ pub fn materialize_workspace(source: &Path, destination: &Path) -> anyhow::Resul
     copy_filtered_tree(source, destination, SnapshotProfile::Full)
 }
 
+pub fn compute_source_content_hash_with_profile(
+    source_root: &Path,
+    profile: SnapshotProfile,
+) -> anyhow::Result<String> {
+    let mut hasher = Sha256::new();
+    hash_filtered_source_tree(source_root, source_root, true, profile, &mut hasher)?;
+    Ok(hex::encode(hasher.finalize()))
+}
+
+pub fn compute_source_fingerprint_with_profile(
+    source_root: &Path,
+    profile: SnapshotProfile,
+) -> anyhow::Result<String> {
+    let Some(git_head) = git_head(source_root) else {
+        return compute_source_content_hash_with_profile(source_root, profile);
+    };
+    let Some(changed_files) = git_changed_files(source_root) else {
+        return compute_source_content_hash_with_profile(source_root, profile);
+    };
+    let Some(ignored_files) = git_ignored_files(source_root) else {
+        return compute_source_content_hash_with_profile(source_root, profile);
+    };
+
+    let mut relevant_files = changed_files;
+    relevant_files.extend(ignored_files);
+    let mut relevant_files = relevant_files
+        .into_iter()
+        .filter(|path| !should_skip_relative_path(Path::new(path), profile))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    relevant_files.sort();
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"git-head\0");
+    hasher.update(git_head.as_bytes());
+    hasher.update(b"\0");
+    for relative in relevant_files {
+        let path = source_root.join(&relative);
+        hasher.update(b"path\0");
+        hasher.update(relative.as_bytes());
+        hasher.update(b"\0");
+
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                hasher.update(b"symlink\0");
+                let target = fs::read_link(&path)
+                    .with_context(|| format!("read symlink {}", path.display()))?;
+                hasher.update(target.as_os_str().as_encoded_bytes());
+            }
+            Ok(metadata) if metadata.is_file() => {
+                hasher.update(b"file\0");
+                let mut file =
+                    fs::File::open(&path).with_context(|| format!("open {}", path.display()))?;
+                let mut buffer = [0u8; 8192];
+                loop {
+                    let read = file
+                        .read(&mut buffer)
+                        .with_context(|| format!("read {}", path.display()))?;
+                    if read == 0 {
+                        break;
+                    }
+                    hasher.update(&buffer[..read]);
+                }
+            }
+            Ok(metadata) if metadata.is_dir() => {
+                hasher.update(b"dir\0");
+            }
+            Ok(_) => {
+                return Err(anyhow!("unsupported filesystem entry: {}", path.display()));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                hasher.update(b"missing\0");
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("stat {}", path.display()));
+            }
+        }
+        hasher.update(b"\0");
+    }
+
+    Ok(hex::encode(hasher.finalize()))
+}
+
 fn copy_filtered_tree(
     source: &Path,
     destination: &Path,
@@ -119,6 +203,20 @@ fn should_skip(name: &str, root: bool, profile: SnapshotProfile) -> bool {
         || (!root && matches!(name, "node_modules" | ".gradle" | "DerivedData" | "build"))
 }
 
+fn should_skip_relative_path(path: &Path, profile: SnapshotProfile) -> bool {
+    let mut root = true;
+    for component in path.components() {
+        let std::path::Component::Normal(component) = component else {
+            continue;
+        };
+        if should_skip(&component.to_string_lossy(), root, profile) {
+            return true;
+        }
+        root = false;
+    }
+    false
+}
+
 pub fn git_head(source_root: &Path) -> Option<String> {
     run_git(source_root, &["rev-parse", "HEAD"])
 }
@@ -142,6 +240,13 @@ pub fn git_changed_files(source_root: &Path) -> Option<Vec<String>> {
     files.extend(tracked);
     files.extend(untracked);
     Some(files.into_iter().collect())
+}
+
+pub fn git_ignored_files(source_root: &Path) -> Option<Vec<String>> {
+    run_git_lines(
+        source_root,
+        &["ls-files", "--others", "--ignored", "--exclude-standard"],
+    )
 }
 
 fn run_git(source_root: &Path, args: &[&str]) -> Option<String> {
@@ -198,6 +303,71 @@ fn compute_snapshot_content_hash(snapshot_dir: &Path) -> anyhow::Result<String> 
     let mut hasher = Sha256::new();
     hash_snapshot_tree(snapshot_dir, snapshot_dir, &mut hasher)?;
     Ok(hex::encode(hasher.finalize()))
+}
+
+fn hash_filtered_source_tree(
+    root: &Path,
+    current: &Path,
+    current_is_root: bool,
+    profile: SnapshotProfile,
+    hasher: &mut Sha256,
+) -> anyhow::Result<()> {
+    let mut entries = fs::read_dir(current)
+        .with_context(|| format!("read {}", current.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("collect {}", current.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        if should_skip(&name, current_is_root, profile) {
+            continue;
+        }
+
+        let relative = path
+            .strip_prefix(root)
+            .with_context(|| format!("strip {} from {}", root.display(), path.display()))?;
+        let metadata =
+            fs::symlink_metadata(&path).with_context(|| format!("stat {}", path.display()))?;
+
+        if metadata.file_type().is_symlink() {
+            hasher.update(b"symlink\0");
+            hasher.update(relative.as_os_str().as_encoded_bytes());
+            hasher.update(b"\0");
+            let target =
+                fs::read_link(&path).with_context(|| format!("read symlink {}", path.display()))?;
+            hasher.update(target.as_os_str().as_encoded_bytes());
+            hasher.update(b"\0");
+        } else if metadata.is_dir() {
+            hasher.update(b"dir\0");
+            hasher.update(relative.as_os_str().as_encoded_bytes());
+            hasher.update(b"\0");
+            hash_filtered_source_tree(root, &path, false, profile, hasher)?;
+        } else if metadata.is_file() {
+            hasher.update(b"file\0");
+            hasher.update(relative.as_os_str().as_encoded_bytes());
+            hasher.update(b"\0");
+            let mut file =
+                fs::File::open(&path).with_context(|| format!("open {}", path.display()))?;
+            let mut buffer = [0u8; 8192];
+            loop {
+                let read = file
+                    .read(&mut buffer)
+                    .with_context(|| format!("read {}", path.display()))?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
+            hasher.update(b"\0");
+        } else {
+            return Err(anyhow!("unsupported filesystem entry: {}", path.display()));
+        }
+    }
+
+    Ok(())
 }
 
 fn hash_snapshot_tree(root: &Path, current: &Path, hasher: &mut Sha256) -> anyhow::Result<()> {
@@ -259,8 +429,12 @@ fn hash_snapshot_tree(root: &Path, current: &Path, hasher: &mut Sha256) -> anyho
 
 #[cfg(test)]
 mod tests {
-    use super::{SnapshotProfile, compute_snapshot_content_hash, should_skip};
+    use super::{
+        SnapshotProfile, compute_snapshot_content_hash, compute_source_content_hash_with_profile,
+        compute_source_fingerprint_with_profile, create_snapshot_with_profile, should_skip,
+    };
     use std::fs;
+    use std::process::Command;
 
     #[test]
     fn snapshot_skip_filters_ignore_expected_paths() {
@@ -318,5 +492,137 @@ mod tests {
         assert_eq!(before, after);
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn filtered_source_hash_matches_created_snapshot_hash() {
+        let temp_root =
+            std::env::temp_dir().join(format!("pikaci-source-hash-test-{}", uuid::Uuid::new_v4()));
+        let root = temp_root.join("source");
+        let snapshot_dir = temp_root.join("snapshot");
+        fs::create_dir_all(root.join("src")).expect("create src dir");
+        fs::create_dir_all(root.join(".git")).expect("create git dir");
+        fs::create_dir_all(root.join("nested").join("node_modules")).expect("create nested skip");
+        fs::write(root.join("src").join("lib.rs"), "pub fn demo() {}\n").expect("write source");
+        fs::write(root.join("nested").join("keep.txt"), "keep").expect("write keep");
+        fs::write(
+            root.join("nested").join("node_modules").join("skip.txt"),
+            "skip",
+        )
+        .expect("write skip");
+
+        let source_hash =
+            compute_source_content_hash_with_profile(&root, SnapshotProfile::Full).expect("hash");
+        let snapshot = create_snapshot_with_profile(
+            &root,
+            &snapshot_dir,
+            "2026-03-15T00:00:00Z",
+            SnapshotProfile::Full,
+        )
+        .expect("create snapshot");
+
+        assert_eq!(snapshot.content_hash.as_deref(), Some(source_hash.as_str()));
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn source_fingerprint_ignores_filtered_path_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-source-fingerprint-ignore-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(root.join("src")).expect("create src dir");
+        fs::write(root.join("Cargo.toml"), "[package]\nname = \"demo\"\n").expect("write cargo");
+        fs::write(root.join("src/lib.rs"), "pub fn demo() {}\n").expect("write source");
+        init_test_git_repo(&root);
+
+        let before = compute_source_fingerprint_with_profile(&root, SnapshotProfile::Full)
+            .expect("fingerprint before");
+        fs::create_dir_all(root.join("target")).expect("create target dir");
+        fs::write(root.join("target/stale.txt"), "ignored").expect("write ignored");
+        let after = compute_source_fingerprint_with_profile(&root, SnapshotProfile::Full)
+            .expect("fingerprint after");
+
+        assert_eq!(before, after);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn source_fingerprint_changes_for_relevant_workspace_edits() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-source-fingerprint-change-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(root.join("src")).expect("create src dir");
+        fs::write(root.join("Cargo.toml"), "[package]\nname = \"demo\"\n").expect("write cargo");
+        fs::write(root.join("src/lib.rs"), "pub fn demo() {}\n").expect("write source");
+        init_test_git_repo(&root);
+
+        let before = compute_source_fingerprint_with_profile(&root, SnapshotProfile::Full)
+            .expect("fingerprint before");
+        fs::write(root.join("src/lib.rs"), "pub fn demo() -> u32 { 42 }\n")
+            .expect("rewrite source");
+        let after = compute_source_fingerprint_with_profile(&root, SnapshotProfile::Full)
+            .expect("fingerprint after");
+
+        assert_ne!(before, after);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn source_fingerprint_changes_for_ignored_but_included_files() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-source-fingerprint-ignored-include-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(root.join("android")).expect("create android dir");
+        fs::create_dir_all(root.join("src")).expect("create src dir");
+        fs::write(root.join("Cargo.toml"), "[package]\nname = \"demo\"\n").expect("write cargo");
+        fs::write(root.join("src/lib.rs"), "pub fn demo() {}\n").expect("write source");
+        fs::write(root.join(".gitignore"), "android/local.properties\n").expect("write gitignore");
+        fs::write(
+            root.join("android/local.properties"),
+            "sdk.dir=/tmp/android-one\n",
+        )
+        .expect("write local properties");
+        init_test_git_repo(&root);
+
+        let before = compute_source_fingerprint_with_profile(&root, SnapshotProfile::Full)
+            .expect("fingerprint before");
+        fs::write(
+            root.join("android/local.properties"),
+            "sdk.dir=/tmp/android-two\n",
+        )
+        .expect("rewrite local properties");
+        let after = compute_source_fingerprint_with_profile(&root, SnapshotProfile::Full)
+            .expect("fingerprint after");
+
+        assert_ne!(before, after);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn init_test_git_repo(root: &std::path::Path) {
+        run_git_test_command(root, &["init"]);
+        run_git_test_command(root, &["config", "user.email", "pikaci-tests@example.com"]);
+        run_git_test_command(root, &["config", "user.name", "pikaci tests"]);
+        run_git_test_command(root, &["add", "."]);
+        run_git_test_command(root, &["commit", "-m", "init"]);
+    }
+
+    fn run_git_test_command(root: &std::path::Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .expect("run git command");
+        assert!(
+            status.success(),
+            "git command failed: git {}",
+            args.join(" ")
+        );
     }
 }

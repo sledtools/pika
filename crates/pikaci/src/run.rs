@@ -9,6 +9,8 @@ use std::thread;
 
 use anyhow::{Context, anyhow};
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::executor::{
@@ -30,7 +32,8 @@ use crate::model::{
     RunRecord, RunStatus, RunnerKind, StagedLinuxRustLane,
 };
 use crate::snapshot::{
-    SnapshotProfile, create_snapshot_with_profile, git_dirty, git_head, materialize_workspace,
+    SnapshotProfile, compute_source_fingerprint_with_profile, create_snapshot_with_profile,
+    git_dirty, git_head, materialize_workspace, read_snapshot_metadata,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -117,20 +120,7 @@ pub fn run_jobs_with_metadata(
 ) -> anyhow::Result<RunRecord> {
     let prepared = prepare_run(options)?;
     run_host_setup_commands(jobs, &options.source_root, &prepared.run_dir)?;
-    let snapshot_dir = prepared.run_dir.join("snapshot");
-    let snapshot = create_snapshot_with_profile(
-        &options.source_root,
-        &snapshot_dir,
-        &prepared.created_at,
-        snapshot_profile_for_jobs(jobs),
-    )?;
-    let snapshot = SnapshotSource {
-        source_root: snapshot.source_root,
-        snapshot_dir: PathBuf::from(&snapshot.snapshot_dir),
-        snapshot_dir_string: snapshot.snapshot_dir,
-        git_head: snapshot.git_head,
-        git_dirty: snapshot.git_dirty,
-    };
+    let snapshot = prepare_snapshot_source(jobs, options, &prepared, &metadata)?;
     run_jobs_against_snapshot(jobs, &prepared, &snapshot, metadata)
 }
 
@@ -164,6 +154,9 @@ pub fn rerun_jobs_with_metadata(
         snapshot_dir_string: previous.snapshot_dir.clone(),
         git_head: previous.git_head.clone(),
         git_dirty: previous.git_dirty,
+        content_hash: read_snapshot_metadata(Path::new(&previous.snapshot_dir))
+            .ok()
+            .and_then(|metadata| metadata.content_hash),
     };
     if !snapshot.snapshot_dir.exists() {
         return Err(anyhow!(
@@ -540,7 +533,18 @@ fn prepare_job_workspace(
     job: &JobSpec,
     snapshot_dir: &Path,
     job_dir: &Path,
+    host_local_cache: Option<&HostLocalCacheLayout>,
 ) -> anyhow::Result<PathBuf> {
+    if job.runner_kind() == RunnerKind::HostLocal {
+        let host_local_cache = host_local_cache.ok_or_else(|| {
+            anyhow!(
+                "host-local cache layout missing for host-local job `{}`",
+                job.id
+            )
+        })?;
+        return Ok(host_local_cache.workspace_dir.clone());
+    }
+
     if !job.writable_workspace {
         return Ok(snapshot_dir.to_path_buf());
     }
@@ -866,8 +870,16 @@ struct PreparedRun {
     created_at: String,
     run_dir: PathBuf,
     jobs_dir: PathBuf,
+    cache_dir: PathBuf,
     shared_cargo_home_dir: PathBuf,
     run_target_dir: PathBuf,
+}
+
+#[derive(Clone)]
+struct HostLocalCacheLayout {
+    cache_dir: PathBuf,
+    workspace_dir: PathBuf,
+    target_dir: PathBuf,
 }
 
 struct SnapshotSource {
@@ -876,6 +888,123 @@ struct SnapshotSource {
     snapshot_dir_string: String,
     git_head: Option<String>,
     git_dirty: Option<bool>,
+    content_hash: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct HostLocalSnapshotCacheState {
+    source_fingerprint: String,
+}
+
+fn prepare_snapshot_source(
+    jobs: &[JobSpec],
+    options: &RunOptions,
+    prepared: &PreparedRun,
+    metadata: &RunMetadata,
+) -> anyhow::Result<SnapshotSource> {
+    let profile = snapshot_profile_for_jobs(jobs);
+    if jobs
+        .iter()
+        .all(|job| job.runner_kind() == RunnerKind::HostLocal)
+    {
+        return prepare_host_local_cached_snapshot_source(
+            options, prepared, metadata, jobs, profile,
+        );
+    }
+
+    let snapshot_dir = prepared.run_dir.join("snapshot");
+    let snapshot = create_snapshot_with_profile(
+        &options.source_root,
+        &snapshot_dir,
+        &prepared.created_at,
+        profile,
+    )?;
+    Ok(snapshot_source_from_metadata(snapshot))
+}
+
+fn prepare_host_local_cached_snapshot_source(
+    options: &RunOptions,
+    prepared: &PreparedRun,
+    metadata: &RunMetadata,
+    jobs: &[JobSpec],
+    profile: SnapshotProfile,
+) -> anyhow::Result<SnapshotSource> {
+    let host_local_cache =
+        build_host_local_cache_layout(prepared, jobs, metadata)?.ok_or_else(|| {
+            anyhow!("host-local cache layout missing for host-local snapshot preparation")
+        })?;
+    let snapshot_dir = host_local_cache.cache_dir.join("snapshot");
+    let source_fingerprint =
+        compute_source_fingerprint_with_profile(&options.source_root, profile)?;
+    let cached_snapshot = read_snapshot_metadata(&snapshot_dir).ok();
+    let cached_state = read_host_local_snapshot_cache_state(&host_local_cache.cache_dir).ok();
+
+    let snapshot = if cached_state
+        .as_ref()
+        .map(|state| state.source_fingerprint.as_str())
+        == Some(source_fingerprint.as_str())
+    {
+        if let Some(cached_snapshot) = cached_snapshot {
+            cached_snapshot
+        } else {
+            let snapshot = create_snapshot_with_profile(
+                &options.source_root,
+                &snapshot_dir,
+                &prepared.created_at,
+                profile,
+            )?;
+            write_host_local_snapshot_cache_state(
+                &host_local_cache.cache_dir,
+                &HostLocalSnapshotCacheState { source_fingerprint },
+            )?;
+            snapshot
+        }
+    } else {
+        remove_path_if_exists(&snapshot_dir)?;
+        let snapshot = create_snapshot_with_profile(
+            &options.source_root,
+            &snapshot_dir,
+            &prepared.created_at,
+            profile,
+        )?;
+        write_host_local_snapshot_cache_state(
+            &host_local_cache.cache_dir,
+            &HostLocalSnapshotCacheState { source_fingerprint },
+        )?;
+        snapshot
+    };
+
+    Ok(snapshot_source_from_metadata(snapshot))
+}
+
+fn host_local_snapshot_cache_state_path(cache_dir: &Path) -> PathBuf {
+    cache_dir.join("snapshot-state.json")
+}
+
+fn read_host_local_snapshot_cache_state(
+    cache_dir: &Path,
+) -> anyhow::Result<HostLocalSnapshotCacheState> {
+    let path = host_local_snapshot_cache_state_path(cache_dir);
+    let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("decode {}", path.display()))
+}
+
+fn write_host_local_snapshot_cache_state(
+    cache_dir: &Path,
+    state: &HostLocalSnapshotCacheState,
+) -> anyhow::Result<()> {
+    write_json(host_local_snapshot_cache_state_path(cache_dir), state)
+}
+
+fn snapshot_source_from_metadata(snapshot: crate::snapshot::SnapshotMetadata) -> SnapshotSource {
+    SnapshotSource {
+        source_root: snapshot.source_root,
+        snapshot_dir: PathBuf::from(&snapshot.snapshot_dir),
+        snapshot_dir_string: snapshot.snapshot_dir,
+        git_head: snapshot.git_head,
+        git_dirty: snapshot.git_dirty,
+        content_hash: snapshot.content_hash,
+    }
 }
 
 fn build_run_plan(
@@ -888,19 +1017,37 @@ fn build_run_plan(
     let mut planned_prepares = Vec::new();
     let mut execute_nodes = Vec::new();
     let mut planned_jobs = Vec::new();
+    let host_local_cache = build_host_local_cache_layout(prepared, jobs, metadata)?;
 
     for job in jobs {
         let job_dir = prepared.jobs_dir.join(job.id);
         fs::create_dir_all(&job_dir).with_context(|| format!("create {}", job_dir.display()))?;
+        let runner_kind = job.runner_kind();
         let ctx = HostContext {
             source_root: PathBuf::from(&snapshot.source_root),
-            workspace_snapshot_dir: prepare_job_workspace(job, &snapshot.snapshot_dir, &job_dir)?,
+            workspace_snapshot_dir: prepare_job_workspace(
+                job,
+                &snapshot.snapshot_dir,
+                &job_dir,
+                host_local_cache.as_ref(),
+            )?,
+            host_local_cache_dir: host_local_cache
+                .as_ref()
+                .filter(|_| runner_kind == RunnerKind::HostLocal)
+                .map(|layout| layout.cache_dir.clone()),
+            workspace_source_dir: (runner_kind == RunnerKind::HostLocal)
+                .then(|| snapshot.snapshot_dir.clone()),
+            workspace_source_content_hash: snapshot.content_hash.clone(),
             workspace_read_only: !job.writable_workspace,
             job_dir: job_dir.clone(),
             host_log_path: job_dir.join("host.log"),
             guest_log_path: job_dir.join("artifacts/guest.log"),
             shared_cargo_home_dir: prepared.shared_cargo_home_dir.clone(),
-            shared_target_dir: prepared.run_target_dir.clone(),
+            shared_target_dir: host_local_cache
+                .as_ref()
+                .filter(|_| runner_kind == RunnerKind::HostLocal)
+                .map(|layout| layout.target_dir.clone())
+                .unwrap_or_else(|| prepared.run_target_dir.clone()),
             staged_linux_rust_workspace_deps_dir: job
                 .staged_linux_rust_lane()
                 .map(|_| job_dir.join("staged-linux-rust").join("workspace-deps")),
@@ -1140,6 +1287,76 @@ fn build_run_plan(
         prepares: planned_prepares,
         jobs: planned_jobs,
     })
+}
+
+fn build_host_local_cache_layout(
+    prepared: &PreparedRun,
+    jobs: &[JobSpec],
+    metadata: &RunMetadata,
+) -> anyhow::Result<Option<HostLocalCacheLayout>> {
+    let host_local_jobs = jobs
+        .iter()
+        .filter(|job| job.runner_kind() == RunnerKind::HostLocal)
+        .collect::<Vec<_>>();
+    if host_local_jobs.is_empty() {
+        return Ok(None);
+    }
+
+    let scope = host_local_cache_scope(&host_local_jobs, metadata);
+    let cache_root = prepared.cache_dir.join("host-local").join(scope);
+    let target_dir = cache_root.join("cargo-target");
+    fs::create_dir_all(&target_dir).with_context(|| format!("create {}", target_dir.display()))?;
+    Ok(Some(HostLocalCacheLayout {
+        cache_dir: cache_root.clone(),
+        workspace_dir: cache_root.join("workspace"),
+        target_dir,
+    }))
+}
+
+fn host_local_cache_scope(host_local_jobs: &[&JobSpec], metadata: &RunMetadata) -> String {
+    if let Some(target_id) = metadata.target_id.as_deref() {
+        return format!("target-{}", sanitize_cache_component(target_id));
+    }
+    if host_local_jobs.len() == 1 {
+        return format!("job-{}", sanitize_cache_component(host_local_jobs[0].id));
+    }
+
+    let mut hasher = Sha256::new();
+    for job in host_local_jobs {
+        hasher.update(job.id.as_bytes());
+        hasher.update([0]);
+    }
+    let digest = hex::encode(hasher.finalize());
+    format!("adhoc-{}", &digest[..12])
+}
+
+fn sanitize_cache_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+fn remove_path_if_exists(path: &Path) -> anyhow::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("stat {}", path.display()));
+        }
+    };
+
+    if metadata.file_type().is_dir() {
+        fs::remove_dir_all(path).with_context(|| format!("remove {}", path.display()))
+    } else {
+        fs::remove_file(path).with_context(|| format!("remove {}", path.display()))
+    }
 }
 
 fn staged_linux_rust_installable(
@@ -3732,6 +3949,7 @@ fn prepare_run(options: &RunOptions) -> anyhow::Result<PreparedRun> {
         created_at,
         run_dir,
         jobs_dir,
+        cache_dir,
         shared_cargo_home_dir,
         run_target_dir,
     })
@@ -3803,8 +4021,9 @@ mod tests {
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
     use super::{
-        FulfillRequestCliPreparedOutputConsumer, HostLocalSymlinkPreparedOutputConsumer,
-        PREPARED_OUTPUT_FULFILLMENT_HELPER_BASENAME, PREPARED_OUTPUT_FULFILLMENT_INVOCATION_ENV,
+        FulfillRequestCliPreparedOutputConsumer, HostLocalSnapshotCacheState,
+        HostLocalSymlinkPreparedOutputConsumer, PREPARED_OUTPUT_FULFILLMENT_HELPER_BASENAME,
+        PREPARED_OUTPUT_FULFILLMENT_INVOCATION_ENV,
         PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_BINARY_ENV,
         PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_TRANSPORT_ENV,
         PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV, PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV,
@@ -3816,15 +4035,17 @@ mod tests {
         PREPARED_OUTPUT_FULFILLMENT_WRAPPER_BINARY_ENV, PrepareFailure,
         PreparedOutputConsumerFailure, PreparedOutputInvocationConfig,
         PreparedOutputMaterialization, PreparedRun, RemoteExposureRequestPreparedOutputConsumer,
-        RunMetadata, STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV, STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME,
-        SnapshotSource, build_run_plan, configured_prepared_output_consumer_kind,
+        RunMetadata, RunOptions, STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV,
+        STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME, SnapshotSource, build_host_local_cache_layout,
+        build_run_plan, configured_prepared_output_consumer_kind,
         configured_prepared_output_invocation_mode,
         configured_prepared_output_launcher_transport_mode, consume_prepared_output_handoff,
         fulfill_prepared_output_request, fulfill_prepared_output_request_result, gc_runs,
         load_prepared_output_fulfillment_launch_request, load_prepared_output_fulfillment_result,
         load_prepared_output_fulfillment_transport_request, load_prepared_output_request,
-        mark_prepare_failure, parallel_execute_cap_for_jobs, parse_bool_env_flag,
-        prepared_output_fulfillment_launcher_program, ready_execute_job_positions,
+        mark_prepare_failure, parallel_execute_cap_for_jobs, parse_bool_env_flag, prepare_run,
+        prepare_snapshot_source, prepared_output_fulfillment_launcher_program,
+        read_host_local_snapshot_cache_state, ready_execute_job_positions,
         record_failed_prepared_output_handoff, resolve_prepared_output_fulfillment_program,
         resolve_run_prepared_output_consumer_kind_for_mode,
         resolve_run_prepared_output_invocation_mode,
@@ -3836,7 +4057,8 @@ mod tests {
         resolve_run_prepared_output_launcher_transport_remote_launcher_program,
         resolve_run_prepared_output_launcher_transport_remote_work_dir,
         selected_prepared_output_consumer, staged_linux_rust_remote_realization,
-        upsert_prepared_output_record, validate_prepared_output_consumer_for_jobs, write_json,
+        upsert_prepared_output_record, validate_prepared_output_consumer_for_jobs,
+        write_host_local_snapshot_cache_state, write_json,
         write_prepared_output_fulfillment_result, write_run_plan_record,
     };
     use crate::model::{
@@ -3849,6 +4071,7 @@ mod tests {
         PreparedOutputResidency, PreparedOutputsRecord, RealizedPreparedOutputRecord,
         RunPlanRecord, RunRecord, RunStatus, StagedLinuxRustLane,
     };
+    use crate::snapshot::{SnapshotProfile, compute_source_fingerprint_with_profile};
     #[test]
     fn gc_runs_keeps_latest_run_directories() {
         let root = std::env::temp_dir().join(format!("pikaci-gc-test-{}", uuid::Uuid::new_v4()));
@@ -4216,6 +4439,228 @@ mod tests {
         }
 
         assert_eq!(plan.jobs.len(), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn build_run_plan_reuses_stable_host_local_cache_paths_per_target() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-host-local-cache-plan-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let prepared = sample_prepared_run(&root);
+        let snapshot = sample_snapshot_source(&prepared);
+        let metadata = RunMetadata {
+            target_id: Some("pre-merge-pikachat-openclaw-e2e".to_string()),
+            target_description: Some("Run OpenClaw host-local lane".to_string()),
+            ..RunMetadata::default()
+        };
+        let jobs = vec![
+            JobSpec {
+                id: "pikachat-build",
+                description: "Build pikachat on the host",
+                timeout_secs: 1800,
+                writable_workspace: false,
+                guest_command: GuestCommand::HostShellCommand {
+                    command: "cargo build -p pikachat",
+                },
+                staged_linux_rust_lane: None,
+            },
+            JobSpec {
+                id: "openclaw-e2e",
+                description: "Run OpenClaw E2E on the host",
+                timeout_secs: 1800,
+                writable_workspace: true,
+                guest_command: GuestCommand::HostShellCommand {
+                    command: "cargo test -p pikahut --test integration_openclaw",
+                },
+                staged_linux_rust_lane: None,
+            },
+        ];
+
+        let plan = build_run_plan(&jobs, &prepared, &snapshot, &metadata).expect("build plan");
+        let expected_cache_root = root
+            .join("cache")
+            .join("host-local")
+            .join("target-pre-merge-pikachat-openclaw-e2e");
+        let expected_workspace_dir = expected_cache_root.join("workspace");
+        let expected_target_dir = expected_cache_root.join("cargo-target");
+
+        assert_eq!(plan.jobs.len(), 2);
+        for planned_job in &plan.jobs {
+            assert_eq!(
+                planned_job.ctx.workspace_snapshot_dir,
+                expected_workspace_dir
+            );
+            assert_eq!(
+                planned_job.ctx.workspace_source_dir,
+                Some(snapshot.snapshot_dir.clone())
+            );
+            assert_eq!(
+                planned_job.ctx.workspace_source_content_hash,
+                Some("deadbeef".to_string())
+            );
+            assert_eq!(planned_job.ctx.shared_target_dir, expected_target_dir);
+            assert!(planned_job.ctx.job_dir.starts_with(&prepared.run_dir));
+        }
+        assert!(expected_target_dir.is_dir());
+        assert!(
+            !prepared
+                .run_dir
+                .join("jobs/pikachat-build/workspace")
+                .exists()
+        );
+        assert!(
+            !prepared
+                .run_dir
+                .join("jobs/openclaw-e2e/workspace")
+                .exists()
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn prepare_host_local_cached_snapshot_source_reuses_matching_cached_snapshot() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-host-local-cached-snapshot-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let source_root = root.join("source");
+        fs::create_dir_all(&source_root).expect("create source root");
+        fs::write(
+            source_root.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\n",
+        )
+        .expect("write cargo file");
+        let options = RunOptions {
+            source_root: source_root.clone(),
+            state_root: root.join("state"),
+        };
+        let prepared = prepare_run(&options).expect("prepare run");
+        let metadata = RunMetadata {
+            target_id: Some("pre-merge-pikachat-openclaw-e2e".to_string()),
+            ..RunMetadata::default()
+        };
+        let jobs = vec![JobSpec {
+            id: "pikachat-clippy",
+            description: "Run pikachat clippy on the host",
+            timeout_secs: 120,
+            writable_workspace: false,
+            guest_command: GuestCommand::HostShellCommand {
+                command: "cargo clippy -p pikachat -- -D warnings",
+            },
+            staged_linux_rust_lane: None,
+        }];
+        let cache = build_host_local_cache_layout(&prepared, &jobs, &metadata)
+            .expect("build host-local cache")
+            .expect("host-local cache");
+        let snapshot_dir = cache.cache_dir.join("snapshot");
+        fs::create_dir_all(&snapshot_dir).expect("create cached snapshot dir");
+        fs::write(
+            snapshot_dir.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\n",
+        )
+        .expect("write cached cargo file");
+        fs::write(snapshot_dir.join("cache-sentinel"), "keep").expect("write sentinel");
+        let source_fingerprint =
+            compute_source_fingerprint_with_profile(&source_root, SnapshotProfile::Full)
+                .expect("fingerprint source");
+        let source_hash = "cached-content-hash";
+        fs::write(
+            snapshot_dir.join("pikaci-snapshot.json"),
+            format!(
+                r#"{{"source_root":"{}","snapshot_dir":"{}","git_head":null,"git_dirty":false,"created_at":"2026-03-15T00:00:00Z","content_hash":"{}"}}"#,
+                source_root.display(),
+                snapshot_dir.display(),
+                source_hash
+            ),
+        )
+        .expect("write cached metadata");
+        write_host_local_snapshot_cache_state(
+            &cache.cache_dir,
+            &HostLocalSnapshotCacheState { source_fingerprint },
+        )
+        .expect("write cache state");
+
+        let snapshot = prepare_snapshot_source(&jobs, &options, &prepared, &metadata)
+            .expect("prepare snapshot");
+
+        assert_eq!(snapshot.snapshot_dir, snapshot_dir);
+        assert_eq!(snapshot.content_hash.as_deref(), Some(source_hash));
+        assert!(snapshot_dir.join("cache-sentinel").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn prepare_host_local_cached_snapshot_source_rebuilds_when_source_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-host-local-cached-snapshot-refresh-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let source_root = root.join("source");
+        fs::create_dir_all(&source_root).expect("create source root");
+        fs::write(
+            source_root.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\n",
+        )
+        .expect("write cargo file");
+        let options = RunOptions {
+            source_root: source_root.clone(),
+            state_root: root.join("state"),
+        };
+        let prepared = prepare_run(&options).expect("prepare run");
+        let metadata = RunMetadata {
+            target_id: Some("pre-merge-pikachat-openclaw-e2e".to_string()),
+            ..RunMetadata::default()
+        };
+        let jobs = vec![JobSpec {
+            id: "pikachat-clippy",
+            description: "Run pikachat clippy on the host",
+            timeout_secs: 120,
+            writable_workspace: false,
+            guest_command: GuestCommand::HostShellCommand {
+                command: "cargo clippy -p pikachat -- -D warnings",
+            },
+            staged_linux_rust_lane: None,
+        }];
+        let cache = build_host_local_cache_layout(&prepared, &jobs, &metadata)
+            .expect("build host-local cache")
+            .expect("host-local cache");
+        let snapshot_dir = cache.cache_dir.join("snapshot");
+        fs::create_dir_all(&snapshot_dir).expect("create cached snapshot dir");
+        fs::write(snapshot_dir.join("stale-file"), "stale").expect("write stale file");
+        write_host_local_snapshot_cache_state(
+            &cache.cache_dir,
+            &HostLocalSnapshotCacheState {
+                source_fingerprint: "stale-fingerprint".to_string(),
+            },
+        )
+        .expect("write stale cache state");
+        fs::write(
+            snapshot_dir.join("pikaci-snapshot.json"),
+            format!(
+                r#"{{"source_root":"{}","snapshot_dir":"{}","git_head":null,"git_dirty":false,"created_at":"2026-03-15T00:00:00Z","content_hash":"old-hash"}}"#,
+                source_root.display(),
+                snapshot_dir.display()
+            ),
+        )
+        .expect("write stale metadata");
+
+        let snapshot = prepare_snapshot_source(&jobs, &options, &prepared, &metadata)
+            .expect("prepare snapshot");
+
+        assert_eq!(snapshot.snapshot_dir, snapshot_dir);
+        assert!(!snapshot_dir.join("stale-file").exists());
+        assert_ne!(snapshot.content_hash.as_deref(), Some("old-hash"));
+        let cache_state =
+            read_host_local_snapshot_cache_state(&cache.cache_dir).expect("read cache state");
+        let expected_fingerprint =
+            compute_source_fingerprint_with_profile(&source_root, SnapshotProfile::Full)
+                .expect("fingerprint source");
+        assert_eq!(cache_state.source_fingerprint, expected_fingerprint);
+
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -6924,6 +7369,7 @@ EOF
             created_at: "2026-03-07T00:00:00Z".to_string(),
             run_dir,
             jobs_dir,
+            cache_dir: root.join("cache"),
             shared_cargo_home_dir: root.join("cache").join("cargo-home"),
             run_target_dir: root.join("runs").join("run-1").join("cargo-target"),
         }
@@ -6938,6 +7384,7 @@ EOF
             snapshot_dir_string: snapshot_dir.display().to_string(),
             git_head: Some("deadbeef".to_string()),
             git_dirty: Some(false),
+            content_hash: Some("deadbeef".to_string()),
         }
     }
 

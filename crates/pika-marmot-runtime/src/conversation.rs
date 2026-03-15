@@ -800,16 +800,24 @@ mod tests {
             &inviter_keys,
             &created.group.mls_group_id,
             Kind::Metadata,
-            r#"{"display_name":"Second","about":"Latest","picture":"https://example.com/second.jpg"}"#,
-            Timestamp::from_secs(20),
+            r#"{"display_name":"First","picture":"https://example.com/first.jpg"}"#,
+            Timestamp::from_secs(10),
+        );
+        store_group_message_at(
+            &inviter_mdk,
+            &invitee_keys,
+            &created.group.mls_group_id,
+            Kind::Metadata,
+            r#"{"display_name":"Other owner","picture":"https://example.com/other.jpg"}"#,
+            Timestamp::from_secs(30),
         );
         store_group_message_at(
             &inviter_mdk,
             &inviter_keys,
             &created.group.mls_group_id,
             Kind::Metadata,
-            r#"{"display_name":"First","picture":"https://example.com/first.jpg"}"#,
-            Timestamp::from_secs(10),
+            r#"{"display_name":"Second","about":"Latest","picture":"https://example.com/second.jpg"}"#,
+            Timestamp::from_secs(20),
         );
 
         let snapshot = ConversationRuntime::new(&inviter_mdk)

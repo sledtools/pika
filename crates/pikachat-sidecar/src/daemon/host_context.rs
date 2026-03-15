@@ -66,6 +66,16 @@ impl<'a> DaemonHostContext<'a> {
         self.runtime().list_groups()
     }
 
+    pub(super) fn lookup_group_profile_snapshot(
+        &self,
+        nostr_group_id: &str,
+        owner_pubkey: &PublicKey,
+    ) -> anyhow::Result<Option<pika_marmot_runtime::conversation::RuntimeGroupProfileSnapshot>>
+    {
+        self.runtime()
+            .lookup_group_profile_snapshot(nostr_group_id, owner_pubkey)
+    }
+
     #[cfg(test)]
     pub(super) fn list_joined_group_snapshots(
         &self,

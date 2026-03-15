@@ -7,6 +7,7 @@ use mdk_storage_traits::{
     groups::{Pagination, types::Group},
     messages::types::Message,
 };
+use nostr_sdk::Metadata;
 use nostr_sdk::prelude::{
     Alphabet, Client, Event, EventId, Filter, Kind, PublicKey, RelayUrl, SingleLetterTag, Timestamp,
 };
@@ -95,6 +96,15 @@ pub struct RuntimeGroupSummary {
     pub name: String,
     pub description: String,
     pub member_count: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeGroupProfileSnapshot {
+    pub nostr_group_id_hex: String,
+    pub owner_pubkey: PublicKey,
+    pub metadata_json: String,
+    pub metadata: Metadata,
+    pub created_at: Timestamp,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -266,6 +276,47 @@ impl<'a> ConversationRuntime<'a> {
             next_offset: query.offset + fetched_count,
             storage_exhausted: fetched_count < query.limit,
         })
+    }
+
+    pub fn lookup_group_profile_snapshot(
+        &self,
+        nostr_group_id_hex: &str,
+        owner_pubkey: &PublicKey,
+    ) -> Result<Option<RuntimeGroupProfileSnapshot>> {
+        let messages = self.get_messages(nostr_group_id_hex, None)?;
+        let mut latest: Option<RuntimeGroupProfileSnapshot> = None;
+
+        for message in messages {
+            if message.kind != Kind::Metadata {
+                continue;
+            }
+
+            let profile_owner = message
+                .tags
+                .iter()
+                .find(|tag| tag.kind() == nostr_sdk::TagKind::p())
+                .and_then(|tag| tag.content())
+                .and_then(|content| PublicKey::parse(content).ok())
+                .unwrap_or(message.pubkey);
+            if profile_owner != *owner_pubkey {
+                continue;
+            }
+
+            let Ok(metadata) = serde_json::from_str::<Metadata>(&message.content) else {
+                continue;
+            };
+            let candidate = RuntimeGroupProfileSnapshot {
+                nostr_group_id_hex: nostr_group_id_hex.to_string(),
+                owner_pubkey: profile_owner,
+                metadata_json: message.content.clone(),
+                metadata,
+                created_at: message.created_at,
+            };
+
+            latest = Some(candidate);
+        }
+
+        Ok(latest)
     }
 
     pub async fn ingest_backlog_messages(
@@ -694,6 +745,62 @@ mod tests {
                 )
                 .expect("get messages")
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn lookup_group_profile_snapshot_returns_latest_owner_profile() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir);
+        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "group profile snapshot".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge pending commit");
+        let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
+
+        store_group_message(
+            &inviter_mdk,
+            &inviter_keys,
+            &created.group.mls_group_id,
+            Kind::Metadata,
+            r#"{"display_name":"First","picture":"https://example.com/first.jpg"}"#,
+        );
+        store_group_message(
+            &inviter_mdk,
+            &inviter_keys,
+            &created.group.mls_group_id,
+            Kind::Metadata,
+            r#"{"display_name":"Second","about":"Latest","picture":"https://example.com/second.jpg"}"#,
+        );
+
+        let snapshot = ConversationRuntime::new(&inviter_mdk)
+            .lookup_group_profile_snapshot(&nostr_group_id_hex, &inviter_keys.public_key())
+            .expect("lookup group profile snapshot")
+            .expect("group profile snapshot");
+
+        assert_eq!(snapshot.nostr_group_id_hex, nostr_group_id_hex);
+        assert_eq!(snapshot.owner_pubkey, inviter_keys.public_key());
+        assert_eq!(snapshot.metadata.display_name.as_deref(), Some("Second"));
+        assert_eq!(snapshot.metadata.about.as_deref(), Some("Latest"));
+        assert_eq!(
+            snapshot.metadata.picture.as_deref(),
+            Some("https://example.com/second.jpg")
         );
     }
 }

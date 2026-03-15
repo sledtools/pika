@@ -15,8 +15,8 @@ use crate::call_runtime::{
     PendingIncomingCall, PreparedAcceptedCall, PreparedCallSignal,
 };
 use crate::conversation::{
-    ConversationEvent, ConversationRuntime, RuntimeApplicationMessage, RuntimeGroupSummary,
-    RuntimeJoinedGroupSnapshot, RuntimeMessagePage, RuntimeMessagePageQuery,
+    ConversationEvent, ConversationRuntime, RuntimeApplicationMessage, RuntimeGroupProfileSnapshot,
+    RuntimeGroupSummary, RuntimeJoinedGroupSnapshot, RuntimeMessagePage, RuntimeMessagePageQuery,
 };
 use crate::media::{
     MediaRuntime, ParsedMediaAttachment, PreparedMediaUpload, RuntimeDownloadedMedia,
@@ -846,6 +846,15 @@ impl<'a> RuntimeQueries<'a> {
         ConversationRuntime::new(self.mdk).load_message_page(nostr_group_id_hex, query)
     }
 
+    pub fn lookup_group_profile_snapshot(
+        &self,
+        nostr_group_id_hex: &str,
+        owner_pubkey: &PublicKey,
+    ) -> Result<Option<RuntimeGroupProfileSnapshot>> {
+        ConversationRuntime::new(self.mdk)
+            .lookup_group_profile_snapshot(nostr_group_id_hex, owner_pubkey)
+    }
+
     pub fn list_pending_welcome_snapshots(&self) -> Result<Vec<PendingWelcomeSnapshot>> {
         list_pending_welcome_snapshots(self.mdk)
     }
@@ -1367,6 +1376,15 @@ impl<'a> MarmotRuntime<'a> {
         query: RuntimeMessagePageQuery,
     ) -> Result<RuntimeMessagePage> {
         self.queries().load_message_page(nostr_group_id_hex, query)
+    }
+
+    pub fn lookup_group_profile_snapshot(
+        &self,
+        nostr_group_id_hex: &str,
+        owner_pubkey: &PublicKey,
+    ) -> Result<Option<RuntimeGroupProfileSnapshot>> {
+        self.queries()
+            .lookup_group_profile_snapshot(nostr_group_id_hex, owner_pubkey)
     }
 
     pub fn list_pending_welcome_snapshots(&self) -> Result<Vec<PendingWelcomeSnapshot>> {

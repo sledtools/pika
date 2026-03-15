@@ -219,7 +219,7 @@ pub enum InCmd {
 }
 
 /// Versioned event/response surface for the daemon's native JSONL/socket protocol.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OutMsg {
     Ready {
@@ -302,9 +302,12 @@ pub enum OutMsg {
         peer_pubkey: String,
         member_count: u32,
     },
+    GroupUpdated {
+        update: GroupUpdatedOut,
+    },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaAttachmentOut {
     pub url: String,
     pub mime_type: String,
@@ -360,6 +363,28 @@ pub struct GroupProfileOut {
     pub name: String,
     pub about: String,
     pub picture_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupUpdateKindOut {
+    Created,
+    MembersAdded,
+    MembersRemoved,
+    ProfileUpdated,
+    Left,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GroupUpdatedOut {
+    pub kind: GroupUpdateKindOut,
+    pub nostr_group_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub member_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<GroupMemberOut>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<GroupProfileOut>,
 }
 
 /// Wrapper that optionally carries a per-command response sender for socket connections.
@@ -608,6 +633,40 @@ mod tests {
                 assert_eq!(nostr_group_id, "aa");
             }
             other => panic!("expected GetGroupProfile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_group_updated_event() {
+        let json = r#"{
+            "type": "group_updated",
+            "update": {
+                "kind": "members_added",
+                "nostr_group_id": "aa",
+                "member_count": 3,
+                "members": [
+                    {"pubkey": "owner", "is_admin": true},
+                    {"pubkey": "peer", "is_admin": false}
+                ],
+                "profile": {
+                    "nostr_group_id": "aa",
+                    "owner_pubkey": "owner",
+                    "name": "Test Group",
+                    "about": "Shared profile",
+                    "picture_url": null
+                }
+            }
+        }"#;
+        let event: OutMsg = serde_json::from_str(json).expect("deserialize");
+        match event {
+            OutMsg::GroupUpdated { update } => {
+                assert_eq!(update.kind, GroupUpdateKindOut::MembersAdded);
+                assert_eq!(update.nostr_group_id, "aa");
+                assert_eq!(update.member_count, Some(3));
+                assert_eq!(update.members.len(), 2);
+                assert_eq!(update.profile.expect("profile").name, "Test Group");
+            }
+            other => panic!("expected GroupUpdated, got {other:?}"),
         }
     }
 

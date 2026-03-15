@@ -60,6 +60,7 @@ The current native daemon protocol already supports real production commands for
 - group profile read
 - group profile metadata update (`name` / `about`)
 - group profile image upload
+- explicit `group_updated` events after local group/membership/profile mutations
 - message send
 - media send
 - typing send
@@ -69,7 +70,7 @@ The current native daemon protocol already supports real production commands for
 The current native daemon protocol does **not** expose real production commands for:
 
 - other membership/group evolution operations
-- explicit group-update eventing
+- inbound remote group-update eventing for mutations that arrive outside local daemon commands
 
 Current `update_group_profile` scope is intentionally metadata-only:
 
@@ -88,6 +89,18 @@ Current group-profile read/write contract is intentionally keyed to the local us
 - `upload_group_profile_image` preserves the current `name` / `about` and updates only `picture`
 - `upload_group_profile_image` accepts base64-in-JSON today; the 8 MB limit applies to decoded
   image bytes, so wire payloads are larger because of base64 expansion
+
+Current group-update observability is intentionally MVP-sized:
+
+- the daemon emits a typed `group_updated` event after successful local `init_group`,
+  `add_members`, `remove_members`, `leave_group`, `update_group_profile`, and
+  `upload_group_profile_image` commands
+- each event carries the `nostr_group_id`, an update kind, and current member/profile snapshots
+  when they are still cheap to query after the mutation
+- `leave_group` emits a lifecycle event without member/profile snapshots because the group is no
+  longer joined at that point
+- remote inbound group changes are still a next gap; consumers should not assume they will get the
+  same event family for mutations performed elsewhere yet
 
 The shared runtime already has most of the underlying membership machinery:
 

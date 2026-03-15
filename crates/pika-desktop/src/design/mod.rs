@@ -21,8 +21,8 @@ pub use tokens::*;
 
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
-use iced::widget::{button, container, rule, scrollable, text_input};
-use iced::{Color, Theme};
+use iced::widget::{button, container, rule, scrollable, text_editor, text_input};
+use iced::{border, Background, Border, Color, Theme};
 
 // ── Global active theme ─────────────────────────────────────────────────────
 
@@ -217,6 +217,26 @@ pub fn call_control_button_style(_theme: &Theme, status: button::Status) -> butt
 
 pub fn dark_input_style(_theme: &Theme, status: text_input::Status) -> text_input::Style {
     current().text_input(status)
+}
+
+pub fn dark_editor_style(_theme: &Theme, status: text_editor::Status) -> text_editor::Style {
+    let t = current();
+    let border_color = match status {
+        text_editor::Status::Focused { .. } => t.accent.base,
+        text_editor::Status::Hovered => t.background.on_faded,
+        _ => t.background.divider,
+    };
+    text_editor::Style {
+        background: Background::Color(t.background.input_bg),
+        border: Border {
+            color: border_color,
+            width: 1.0,
+            radius: border::radius(t.radii.s),
+        },
+        placeholder: t.background.on_faded,
+        value: t.background.on,
+        selection: t.accent.base.scale_alpha(0.3),
+    }
 }
 
 // ── Scrollable ──────────────────────────────────────────────────────────────

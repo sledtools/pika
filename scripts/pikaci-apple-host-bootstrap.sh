@@ -154,6 +154,7 @@ ensure_xcode() {
     say "running xcodes install ${xcode_version}"
     (
       cd "$repo_root"
+      export PIKA_XCODE_INSTALL_PROMPT=0
       nix --extra-experimental-features 'nix-command flakes' \
         develop .#apple-host \
         -c xcodes install "$xcode_version"
@@ -187,6 +188,7 @@ run_dev_shell_preflight() {
   say "entering repo dev shell"
   (
     cd "$repo_root"
+    export PIKA_XCODE_INSTALL_PROMPT=0
     nix --extra-experimental-features 'nix-command flakes' \
       develop .#apple-host \
       -c bash -lc '
@@ -209,6 +211,7 @@ run_simulator_preflight() {
   say "running iOS simulator preflight"
   (
     cd "$repo_root"
+    export PIKA_XCODE_INSTALL_PROMPT=0
     nix --extra-experimental-features 'nix-command flakes' \
       develop .#apple-host \
       -c bash -lc '
@@ -220,7 +223,7 @@ run_simulator_preflight() {
 
 say "repo root: $repo_root"
 ensure_nix
-run_dev_shell_preflight
 ensure_xcode
+run_dev_shell_preflight
 run_simulator_preflight
 say "apple host bootstrap complete"

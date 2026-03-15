@@ -31,8 +31,9 @@ source "$ROOT/tools/lib/relay-defaults.sh"
 # shellcheck disable=SC1091
 source "$ROOT/tools/lib/channel-config.sh"
 
-# If the user isn't in the Apple-host dev shell, re-exec under Nix for a consistent toolchain.
-if [ -z "${IN_NIX_SHELL:-}" ] && [ "${PIKA_RUN_IOS_NO_NIX:-0}" != "1" ]; then
+# If the user isn't already in the Apple-host dev shell, re-exec under Nix for a
+# consistent toolchain without inheriting the heavier default shell.
+if [ "${PIKA_DEV_SHELL:-}" != "apple-host" ] && [ "${PIKA_RUN_IOS_NO_NIX:-0}" != "1" ]; then
   qargs=()
   for a in "$@"; do qargs+=("$(printf '%q' "$a")"); done
   exec nix develop .#apple-host -c bash -lc "cd \"$ROOT\"; ./tools/run-ios ${qargs[*]}"

@@ -496,7 +496,7 @@
           }
         );
         pikachatOpenclawExtensionPkg = mkPikachatOpenclawExtensionPkg pkgs (mkPikachatOpenclawExtensionSrc pkgs.lib);
-        mkPikaDevShell = { includeAndroid ? hasAndroidSdk }:
+        mkPikaDevShell = { includeAndroid ? hasAndroidSdk, shellName ? "default" }:
           let
             withAndroid = includeAndroid && hasAndroidSdk;
           in
@@ -567,6 +567,7 @@
             unset ANDROID_NDK_HOME
             unset ADB_MDNS_OPENSCREEN
             ''}
+            export PIKA_DEV_SHELL="${shellName}"
             export PATH=$PWD/tools:$PATH
 
             if [ "$(uname -s)" = "Linux" ] && [ -n "${linuxGuiRuntimeLibraryPath}" ]; then
@@ -628,7 +629,7 @@
                 echo "│  iOS builds will not work without it.                   │"
                 echo "└─────────────────────────────────────────────────────────┘"
                 echo ""
-                if [ -t 0 ]; then
+                if [ "''${PIKA_XCODE_INSTALL_PROMPT:-1}" != "0" ] && [ -t 0 ]; then
                   printf "Install Xcode ${xcodeVersion} now? [y/N] "
                   read -r answer
                   if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
@@ -697,8 +698,8 @@ EOF
         };
       in {
 
-        devShells.default = mkPikaDevShell { };
-        devShells.apple-host = mkPikaDevShell { includeAndroid = false; };
+        devShells.default = mkPikaDevShell { shellName = "default"; };
+        devShells.apple-host = mkPikaDevShell { includeAndroid = false; shellName = "apple-host"; };
 
         devShells.rmp = pkgs.mkShell {
           buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [

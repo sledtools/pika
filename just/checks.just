@@ -112,8 +112,13 @@ pre-merge-pikachat:
     #!/usr/bin/env bash
     set -euo pipefail
     if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-        nix run .#pikaci -- run pre-merge-pikachat-rust
-        nix run .#pikaci -- run pre-merge-pikachat-apple-followup
+        if [[ -n "${IN_NIX_SHELL:-}" ]]; then
+            cargo run -q -p pikaci --bin pikaci -- run pre-merge-pikachat-rust
+            cargo run -q -p pikaci --bin pikaci -- run pre-merge-pikachat-apple-followup
+        else
+            nix run .#pikaci -- run pre-merge-pikachat-rust
+            nix run .#pikaci -- run pre-merge-pikachat-apple-followup
+        fi
     else
         cargo clippy -p pikachat -- -D warnings
         cargo clippy -p pikachat-sidecar -- -D warnings

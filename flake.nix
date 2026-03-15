@@ -512,6 +512,7 @@
             pkgs.python3
             pkgs.curl
             pkgs.git
+            pkgs.go
             pkgs.gh
             pkgs.actionlint
             pkgs.coreutils

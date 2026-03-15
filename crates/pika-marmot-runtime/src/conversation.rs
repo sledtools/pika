@@ -283,10 +283,26 @@ impl<'a> ConversationRuntime<'a> {
         nostr_group_id_hex: &str,
         owner_pubkey: &PublicKey,
     ) -> Result<Option<RuntimeGroupProfileSnapshot>> {
+        self.lookup_group_profile_snapshot_for_owners(
+            nostr_group_id_hex,
+            std::slice::from_ref(owner_pubkey),
+        )
+    }
+
+    pub fn lookup_group_profile_snapshot_for_owners(
+        &self,
+        nostr_group_id_hex: &str,
+        owner_pubkeys: &[PublicKey],
+    ) -> Result<Option<RuntimeGroupProfileSnapshot>> {
+        if owner_pubkeys.is_empty() {
+            return Ok(None);
+        }
+
         // This currently backs explicit profile-update follow-through, so an O(n) scan is
         // acceptable for MVP. If this ever moves onto a hotter path, add storage-side kind
         // filtering or indexing instead of loading the full group history.
         let messages = self.get_messages(nostr_group_id_hex, None)?;
+        let owner_pubkeys: HashSet<PublicKey> = owner_pubkeys.iter().copied().collect();
         let mut latest: Option<RuntimeGroupProfileSnapshot> = None;
 
         for message in messages {
@@ -301,7 +317,7 @@ impl<'a> ConversationRuntime<'a> {
                 .and_then(|tag| tag.content())
                 .and_then(|content| PublicKey::parse(content).ok())
                 .unwrap_or(message.pubkey);
-            if profile_owner != *owner_pubkey {
+            if !owner_pubkeys.contains(&profile_owner) {
                 continue;
             }
 
@@ -833,5 +849,76 @@ mod tests {
             snapshot.metadata.picture.as_deref(),
             Some("https://example.com/second.jpg")
         );
+    }
+
+    #[test]
+    fn lookup_group_profile_snapshot_for_owners_returns_latest_matching_profile() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let peer_dir = tempfile::tempdir().expect("peer tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let peer_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir);
+        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let _peer_mdk = open_test_mdk(&peer_dir);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "group profile snapshot owners".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge pending commit");
+        let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
+
+        store_group_message_at(
+            &inviter_mdk,
+            &inviter_keys,
+            &created.group.mls_group_id,
+            Kind::Metadata,
+            r#"{"display_name":"Owner profile"}"#,
+            Timestamp::from_secs(10),
+        );
+        store_group_message_at(
+            &inviter_mdk,
+            &peer_keys,
+            &created.group.mls_group_id,
+            Kind::Metadata,
+            r#"{"display_name":"Ignored peer profile"}"#,
+            Timestamp::from_secs(20),
+        );
+        store_group_message_at(
+            &inviter_mdk,
+            &invitee_keys,
+            &created.group.mls_group_id,
+            Kind::Metadata,
+            r#"{"display_name":"Latest admin profile","about":"Newest"}"#,
+            Timestamp::from_secs(30),
+        );
+
+        let snapshot = ConversationRuntime::new(&inviter_mdk)
+            .lookup_group_profile_snapshot_for_owners(
+                &nostr_group_id_hex,
+                &[inviter_keys.public_key(), invitee_keys.public_key()],
+            )
+            .expect("lookup group profile snapshot for owners")
+            .expect("group profile snapshot");
+
+        assert_eq!(snapshot.nostr_group_id_hex, nostr_group_id_hex);
+        assert_eq!(snapshot.owner_pubkey, invitee_keys.public_key());
+        assert_eq!(
+            snapshot.metadata.display_name.as_deref(),
+            Some("Latest admin profile")
+        );
+        assert_eq!(snapshot.metadata.about.as_deref(), Some("Newest"));
     }
 }

@@ -386,7 +386,6 @@ pub struct GroupUpdatedOut {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<GroupProfileOut>,
 }
-
 /// Wrapper that optionally carries a per-command response sender for socket connections.
 pub struct DaemonCmd {
     pub cmd: InCmd,

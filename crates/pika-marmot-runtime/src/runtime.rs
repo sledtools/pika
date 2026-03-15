@@ -855,6 +855,15 @@ impl<'a> RuntimeQueries<'a> {
             .lookup_group_profile_snapshot(nostr_group_id_hex, owner_pubkey)
     }
 
+    pub fn lookup_group_profile_snapshot_for_owners(
+        &self,
+        nostr_group_id_hex: &str,
+        owner_pubkeys: &[PublicKey],
+    ) -> Result<Option<RuntimeGroupProfileSnapshot>> {
+        ConversationRuntime::new(self.mdk)
+            .lookup_group_profile_snapshot_for_owners(nostr_group_id_hex, owner_pubkeys)
+    }
+
     pub fn list_pending_welcome_snapshots(&self) -> Result<Vec<PendingWelcomeSnapshot>> {
         list_pending_welcome_snapshots(self.mdk)
     }
@@ -1385,6 +1394,15 @@ impl<'a> MarmotRuntime<'a> {
     ) -> Result<Option<RuntimeGroupProfileSnapshot>> {
         self.queries()
             .lookup_group_profile_snapshot(nostr_group_id_hex, owner_pubkey)
+    }
+
+    pub fn lookup_group_profile_snapshot_for_owners(
+        &self,
+        nostr_group_id_hex: &str,
+        owner_pubkeys: &[PublicKey],
+    ) -> Result<Option<RuntimeGroupProfileSnapshot>> {
+        self.queries()
+            .lookup_group_profile_snapshot_for_owners(nostr_group_id_hex, owner_pubkeys)
     }
 
     pub fn list_pending_welcome_snapshots(&self) -> Result<Vec<PendingWelcomeSnapshot>> {

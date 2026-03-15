@@ -1735,7 +1735,7 @@ done
                 }
             }
             KeypackageReadyScenario::Openclaw => {
-                command
+                let command = command
                     .env("TEST_JQ_AGENT_KIND", "openclaw")
                     .env("TEST_JQ_SERVICE_KIND", "openclaw_gateway")
                     .env("TEST_JQ_BACKEND_MODE", "native")
@@ -1763,8 +1763,10 @@ done
                     .env(
                         "TEST_JQ_READINESS_URL",
                         format!("http://127.0.0.1:{openclaw_gateway_port}/health"),
-                    )
-                    .env("PIKA_TEST_CURL_RESULTS", "1");
+                    );
+                if matches!(outcome, KeypackagePublishOutcome::TimesOut { .. }) {
+                    command.env("PIKA_TEST_CURL_RESULTS", "1");
+                }
             }
         }
 

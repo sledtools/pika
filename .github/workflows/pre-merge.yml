@@ -199,7 +199,7 @@ jobs:
               - 'tools/ui-e2e-public'
 
   check-pika:
-    name: check-pika-followup (pikaci)
+    name: check-pika
     needs: [detect-changes]
     if: needs.detect-changes.outputs.pika == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404

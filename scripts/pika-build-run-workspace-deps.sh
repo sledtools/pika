@@ -3,12 +3,11 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
-pikaci_bin="$repo_root/target/debug/pikaci"
+source "$script_dir/lib/pikaci-tools.sh"
 
 load_remote_defaults() {
-  cd "$repo_root"
-  cargo build -p pikaci --bin pikaci >/dev/null
-  eval "$("$pikaci_bin" staged-linux-remote-defaults)"
+  resolve_pikaci_tools "$repo_root"
+  eval "$("$PIKACI_BIN" staged-linux-remote-defaults)"
 }
 
 usage() {

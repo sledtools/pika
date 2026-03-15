@@ -16,6 +16,44 @@ Working assumptions:
 6. Between slices, re-check recent merged `pikaci` changes so this plan stays aligned with the parallel CI-tooling work.
 7. Apply the public-network deletion/demotion policy broadly, not just to iOS. Current likely candidates include Android public E2E, deployed-bot call probes, and relay-latency/perf probes.
 
+## Current Phase (2026-03-15)
+
+1. The CI / lane-definition cleanup phase is mostly complete.
+   - `pikaci` is now the checked-in authority for the obvious staged Linux Rust lanes.
+   - the major wrapper-over-wrapper ownership seams have already been collapsed into `pikahut`.
+   - the remaining infra work is mostly runtime hardening or provisioning, not more test-policy taxonomy.
+
+2. The active phase is now test-suite quality, not more CI gardening.
+   - prefer improving the suite we already have over refining more GitHub-specific change-detection logic
+   - prefer understanding and simplifying test ownership over accumulating new lane machinery
+   - prefer deleting redundant tests over preserving multiple owners for the same behavior
+
+3. Preferred confidence model:
+   - deterministic local-fixture `pikahut` selectors are the clearest CI-facing contract
+   - drive as much behavior as possible through the `FfiApp` / FFI surface the apps actually exercise
+   - keep native/platform suites for true platform-capability validation, not as the default owner of core Rust behavior
+   - public-network and deployed-system probes remain non-core and should not silently grow back into the main confidence story
+
+4. Each audit slice in this phase should do both:
+   - improve or remove something real in the suite
+   - leave behind a clearer checked-in explanation of how that area of the suite works and why it is shaped that way
+
+5. Audit rubric for every major test surface:
+   - what product behavior does this test or selector actually own?
+   - why is this the right ownership layer?
+   - could deterministic `pikahut` + FFI coverage say the same thing more clearly?
+   - is this redundant with another owner?
+   - if it fails, do we learn something useful or mostly fight harness noise?
+
+6. Immediate focus areas:
+   - map the current FFI-heavy Rust behavioral tests in `rust/tests/` against the deterministic `pikahut` selectors that sit above them
+   - identify seams where `pikahut` should own the clearer end-to-end contract and `rust/tests` should stay focused on narrower app-state behavior
+   - document which native/platform tests still validate real platform capability versus historical drift
+
+7. The living plan should now be maintained as both:
+   - the project to-do list
+   - a readable map of the suite’s current strengths, weaknesses, flakes, and ownership boundaries
+
 ## Progress Update (2026-03-10)
 
 1. Slice 1 landed and reviewed cleanly:
@@ -121,6 +159,11 @@ Working assumptions:
    - `crates/pikaci/src/model.rs`, `crates/pikaci/src/run.rs`, and `crates/pikaci/src/executor.rs` now support the minimal host-local execute shape needed for that checked-in target instead of leaving the lane logic embedded in a private recipe body
    - `just pre-merge-pikachat` now routes its Apple Silicon follow-up through `nix run .#pikaci -- run pre-merge-pikachat-apple-followup`, so the lane still composes staged Linux Rust plus Apple-host follow-up without coverage drift
    - that closes the remaining obvious lane-definition cleanup; the next likely pivot is fast local smoke / pre-commit developer-signal work, with Apple-host provisioning/long-term ownership as the remaining infra follow-up
+14. Slice 15 started the post-lane-definition quality phase on the FFI-centered deterministic app behavior surface:
+   - the checked-in plan now maps `app_flows`, `e2e_messaging`, `e2e_group_profiles`, `pikahut` deterministic selectors, and the native UI suites by actual ownership of account/chat/messaging/group/profile behavior
+   - duplicated relay-backed multi-app DM/account bootstrap helpers in `rust/tests/e2e_messaging.rs` and `rust/tests/e2e_group_profiles.rs` are now collapsed into shared `rust/tests/support`
+   - the code now says more clearly why that Rust-side helper sharing is different from the still-intentional selector-side duplication in `crates/pikahut/tests/support.rs`
+   - the next audit slice should stay in this quality phase and target another behavior family rather than reopening CI/lane-definition cleanup
 ## Progress Update
 
 Completed on 2026-03-10:
@@ -203,6 +246,42 @@ Verified in the repo today:
    - the active staged lane is centered on deterministic `pika_core` behavioral tests
    - current `pikaci` work already treats helper/unit noise as lower priority than app-flows and messaging/group-profile behavior
    - the newest shadow-lane work reinforces that root CI surfaces are currently high-conflict and should not be the first target for this cleanup project
+
+## FFI Behavioral Surface Map (Account / Chat / Messaging / Group / Profile)
+
+1. `rust/tests/app_flows.rs`
+   - Owns single-app `FfiApp` state/lifecycle behavior: account creation, router changes, logout/reset, persistence/restart, paging, reactions, and external-signer/bunker/Nostr Connect flows.
+   - This is the right ownership layer when the product question is “what does one app instance do after this action/update?” rather than “can two apps talk over local fixtures?”
+   - The main overlap with native UI is shell-level: iOS can still validate that login/chat/logout/navigation render correctly, but it should not be the primary owner of these Rust semantics.
+
+2. `rust/tests/e2e_messaging.rs`
+   - Owns focused relay-backed multi-app `FfiApp` messaging/call-signaling semantics: DM creation, message delivery state, invalid call invite rejection, optimistic send behavior, and peer-visible call-end signaling.
+   - This is still the clearest owner for narrow multi-app Rust behavior because the assertions are on `FfiApp` state, not on fixture orchestration.
+   - `pikahut` currently pins only a subset of this file through regression selectors; that is a selector contract, not semantic ownership.
+
+3. `rust/tests/e2e_group_profiles.rs`
+   - Owns focused relay-backed multi-app profile semantics: per-group profile visibility, rebroadcast to late joiners, and DM-local profile overrides.
+   - This layer is still the clearest semantic owner today because the tests assert MLS/profile state directly through `FfiApp`.
+   - The obvious gap is that `pikahut` does not yet expose one higher-level deterministic selector for the most important end-user profile flow, so this behavior is strong but not yet represented well at the CI-facing selector layer.
+
+4. `crates/pikahut/tests/integration_deterministic.rs`
+   - Owns the CI-facing deterministic selector contract.
+   - For this audit area it currently owns only a small number of explicit boundaries: `post_rebase_invalid_event_rejection_boundary` and `post_rebase_logout_session_convergence_boundary`, while broader message/profile semantics still live in `rust/tests`.
+   - That split is acceptable when the selector is clearly pinning a narrower Rust semantic owner, but it would be questionable if `pikahut` tried to become a second full owner of every messaging/profile assertion.
+
+5. `ios/UITests/PikaUITests.swift`
+   - Owns platform-hosted capability smoke: login/chat navigation, session persistence across relaunch, layout/focus behavior, long-press actions, deep links, and native interop launch.
+   - The local note-to-self/login/logout path overlaps `app_flows.rs` semantically, but it still validates a real iOS-hosted UI shell and persistence capability.
+   - It is questionable as an owner of core message/profile semantics and should stay a platform smoke layer, not the canonical behavior contract.
+
+6. `android/app/src/androidTest/.../PikaE2eUiTest.kt`
+   - Owns fixture-backed Android-hosted rendering/capability smoke for bot-driven chat/hypernote UI.
+   - It is not the owner of account/chat/group/profile Rust semantics and already says so more honestly than the older iOS surface did.
+
+7. Obvious redundancies and gaps in this area today:
+   - relay-backed multi-app helper logic was duplicated across `rust/tests/e2e_messaging.rs` and `rust/tests/e2e_group_profiles.rs`; this slice collapses that Rust-side duplication into shared `rust/tests/support`
+   - similar DM bootstrap helpers still exist in `crates/pikahut/tests/support.rs`, but that duplication is currently intentional because selector-side fixture/orchestration support cannot depend on the private `rust/tests` layer
+   - there is still no selector-owned deterministic `pikahut` contract for the clearest end-user message-delivery/profile flows, only the narrower post-rebase regression boundaries
 
 ## Strongest Problems
 
@@ -390,6 +469,11 @@ Updated recommendation after Slice 14:
 2. The broader package-specific local follow-up still exists at `just checks::pre-commit-full`, but it is no longer the default habit path.
 3. The next likely follow-up is either extending the same fast-signal philosophy to one more developer workflow surface or stopping this rationalization track and letting the parallel `pikaci` effort absorb the remaining infra-specific follow-ups.
 4. Keep avoiding broad root CI/workflow churn unless a concrete developer-signal problem requires it.
+Updated recommendation after Slice 15:
+1. The current strongest deterministic behavioral signal for account/chat/messaging/group/profile flows is now mapped explicitly: single-app app-state behavior in `app_flows`, focused relay-backed multi-app semantics in `e2e_messaging` / `e2e_group_profiles`, selector contracts in `pikahut`, and platform capability smoke in native UI.
+2. The next audit slices should keep improving that behavioral clarity rather than reopening CI/lane-definition cleanup.
+3. The best next candidates are another FFI-centered behavioral family with real native overlap, or a selector-owned deterministic contract that should replace a weaker native/UI owner.
+4. Keep preferring one real simplification per slice over broad inventory churn.
 Default bias:
 1. Keep the `pikahut` selector contract when practical.
 2. Do not preserve wrapper-over-opaque-legacy-test shapes when the behavior can be owned more directly.
@@ -400,8 +484,9 @@ Recommended next slice:
 3. Explicit CI tier clarification is now done in checked-in docs, the staged-lane filter-alignment cleanup is done for `pikachat`, `agent_contracts`, `notifications`, and `fixture`, and the staged Linux target-model normalization now covers `pre-merge-pika-rust`, `pre-merge-agent-contracts`, `pre-merge-notifications`, `pre-merge-pikachat-rust`, `pre-merge-fixture-rust`, and `pre-merge-rmp`.
 4. The lane-definition cleanup pass is now effectively done for the current pre-merge contracts.
 5. Fast local smoke / pre-commit developer-signal work is now in place as a checked-in default.
-6. Apple-host provisioning/long-term ownership for `pre-merge-pikachat-apple-followup` remains a follow-up, but it is no longer a lane-definition gap and no longer blocks the local developer-signal path.
-7. Keep avoiding broad root CI/workflow churn while the parallel `pikaci` shadow-lane work is active.
+6. The active cleanup phase is now FFI-centered test-suite quality and ownership clarity, starting with account/chat/messaging/group/profile behavior.
+7. Apple-host provisioning/long-term ownership for `pre-merge-pikachat-apple-followup` remains a follow-up, but it is no longer a lane-definition gap and no longer blocks the current quality phase.
+8. Keep avoiding broad root CI/workflow churn while the parallel `pikaci` shadow-lane work is active.
 
 ### Phase 3: Define Explicit CI Policy Tiers
 

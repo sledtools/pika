@@ -22,7 +22,7 @@ import org.junit.runner.RunWith
  * Legacy-name UI selectors that `pikahut` drives against local relay/bot fixtures.
  *
  * These are not part of the default offline instrumentation suite and should not be treated as
- * public-network coverage.
+ * public-network coverage or as the primary owner of core Rust messaging/profile semantics.
  */
 @RunWith(AndroidJUnit4::class)
 class PikaE2eUiTest {

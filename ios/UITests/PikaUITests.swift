@@ -1,6 +1,10 @@
 import XCTest
 import UIKit
 
+/// Platform-hosted UI smoke for navigation, persistence, layout, and deep-link capability.
+///
+/// Core Rust messaging/profile semantics should stay owned by `rust/tests` and deterministic
+/// `pikahut` selectors, not by this XCTest layer.
 final class PikaUITests: XCTestCase {
     private let localUiTestNsec = "nsec1ds2my67qq6ls28vyms056cwz460w6nkpemxmqejgk77d6xw277as0692cq"
     private let localUiTestNpub = "npub1q49v9chr3cqt2gectr0g98aj4sw3dch8tpnur0yl9q9gxg26e2ysdl24fy"

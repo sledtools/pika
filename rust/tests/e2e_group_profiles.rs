@@ -1,66 +1,18 @@
-//! E2E tests for per-group profiles: setting, receiving, and rebroadcasting
-//! group-specific kind-0 metadata via MLS.
+//! Focused relay-backed multi-app FFI profile semantics for groups and DMs.
+//!
+//! These tests stay below `pikahut` because they are the clearest owner for per-chat/profile MLS
+//! behavior. `pikahut` should eventually own higher-level deterministic selectors for the most
+//! important user-facing profile flows, but not every narrow semantic edge belongs there.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use pika_core::{AppAction, AuthState, FfiApp};
+use pika_core::{AppAction, FfiApp};
 use tempfile::tempdir;
 
 mod support;
-use support::{wait_until, write_config};
-
-fn get_npub(app: &FfiApp) -> String {
-    match app.state().auth {
-        AuthState::LoggedIn { npub, .. } => npub,
-        _ => panic!("not logged in"),
-    }
-}
-
-fn dm_chat_id_for_peer(app: &FfiApp, peer_npub: &str) -> Option<String> {
-    let st = app.state();
-    if let Some(chat) = st
-        .current_chat
-        .as_ref()
-        .filter(|c| c.members.iter().any(|m| m.npub == peer_npub))
-    {
-        return Some(chat.chat_id.clone());
-    }
-    st.chat_list
-        .iter()
-        .find(|c| c.members.iter().any(|m| m.npub == peer_npub))
-        .map(|c| c.chat_id.clone())
-}
-
-fn create_or_open_dm(app: &FfiApp, peer_npub: &str, timeout: Duration) -> String {
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if let Some(chat_id) = dm_chat_id_for_peer(app, peer_npub) {
-            app.dispatch(AppAction::OpenChat {
-                chat_id: chat_id.clone(),
-            });
-            wait_until("dm opened", Duration::from_secs(20), || {
-                app.state()
-                    .current_chat
-                    .as_ref()
-                    .map(|c| c.chat_id == chat_id)
-                    .unwrap_or(false)
-            });
-            return chat_id;
-        }
-        app.dispatch(AppAction::CreateChat {
-            peer_npub: peer_npub.to_owned(),
-        });
-        std::thread::sleep(Duration::from_millis(500));
-    }
-    panic!("DM for peer {peer_npub} was not ready within {timeout:?}");
-}
-
-fn create_account_and_wait(app: &FfiApp) {
-    app.dispatch(AppAction::CreateAccount);
-    wait_until("logged in", Duration::from_secs(10), || {
-        matches!(app.state().auth, AuthState::LoggedIn { .. })
-    });
-}
+use support::{
+    create_account_and_wait, create_or_open_dm_chat, get_logged_in_npub, wait_until, write_config,
+};
 
 /// Create a group chat where `creator` adds `peer_npub`, retrying until
 /// key packages are available and the group appears in the chat list.
@@ -112,7 +64,7 @@ fn group_profile_visible_to_other_member() {
     create_account_and_wait(&alice);
     create_account_and_wait(&bob);
 
-    let bob_npub = get_npub(&bob);
+    let bob_npub = get_logged_in_npub(&bob);
 
     // Alice creates a group with Bob.
     let chat_id = create_group_chat(&alice, &bob_npub, "ProfileTest", Duration::from_secs(60));
@@ -199,8 +151,8 @@ fn new_member_receives_rebroadcasted_group_profiles() {
     create_account_and_wait(&bob);
     create_account_and_wait(&charlie);
 
-    let bob_npub = get_npub(&bob);
-    let charlie_npub = get_npub(&charlie);
+    let bob_npub = get_logged_in_npub(&bob);
+    let charlie_npub = get_logged_in_npub(&charlie);
 
     // Alice creates a group with Bob.
     let chat_id = create_group_chat(
@@ -352,10 +304,10 @@ fn dm_profile_visible_to_peer() {
     create_account_and_wait(&alice);
     create_account_and_wait(&bob);
 
-    let bob_npub = get_npub(&bob);
+    let bob_npub = get_logged_in_npub(&bob);
 
     // Alice creates a DM with Bob (1:1 chat, not a named group).
-    let chat_id = create_or_open_dm(&alice, &bob_npub, Duration::from_secs(60));
+    let chat_id = create_or_open_dm_chat(&alice, &bob_npub, Duration::from_secs(60));
 
     // Wait for Bob to see the chat.
     wait_until("bob has dm", Duration::from_secs(30), || {

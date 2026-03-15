@@ -1,3 +1,8 @@
+//! Single-app `FfiApp` behavior: auth, router, persistence, restart, paging, and reactions.
+//!
+//! These tests intentionally stay below `pikahut`: they own app-state and lifecycle semantics
+//! within one app instance rather than fixture/orchestration boundaries.
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 

@@ -3,7 +3,12 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use pika_core::{AppReconciler, AppUpdate};
+use pika_core::{AppAction, AppReconciler, AppUpdate, AuthState, FfiApp};
+
+// Shared helper layer for the focused relay-backed multi-app FFI tests in `rust/tests/`.
+// Keep selector-specific orchestration in `crates/pikahut/tests/support.rs`; that layer owns
+// fixture lifecycle and CI-facing boundaries, while these helpers stay with the narrower
+// `FfiApp` semantic owners.
 
 pub fn wait_until(what: &str, timeout: Duration, f: impl FnMut() -> bool) {
     wait_until_with_poll(what, timeout, Duration::from_millis(50), f);
@@ -75,6 +80,60 @@ pub fn write_config_multi(data_dir: &str, relays: &[String], kp_relays: &[String
         "call_audio_backend": "synthetic",
     });
     std::fs::write(path, serde_json::to_vec(&v).unwrap()).unwrap();
+}
+
+pub fn create_account_and_wait(app: &FfiApp) {
+    app.dispatch(AppAction::CreateAccount);
+    wait_until("logged in", Duration::from_secs(10), || {
+        matches!(app.state().auth, AuthState::LoggedIn { .. })
+    });
+}
+
+pub fn get_logged_in_npub(app: &FfiApp) -> String {
+    match app.state().auth {
+        AuthState::LoggedIn { npub, .. } => npub,
+        _ => panic!("not logged in"),
+    }
+}
+
+pub fn dm_chat_id_for_peer(app: &FfiApp, peer_npub: &str) -> Option<String> {
+    let state = app.state();
+    if let Some(chat) = state
+        .current_chat
+        .as_ref()
+        .filter(|chat| chat.members.iter().any(|member| member.npub == peer_npub))
+    {
+        return Some(chat.chat_id.clone());
+    }
+    state
+        .chat_list
+        .iter()
+        .find(|chat| chat.members.iter().any(|member| member.npub == peer_npub))
+        .map(|chat| chat.chat_id.clone())
+}
+
+pub fn create_or_open_dm_chat(app: &FfiApp, peer_npub: &str, timeout: Duration) -> String {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if let Some(chat_id) = dm_chat_id_for_peer(app, peer_npub) {
+            app.dispatch(AppAction::OpenChat {
+                chat_id: chat_id.clone(),
+            });
+            wait_until("chat opened", Duration::from_secs(20), || {
+                app.state()
+                    .current_chat
+                    .as_ref()
+                    .map(|chat| chat.chat_id == chat_id)
+                    .unwrap_or(false)
+            });
+            return chat_id;
+        }
+        app.dispatch(AppAction::CreateChat {
+            peer_npub: peer_npub.to_owned(),
+        });
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    panic!("chat for peer {peer_npub} was not ready within {timeout:?}");
 }
 
 #[derive(Clone)]

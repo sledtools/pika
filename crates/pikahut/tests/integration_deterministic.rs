@@ -366,6 +366,8 @@ async fn openclaw_scenario_audio_echo() -> Result<()> {
 #[test]
 #[ignore = "deterministic post-rebase regression selector"]
 fn post_rebase_invalid_event_rejection_boundary() -> Result<()> {
+    // Keep the narrow invalid-invite semantics owned by `rust/tests/e2e_messaging.rs`; this
+    // selector exists to pin that behavior into the CI-facing deterministic contract.
     let mut context = TestContext::builder("regression-invalid-event-rejection")
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
@@ -398,6 +400,8 @@ fn post_rebase_invalid_event_rejection_boundary() -> Result<()> {
 #[test]
 #[ignore = "deterministic post-rebase regression selector"]
 fn post_rebase_logout_session_convergence_boundary() -> Result<()> {
+    // Keep the single-app logout/session semantics owned by `rust/tests/app_flows.rs`; this
+    // selector exists to pin that behavior into the CI-facing deterministic contract.
     let mut context = TestContext::builder("regression-logout-session-convergence")
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;

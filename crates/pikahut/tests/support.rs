@@ -960,6 +960,9 @@ fn call_stats_snapshot(app: &FfiApp) -> Result<CallStatsSnapshot> {
     })
 }
 
+// Keep selector-side DM bootstrap local here even though `rust/tests/support` has a similar
+// helper: `pikahut` owns fixture/orchestration boundaries and cannot depend on the private
+// `rust/tests` support layer that the narrower FFI semantic tests use.
 fn dm_chat_id_for_peer(app: &FfiApp, peer_npub: &str) -> Option<String> {
     let state = app.state();
     if let Some(chat) = state

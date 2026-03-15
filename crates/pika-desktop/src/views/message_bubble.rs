@@ -276,24 +276,28 @@ fn push_message_content<'a>(
         theme::text_primary()
     };
 
-    let parts: Vec<&str> = if segments.is_empty() {
+    // (text, is_markdown) — preserve the segment type so we don't re-check
+    // with has_markdown and risk misclassifying valid markdown content.
+    let parts: Vec<(&str, bool)> = if segments.is_empty() {
         if display_content.is_empty() {
             vec![]
         } else {
-            vec![display_content]
+            vec![(display_content, markdown::has_markdown(display_content))]
         }
     } else {
         segments
             .iter()
             .filter_map(|seg| match seg {
-                MessageSegment::Markdown { text } if !text.is_empty() => Some(text.as_str()),
+                MessageSegment::Markdown { text } if !text.is_empty() => {
+                    Some((text.as_str(), true))
+                }
                 _ => None,
             })
             .collect()
     };
 
-    for part in parts {
-        if markdown::has_markdown(part) {
+    for (part, is_markdown) in parts {
+        if is_markdown {
             col = col.push(markdown::render_markdown(part, text_color, is_mine));
         } else {
             col = col.push(text(part).size(15).color(text_color));

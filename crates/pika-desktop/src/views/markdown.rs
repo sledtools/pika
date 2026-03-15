@@ -138,11 +138,11 @@ pub fn render_markdown<'a>(
                     blocks.push(el);
                 }
             }
-            Event::Start(Tag::BlockQuote(_)) => {
+            Event::Start(Tag::BlockQuote) => {
                 flush_spans(&mut inline_spans, &mut blocks);
                 in_blockquote = true;
             }
-            Event::End(TagEnd::BlockQuote(_)) => {
+            Event::End(TagEnd::BlockQuote) => {
                 flush_spans(&mut inline_spans, &mut blockquote_elements);
                 in_blockquote = false;
                 let bar_color = blockquote_bar(is_mine);
@@ -203,12 +203,20 @@ pub fn render_markdown<'a>(
                 }
             }
             Event::Start(Tag::Heading { .. }) => {
-                flush_spans(&mut inline_spans, &mut blocks);
+                if in_blockquote {
+                    flush_spans(&mut inline_spans, &mut blockquote_elements);
+                } else {
+                    flush_spans(&mut inline_spans, &mut blocks);
+                }
                 style.bold = true;
             }
             Event::End(TagEnd::Heading(_)) => {
                 style.bold = false;
-                flush_spans(&mut inline_spans, &mut blocks);
+                if in_blockquote {
+                    flush_spans(&mut inline_spans, &mut blockquote_elements);
+                } else {
+                    flush_spans(&mut inline_spans, &mut blocks);
+                }
             }
 
             // ── Inline tags ────────────────────────────────────
@@ -294,5 +302,7 @@ pub fn render_markdown<'a>(
 /// Returns `true` if the content has any markdown syntax worth rendering.
 /// Plain text with no formatting is faster to render as a simple `text()`.
 pub fn has_markdown(content: &str) -> bool {
-    content.bytes().any(|b| matches!(b, b'*' | b'_' | b'`' | b'~' | b'[' | b'#' | b'>' | b'-'))
+    content
+        .bytes()
+        .any(|b| matches!(b, b'*' | b'_' | b'`' | b'~' | b'[' | b'#' | b'>' | b'-' | b'+' | b'0'..=b'9'))
 }

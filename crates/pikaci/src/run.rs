@@ -709,7 +709,7 @@ enum PrepareAction {
     },
     RemoteMicrovmRunner {
         job: JobSpec,
-        ctx: HostContext,
+        ctx: Box<HostContext>,
         log_paths: Vec<PathBuf>,
     },
 }
@@ -893,6 +893,7 @@ fn build_run_plan(
         let job_dir = prepared.jobs_dir.join(job.id);
         fs::create_dir_all(&job_dir).with_context(|| format!("create {}", job_dir.display()))?;
         let ctx = HostContext {
+            source_root: PathBuf::from(&snapshot.source_root),
             workspace_snapshot_dir: prepare_job_workspace(job, &snapshot.snapshot_dir, &job_dir)?,
             workspace_read_only: !job.writable_workspace,
             job_dir: job_dir.clone(),
@@ -1041,7 +1042,7 @@ fn build_run_plan(
                 },
                 RunnerKind::MicrovmRemote => PrepareAction::RemoteMicrovmRunner {
                     job: job.clone(),
-                    ctx: ctx.clone(),
+                    ctx: Box::new(ctx.clone()),
                     log_paths: vec![ctx.host_log_path.clone()],
                 },
                 RunnerKind::TartLocal => unreachable!("tart jobs skip Linux microvm runner"),
@@ -3552,7 +3553,7 @@ fn run_prepare_nodes(
                     node_id: prepare.node_id.clone(),
                     message: "missing remote microvm runner prepare log path".to_string(),
                 })?;
-                prepare_remote_microvm_runner(job, ctx, log_path).map_err(|err| {
+                prepare_remote_microvm_runner(job, ctx.as_ref(), log_path).map_err(|err| {
                     PrepareFailure {
                         node_id: prepare.node_id.clone(),
                         message: format!("{err:#}"),

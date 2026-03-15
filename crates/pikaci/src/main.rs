@@ -452,7 +452,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 timeout_secs: 3600,
                 writable_workspace: true,
                 guest_command: GuestCommand::HostShellCommand {
-                    command: "cargo test -p pikahut --test integration_openclaw openclaw_gateway_e2e -- --ignored --nocapture",
+                    command: "cargo build -p pikachat && export PIKAHUT_TEST_PIKACHAT_BIN=\"$CARGO_TARGET_DIR/debug/pikachat\" && cargo test -p pikahut --test integration_openclaw openclaw_gateway_e2e -- --ignored --nocapture",
                 },
                 staged_linux_rust_lane: None,
             }],
@@ -1628,7 +1628,7 @@ mod tests {
         target_spec_for_rerun,
     };
     use pikaci::{
-        JobRecord, PreparedOutputConsumerKind, RunRecord, RunStatus, RunnerKind,
+        GuestCommand, JobRecord, PreparedOutputConsumerKind, RunRecord, RunStatus, RunnerKind,
         StagedLinuxRustLane, StagedLinuxRustTarget,
     };
 
@@ -1737,6 +1737,13 @@ mod tests {
         assert_eq!(target.jobs.len(), 1);
         assert_eq!(target.jobs[0].staged_linux_rust_lane(), None);
         assert_eq!(target.jobs[0].runner_kind(), RunnerKind::HostLocal);
+        match &target.jobs[0].guest_command {
+            GuestCommand::HostShellCommand { command } => {
+                assert!(command.contains("PIKAHUT_TEST_PIKACHAT_BIN"));
+                assert!(command.contains("$CARGO_TARGET_DIR/debug/pikachat"));
+            }
+            other => panic!("unexpected guest command: {other:?}"),
+        }
     }
 
     #[test]

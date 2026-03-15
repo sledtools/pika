@@ -1227,9 +1227,25 @@ We have at least one important Linux Rust lane where:
       - that keeps fixture under `pikaci` without dragging repo-guardrail tests into a lane that never required them,
       - and the real lane passed locally as `20260312T074318Z-c1eb5813`,
     - `check-pikachat-openclaw-e2e` now runs through `pikaci` as well:
-      - the existing `pre-merge-pikachat-openclaw-e2e` host-local Linux target was validated against a real OpenClaw checkout via `OPENCLAW_DIR=../openclaw`,
+      - the existing `pre-merge-pikachat-openclaw-e2e` host-local Linux target now normalizes a relative `OPENCLAW_DIR` against the original repo checkout before the host-local runner switches into the copied workspace, so local invocations like `OPENCLAW_DIR=../openclaw` are stable again instead of resolving relative to `.pikaci/runs/.../workspace`,
       - the lane passed locally as `20260312T074532Z-9adace00`,
       - and the workflow job now invokes `just pre-merge-pikachat-openclaw-e2e` instead of the legacy direct cargo path,
+      - manual GitHub timing shows it is still the slowest `pikaci` Linux lane:
+        - `check-pikachat-openclaw-e2e (pikaci)`: about `129s`,
+        - recent legacy analogue: about `89s`,
+      - the slowdown is now diagnosed concretely:
+        - the extra `openclaw/openclaw` checkout only costs a few seconds,
+        - the bigger self-inflicted cost is the host-local job recompiling `pikahut` in a fresh copied workspace path on each run,
+        - and the old recipe was also paying an unnecessary nested `nix run .#pikaci` build inside an already-entered devshell,
+      - the host-local lane also had a real local-only contract bug:
+        - once a real external OpenClaw checkout was used, the scenario could look for `workspace/target/debug/pikachat` even though `pikaci` host-local jobs redirect Cargo outputs to `$CARGO_TARGET_DIR`,
+        - the lane now runs `cargo build -p pikachat` first and exports `PIKAHUT_TEST_PIKACHAT_BIN="$CARGO_TARGET_DIR/debug/pikachat"` so the OpenClaw peer step follows the host-local runner contract instead of assuming a workspace-local `target/` tree,
+      - the immediate low-risk fix is now landed:
+        - the CI-safe recipe uses `cargo run -q -p pikaci --bin pikaci -- ...` when already inside `nix develop`, which avoids that nested Nix build tax,
+      - the next improvement plan is explicit:
+        - keep host-local `pikaci` workspaces on a stable per-target path instead of a per-run copied path so Cargo fingerprints survive across runs,
+        - pair that with a stable shared target dir for host-local lanes,
+        - and only revisit OpenClaw-side npm dependency caching if the Rust compile tax stops dominating after the stable-workspace change,
     - the last non-`pikaci` Linux remainder inside `check-pika` is now also gone:
       - `pre-merge-pika-followup` is now a host-local `pikaci` target covering:
         - Android instrumentation-test Kotlin compile,

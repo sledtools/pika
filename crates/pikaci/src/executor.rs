@@ -18,6 +18,7 @@ use crate::snapshot::{SnapshotMetadata, read_snapshot_metadata};
 
 #[derive(Clone, Debug)]
 pub struct HostContext {
+    pub source_root: PathBuf,
     pub workspace_snapshot_dir: PathBuf,
     pub workspace_read_only: bool,
     pub job_dir: PathBuf,
@@ -27,6 +28,23 @@ pub struct HostContext {
     pub shared_target_dir: PathBuf,
     pub staged_linux_rust_workspace_deps_dir: Option<PathBuf>,
     pub staged_linux_rust_workspace_build_dir: Option<PathBuf>,
+}
+
+fn resolved_host_local_openclaw_dir(ctx: &HostContext) -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("OPENCLAW_DIR").map(PathBuf::from) {
+        if path.is_absolute() {
+            return Some(path);
+        }
+        let joined = ctx.source_root.join(path);
+        return Some(joined.canonicalize().unwrap_or(joined));
+    }
+
+    let snapshot_openclaw_dir = ctx.workspace_snapshot_dir.join("openclaw");
+    if snapshot_openclaw_dir.join("package.json").is_file() {
+        return Some(snapshot_openclaw_dir);
+    }
+
+    None
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -182,11 +200,8 @@ fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOut
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let snapshot_openclaw_dir = ctx.workspace_snapshot_dir.join("openclaw");
-    if std::env::var_os("OPENCLAW_DIR").is_none()
-        && snapshot_openclaw_dir.join("package.json").is_file()
-    {
-        cmd.env("OPENCLAW_DIR", &snapshot_openclaw_dir);
+    if let Some(openclaw_dir) = resolved_host_local_openclaw_dir(ctx) {
+        cmd.env("OPENCLAW_DIR", openclaw_dir);
     }
 
     let output = cmd
@@ -2780,6 +2795,7 @@ mod tests {
             staged_linux_rust_lane: None,
         };
         let ctx = HostContext {
+            source_root: root.clone(),
             workspace_snapshot_dir: workspace_snapshot_dir.clone(),
             workspace_read_only: true,
             job_dir: job_dir.clone(),
@@ -2796,6 +2812,71 @@ mod tests {
         assert_eq!(outcome.status, RunStatus::Passed);
         let host_log = std::fs::read_to_string(&ctx.host_log_path).expect("read host log");
         assert!(host_log.contains("host-local command"));
+        assert!(host_log.contains("ok"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn host_local_jobs_resolve_relative_openclaw_dir_from_source_root() {
+        let root =
+            std::env::temp_dir().join(format!("pikaci-openclaw-test-{}", uuid::Uuid::new_v4()));
+        let source_root = root.join("source");
+        let external_openclaw_dir = root.join("openclaw");
+        let workspace_snapshot_dir = root.join("snapshot");
+        let job_dir = root.join("job");
+        std::fs::create_dir_all(&source_root).expect("create source root");
+        std::fs::create_dir_all(&external_openclaw_dir).expect("create external openclaw");
+        std::fs::write(external_openclaw_dir.join("package.json"), "{}")
+            .expect("write package.json");
+        std::fs::create_dir_all(&workspace_snapshot_dir).expect("create workspace snapshot");
+        std::fs::create_dir_all(job_dir.join("artifacts")).expect("create artifacts dir");
+        std::fs::create_dir_all(root.join("cargo-home")).expect("create cargo home");
+        std::fs::create_dir_all(root.join("target")).expect("create target dir");
+
+        let job = JobSpec {
+            id: "pikachat-openclaw-relative",
+            description: "Verify relative OPENCLAW_DIR resolution for host-local jobs",
+            timeout_secs: 120,
+            writable_workspace: false,
+            guest_command: GuestCommand::HostShellCommand {
+                command: "python3 -c 'from pathlib import Path; import os; assert Path(os.environ[\"OPENCLAW_DIR\"]).resolve() == Path(os.environ[\"EXPECTED_OPENCLAW_DIR\"]).resolve(); print(\"ok\")'",
+            },
+            staged_linux_rust_lane: None,
+        };
+        let ctx = HostContext {
+            source_root: source_root.clone(),
+            workspace_snapshot_dir: workspace_snapshot_dir.clone(),
+            workspace_read_only: true,
+            job_dir: job_dir.clone(),
+            host_log_path: job_dir.join("host.log"),
+            guest_log_path: job_dir.join("artifacts/guest.log"),
+            shared_cargo_home_dir: root.join("cargo-home"),
+            shared_target_dir: root.join("target"),
+            staged_linux_rust_workspace_deps_dir: None,
+            staged_linux_rust_workspace_build_dir: None,
+        };
+
+        let old_openclaw_dir = std::env::var_os("OPENCLAW_DIR");
+        let old_expected_openclaw_dir = std::env::var_os("EXPECTED_OPENCLAW_DIR");
+        unsafe {
+            std::env::set_var("OPENCLAW_DIR", "../openclaw");
+            std::env::set_var("EXPECTED_OPENCLAW_DIR", external_openclaw_dir.as_os_str());
+        }
+
+        let outcome = run_job_on_runner(&job, &ctx).expect("run host-local job");
+
+        match old_openclaw_dir {
+            Some(value) => unsafe { std::env::set_var("OPENCLAW_DIR", value) },
+            None => unsafe { std::env::remove_var("OPENCLAW_DIR") },
+        }
+        match old_expected_openclaw_dir {
+            Some(value) => unsafe { std::env::set_var("EXPECTED_OPENCLAW_DIR", value) },
+            None => unsafe { std::env::remove_var("EXPECTED_OPENCLAW_DIR") },
+        }
+
+        assert_eq!(outcome.status, RunStatus::Passed);
+        let host_log = std::fs::read_to_string(&ctx.host_log_path).expect("read host log");
         assert!(host_log.contains("ok"));
 
         let _ = std::fs::remove_dir_all(root);

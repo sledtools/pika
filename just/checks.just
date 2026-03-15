@@ -73,10 +73,16 @@ pre-merge-pikachat-rust-shadow:
 pre-merge-pikachat-openclaw-e2e:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [[ -z "${OPENCLAW_DIR:-}" ]] && [[ -d openclaw ]]; then
+    if [[ -n "${OPENCLAW_DIR:-}" ]]; then
+        export OPENCLAW_DIR="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$OPENCLAW_DIR")"
+    elif [[ -d openclaw ]]; then
         export OPENCLAW_DIR="$PWD/openclaw"
     fi
-    nix run .#pikaci -- run pre-merge-pikachat-openclaw-e2e
+    if [[ -n "${IN_NIX_SHELL:-}" ]]; then
+        cargo run -q -p pikaci --bin pikaci -- run pre-merge-pikachat-openclaw-e2e
+    else
+        nix run .#pikaci -- run pre-merge-pikachat-openclaw-e2e
+    fi
     echo "pre-merge-pikachat-openclaw-e2e complete"
 
 # CI-safe pre-merge for the notification server lane.

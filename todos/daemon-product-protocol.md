@@ -70,37 +70,46 @@ The current native daemon protocol already supports real production commands for
 The current native daemon protocol does **not** expose real production commands for:
 
 - other membership/group evolution operations
-- inbound remote group-update eventing for mutations that arrive outside local daemon commands
+- broader governance/admin-role operations
+- a general inbound event bus beyond the focused group/product event family
 
-Current `update_group_profile` scope is intentionally metadata-only:
+Current group-profile mutation scope is intentionally metadata + image only:
 
-- it can set `name` / `about`
-- it preserves any existing `picture` from the latest self-authored group profile metadata
-- it does not let callers set or clear `picture` yet
+- `update_group_profile` can set `name` / `about`
+- `upload_group_profile_image` can set `picture`
+- both preserve the rest of the current effective profile fields
+- callers still cannot explicitly clear `picture`
 - it returns the same full profile shape as `get_group_profile`, including the carried-forward
   `picture`
 
-Current group-profile read/write contract is intentionally keyed to the local user/admin view:
+Current group-profile read/write contract is intentionally keyed to the effective admin-authored
+group view:
 
-- `get_group_profile` returns the latest self-authored group profile metadata if present
-- when no self-authored metadata exists yet, it falls back to joined-group summary `name` / `about`
+- `get_group_profile` returns the latest admin-authored group profile metadata if present
+- when no admin-authored metadata exists yet, it falls back to joined-group summary `name` /
+  `about`
 - in that fallback case, `picture_url: null` is the current implicit signal that no explicit
-  self-authored profile metadata has been seen yet
+  profile metadata has been seen yet
 - `upload_group_profile_image` preserves the current `name` / `about` and updates only `picture`
 - `upload_group_profile_image` accepts base64-in-JSON today; the 8 MB limit applies to decoded
   image bytes, so wire payloads are larger because of base64 expansion
 
-Current group-update observability is intentionally MVP-sized:
+Current group-update observability is intentionally focused, not generic:
 
 - the daemon emits a typed `group_updated` event after successful local `init_group`,
   `add_members`, `remove_members`, `leave_group`, `update_group_profile`, and
   `upload_group_profile_image` commands
+- the daemon also emits the same `group_updated` family for honest inbound remote changes:
+  remote membership commits and remote group-profile metadata messages
 - each event carries the `nostr_group_id`, an update kind, and current member/profile snapshots
-  when they are still cheap to query after the mutation
+  when they are still cheap to query after the mutation or inbound update
 - `leave_group` emits a lifecycle event without member/profile snapshots because the group is no
-  longer joined at that point
-- remote inbound group changes are still a next gap; consumers should not assume they will get the
-  same event family for mutations performed elsewhere yet
+  longer joined at that point; the same shape is reused if an inbound remote membership commit
+  removes the local member
+- for the common local and remote membership/profile paths, consumers should not need an immediate
+  poll after receiving `group_updated`
+- remote welcome/join lifecycle follow-through and broader governance/admin-role observability are
+  still future product work rather than part of this MVP
 
 The shared runtime already has most of the underlying membership machinery:
 

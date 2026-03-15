@@ -78,10 +78,27 @@ pub fn compute_source_fingerprint_with_profile(
     let mut relevant_files = relevant_files
         .into_iter()
         .filter(|path| !should_skip_relative_path(Path::new(path), profile))
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    relevant_files.sort();
+
+    let mut normalized_files = Vec::new();
+    for path in relevant_files {
+        if normalized_files
+            .iter()
+            .any(|existing: &PathBuf| path.starts_with(existing))
+        {
+            continue;
+        }
+        normalized_files.push(path);
+    }
+
+    let relevant_files = normalized_files
+        .into_iter()
+        .map(|path| path.to_string_lossy().to_string())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    relevant_files.sort();
 
     let mut hasher = Sha256::new();
     hasher.update(b"git-head\0");
@@ -89,49 +106,77 @@ pub fn compute_source_fingerprint_with_profile(
     hasher.update(b"\0");
     for relative in relevant_files {
         let path = source_root.join(&relative);
-        hasher.update(b"path\0");
-        hasher.update(relative.as_bytes());
-        hasher.update(b"\0");
-
-        match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                hasher.update(b"symlink\0");
-                let target = fs::read_link(&path)
-                    .with_context(|| format!("read symlink {}", path.display()))?;
-                hasher.update(target.as_os_str().as_encoded_bytes());
-            }
-            Ok(metadata) if metadata.is_file() => {
-                hasher.update(b"file\0");
-                let mut file =
-                    fs::File::open(&path).with_context(|| format!("open {}", path.display()))?;
-                let mut buffer = [0u8; 8192];
-                loop {
-                    let read = file
-                        .read(&mut buffer)
-                        .with_context(|| format!("read {}", path.display()))?;
-                    if read == 0 {
-                        break;
-                    }
-                    hasher.update(&buffer[..read]);
-                }
-            }
-            Ok(metadata) if metadata.is_dir() => {
-                hasher.update(b"dir\0");
-            }
-            Ok(_) => {
-                return Err(anyhow!("unsupported filesystem entry: {}", path.display()));
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                hasher.update(b"missing\0");
-            }
-            Err(error) => {
-                return Err(error).with_context(|| format!("stat {}", path.display()));
-            }
-        }
-        hasher.update(b"\0");
+        hash_source_fingerprint_entry(
+            source_root,
+            &path,
+            Path::new(&relative),
+            profile,
+            &mut hasher,
+        )?;
     }
 
     Ok(hex::encode(hasher.finalize()))
+}
+
+fn hash_source_fingerprint_entry(
+    source_root: &Path,
+    path: &Path,
+    relative: &Path,
+    profile: SnapshotProfile,
+    hasher: &mut Sha256,
+) -> anyhow::Result<()> {
+    hasher.update(b"path\0");
+    hasher.update(relative.as_os_str().as_encoded_bytes());
+    hasher.update(b"\0");
+
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            hasher.update(b"symlink\0");
+            let target =
+                fs::read_link(path).with_context(|| format!("read symlink {}", path.display()))?;
+            hasher.update(target.as_os_str().as_encoded_bytes());
+            hasher.update(b"\0");
+        }
+        Ok(metadata) if metadata.is_file() => {
+            hasher.update(b"file\0");
+            let mut file =
+                fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+            let mut buffer = [0u8; 8192];
+            loop {
+                let read = file
+                    .read(&mut buffer)
+                    .with_context(|| format!("read {}", path.display()))?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
+            hasher.update(b"\0");
+        }
+        Ok(metadata) if metadata.is_dir() => {
+            hasher.update(b"dir\0");
+            hasher.update(b"\0");
+            hash_filtered_source_tree(
+                source_root,
+                path,
+                relative == Path::new(""),
+                profile,
+                hasher,
+            )?;
+        }
+        Ok(_) => {
+            return Err(anyhow!("unsupported filesystem entry: {}", path.display()));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            hasher.update(b"missing\0");
+            hasher.update(b"\0");
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("stat {}", path.display()));
+        }
+    }
+
+    Ok(())
 }
 
 fn copy_filtered_tree(
@@ -597,6 +642,48 @@ mod tests {
             "sdk.dir=/tmp/android-two\n",
         )
         .expect("rewrite local properties");
+        let after = compute_source_fingerprint_with_profile(&root, SnapshotProfile::Full)
+            .expect("fingerprint after");
+
+        assert_ne!(before, after);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn source_fingerprint_changes_for_nested_untracked_git_checkout_edits() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-source-fingerprint-nested-git-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(root.join("src")).expect("create src dir");
+        fs::write(root.join("Cargo.toml"), "[package]\nname = \"demo\"\n").expect("write cargo");
+        fs::write(root.join("src/lib.rs"), "pub fn demo() {}\n").expect("write source");
+        init_test_git_repo(&root);
+
+        let nested = root.join("openclaw");
+        fs::create_dir_all(&nested).expect("create nested dir");
+        run_git_test_command(&nested, &["init"]);
+        run_git_test_command(
+            &nested,
+            &["config", "user.email", "pikaci-tests@example.com"],
+        );
+        run_git_test_command(&nested, &["config", "user.name", "pikaci tests"]);
+        fs::write(
+            nested.join("package.json"),
+            "{\n  \"name\": \"openclaw\"\n}\n",
+        )
+        .expect("write nested package");
+        run_git_test_command(&nested, &["add", "."]);
+        run_git_test_command(&nested, &["commit", "-m", "init"]);
+
+        let before = compute_source_fingerprint_with_profile(&root, SnapshotProfile::Full)
+            .expect("fingerprint before");
+        fs::write(
+            nested.join("package.json"),
+            "{\n  \"name\": \"openclaw-next\"\n}\n",
+        )
+        .expect("rewrite nested package");
         let after = compute_source_fingerprint_with_profile(&root, SnapshotProfile::Full)
             .expect("fingerprint after");
 

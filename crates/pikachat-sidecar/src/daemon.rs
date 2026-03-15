@@ -79,6 +79,14 @@ const MAX_GROUP_PROFILE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
 type ProtocolEventSinks = Arc<Mutex<Vec<mpsc::UnboundedSender<OutMsg>>>>;
 
+struct GroupUpdatedEmission<'a> {
+    host: &'a DaemonHostContext<'a>,
+    local_pubkey: &'a PublicKey,
+    kind: GroupUpdateKindOut,
+    nostr_group_id: &'a str,
+    context: &'static str,
+}
+
 fn daemon_open_request(
     subscribed_group_ids: Vec<String>,
     relay_urls: Vec<RelayUrl>,
@@ -135,6 +143,54 @@ fn broadcast_protocol_event(
     let _ = out_tx.send(event.clone());
     let mut sinks = event_sinks.lock().expect("protocol event sinks lock");
     sinks.retain(|sink| sink.send(event.clone()).is_ok());
+}
+
+fn emit_group_updated_snapshot(
+    out_tx: &mpsc::UnboundedSender<OutMsg>,
+    event_sinks: &ProtocolEventSinks,
+    emission: GroupUpdatedEmission<'_>,
+) -> bool {
+    match build_group_updated_snapshot(
+        emission.host,
+        emission.local_pubkey,
+        emission.kind,
+        emission.nostr_group_id,
+    ) {
+        Ok(update) => {
+            broadcast_protocol_event(out_tx, event_sinks, OutMsg::GroupUpdated { update });
+            true
+        }
+        Err(err) => {
+            warn!(
+                "[pikachat] build group_updated event after {} failed: {err:#}",
+                emission.context
+            );
+            false
+        }
+    }
+}
+
+fn emit_group_updated_if_ok(
+    reply: &OutMsg,
+    out_tx: &mpsc::UnboundedSender<OutMsg>,
+    event_sinks: &ProtocolEventSinks,
+    emission: GroupUpdatedEmission<'_>,
+) -> bool {
+    matches!(reply, OutMsg::Ok { .. }) && emit_group_updated_snapshot(out_tx, event_sinks, emission)
+}
+
+fn emit_left_group_updated(
+    out_tx: &mpsc::UnboundedSender<OutMsg>,
+    event_sinks: &ProtocolEventSinks,
+    nostr_group_id: &str,
+) {
+    broadcast_protocol_event(
+        out_tx,
+        event_sinks,
+        OutMsg::GroupUpdated {
+            update: build_left_group_updated(nostr_group_id),
+        },
+    );
 }
 
 fn daemon_base_session_sync_plan(
@@ -3630,25 +3686,19 @@ pub async fn daemon_main(
                             &peer_pubkeys,
                         )
                         .await;
-                        let emit_update = matches!(reply, OutMsg::Ok { .. });
+                        let _ = emit_group_updated_if_ok(
+                            &reply,
+                            &out_tx,
+                            &protocol_event_sinks,
+                            GroupUpdatedEmission {
+                                host: &host,
+                                local_pubkey: &keys.public_key(),
+                                kind: GroupUpdateKindOut::MembersAdded,
+                                nostr_group_id: &nostr_group_id,
+                                context: "add_members",
+                            },
+                        );
                         let _ = reply_tx.send(reply);
-                        if emit_update {
-                            match build_group_updated_snapshot(
-                                &host,
-                                &keys.public_key(),
-                                GroupUpdateKindOut::MembersAdded,
-                                &nostr_group_id,
-                            ) {
-                                Ok(update) => broadcast_protocol_event(
-                                    &out_tx,
-                                    &protocol_event_sinks,
-                                    OutMsg::GroupUpdated { update },
-                                ),
-                                Err(err) => warn!(
-                                    "[pikachat] build group_updated event after add_members failed: {err:#}"
-                                ),
-                            }
-                        }
                     }
                     InCmd::ListMembers {
                         request_id,
@@ -3675,25 +3725,19 @@ pub async fn daemon_main(
                             &peer_pubkeys,
                         )
                         .await;
-                        let emit_update = matches!(reply, OutMsg::Ok { .. });
+                        let _ = emit_group_updated_if_ok(
+                            &reply,
+                            &out_tx,
+                            &protocol_event_sinks,
+                            GroupUpdatedEmission {
+                                host: &host,
+                                local_pubkey: &keys.public_key(),
+                                kind: GroupUpdateKindOut::MembersRemoved,
+                                nostr_group_id: &nostr_group_id,
+                                context: "remove_members",
+                            },
+                        );
                         let _ = reply_tx.send(reply);
-                        if emit_update {
-                            match build_group_updated_snapshot(
-                                &host,
-                                &keys.public_key(),
-                                GroupUpdateKindOut::MembersRemoved,
-                                &nostr_group_id,
-                            ) {
-                                Ok(update) => broadcast_protocol_event(
-                                    &out_tx,
-                                    &protocol_event_sinks,
-                                    OutMsg::GroupUpdated { update },
-                                ),
-                                Err(err) => warn!(
-                                    "[pikachat] build group_updated event after remove_members failed: {err:#}"
-                                ),
-                            }
-                        }
                     }
                     InCmd::LeaveGroup {
                         request_id,
@@ -3714,16 +3758,10 @@ pub async fn daemon_main(
                             unsubscribe_group_subscriptions(&client, &mut group_subs, &nostr_group_id)
                                 .await;
                         }
-                        let _ = reply_tx.send(reply);
                         if left_group {
-                            broadcast_protocol_event(
-                                &out_tx,
-                                &protocol_event_sinks,
-                                OutMsg::GroupUpdated {
-                                    update: build_left_group_updated(&nostr_group_id),
-                                },
-                            );
+                            emit_left_group_updated(&out_tx, &protocol_event_sinks, &nostr_group_id);
                         }
+                        let _ = reply_tx.send(reply);
                     }
                     InCmd::UpdateGroupProfile {
                         request_id,
@@ -3742,25 +3780,19 @@ pub async fn daemon_main(
                             &about,
                         )
                         .await;
-                        let emit_update = matches!(reply, OutMsg::Ok { .. });
+                        let _ = emit_group_updated_if_ok(
+                            &reply,
+                            &out_tx,
+                            &protocol_event_sinks,
+                            GroupUpdatedEmission {
+                                host: &host,
+                                local_pubkey: &keys.public_key(),
+                                kind: GroupUpdateKindOut::ProfileUpdated,
+                                nostr_group_id: &nostr_group_id,
+                                context: "update_group_profile",
+                            },
+                        );
                         let _ = reply_tx.send(reply);
-                        if emit_update {
-                            match build_group_updated_snapshot(
-                                &host,
-                                &keys.public_key(),
-                                GroupUpdateKindOut::ProfileUpdated,
-                                &nostr_group_id,
-                            ) {
-                                Ok(update) => broadcast_protocol_event(
-                                    &out_tx,
-                                    &protocol_event_sinks,
-                                    OutMsg::GroupUpdated { update },
-                                ),
-                                Err(err) => warn!(
-                                    "[pikachat] build group_updated event after update_group_profile failed: {err:#}"
-                                ),
-                            }
-                        }
                     }
                     InCmd::GetGroupProfile {
                         request_id,
@@ -3794,25 +3826,19 @@ pub async fn daemon_main(
                             &mime_type,
                         )
                         .await;
-                        let emit_update = matches!(reply, OutMsg::Ok { .. });
+                        let _ = emit_group_updated_if_ok(
+                            &reply,
+                            &out_tx,
+                            &protocol_event_sinks,
+                            GroupUpdatedEmission {
+                                host: &host,
+                                local_pubkey: &keys.public_key(),
+                                kind: GroupUpdateKindOut::ProfileUpdated,
+                                nostr_group_id: &nostr_group_id,
+                                context: "upload_group_profile_image",
+                            },
+                        );
                         let _ = reply_tx.send(reply);
-                        if emit_update {
-                            match build_group_updated_snapshot(
-                                &host,
-                                &keys.public_key(),
-                                GroupUpdateKindOut::ProfileUpdated,
-                                &nostr_group_id,
-                            ) {
-                                Ok(update) => broadcast_protocol_event(
-                                    &out_tx,
-                                    &protocol_event_sinks,
-                                    OutMsg::GroupUpdated { update },
-                                ),
-                                Err(err) => warn!(
-                                    "[pikachat] build group_updated event after upload_group_profile_image failed: {err:#}"
-                                ),
-                            }
-                        }
                     }
                     InCmd::GetMessages { request_id, nostr_group_id, limit } => {
                         let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
@@ -4995,6 +5021,17 @@ pub async fn daemon_main(
                             }
                         }
 
+                        let _ = emit_group_updated_snapshot(
+                            &out_tx,
+                            &protocol_event_sinks,
+                            GroupUpdatedEmission {
+                                host: &host,
+                                local_pubkey: &keys.public_key(),
+                                kind: GroupUpdateKindOut::Created,
+                                nostr_group_id: &nostr_group_id_hex,
+                                context: "init_group",
+                            },
+                        );
                         reply_tx.send(out_ok(request_id, Some(json!({
                             "nostr_group_id": nostr_group_id_hex,
                             "mls_group_id": mls_group_id_hex,
@@ -5007,21 +5044,6 @@ pub async fn daemon_main(
                             peer_pubkey: peer_pubkey.to_hex(),
                             member_count,
                         }).ok();
-                        match build_group_updated_snapshot(
-                            &host,
-                            &keys.public_key(),
-                            GroupUpdateKindOut::Created,
-                            &hex::encode(created.group.nostr_group_id),
-                        ) {
-                            Ok(update) => broadcast_protocol_event(
-                                &out_tx,
-                                &protocol_event_sinks,
-                                OutMsg::GroupUpdated { update },
-                            ),
-                            Err(err) => warn!(
-                                "[pikachat] build group_updated event after init_group failed: {err:#}"
-                            ),
-                        }
                     }
                     InCmd::Shutdown { request_id } => {
                         reply_tx.send(out_ok(request_id, None)).ok();
@@ -6459,15 +6481,21 @@ mod tests {
         .await;
         assert!(matches!(reply, OutMsg::Ok { .. }));
 
-        let update = expect_group_updated(OutMsg::GroupUpdated {
-            update: build_group_updated_snapshot(
-                &host,
-                &inviter_keys.public_key(),
-                GroupUpdateKindOut::MembersAdded,
-                &nostr_group_id_hex,
-            )
-            .expect("build group_updated snapshot"),
-        });
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel();
+        let event_sinks: ProtocolEventSinks = Arc::new(Mutex::new(Vec::new()));
+        assert!(emit_group_updated_if_ok(
+            &reply,
+            &out_tx,
+            &event_sinks,
+            GroupUpdatedEmission {
+                host: &host,
+                local_pubkey: &inviter_keys.public_key(),
+                kind: GroupUpdateKindOut::MembersAdded,
+                nostr_group_id: &nostr_group_id_hex,
+                context: "add_members",
+            },
+        ));
+        let update = expect_group_updated(out_rx.try_recv().expect("group_updated event"));
         assert_eq!(update.kind, GroupUpdateKindOut::MembersAdded);
         assert_eq!(update.nostr_group_id, nostr_group_id_hex);
         assert_eq!(update.member_count, Some(3));
@@ -6711,15 +6739,21 @@ mod tests {
         .await;
         assert!(matches!(reply, OutMsg::Ok { .. }));
 
-        let update = expect_group_updated(OutMsg::GroupUpdated {
-            update: build_group_updated_snapshot(
-                &host,
-                &inviter_keys.public_key(),
-                GroupUpdateKindOut::MembersRemoved,
-                &nostr_group_id_hex,
-            )
-            .expect("build group_updated snapshot"),
-        });
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel();
+        let event_sinks: ProtocolEventSinks = Arc::new(Mutex::new(Vec::new()));
+        assert!(emit_group_updated_if_ok(
+            &reply,
+            &out_tx,
+            &event_sinks,
+            GroupUpdatedEmission {
+                host: &host,
+                local_pubkey: &inviter_keys.public_key(),
+                kind: GroupUpdateKindOut::MembersRemoved,
+                nostr_group_id: &nostr_group_id_hex,
+                context: "remove_members",
+            },
+        ));
+        let update = expect_group_updated(out_rx.try_recv().expect("group_updated event"));
         assert_eq!(update.kind, GroupUpdateKindOut::MembersRemoved);
         assert_eq!(update.member_count, Some(1));
         assert_eq!(update.members.len(), 1);
@@ -7014,15 +7048,21 @@ mod tests {
         .await;
         assert!(matches!(reply, OutMsg::Ok { .. }));
 
-        let update = expect_group_updated(OutMsg::GroupUpdated {
-            update: build_group_updated_snapshot(
-                &host,
-                &inviter_keys.public_key(),
-                GroupUpdateKindOut::ProfileUpdated,
-                &nostr_group_id_hex,
-            )
-            .expect("build group_updated snapshot"),
-        });
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel();
+        let event_sinks: ProtocolEventSinks = Arc::new(Mutex::new(Vec::new()));
+        assert!(emit_group_updated_if_ok(
+            &reply,
+            &out_tx,
+            &event_sinks,
+            GroupUpdatedEmission {
+                host: &host,
+                local_pubkey: &inviter_keys.public_key(),
+                kind: GroupUpdateKindOut::ProfileUpdated,
+                nostr_group_id: &nostr_group_id_hex,
+                context: "update_group_profile",
+            },
+        ));
+        let update = expect_group_updated(out_rx.try_recv().expect("group_updated event"));
         assert_eq!(update.kind, GroupUpdateKindOut::ProfileUpdated);
         assert_eq!(update.member_count, Some(2));
         assert_eq!(update.members.len(), 2);

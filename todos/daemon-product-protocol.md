@@ -89,6 +89,12 @@ Current group-profile read/write contract is intentionally keyed to the local us
 - `upload_group_profile_image` accepts base64-in-JSON today; the 8 MB limit applies to decoded
   image bytes, so wire payloads are larger because of base64 expansion
 
+Current group-profile read/write contract is intentionally keyed to the local user/admin view:
+
+- `get_group_profile` returns the latest self-authored group profile metadata if present
+- when no self-authored metadata exists yet, it falls back to joined-group summary `name` / `about`
+- `upload_group_profile_image` preserves the current `name` / `about` and updates only `picture`
+
 The shared runtime already has most of the underlying membership machinery:
 
 - membership prep in `prepare_add_members(...)`

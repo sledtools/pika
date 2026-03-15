@@ -58,8 +58,9 @@ use crate::acp::{AcpBackendConfig, AcpBackendManager, AcpTurnCompletion};
 use crate::call_audio::OpusToAudioPipeline;
 use crate::call_tts::synthesize_tts_pcm;
 use crate::protocol::{
-    AddMembersResultOut, DaemonCmd, GroupMemberOut, GroupProfileOut, InCmd, LeaveGroupResultOut,
-    ListMembersResultOut, MediaAttachmentOut, OutMsg, RemoveMembersResultOut, out_error, out_ok,
+    AddMembersResultOut, DaemonCmd, GroupMemberOut, GroupProfileOut, GroupUpdateKindOut,
+    GroupUpdatedOut, InCmd, LeaveGroupResultOut, ListMembersResultOut, MediaAttachmentOut, OutMsg,
+    RemoveMembersResultOut, out_error, out_ok,
 };
 use host_context::{DaemonHostContext, DaemonPrepareError};
 
@@ -6158,6 +6159,7 @@ mod tests {
         )
         .await;
 
+        dbg!(&reply);
         let OutMsg::Ok {
             request_id,
             result: Some(result),

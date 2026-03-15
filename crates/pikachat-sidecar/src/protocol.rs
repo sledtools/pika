@@ -362,6 +362,15 @@ pub struct GroupProfileOut {
     pub picture_url: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GroupProfileOut {
+    pub nostr_group_id: String,
+    pub owner_pubkey: String,
+    pub name: String,
+    pub about: String,
+    pub picture_url: Option<String>,
+}
+
 /// Wrapper that optionally carries a per-command response sender for socket connections.
 pub struct DaemonCmd {
     pub cmd: InCmd,

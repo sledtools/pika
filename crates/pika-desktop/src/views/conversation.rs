@@ -120,10 +120,9 @@ impl State {
     pub fn update(&mut self, message: Message) -> (Option<Event>, Option<Task<Message>>) {
         match message {
             Message::EditorAction(action) => {
-                let was_empty = self.message_input.text().trim().is_empty();
                 self.message_input.perform(action);
                 let is_empty = self.message_input.text().trim().is_empty();
-                if !is_empty && (was_empty || !is_empty) {
+                if !is_empty {
                     return (Some(Event::TypingStarted), None);
                 }
                 (None, None)
@@ -524,7 +523,7 @@ impl State {
                         Some(Binding::Custom(Message::SendMessage))
                     }
                 } else {
-                    None // use default bindings for everything else
+                    Binding::from_key_press(key_press)
                 }
             });
 

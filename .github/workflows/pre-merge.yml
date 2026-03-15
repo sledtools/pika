@@ -1204,6 +1204,7 @@ jobs:
           check_required_job "check-fixture" "${{ needs.detect-changes.outputs.fixture }}" "${{ needs.check-fixture.result }}"
 
           echo "Advisory integration lanes:"
+          echo "shadow-pikaci-pre-merge-pika-rust: ${{ needs.shadow-pikaci-pre-merge-pika-rust.outputs.result }} (exit=${{ needs.shadow-pikaci-pre-merge-pika-rust.outputs.exit_code }})"
           echo "legacy Linux jobs are advisory; nightly-* jobs remain non-blocking and run only on schedule/manual nightly mode."
 
           if [[ -n "$failed" ]]; then

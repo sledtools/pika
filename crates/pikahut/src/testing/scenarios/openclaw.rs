@@ -61,6 +61,20 @@ fn read_identity_pubkey_hex(identity_path: &Path) -> Result<String> {
         .ok_or_else(|| anyhow!("identity.json missing public_key_hex"))
 }
 
+fn emit_gateway_failure_logs(context: &TestContext, openclaw_log: &Path, openclaw_err: &Path) {
+    let _ = artifacts::write_failure_tail(context, "openclaw-gateway-stdout", openclaw_log, 120);
+    let _ = artifacts::write_failure_tail(context, "openclaw-gateway-stderr", openclaw_err, 120);
+
+    let stdout_tail = tail_lines(openclaw_log, 120);
+    let stderr_tail = tail_lines(openclaw_err, 120);
+    if !stdout_tail.trim().is_empty() {
+        eprintln!("openclaw gateway stdout tail:\n{stdout_tail}");
+    }
+    if !stderr_tail.trim().is_empty() {
+        eprintln!("openclaw gateway stderr tail:\n{stderr_tail}");
+    }
+}
+
 async fn wait_for_sidecar_keypackage(
     relay_url: &str,
     sidecar_state_dir: &Path,
@@ -312,8 +326,7 @@ pub async fn run_openclaw_e2e(args: OpenclawE2eRequest) -> Result<ScenarioRunOut
                 "openclaw e2e failed; artifacts preserved at: {}",
                 artifact_dir.display()
             );
-            let _ = artifacts::write_failure_tail(&context, "openclaw-gateway", &openclaw_log, 120);
-            eprintln!("{}", tail_lines(&openclaw_log, 120));
+            emit_gateway_failure_logs(&context, &openclaw_log, &openclaw_err);
             return Err(err);
         }
     };
@@ -333,8 +346,7 @@ pub async fn run_openclaw_e2e(args: OpenclawE2eRequest) -> Result<ScenarioRunOut
                 "openclaw e2e failed; artifacts preserved at: {}",
                 artifact_dir.display()
             );
-            let _ = artifacts::write_failure_tail(&context, "openclaw-gateway", &openclaw_log, 120);
-            eprintln!("{}", tail_lines(&openclaw_log, 120));
+            emit_gateway_failure_logs(&context, &openclaw_log, &openclaw_err);
             return Err(err);
         }
     };

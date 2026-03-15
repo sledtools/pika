@@ -6159,7 +6159,6 @@ mod tests {
         )
         .await;
 
-        dbg!(&reply);
         let OutMsg::Ok {
             request_id,
             result: Some(result),

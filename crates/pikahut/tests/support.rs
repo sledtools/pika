@@ -724,9 +724,9 @@ pub fn run_logout_reset_across_restart(context: &TestContext) -> Result<()> {
     Ok(())
 }
 
-// CI-facing readable restore contract: after a user restarts the app and explicitly restores the
-// same local session, they land back in the signed-in chat list and can reopen persisted chat
-// state from the same data dir.
+// CI-facing readable restore contract: after a user restarts the app, the fresh process stays
+// logged out until an explicit restore action, and that restore brings them back to the signed-in
+// chat state they expect from the same data dir.
 pub fn run_restore_session_after_restart(context: &TestContext) -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -787,6 +787,14 @@ pub fn run_restore_session_after_restart(context: &TestContext) -> Result<()> {
     drop(app);
 
     let restored = FfiApp::new(path_arg(&data_dir), String::new(), String::new());
+    anyhow::ensure!(
+        matches!(restored.state().auth, AuthState::LoggedOut),
+        "fresh process should still start logged out before explicit restore"
+    );
+    anyhow::ensure!(
+        restored.state().chat_list.is_empty(),
+        "fresh process should not surface chat state before explicit restore"
+    );
     restored.dispatch(AppAction::RestoreSession { nsec });
     wait_until(
         "restored app reaches signed-in chat list",

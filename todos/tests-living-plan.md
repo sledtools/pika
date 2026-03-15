@@ -187,8 +187,8 @@ Working assumptions:
    - the iOS and Android local logout/relaunch tests are now labeled more honestly as platform shell/auth-store smoke, and `ios/Tests/AppManagerTests.swift` now says explicitly that stored-auth restore dispatch is native glue ownership rather than the owner of Rust restore semantics
 19. Slice 20 finished the restore side of that same auth/session family:
    - `crates/pikahut/tests/integration_deterministic.rs::session_restore_after_restart_boundary` now gives restore-across-relaunch a readable deterministic CI-facing owner instead of leaving it mainly in `rust/tests/app_flows.rs`
-   - `crates/pikahut/tests/support.rs` now drives that selector directly through the same `FfiApp` surface the apps exercise: create account, create note-to-self state, restart from the same data dir, restore the session, and verify the signed-in chat list plus persisted message come back
-   - `rust/tests/app_flows.rs` now keeps the narrower restored-state semantic owner in `restore_session_recovers_persisted_chat_state` instead of also carrying the broader relaunch-readable contract
+   - `crates/pikahut/tests/support.rs` now drives that selector directly through the same `FfiApp` surface the apps exercise: create account, create note-to-self state, restart from the same data dir, prove the fresh process is still logged out until explicit restore, then verify the signed-in chat list plus persisted message come back
+   - `rust/tests/app_flows.rs` now keeps the narrower restored-state semantic owner in `restore_session_hydrates_persisted_chat_summary_state`: after `RestoreSession`, auth and chat summary state are hydrated back into the Rust model without reasserting the full relaunch-and-reopen user contract
    - the auth/session/persistence family now has a coherent ownership split: `pikahut` owns readable logout/reset and restore/relaunch contracts, `app_flows.rs` keeps the narrower runtime-reset and persisted-state semantics underneath them, and native tests stay as platform shell/auth-store glue smoke
 ## Progress Update
 
@@ -279,7 +279,7 @@ Verified in the repo today:
    - Owns single-app `FfiApp` state/lifecycle behavior: account creation, router changes, immediate logout/reset semantics, persistence/restore state, paging, reactions, and external-signer/bunker/Nostr Connect flows.
    - This is the right ownership layer when the product question is “what does one app instance do after this action/update?” rather than “can two apps talk over local fixtures?”
    - The main overlap with native UI is shell-level: iOS/Android can still validate that login/chat/logout/navigation render correctly, but they should not be the primary owners of these Rust semantics.
-   - The auth/session area is now intentionally split: `pikahut` owns the readable logout-reset and restore-after-restart boundaries, while this file keeps the narrower runtime-reset and restored-state semantics underneath them.
+   - The auth/session area is now intentionally split: `pikahut` owns the readable logout-reset and restore-after-restart boundaries, while this file keeps the narrower runtime-reset and restored model-state hydration semantics underneath them.
 
 2. `rust/tests/e2e_messaging.rs`
    - Owns focused relay-backed multi-app `FfiApp` messaging/call-signaling semantics: relay-backed DM delivery into peer chat state, invalid call invite rejection, optimistic send behavior, and peer-visible call-end signaling.
@@ -310,7 +310,7 @@ Verified in the repo today:
    - similar DM bootstrap helpers still exist in `crates/pikahut/tests/support.rs`, but that duplication is currently intentional because selector-side fixture/orchestration support cannot depend on the private `rust/tests` layer
    - both helper layers now at least agree on one important boundary: DM lookup excludes group chats with the same peer instead of relying on a fuzzy member-only match
    - the main user-facing message/profile flows now have selector-owned deterministic `pikahut` contracts; the remaining confusing area is the harness-limited true pre-existing late-joiner rebroadcast case, not general ownership drift across this family
-   - the single-app auth/session family is now coherent at the selector layer for the main user-facing lifecycle contracts; the remaining native overlap is intentional platform auth-store/app-shell glue smoke, not a broad ownership blur in Rust session semantics
+   - the single-app auth/session family is now coherent at the selector layer for the main user-facing lifecycle contracts; the remaining native overlap is intentional platform auth-store/app-shell glue smoke, not another full owner of Rust restore semantics
 
 ## Strongest Problems
 

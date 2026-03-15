@@ -15,7 +15,7 @@ End-to-end encrypted messaging for iOS, Android, and Desktop, built on [MLS](htt
 | Video calls (1:1) | ✅ | | ✅ |
 | Push notifications | ✅ | | |
 | Emoji reactions | ✅ | | ✅ |
-| Typing indicators | ✅ | | ✅ |
+| Typing indicators | ✅ | ✅ | ✅ |
 | @mention autocomplete | ✅ | | ✅ |
 | Markdown rendering | ✅ | ✅ | |
 | Polls | ✅ | ✅ | |

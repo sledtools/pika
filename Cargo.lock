@@ -6076,6 +6076,7 @@ dependencies = [
  "pika-media",
  "pika-relay-profiles",
  "pika_core",
+ "pulldown-cmark",
  "rfd",
  "tempfile",
  "tracing-subscriber",

@@ -539,6 +539,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "crates/pikahut/**",
                 "crates/pika-marmot-runtime/**",
                 "crates/pika-media/**",
+                "crates/pikachat-sidecar/Cargo.toml",
                 "crates/pika-relay-profiles/**",
                 "crates/pika-server/Cargo.toml",
                 "crates/pika-tls/**",

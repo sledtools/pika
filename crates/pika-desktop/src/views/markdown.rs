@@ -92,7 +92,7 @@ fn wrap_blockquote<'a>(
 ) -> Element<'a, Message, Theme> {
     let bar_color = blockquote_bar(is_mine);
     row![
-        container(Space::new(3, iced::Fill)).style(move |_: &Theme| {
+        container(Space::new().width(3).height(iced::Fill)).style(move |_: &Theme| {
             container::Style {
                 background: Some(Background::Color(bar_color)),
                 border: border::rounded(1),
@@ -195,12 +195,10 @@ pub fn render_markdown<'a>(
                 if !inline_spans.is_empty() {
                     let rt: Element<'a, Message, Theme> =
                         rich_text(std::mem::take(&mut inline_spans)).size(15).into();
-                    let item: Element<'a, Message, Theme> = row![
-                        text(bullet).size(15).color(text_color),
-                        rt,
-                    ]
-                    .spacing(6)
-                    .into();
+                    let item: Element<'a, Message, Theme> =
+                        row![text(bullet).size(15).color(text_color), rt,]
+                            .spacing(6)
+                            .into();
                     target(&mut blocks, &mut bq_stack).push(item);
                 }
             }
@@ -277,7 +275,7 @@ pub fn render_markdown<'a>(
     }
 
     match blocks.len() {
-        0 => Space::new(0, 0).into(),
+        0 => Space::new().width(0).height(0).into(),
         1 => blocks.pop().unwrap(),
         _ => column(blocks).spacing(4).into(),
     }
@@ -286,7 +284,10 @@ pub fn render_markdown<'a>(
 /// Returns `true` if the content has any markdown syntax worth rendering.
 /// Plain text with no formatting is faster to render as a simple `text()`.
 pub fn has_markdown(content: &str) -> bool {
-    content
-        .bytes()
-        .any(|b| matches!(b, b'*' | b'_' | b'`' | b'~' | b'[' | b'#' | b'>' | b'-' | b'+' | b'0'..=b'9'))
+    content.bytes().any(|b| {
+        matches!(
+            b,
+            b'*' | b'_' | b'`' | b'~' | b'[' | b'#' | b'>' | b'-' | b'+' | b'0'..=b'9'
+        )
+    })
 }

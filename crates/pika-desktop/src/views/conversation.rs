@@ -1,8 +1,8 @@
 use base64::Engine as _;
+use iced::widget::text_editor::{Binding, Content, KeyPress};
 use iced::widget::{
     button, column, container, operation, row, scrollable, text, text_editor, Space, Stack,
 };
-use iced::widget::text_editor::{Binding, Content, KeyPress};
 use iced::{Alignment, Element, Fill, Task, Theme};
 use pika_core::{CallState, CallStatus, ChatMessage, ChatViewState};
 use std::collections::HashMap;

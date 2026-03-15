@@ -94,6 +94,14 @@ struct RunnerFlakeMetadata {
     remote_store_path: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct HostLocalDevEnvState {
+    schema_version: u32,
+    shell: String,
+    shell_fingerprint: String,
+    validated_source_content_hash: Option<String>,
+}
+
 const TART_BASE_VM_ENV: &str = "PIKACI_TART_BASE_VM";
 const TART_BASE_VM_DEFAULT: &str = "sequoia-base";
 const TART_USE_HOST_XCODE_ENV: &str = "PIKACI_TART_USE_HOST_XCODE";
@@ -218,7 +226,14 @@ fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOut
         &format!("[pikaci] host-local command: {command}"),
     )?;
 
-    let host_local_mode = host_local_command_mode(ctx);
+    let env_started = Instant::now();
+    let prepared_mode = prepare_host_local_command_mode(ctx).with_context(|| {
+        format!(
+            "prepare host-local execution environment for job `{}`",
+            job.id
+        )
+    })?;
+    let host_local_mode = prepared_mode.mode;
     append_line(
         &ctx.host_log_path,
         &format!(
@@ -226,10 +241,19 @@ fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOut
             host_local_mode
         ),
     )?;
+    if let Some(refresh) = prepared_mode.refresh {
+        append_line(
+            &ctx.host_log_path,
+            &format!(
+                "[pikaci] host-local environment {} in {:.3}s",
+                refresh,
+                env_started.elapsed().as_secs_f64()
+            ),
+        )?;
+    }
 
-    let mut cmd = Command::new(host_local_mode.program());
-    cmd.args(host_local_mode.args(&command))
-        .current_dir(&ctx.workspace_snapshot_dir)
+    let mut cmd = host_local_mode.command(&command)?;
+    cmd.current_dir(&ctx.workspace_snapshot_dir)
         .env("ARTIFACTS", &artifacts_dir)
         .env("CARGO_HOME", &ctx.shared_cargo_home_dir)
         .env("CARGO_TARGET_DIR", &ctx.shared_target_dir)
@@ -326,35 +350,67 @@ fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOut
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum HostLocalCommandMode {
     DirectShell,
-    NixDevelop { shell: String },
+    NixDevelop {
+        shell: String,
+    },
+    CachedNixPrintDevEnv {
+        shell: String,
+        env_script_path: PathBuf,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PreparedHostLocalCommandMode {
+    mode: HostLocalCommandMode,
+    refresh: Option<HostLocalEnvironmentRefresh>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HostLocalEnvironmentRefresh {
+    ReusedMatchingSourceHash,
+    RevalidatedMatchingShellFingerprint,
+    RefreshedFromNixPrintDevEnv,
 }
 
 impl HostLocalCommandMode {
-    fn program(&self) -> &str {
+    fn command(&self, command: &str) -> anyhow::Result<Command> {
         match self {
-            Self::DirectShell => "/bin/bash",
-            Self::NixDevelop { .. } => "nix",
-        }
-    }
-
-    fn args(&self, command: &str) -> Vec<String> {
-        match self {
-            Self::DirectShell => vec![
-                "--noprofile".to_string(),
-                "--norc".to_string(),
-                "-lc".to_string(),
-                command.to_string(),
-            ],
-            Self::NixDevelop { shell } => vec![
-                "develop".to_string(),
-                format!("path:./#{shell}"),
-                "-c".to_string(),
-                "/bin/bash".to_string(),
-                "--noprofile".to_string(),
-                "--norc".to_string(),
-                "-lc".to_string(),
-                command.to_string(),
-            ],
+            Self::DirectShell => {
+                let mut cmd = Command::new("/bin/bash");
+                cmd.args(["--noprofile", "--norc", "-lc", command]);
+                Ok(cmd)
+            }
+            Self::NixDevelop { shell } => {
+                let mut cmd = Command::new("nix");
+                cmd.args([
+                    "develop",
+                    &format!("path:./#{shell}"),
+                    "-c",
+                    "/bin/bash",
+                    "--noprofile",
+                    "--norc",
+                    "-lc",
+                    command,
+                ]);
+                Ok(cmd)
+            }
+            Self::CachedNixPrintDevEnv {
+                env_script_path, ..
+            } => {
+                let shell_program = host_local_dev_env_shell_program(env_script_path)?;
+                let mut cmd = Command::new(shell_program);
+                cmd.args([
+                    "--noprofile",
+                    "--norc",
+                    "-lc",
+                    &format!(
+                        ". {}; {}",
+                        bash_single_quote(env_script_path.as_os_str().to_string_lossy().as_ref()),
+                        command
+                    ),
+                ]);
+                Ok(cmd)
+            }
         }
     }
 }
@@ -364,6 +420,28 @@ impl std::fmt::Display for HostLocalCommandMode {
         match self {
             Self::DirectShell => write!(f, "direct shell"),
             Self::NixDevelop { shell } => write!(f, "nix develop path:./#{shell}"),
+            Self::CachedNixPrintDevEnv { shell, .. } => {
+                write!(f, "cached nix print-dev-env .#{shell}")
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for HostLocalEnvironmentRefresh {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReusedMatchingSourceHash => {
+                write!(f, "reused cached nix environment for unchanged source hash")
+            }
+            Self::RevalidatedMatchingShellFingerprint => {
+                write!(
+                    f,
+                    "reused cached nix environment after shell fingerprint revalidation"
+                )
+            }
+            Self::RefreshedFromNixPrintDevEnv => {
+                write!(f, "refreshed cached nix environment from nix print-dev-env")
+            }
         }
     }
 }
@@ -372,13 +450,242 @@ fn host_local_command_mode(ctx: &HostContext) -> HostLocalCommandMode {
     if std::env::var_os("IN_NIX_SHELL").is_some()
         || !ctx.workspace_snapshot_dir.join("flake.nix").is_file()
     {
-        HostLocalCommandMode::DirectShell
+        return HostLocalCommandMode::DirectShell;
+    }
+
+    let shell = resolve_host_local_nix_shell();
+    if let Some(cache_dir) = ctx.host_local_cache_dir.as_deref() {
+        HostLocalCommandMode::CachedNixPrintDevEnv {
+            shell,
+            env_script_path: host_local_dev_env_script_path(cache_dir),
+        }
     } else {
-        HostLocalCommandMode::NixDevelop {
-            shell: std::env::var("PIKACI_HOST_LOCAL_NIX_SHELL")
-                .unwrap_or_else(|_| "default".to_string()),
+        HostLocalCommandMode::NixDevelop { shell }
+    }
+}
+
+fn prepare_host_local_command_mode(
+    ctx: &HostContext,
+) -> anyhow::Result<PreparedHostLocalCommandMode> {
+    let mode = host_local_command_mode(ctx);
+    let refresh = match &mode {
+        HostLocalCommandMode::CachedNixPrintDevEnv { shell, .. } => {
+            Some(prepare_host_local_cached_dev_env(ctx, shell)?)
+        }
+        HostLocalCommandMode::DirectShell | HostLocalCommandMode::NixDevelop { .. } => None,
+    };
+    Ok(PreparedHostLocalCommandMode { mode, refresh })
+}
+
+fn resolve_host_local_nix_shell() -> String {
+    std::env::var("PIKACI_HOST_LOCAL_NIX_SHELL").unwrap_or_else(|_| "default".to_string())
+}
+
+fn host_local_dev_env_cache_dir(cache_dir: &Path) -> PathBuf {
+    cache_dir.join("dev-env")
+}
+
+fn host_local_dev_env_state_path(cache_dir: &Path) -> PathBuf {
+    host_local_dev_env_cache_dir(cache_dir).join("state.json")
+}
+
+fn host_local_dev_env_script_path(cache_dir: &Path) -> PathBuf {
+    host_local_dev_env_cache_dir(cache_dir).join("env.sh")
+}
+
+fn read_host_local_dev_env_state(cache_dir: &Path) -> anyhow::Result<HostLocalDevEnvState> {
+    let path = host_local_dev_env_state_path(cache_dir);
+    let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("decode {}", path.display()))
+}
+
+fn write_host_local_dev_env_state(
+    cache_dir: &Path,
+    state: &HostLocalDevEnvState,
+) -> anyhow::Result<()> {
+    let path = host_local_dev_env_state_path(cache_dir);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let bytes = serde_json::to_vec_pretty(state).context("encode host-local dev env state")?;
+    fs::write(&path, bytes).with_context(|| format!("write {}", path.display()))
+}
+
+fn write_host_local_dev_env_script(cache_dir: &Path, script: &str) -> anyhow::Result<()> {
+    let script_path = host_local_dev_env_script_path(cache_dir);
+    if let Some(parent) = script_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let bytes = script.as_bytes();
+    fs::write(&script_path, bytes).with_context(|| format!("write {}", script_path.display()))
+}
+
+fn prepare_host_local_cached_dev_env(
+    ctx: &HostContext,
+    shell: &str,
+) -> anyhow::Result<HostLocalEnvironmentRefresh> {
+    let cache_dir = ctx
+        .host_local_cache_dir
+        .as_deref()
+        .ok_or_else(|| anyhow!("host-local cache directory missing for cached nix environment"))?;
+    let source_dir = ctx
+        .workspace_source_dir
+        .as_deref()
+        .unwrap_or(&ctx.workspace_snapshot_dir);
+    prepare_host_local_cached_dev_env_with(
+        cache_dir,
+        source_dir,
+        ctx.workspace_source_content_hash.as_deref(),
+        shell,
+        compute_host_local_shell_fingerprint,
+        render_host_local_dev_env_script,
+    )
+}
+
+fn prepare_host_local_cached_dev_env_with<Fingerprint, Render>(
+    cache_dir: &Path,
+    source_dir: &Path,
+    source_content_hash: Option<&str>,
+    shell: &str,
+    mut fingerprint: Fingerprint,
+    mut render: Render,
+) -> anyhow::Result<HostLocalEnvironmentRefresh>
+where
+    Fingerprint: FnMut(&Path, &str) -> anyhow::Result<String>,
+    Render: FnMut(&Path, &str) -> anyhow::Result<String>,
+{
+    let env_dir = host_local_dev_env_cache_dir(cache_dir);
+    fs::create_dir_all(&env_dir).with_context(|| format!("create {}", env_dir.display()))?;
+    let script_path = host_local_dev_env_script_path(cache_dir);
+    let cached_state = read_host_local_dev_env_state(cache_dir).ok();
+
+    if script_path.is_file()
+        && cached_state.as_ref().map(|state| state.shell.as_str()) == Some(shell)
+        && cached_state
+            .as_ref()
+            .and_then(|state| state.validated_source_content_hash.as_deref())
+            == source_content_hash
+    {
+        return Ok(HostLocalEnvironmentRefresh::ReusedMatchingSourceHash);
+    }
+
+    let shell_fingerprint = fingerprint(source_dir, shell)?;
+    if script_path.is_file()
+        && cached_state.as_ref().map(|state| state.shell.as_str()) == Some(shell)
+        && cached_state
+            .as_ref()
+            .map(|state| state.shell_fingerprint.as_str())
+            == Some(shell_fingerprint.as_str())
+    {
+        write_host_local_dev_env_state(
+            cache_dir,
+            &HostLocalDevEnvState {
+                schema_version: 1,
+                shell: shell.to_string(),
+                shell_fingerprint,
+                validated_source_content_hash: source_content_hash.map(ToOwned::to_owned),
+            },
+        )?;
+        return Ok(HostLocalEnvironmentRefresh::RevalidatedMatchingShellFingerprint);
+    }
+
+    let script = render(source_dir, shell)?;
+    write_host_local_dev_env_script(cache_dir, &script)?;
+    write_host_local_dev_env_state(
+        cache_dir,
+        &HostLocalDevEnvState {
+            schema_version: 1,
+            shell: shell.to_string(),
+            shell_fingerprint,
+            validated_source_content_hash: source_content_hash.map(ToOwned::to_owned),
+        },
+    )?;
+    Ok(HostLocalEnvironmentRefresh::RefreshedFromNixPrintDevEnv)
+}
+
+fn compute_host_local_shell_fingerprint(source_dir: &Path, shell: &str) -> anyhow::Result<String> {
+    let installable = host_local_shell_installable(
+        source_dir,
+        &format!("devShells.{}.{}.drvPath", current_nix_system(), shell),
+    );
+    let output = Command::new("nix")
+        .args(["eval", "--raw", &installable])
+        .output()
+        .with_context(|| format!("run nix eval for host-local shell `.{shell}`"))?;
+    if !output.status.success() {
+        bail!(
+            "nix eval {} failed: {}",
+            installable,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let fingerprint = String::from_utf8(output.stdout)
+        .context("decode nix eval stdout for host-local shell fingerprint")?;
+    let fingerprint = fingerprint.trim().to_string();
+    if fingerprint.is_empty() {
+        bail!("nix eval returned an empty host-local shell fingerprint for `.{shell}`");
+    }
+    Ok(fingerprint)
+}
+
+fn render_host_local_dev_env_script(source_dir: &Path, shell: &str) -> anyhow::Result<String> {
+    let installable = host_local_shell_installable(source_dir, shell);
+    let output = Command::new("nix")
+        .args(["print-dev-env", &installable])
+        .output()
+        .with_context(|| format!("run nix print-dev-env for host-local shell `.{shell}`"))?;
+    if !output.status.success() {
+        bail!(
+            "nix print-dev-env {} failed: {}",
+            installable,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    String::from_utf8(output.stdout).context("decode nix print-dev-env stdout")
+}
+
+fn current_nix_system() -> &'static str {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        "aarch64-darwin"
+    }
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        "x86_64-darwin"
+    }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        "aarch64-linux"
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        "x86_64-linux"
+    }
+}
+
+fn bash_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn host_local_shell_installable(source_dir: &Path, attr_path: &str) -> String {
+    format!("path:{}#{}", source_dir.display(), attr_path)
+}
+
+fn host_local_dev_env_shell_program(env_script_path: &Path) -> anyhow::Result<PathBuf> {
+    let script = fs::read_to_string(env_script_path)
+        .with_context(|| format!("read {}", env_script_path.display()))?;
+    for line in script.lines().take(32) {
+        if let Some(path) = line
+            .strip_prefix("BASH='")
+            .and_then(|line| line.strip_suffix('\''))
+        {
+            return Ok(PathBuf::from(path));
         }
     }
+    bail!(
+        "cached host-local nix environment {} did not declare a BASH path",
+        env_script_path.display()
+    );
 }
 
 fn acquire_host_local_cache_lock(
@@ -2619,15 +2926,21 @@ fn shell_escape(value: &str) -> String {
 mod tests {
     use std::fs;
     use std::path::Path;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
     use std::time::{Duration, Instant};
 
     use super::{
-        GuestFlakePaths, HostContext, HostLocalCommandMode, REMOTE_MICROVM_VIRTIOFS_SOCKETS,
-        RemoteMicrovmContext, build_remote_microvm_launch_command, builders_supports_aarch64_linux,
+        GuestFlakePaths, HostContext, HostLocalCommandMode, HostLocalDevEnvState,
+        HostLocalEnvironmentRefresh, REMOTE_MICROVM_VIRTIOFS_SOCKETS, RemoteMicrovmContext,
+        build_remote_microvm_launch_command, builders_supports_aarch64_linux,
         ensure_staged_linux_rust_lane_matches_vfkit_guest, guest_runner_config_for,
-        host_local_command_mode, render_guest_flake, render_local_guest_flake, run_job_on_runner,
-        staged_linux_remote_defaults, staged_linux_remote_snapshot_dir, vfkit_socket_path,
+        host_local_command_mode, host_local_dev_env_script_path, host_local_dev_env_shell_program,
+        prepare_host_local_cached_dev_env_with, read_host_local_dev_env_state, render_guest_flake,
+        render_local_guest_flake, run_job_on_runner, staged_linux_remote_defaults,
+        staged_linux_remote_snapshot_dir, vfkit_socket_path, write_host_local_dev_env_script,
+        write_host_local_dev_env_state,
     };
     use crate::model::{GuestCommand, JobSpec, RunStatus, RunnerKind};
 
@@ -3238,6 +3551,56 @@ mod tests {
     }
 
     #[test]
+    fn host_local_command_mode_uses_cached_dev_env_when_cache_dir_exists() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-host-local-cached-env-mode-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let workspace_dir = root.join("workspace");
+        let cache_dir = root.join("cache").join("host-local");
+        std::fs::create_dir_all(&workspace_dir).expect("create workspace dir");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+        std::fs::write(workspace_dir.join("flake.nix"), "{ }").expect("write flake");
+
+        let ctx = HostContext {
+            source_root: root.clone(),
+            workspace_snapshot_dir: workspace_dir,
+            host_local_cache_dir: Some(cache_dir.clone()),
+            workspace_source_dir: None,
+            workspace_source_content_hash: None,
+            workspace_read_only: true,
+            job_dir: root.join("job"),
+            host_log_path: root.join("job/host.log"),
+            guest_log_path: root.join("job/artifacts/guest.log"),
+            shared_cargo_home_dir: root.join("cargo-home"),
+            shared_target_dir: root.join("target"),
+            staged_linux_rust_workspace_deps_dir: None,
+            staged_linux_rust_workspace_build_dir: None,
+        };
+        let old_in_nix_shell = std::env::var_os("IN_NIX_SHELL");
+        unsafe {
+            std::env::remove_var("IN_NIX_SHELL");
+        }
+
+        let mode = host_local_command_mode(&ctx);
+
+        match old_in_nix_shell {
+            Some(value) => unsafe { std::env::set_var("IN_NIX_SHELL", value) },
+            None => unsafe { std::env::remove_var("IN_NIX_SHELL") },
+        }
+
+        assert_eq!(
+            mode,
+            HostLocalCommandMode::CachedNixPrintDevEnv {
+                shell: "default".to_string(),
+                env_script_path: host_local_dev_env_script_path(&cache_dir),
+            }
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn host_local_command_mode_uses_direct_shell_inside_nix_shell() {
         let root = std::env::temp_dir().join(format!(
             "pikaci-host-local-direct-mode-test-{}",
@@ -3275,6 +3638,190 @@ mod tests {
         }
 
         assert_eq!(mode, HostLocalCommandMode::DirectShell);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn host_local_dev_env_cache_reuses_matching_source_hash_without_refresh() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-host-local-dev-env-reuse-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let cache_dir = root.join("cache");
+        let source_dir = root.join("snapshot");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+        std::fs::create_dir_all(&source_dir).expect("create source dir");
+        write_host_local_dev_env_script(&cache_dir, "export TEST_ENV=1\n")
+            .expect("write cached env script");
+        write_host_local_dev_env_state(
+            &cache_dir,
+            &HostLocalDevEnvState {
+                schema_version: 1,
+                shell: "default".to_string(),
+                shell_fingerprint: "shell-fingerprint".to_string(),
+                validated_source_content_hash: Some("same-hash".to_string()),
+            },
+        )
+        .expect("write cached env state");
+
+        let fingerprint_calls = Arc::new(AtomicUsize::new(0));
+        let render_calls = Arc::new(AtomicUsize::new(0));
+        let refresh = prepare_host_local_cached_dev_env_with(
+            &cache_dir,
+            &source_dir,
+            Some("same-hash"),
+            "default",
+            {
+                let fingerprint_calls = Arc::clone(&fingerprint_calls);
+                move |_, _| {
+                    fingerprint_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok("shell-fingerprint".to_string())
+                }
+            },
+            {
+                let render_calls = Arc::clone(&render_calls);
+                move |_, _| {
+                    render_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok("export TEST_ENV=1\n".to_string())
+                }
+            },
+        )
+        .expect("prepare cached env");
+
+        assert_eq!(
+            refresh,
+            HostLocalEnvironmentRefresh::ReusedMatchingSourceHash
+        );
+        assert_eq!(fingerprint_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(render_calls.load(Ordering::SeqCst), 0);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn host_local_dev_env_cache_reuses_matching_shell_fingerprint_after_source_change() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-host-local-dev-env-validate-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let cache_dir = root.join("cache");
+        let source_dir = root.join("snapshot");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+        std::fs::create_dir_all(&source_dir).expect("create source dir");
+        write_host_local_dev_env_script(&cache_dir, "export TEST_ENV=1\n")
+            .expect("write cached env script");
+        write_host_local_dev_env_state(
+            &cache_dir,
+            &HostLocalDevEnvState {
+                schema_version: 1,
+                shell: "default".to_string(),
+                shell_fingerprint: "shell-fingerprint".to_string(),
+                validated_source_content_hash: Some("old-hash".to_string()),
+            },
+        )
+        .expect("write cached env state");
+
+        let render_calls = Arc::new(AtomicUsize::new(0));
+        let refresh = prepare_host_local_cached_dev_env_with(
+            &cache_dir,
+            &source_dir,
+            Some("new-hash"),
+            "default",
+            |_, _| Ok("shell-fingerprint".to_string()),
+            {
+                let render_calls = Arc::clone(&render_calls);
+                move |_, _| {
+                    render_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok("export TEST_ENV=1\n".to_string())
+                }
+            },
+        )
+        .expect("prepare cached env");
+
+        assert_eq!(
+            refresh,
+            HostLocalEnvironmentRefresh::RevalidatedMatchingShellFingerprint
+        );
+        assert_eq!(render_calls.load(Ordering::SeqCst), 0);
+        let state = read_host_local_dev_env_state(&cache_dir).expect("read cached env state");
+        assert_eq!(
+            state.validated_source_content_hash.as_deref(),
+            Some("new-hash")
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn host_local_dev_env_cache_refreshes_when_shell_fingerprint_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-host-local-dev-env-refresh-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let cache_dir = root.join("cache");
+        let source_dir = root.join("snapshot");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+        std::fs::create_dir_all(&source_dir).expect("create source dir");
+        write_host_local_dev_env_script(&cache_dir, "export TEST_ENV=old\n")
+            .expect("write cached env script");
+        write_host_local_dev_env_state(
+            &cache_dir,
+            &HostLocalDevEnvState {
+                schema_version: 1,
+                shell: "default".to_string(),
+                shell_fingerprint: "old-shell-fingerprint".to_string(),
+                validated_source_content_hash: Some("old-hash".to_string()),
+            },
+        )
+        .expect("write cached env state");
+
+        let refresh = prepare_host_local_cached_dev_env_with(
+            &cache_dir,
+            &source_dir,
+            Some("new-hash"),
+            "default",
+            |_, _| Ok("new-shell-fingerprint".to_string()),
+            |_, _| Ok("export TEST_ENV=new\n".to_string()),
+        )
+        .expect("prepare cached env");
+
+        assert_eq!(
+            refresh,
+            HostLocalEnvironmentRefresh::RefreshedFromNixPrintDevEnv
+        );
+        let state = read_host_local_dev_env_state(&cache_dir).expect("read cached env state");
+        assert_eq!(state.shell_fingerprint, "new-shell-fingerprint");
+        assert_eq!(
+            state.validated_source_content_hash.as_deref(),
+            Some("new-hash")
+        );
+        let script = std::fs::read_to_string(host_local_dev_env_script_path(&cache_dir))
+            .expect("read cached env script");
+        assert_eq!(script, "export TEST_ENV=new\n");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn host_local_dev_env_shell_program_uses_script_declared_bash() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-host-local-dev-env-shell-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let cache_dir = root.join("cache");
+        let expected_shell = "/nix/store/test-bash/bin/bash";
+        write_host_local_dev_env_script(
+            &cache_dir,
+            &format!("BASH='{}'\nexport BASH\n", expected_shell),
+        )
+        .expect("write cached env script");
+
+        let shell_program =
+            host_local_dev_env_shell_program(&host_local_dev_env_script_path(&cache_dir))
+                .expect("parse bash path");
+
+        assert_eq!(shell_program, std::path::PathBuf::from(expected_shell));
 
         let _ = std::fs::remove_dir_all(root);
     }

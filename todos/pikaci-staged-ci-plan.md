@@ -1300,14 +1300,31 @@ We have at least one important Linux Rust lane where:
           - after switching to the packaged control-plane entrypoint and clearing `IN_NIX_SHELL` to match GitHub, the first run after the code change was `55.72s` (`20260315T193128Z-78aa1e96`) while the Nix package and cached workspace refreshed,
           - the next unchanged reruns were `30.21s` (`20260315T193207Z-70361f87`) and `27.87s` (`20260315T193238Z-985872a0`),
           - on those unchanged reruns the host-local command now starts after about `5.38s` to `5.57s` instead of about `57.82s`,
-          - and the remaining visible cost inside the job is now mostly the inner `nix develop` shell entry plus the actual OpenClaw lane itself; the command body was about `20.56s` to `21.55s`, with the actual test body about `14.82s` to `15.07s`,
+          - and the remaining visible cost after that slice was mostly the inner per-job `nix develop path:./#default` shell entry plus the actual OpenClaw lane itself; the command body was about `20.56s` to `21.55s`, with the actual test body about `14.82s` to `15.07s`,
+        - the next host-local warm-path slice is now landed too:
+          - the remaining self-inflicted tax was the inner `nix develop` hop on every host-local job even when the source snapshot and shell inputs were unchanged,
+          - `pikaci` now caches a rendered `nix print-dev-env` script under `.pikaci/cache/host-local/target-<target-id>/dev-env/`,
+          - the cache records the selected shell, the last validated source hash, and the shell derivation fingerprint,
+          - unchanged source hashes now reuse the cached environment script with no Nix call at all,
+          - changed source snapshots only re-run `nix eval` to revalidate the shell fingerprint, and they only regenerate the cached env script when that shell fingerprint actually changes,
+          - cached execution also now reads the Nix-provided Bash path out of the generated env script and runs the job under that shell instead of macOS `/bin/bash`, so the cached path preserves the same bash-language contract that `nix develop` had,
+        - the measured effect on the same CI-shaped local lane is concrete:
+          - first post-change run `20260315T210329Z-adf83695` still paid one expected revalidation and recompile wave at `52.58s`, with `3.07s` spent revalidating the cached env and about `18.20s` in the actual test body,
+          - after that, unchanged reruns dropped to `19.36s` (`20260315T210431Z-11f9dc4e`) and `17.63s` (`20260315T210454Z-5c7bc2e9`),
+          - pre-job delay dropped again from about `5.38s` to `5.57s` down to about `2.97s` and then `1.88s`,
+          - the host-local job body itself dropped from about `20.56s` to `21.55s` down to about `15.49s` and `14.96s`,
+          - those unchanged reruns now log `host-local environment reused cached nix environment for unchanged source hash in 0.000s`,
+          - and inside the command the remaining work is essentially the lane body:
+          - `cargo build -p pikachat`: `0.18s` to `0.19s`,
+          - `cargo test -p pikahut --test integration_openclaw ...`: `0.24s`,
+          - actual OpenClaw test body: `14.32s` to `14.84s`,
         - validating the staged-remote entrypoint got meaningfully further:
           - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-rust` now starts by resolving packaged `pikaci`/helper binaries from the Nix store instead of compiling them locally,
           - the first validation run exposed and forced removal of stale conflict markers in `nix/ci/linux-rust.nix`,
           - the follow-up run got past that syntax failure and reached the real staged `workspaceDeps` build again,
           - the current blocker there is not workflow bootstrap anymore; it is a staged Linux Rust dependency/vendor failure on `pika-build` (`no matching package named pulldown-cmark found` while building `pika-linux-rust-workspace-deps-deps-0.1.0`),
         - after this slice, the next biggest CI performance target is not runner-local `pikaci` bootstrap:
-          - for host-local lanes it is the inner per-job `nix develop` shell startup plus the real lane body,
+          - for host-local lanes it is now the real lane body itself plus small fixed control-plane/post-run overhead, not per-job environment startup,
           - and for staged remote lanes it is the actual remote prepare/build path, not Cargo-building the control plane on GitHub runners,
     - the last non-`pikaci` Linux remainder inside `check-pika` is now also gone:
       - `pre-merge-pika-followup` is now a host-local `pikaci` target covering:

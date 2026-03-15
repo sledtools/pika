@@ -10,16 +10,20 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, anyhow, bail};
 use chrono::Utc;
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::model::{GuestCommand, JobOutcome, JobSpec, RunStatus, RunnerKind};
-use crate::snapshot::{SnapshotMetadata, read_snapshot_metadata};
+use crate::snapshot::{SnapshotMetadata, materialize_workspace, read_snapshot_metadata};
 
 #[derive(Clone, Debug)]
 pub struct HostContext {
     pub source_root: PathBuf,
     pub workspace_snapshot_dir: PathBuf,
+    pub host_local_cache_dir: Option<PathBuf>,
+    pub workspace_source_dir: Option<PathBuf>,
+    pub workspace_source_content_hash: Option<String>,
     pub workspace_read_only: bool,
     pub job_dir: PathBuf,
     pub host_log_path: PathBuf,
@@ -136,6 +140,16 @@ struct TartRunProcess {
     stderr_handle: thread::JoinHandle<()>,
 }
 
+struct HostLocalCacheLockGuard {
+    file: File,
+}
+
+impl Drop for HostLocalCacheLockGuard {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StagedLinuxRemoteDefaults {
     pub ssh_binary: &'static str,
@@ -169,6 +183,19 @@ pub fn run_job_on_runner(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<Job
 fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
     ensure_file(&ctx.host_log_path)?;
     ensure_file(&ctx.guest_log_path)?;
+    let deadline = Instant::now() + Duration::from_secs(job.timeout_secs);
+    let _cache_lock = acquire_host_local_cache_lock(ctx, job, deadline)?;
+    let refresh_started = Instant::now();
+    let refresh_result = refresh_host_local_workspace(ctx)
+        .with_context(|| format!("refresh host-local workspace for job `{}`", job.id))?;
+    append_line(
+        &ctx.host_log_path,
+        &format!(
+            "[pikaci] host-local workspace {} in {:.3}s",
+            refresh_result,
+            refresh_started.elapsed().as_secs_f64()
+        ),
+    )?;
 
     let artifacts_dir = ctx.job_dir.join("artifacts");
     fs::create_dir_all(&artifacts_dir)
@@ -204,36 +231,62 @@ fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOut
         cmd.env("OPENCLAW_DIR", openclaw_dir);
     }
 
-    let output = cmd
-        .output()
+    let mut child = cmd
+        .spawn()
         .with_context(|| format!("run host-local job `{}`", job.id))?;
-    {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&ctx.host_log_path)
-            .with_context(|| format!("open {}", ctx.host_log_path.display()))?;
-        file.write_all(&output.stdout)
-            .with_context(|| format!("write stdout to {}", ctx.host_log_path.display()))?;
-        file.write_all(&output.stderr)
-            .with_context(|| format!("write stderr to {}", ctx.host_log_path.display()))?;
-    }
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("host-local stdout unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("host-local stderr unavailable"))?;
+    let stdout_handle = spawn_output_copy_pump(stdout, ctx.host_log_path.clone());
+    let stderr_handle = spawn_output_copy_pump(stderr, ctx.host_log_path.clone());
+
+    let exit_status = loop {
+        if let Some(status) = child.try_wait().context("poll host-local command")? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            append_line(
+                &ctx.host_log_path,
+                &format!(
+                    "[pikaci] timeout after {}s, killing host-local command",
+                    job.timeout_secs
+                ),
+            )?;
+            child.kill().context("kill timed out host-local command")?;
+            let _ = child.wait();
+            join_output_copy_pump(stdout_handle, "host-local stdout")?;
+            join_output_copy_pump(stderr_handle, "host-local stderr")?;
+            return Ok(JobOutcome {
+                status: RunStatus::Failed,
+                exit_code: None,
+                message: format!("timed out after {}s", job.timeout_secs),
+            });
+        }
+        thread::sleep(Duration::from_millis(250));
+    };
+    join_output_copy_pump(stdout_handle, "host-local stdout")?;
+    join_output_copy_pump(stderr_handle, "host-local stderr")?;
     append_line(
         &ctx.host_log_path,
         &format!(
             "[pikaci] host-local job exited with {:?} at {}",
-            output.status.code(),
+            exit_status.code(),
             Utc::now().to_rfc3339()
         ),
     )?;
 
-    let exit_code = output.status.code().unwrap_or(1);
-    let status = if output.status.success() {
+    let exit_code = exit_status.code().unwrap_or(1);
+    let status = if exit_status.success() {
         RunStatus::Passed
     } else {
         RunStatus::Failed
     };
-    let message = if output.status.success() {
+    let message = if exit_status.success() {
         "host-local command passed".to_string()
     } else {
         format!("host-local command exited with {exit_code}")
@@ -259,6 +312,168 @@ fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOut
         exit_code: Some(exit_code),
         message,
     })
+}
+
+fn acquire_host_local_cache_lock(
+    ctx: &HostContext,
+    job: &JobSpec,
+    deadline: Instant,
+) -> anyhow::Result<Option<HostLocalCacheLockGuard>> {
+    let Some(cache_dir) = ctx.host_local_cache_dir.as_deref() else {
+        return Ok(None);
+    };
+    fs::create_dir_all(cache_dir).with_context(|| format!("create {}", cache_dir.display()))?;
+    let lock_path = cache_dir.join(".lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("open {}", lock_path.display()))?;
+
+    let mut logged_wait = false;
+    loop {
+        match file.try_lock_exclusive() {
+            Ok(()) => {
+                append_line(
+                    &ctx.host_log_path,
+                    &format!(
+                        "[pikaci] acquired host-local cache lock for `{}` at {}",
+                        job.id,
+                        lock_path.display()
+                    ),
+                )?;
+                return Ok(Some(HostLocalCacheLockGuard { file }));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    bail!(
+                        "timed out after {}s waiting for host-local cache lock {}",
+                        job.timeout_secs,
+                        lock_path.display()
+                    );
+                }
+                if !logged_wait {
+                    append_line(
+                        &ctx.host_log_path,
+                        &format!(
+                            "[pikaci] waiting for host-local cache lock {}",
+                            lock_path.display()
+                        ),
+                    )?;
+                    logged_wait = true;
+                }
+                thread::sleep(Duration::from_millis(250));
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("lock {}", lock_path.display()));
+            }
+        }
+    }
+}
+
+fn refresh_host_local_workspace(ctx: &HostContext) -> anyhow::Result<HostLocalWorkspaceRefresh> {
+    let Some(source_dir) = ctx.workspace_source_dir.as_deref() else {
+        return Ok(HostLocalWorkspaceRefresh::NoSourceRefreshNeeded);
+    };
+    if workspace_matches_source_hash(ctx)? {
+        return Ok(HostLocalWorkspaceRefresh::ReusedUnchangedSnapshot);
+    };
+    remove_path_if_exists(&ctx.workspace_snapshot_dir)?;
+    materialize_workspace(source_dir, &ctx.workspace_snapshot_dir).with_context(|| {
+        format!(
+            "materialize host-local workspace {} from {}",
+            ctx.workspace_snapshot_dir.display(),
+            source_dir.display()
+        )
+    })?;
+    Ok(HostLocalWorkspaceRefresh::RematerializedFromSnapshot)
+}
+
+fn remove_path_if_exists(path: &Path) -> anyhow::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("stat {}", path.display()));
+        }
+    };
+
+    if metadata.file_type().is_dir() {
+        fs::remove_dir_all(path).with_context(|| format!("remove {}", path.display()))
+    } else {
+        fs::remove_file(path).with_context(|| format!("remove {}", path.display()))
+    }
+}
+
+fn workspace_matches_source_hash(ctx: &HostContext) -> anyhow::Result<bool> {
+    let Some(source_hash) = ctx.workspace_source_content_hash.as_deref() else {
+        return Ok(false);
+    };
+    if !ctx.workspace_snapshot_dir.exists() {
+        return Ok(false);
+    }
+    let workspace_metadata = match read_snapshot_metadata(&ctx.workspace_snapshot_dir) {
+        Ok(metadata) => metadata,
+        Err(_) => return Ok(false),
+    };
+    Ok(workspace_metadata.content_hash.as_deref() == Some(source_hash))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HostLocalWorkspaceRefresh {
+    NoSourceRefreshNeeded,
+    ReusedUnchangedSnapshot,
+    RematerializedFromSnapshot,
+}
+
+impl std::fmt::Display for HostLocalWorkspaceRefresh {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoSourceRefreshNeeded => write!(f, "reuse does not require snapshot refresh"),
+            Self::ReusedUnchangedSnapshot => write!(f, "reused unchanged snapshot"),
+            Self::RematerializedFromSnapshot => write!(f, "rematerialized from cached snapshot"),
+        }
+    }
+}
+
+fn spawn_output_copy_pump<R>(
+    mut reader: R,
+    log_path: PathBuf,
+) -> thread::JoinHandle<anyhow::Result<()>>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .with_context(|| format!("open {}", log_path.display()))?;
+        let mut buffer = [0u8; 8192];
+        loop {
+            let count = reader
+                .read(&mut buffer)
+                .with_context(|| format!("read {}", log_path.display()))?;
+            if count == 0 {
+                break;
+            }
+            file.write_all(&buffer[..count])
+                .with_context(|| format!("write {}", log_path.display()))?;
+        }
+        Ok(())
+    })
+}
+
+fn join_output_copy_pump(
+    handle: thread::JoinHandle<anyhow::Result<()>>,
+    label: &str,
+) -> anyhow::Result<()> {
+    match handle.join() {
+        Ok(result) => result.with_context(|| format!("capture {label}")),
+        Err(_) => bail!("{label} capture thread panicked"),
+    }
 }
 
 pub fn run_vfkit_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
@@ -2335,7 +2550,10 @@ fn shell_escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::Path;
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     use super::{
         GuestFlakePaths, HostContext, REMOTE_MICROVM_VIRTIOFS_SOCKETS, RemoteMicrovmContext,
@@ -2345,6 +2563,19 @@ mod tests {
         staged_linux_remote_defaults, staged_linux_remote_snapshot_dir, vfkit_socket_path,
     };
     use crate::model::{GuestCommand, JobSpec, RunStatus, RunnerKind};
+
+    fn write_snapshot_metadata(snapshot_dir: &Path, content_hash: &str) {
+        fs::create_dir_all(snapshot_dir).expect("create snapshot dir");
+        fs::write(
+            snapshot_dir.join("pikaci-snapshot.json"),
+            format!(
+                r#"{{"source_root":"/tmp/source","snapshot_dir":"{}","git_head":"deadbeef","git_dirty":false,"created_at":"2026-03-15T00:00:00Z","content_hash":"{}"}}"#,
+                snapshot_dir.display(),
+                content_hash
+            ),
+        )
+        .expect("write snapshot metadata");
+    }
 
     #[test]
     fn guest_flake_targets_vfkit_exact_test_beachhead() {
@@ -2769,20 +3000,22 @@ mod tests {
     }
 
     #[test]
-    fn host_local_jobs_run_from_workspace_snapshot() {
+    fn host_local_jobs_refresh_stable_workspace_before_running() {
         let root =
             std::env::temp_dir().join(format!("pikaci-host-local-test-{}", uuid::Uuid::new_v4()));
-        let workspace_snapshot_dir = root.join("snapshot");
+        let workspace_source_dir = root.join("snapshot");
+        let workspace_dir = root.join("cache").join("host-local").join("workspace");
         let job_dir = root.join("job");
-        std::fs::create_dir_all(&workspace_snapshot_dir).expect("create workspace snapshot");
+        std::fs::create_dir_all(&workspace_source_dir).expect("create workspace snapshot");
+        std::fs::create_dir_all(&workspace_dir).expect("create stable workspace");
         std::fs::create_dir_all(job_dir.join("artifacts")).expect("create artifacts dir");
         std::fs::create_dir_all(root.join("cargo-home")).expect("create cargo home");
         std::fs::create_dir_all(root.join("target")).expect("create target dir");
-        std::fs::write(
-            workspace_snapshot_dir.join("pikaci-host-local-marker"),
-            "ok",
-        )
-        .expect("write workspace marker");
+        std::fs::write(workspace_source_dir.join("pikaci-host-local-marker"), "ok")
+            .expect("write workspace marker");
+        std::fs::write(workspace_dir.join("stale-marker"), "stale").expect("write stale marker");
+        write_snapshot_metadata(&workspace_source_dir, "new-hash");
+        write_snapshot_metadata(&workspace_dir, "old-hash");
 
         let job = JobSpec {
             id: "pikachat-clippy",
@@ -2790,13 +3023,86 @@ mod tests {
             timeout_secs: 120,
             writable_workspace: false,
             guest_command: GuestCommand::HostShellCommand {
-                command: "test -f ./pikaci-host-local-marker && test -n \"$CARGO_HOME\" && test -n \"$CARGO_TARGET_DIR\" && echo ok",
+                command: "python3 -c 'from pathlib import Path; import os; cwd = Path.cwd().resolve(); expected = Path(os.environ[\"EXPECTED_WORKSPACE_DIR\"]).resolve(); assert cwd == expected; assert (cwd / \"pikaci-host-local-marker\").is_file(); assert not (cwd / \"stale-marker\").exists(); assert os.environ[\"CARGO_HOME\"]; assert os.environ[\"CARGO_TARGET_DIR\"]; print(\"ok\")'",
             },
             staged_linux_rust_lane: None,
         };
         let ctx = HostContext {
             source_root: root.clone(),
-            workspace_snapshot_dir: workspace_snapshot_dir.clone(),
+            workspace_snapshot_dir: workspace_dir.clone(),
+            host_local_cache_dir: Some(root.join("cache").join("host-local")),
+            workspace_source_dir: Some(workspace_source_dir.clone()),
+            workspace_source_content_hash: Some("new-hash".to_string()),
+            workspace_read_only: true,
+            job_dir: job_dir.clone(),
+            host_log_path: job_dir.join("host.log"),
+            guest_log_path: job_dir.join("artifacts/guest.log"),
+            shared_cargo_home_dir: root.join("cargo-home"),
+            shared_target_dir: root.join("target"),
+            staged_linux_rust_workspace_deps_dir: None,
+            staged_linux_rust_workspace_build_dir: None,
+        };
+        let old_expected_workspace_dir = std::env::var_os("EXPECTED_WORKSPACE_DIR");
+        unsafe {
+            std::env::set_var("EXPECTED_WORKSPACE_DIR", workspace_dir.as_os_str());
+        }
+
+        let outcome = run_job_on_runner(&job, &ctx).expect("run host-local job");
+
+        match old_expected_workspace_dir {
+            Some(value) => unsafe { std::env::set_var("EXPECTED_WORKSPACE_DIR", value) },
+            None => unsafe { std::env::remove_var("EXPECTED_WORKSPACE_DIR") },
+        }
+
+        assert_eq!(outcome.status, RunStatus::Passed);
+        let host_log = std::fs::read_to_string(&ctx.host_log_path).expect("read host log");
+        assert!(host_log.contains("host-local command"));
+        assert!(host_log.contains("rematerialized from cached snapshot"));
+        assert!(host_log.contains("ok"));
+        assert!(workspace_dir.join("pikaci-host-local-marker").is_file());
+        assert!(!workspace_dir.join("stale-marker").exists());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn host_local_jobs_skip_workspace_refresh_for_unchanged_snapshot() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-host-local-unchanged-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let workspace_source_dir = root.join("snapshot");
+        let workspace_dir = root.join("cache").join("host-local").join("workspace");
+        let job_dir = root.join("job");
+        std::fs::create_dir_all(&workspace_source_dir).expect("create workspace snapshot");
+        std::fs::create_dir_all(&workspace_dir).expect("create stable workspace");
+        std::fs::create_dir_all(job_dir.join("artifacts")).expect("create artifacts dir");
+        std::fs::create_dir_all(root.join("cargo-home")).expect("create cargo home");
+        std::fs::create_dir_all(root.join("target")).expect("create target dir");
+        std::fs::write(workspace_source_dir.join("pikaci-host-local-marker"), "ok")
+            .expect("write workspace marker");
+        std::fs::write(workspace_dir.join("cache-sentinel"), "keep").expect("write cache sentinel");
+        std::fs::write(workspace_dir.join("pikaci-host-local-marker"), "ok")
+            .expect("write stable marker");
+        write_snapshot_metadata(&workspace_source_dir, "same-hash");
+        write_snapshot_metadata(&workspace_dir, "same-hash");
+
+        let job = JobSpec {
+            id: "pikachat-clippy",
+            description: "Run pikachat clippy on the host",
+            timeout_secs: 120,
+            writable_workspace: false,
+            guest_command: GuestCommand::HostShellCommand {
+                command: "python3 -c 'from pathlib import Path; assert Path(\"cache-sentinel\").is_file(); assert Path(\"pikaci-host-local-marker\").is_file(); print(\"ok\")'",
+            },
+            staged_linux_rust_lane: None,
+        };
+        let ctx = HostContext {
+            source_root: root.clone(),
+            workspace_snapshot_dir: workspace_dir.clone(),
+            host_local_cache_dir: Some(root.join("cache").join("host-local")),
+            workspace_source_dir: Some(workspace_source_dir),
+            workspace_source_content_hash: Some("same-hash".to_string()),
             workspace_read_only: true,
             job_dir: job_dir.clone(),
             host_log_path: job_dir.join("host.log"),
@@ -2810,9 +3116,9 @@ mod tests {
         let outcome = run_job_on_runner(&job, &ctx).expect("run host-local job");
 
         assert_eq!(outcome.status, RunStatus::Passed);
+        assert!(workspace_dir.join("cache-sentinel").is_file());
         let host_log = std::fs::read_to_string(&ctx.host_log_path).expect("read host log");
-        assert!(host_log.contains("host-local command"));
-        assert!(host_log.contains("ok"));
+        assert!(host_log.contains("reused unchanged snapshot"));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2823,16 +3129,18 @@ mod tests {
             std::env::temp_dir().join(format!("pikaci-openclaw-test-{}", uuid::Uuid::new_v4()));
         let source_root = root.join("source");
         let external_openclaw_dir = root.join("openclaw");
-        let workspace_snapshot_dir = root.join("snapshot");
+        let workspace_source_dir = root.join("snapshot");
+        let workspace_dir = root.join("cache").join("host-local").join("workspace");
         let job_dir = root.join("job");
         std::fs::create_dir_all(&source_root).expect("create source root");
         std::fs::create_dir_all(&external_openclaw_dir).expect("create external openclaw");
         std::fs::write(external_openclaw_dir.join("package.json"), "{}")
             .expect("write package.json");
-        std::fs::create_dir_all(&workspace_snapshot_dir).expect("create workspace snapshot");
+        std::fs::create_dir_all(&workspace_source_dir).expect("create workspace snapshot");
         std::fs::create_dir_all(job_dir.join("artifacts")).expect("create artifacts dir");
         std::fs::create_dir_all(root.join("cargo-home")).expect("create cargo home");
         std::fs::create_dir_all(root.join("target")).expect("create target dir");
+        write_snapshot_metadata(&workspace_source_dir, "openclaw-hash");
 
         let job = JobSpec {
             id: "pikachat-openclaw-relative",
@@ -2846,7 +3154,10 @@ mod tests {
         };
         let ctx = HostContext {
             source_root: source_root.clone(),
-            workspace_snapshot_dir: workspace_snapshot_dir.clone(),
+            workspace_snapshot_dir: workspace_dir.clone(),
+            host_local_cache_dir: Some(root.join("cache").join("host-local")),
+            workspace_source_dir: Some(workspace_source_dir.clone()),
+            workspace_source_content_hash: Some("openclaw-hash".to_string()),
             workspace_read_only: true,
             job_dir: job_dir.clone(),
             host_log_path: job_dir.join("host.log"),
@@ -2878,6 +3189,151 @@ mod tests {
         assert_eq!(outcome.status, RunStatus::Passed);
         let host_log = std::fs::read_to_string(&ctx.host_log_path).expect("read host log");
         assert!(host_log.contains("ok"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn host_local_jobs_honor_timeout_secs() {
+        let root =
+            std::env::temp_dir().join(format!("pikaci-host-timeout-test-{}", uuid::Uuid::new_v4()));
+        let workspace_source_dir = root.join("snapshot");
+        let workspace_dir = root.join("cache").join("host-local").join("workspace");
+        let cache_dir = root.join("cache").join("host-local").join("scope");
+        let job_dir = root.join("job");
+        std::fs::create_dir_all(&workspace_source_dir).expect("create workspace snapshot");
+        std::fs::create_dir_all(job_dir.join("artifacts")).expect("create artifacts dir");
+        std::fs::create_dir_all(root.join("cargo-home")).expect("create cargo home");
+        std::fs::create_dir_all(root.join("target")).expect("create target dir");
+        std::fs::write(workspace_source_dir.join("marker"), "ok").expect("write marker");
+        write_snapshot_metadata(&workspace_source_dir, "timeout-hash");
+
+        let job = JobSpec {
+            id: "timeout-host-local",
+            description: "Verify host-local timeout enforcement",
+            timeout_secs: 1,
+            writable_workspace: false,
+            guest_command: GuestCommand::HostShellCommand {
+                command: "python3 -c 'import time; time.sleep(2)'",
+            },
+            staged_linux_rust_lane: None,
+        };
+        let ctx = HostContext {
+            source_root: root.clone(),
+            workspace_snapshot_dir: workspace_dir,
+            host_local_cache_dir: Some(cache_dir),
+            workspace_source_dir: Some(workspace_source_dir),
+            workspace_source_content_hash: Some("timeout-hash".to_string()),
+            workspace_read_only: true,
+            job_dir: job_dir.clone(),
+            host_log_path: job_dir.join("host.log"),
+            guest_log_path: job_dir.join("artifacts/guest.log"),
+            shared_cargo_home_dir: root.join("cargo-home"),
+            shared_target_dir: root.join("target"),
+            staged_linux_rust_workspace_deps_dir: None,
+            staged_linux_rust_workspace_build_dir: None,
+        };
+
+        let started = Instant::now();
+        let outcome = run_job_on_runner(&job, &ctx).expect("run host-local job");
+
+        assert_eq!(outcome.status, RunStatus::Failed);
+        assert_eq!(outcome.exit_code, None);
+        assert!(outcome.message.contains("timed out after 1s"));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let host_log = std::fs::read_to_string(&ctx.host_log_path).expect("read host log");
+        assert!(host_log.contains("timeout after 1s"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn host_local_jobs_serialize_shared_cache_scope() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-host-cache-lock-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let workspace_source_dir = root.join("snapshot");
+        let workspace_dir = root.join("cache").join("host-local").join("workspace");
+        let cache_dir = root.join("cache").join("host-local").join("scope");
+        let first_job_dir = root.join("job-a");
+        let second_job_dir = root.join("job-b");
+        std::fs::create_dir_all(&workspace_source_dir).expect("create workspace snapshot");
+        std::fs::create_dir_all(first_job_dir.join("artifacts")).expect("create first artifacts");
+        std::fs::create_dir_all(second_job_dir.join("artifacts")).expect("create second artifacts");
+        std::fs::create_dir_all(root.join("cargo-home")).expect("create cargo home");
+        std::fs::create_dir_all(root.join("target")).expect("create target dir");
+        std::fs::write(workspace_source_dir.join("marker"), "ok").expect("write marker");
+        write_snapshot_metadata(&workspace_source_dir, "lock-hash");
+
+        let job = JobSpec {
+            id: "serialized-host-local",
+            description: "Verify host-local cache locking",
+            timeout_secs: 10,
+            writable_workspace: false,
+            guest_command: GuestCommand::HostShellCommand {
+                command: "python3 -c 'from pathlib import Path; import time; assert Path(\"marker\").is_file(); time.sleep(1.0); assert Path(\"marker\").is_file(); print(\"ok\")'",
+            },
+            staged_linux_rust_lane: None,
+        };
+        let first_ctx = HostContext {
+            source_root: root.clone(),
+            workspace_snapshot_dir: workspace_dir.clone(),
+            host_local_cache_dir: Some(cache_dir.clone()),
+            workspace_source_dir: Some(workspace_source_dir.clone()),
+            workspace_source_content_hash: Some("lock-hash".to_string()),
+            workspace_read_only: true,
+            job_dir: first_job_dir.clone(),
+            host_log_path: first_job_dir.join("host.log"),
+            guest_log_path: first_job_dir.join("artifacts/guest.log"),
+            shared_cargo_home_dir: root.join("cargo-home"),
+            shared_target_dir: root.join("target"),
+            staged_linux_rust_workspace_deps_dir: None,
+            staged_linux_rust_workspace_build_dir: None,
+        };
+        let second_ctx = HostContext {
+            source_root: root.clone(),
+            workspace_snapshot_dir: workspace_dir,
+            host_local_cache_dir: Some(cache_dir),
+            workspace_source_dir: Some(workspace_source_dir),
+            workspace_source_content_hash: Some("lock-hash".to_string()),
+            workspace_read_only: true,
+            job_dir: second_job_dir.clone(),
+            host_log_path: second_job_dir.join("host.log"),
+            guest_log_path: second_job_dir.join("artifacts/guest.log"),
+            shared_cargo_home_dir: root.join("cargo-home"),
+            shared_target_dir: root.join("target"),
+            staged_linux_rust_workspace_deps_dir: None,
+            staged_linux_rust_workspace_build_dir: None,
+        };
+
+        let started = Instant::now();
+        let first = thread::spawn(move || run_job_on_runner(&job, &first_ctx));
+        thread::sleep(Duration::from_millis(200));
+        let second_job = JobSpec {
+            id: "serialized-host-local",
+            description: "Verify host-local cache locking",
+            timeout_secs: 10,
+            writable_workspace: false,
+            guest_command: GuestCommand::HostShellCommand {
+                command: "python3 -c 'from pathlib import Path; import time; assert Path(\"marker\").is_file(); time.sleep(1.0); assert Path(\"marker\").is_file(); print(\"ok\")'",
+            },
+            staged_linux_rust_lane: None,
+        };
+        let second = thread::spawn(move || run_job_on_runner(&second_job, &second_ctx));
+
+        let first_outcome = first.join().expect("join first").expect("first outcome");
+        let second_outcome = second.join().expect("join second").expect("second outcome");
+
+        assert_eq!(first_outcome.status, RunStatus::Passed);
+        assert_eq!(second_outcome.status, RunStatus::Passed);
+        assert!(started.elapsed() >= Duration::from_millis(1800));
+        let first_log = std::fs::read_to_string(first_job_dir.join("host.log")).expect("first log");
+        let second_log =
+            std::fs::read_to_string(second_job_dir.join("host.log")).expect("second log");
+        assert!(first_log.contains("acquired host-local cache lock"));
+        assert!(second_log.contains("waiting for host-local cache lock"));
+        assert!(second_log.contains("acquired host-local cache lock"));
 
         let _ = std::fs::remove_dir_all(root);
     }

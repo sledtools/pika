@@ -283,6 +283,9 @@ impl<'a> ConversationRuntime<'a> {
         nostr_group_id_hex: &str,
         owner_pubkey: &PublicKey,
     ) -> Result<Option<RuntimeGroupProfileSnapshot>> {
+        // This currently backs explicit profile-update follow-through, so an O(n) scan is
+        // acceptable for MVP. If this ever moves onto a hotter path, add storage-side kind
+        // filtering or indexing instead of loading the full group history.
         let messages = self.get_messages(nostr_group_id_hex, None)?;
         let mut latest: Option<RuntimeGroupProfileSnapshot> = None;
 
@@ -313,7 +316,12 @@ impl<'a> ConversationRuntime<'a> {
                 created_at: message.created_at,
             };
 
-            latest = Some(candidate);
+            let should_replace = latest
+                .as_ref()
+                .is_none_or(|current| candidate.created_at >= current.created_at);
+            if should_replace {
+                latest = Some(candidate);
+            }
         }
 
         Ok(latest)
@@ -460,7 +468,20 @@ mod tests {
         kind: Kind,
         content: &str,
     ) -> Event {
-        let rumor = nostr_sdk::prelude::EventBuilder::new(kind, content).build(keys.public_key());
+        store_group_message_at(mdk, keys, mls_group_id, kind, content, Timestamp::now())
+    }
+
+    fn store_group_message_at(
+        mdk: &PikaMdk,
+        keys: &Keys,
+        mls_group_id: &GroupId,
+        kind: Kind,
+        content: &str,
+        created_at: Timestamp,
+    ) -> Event {
+        let rumor = nostr_sdk::prelude::EventBuilder::new(kind, content)
+            .custom_created_at(created_at)
+            .build(keys.public_key());
         let event = mdk
             .create_message(mls_group_id, rumor)
             .expect("create group message");
@@ -774,19 +795,21 @@ mod tests {
             .expect("merge pending commit");
         let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
 
-        store_group_message(
-            &inviter_mdk,
-            &inviter_keys,
-            &created.group.mls_group_id,
-            Kind::Metadata,
-            r#"{"display_name":"First","picture":"https://example.com/first.jpg"}"#,
-        );
-        store_group_message(
+        store_group_message_at(
             &inviter_mdk,
             &inviter_keys,
             &created.group.mls_group_id,
             Kind::Metadata,
             r#"{"display_name":"Second","about":"Latest","picture":"https://example.com/second.jpg"}"#,
+            Timestamp::from_secs(20),
+        );
+        store_group_message_at(
+            &inviter_mdk,
+            &inviter_keys,
+            &created.group.mls_group_id,
+            Kind::Metadata,
+            r#"{"display_name":"First","picture":"https://example.com/first.jpg"}"#,
+            Timestamp::from_secs(10),
         );
 
         let snapshot = ConversationRuntime::new(&inviter_mdk)

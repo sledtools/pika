@@ -70,6 +70,12 @@ The current native daemon protocol does **not** expose real production commands 
 - group profile image upload
 - explicit group-update eventing
 
+Current `update_group_profile` scope is intentionally metadata-only:
+
+- it can set `name` / `about`
+- it preserves any existing `picture` from the latest self-authored group profile metadata
+- it does not let callers set or clear `picture` yet
+
 The shared runtime already has most of the underlying membership machinery:
 
 - membership prep in `prepare_add_members(...)`

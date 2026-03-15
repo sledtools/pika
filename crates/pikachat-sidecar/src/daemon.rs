@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
+use base64::Engine;
 use hypernote_protocol as hn;
 use mdk_core::prelude::*;
 use mdk_sqlite_storage::MdkSqliteStorage;
@@ -57,7 +58,7 @@ use crate::acp::{AcpBackendConfig, AcpBackendManager, AcpTurnCompletion};
 use crate::call_audio::OpusToAudioPipeline;
 use crate::call_tts::synthesize_tts_pcm;
 use crate::protocol::{
-    AddMembersResultOut, DaemonCmd, GroupMemberOut, InCmd, LeaveGroupResultOut,
+    AddMembersResultOut, DaemonCmd, GroupMemberOut, GroupProfileOut, InCmd, LeaveGroupResultOut,
     ListMembersResultOut, MediaAttachmentOut, OutMsg, RemoveMembersResultOut,
     UpdateGroupProfileResultOut, out_error, out_ok,
 };
@@ -74,6 +75,7 @@ const PROTOCOL_VERSION: u32 = 1;
 const ACCEPT_WELCOME_BACKLOG_LIMIT: usize = 200;
 const INIT_GROUP_WELCOME_EXPIRATION_SECS: u64 = 30 * 24 * 60 * 60;
 const DAEMON_WELCOME_SUBSCRIPTION_LIMIT: usize = 200;
+const MAX_GROUP_PROFILE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
 fn daemon_open_request(
     subscribed_group_ids: Vec<String>,
@@ -280,8 +282,8 @@ fn accept_welcome_not_found_message() -> String {
 
 use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
 use pika_marmot_runtime::media::{
-    MAX_CHAT_MEDIA_BYTES, ParsedMediaAttachment, RuntimeMediaAttachment, resolve_upload_metadata,
-    upload_encrypted_blob,
+    MAX_CHAT_MEDIA_BYTES, ParsedMediaAttachment, PreparedMediaUpload, RuntimeMediaAttachment,
+    UploadedBlob, resolve_upload_metadata, upload_encrypted_blob,
 };
 use pika_marmot_runtime::relay::{fetch_latest_key_package_for_mdk, publish_and_confirm};
 
@@ -431,10 +433,24 @@ impl DaemonGroupProfileWorkflowError {
         }
     }
 
+    fn bad_mime_type(message: impl Into<String>) -> Self {
+        Self {
+            code: "bad_mime_type",
+            message: message.into(),
+        }
+    }
+
     fn prepare(err: anyhow::Error) -> Self {
         Self {
             code: "mdk_error",
             message: format!("{err:#}"),
+        }
+    }
+
+    fn upload(message: impl Into<String>) -> Self {
+        Self {
+            code: "upload_failed",
+            message: message.into(),
         }
     }
 
@@ -928,6 +944,179 @@ fn build_group_profile_metadata(
     Ok((normalized_name, normalized_about, metadata_json))
 }
 
+fn trim_group_profile_field(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn build_group_profile_metadata_json(
+    name: Option<&str>,
+    about: Option<&str>,
+    picture: Option<String>,
+) -> Result<String, DaemonGroupProfileWorkflowError> {
+    let mut metadata = Metadata::new();
+    if let Some(name) = trim_group_profile_field(name) {
+        metadata.name = Some(name.clone());
+        metadata.display_name = Some(name);
+    }
+    if let Some(about) = trim_group_profile_field(about) {
+        metadata.about = Some(about);
+    }
+    metadata.picture = picture;
+
+    serde_json::to_string(&metadata)
+        .map_err(|err| DaemonGroupProfileWorkflowError::prepare(anyhow!(err)))
+}
+
+fn get_group_profile_result(
+    host: &DaemonHostContext<'_>,
+    local_pubkey: &PublicKey,
+    nostr_group_id: &str,
+) -> Result<GroupProfileOut, DaemonGroupProfileWorkflowError> {
+    let group = host
+        .lookup_joined_group_snapshot(nostr_group_id)
+        .map_err(|err| DaemonGroupProfileWorkflowError::bad_group(format!("{err:#}")))?;
+    let snapshot = host
+        .lookup_group_profile_snapshot(nostr_group_id, local_pubkey)
+        .map_err(|err| DaemonGroupProfileWorkflowError::bad_group(format!("{err:#}")))?;
+
+    let name = snapshot
+        .as_ref()
+        .and_then(|snapshot| {
+            trim_group_profile_field(snapshot.metadata.display_name.as_deref())
+                .or_else(|| trim_group_profile_field(snapshot.metadata.name.as_deref()))
+        })
+        .unwrap_or_else(|| group.name.clone());
+    let about = snapshot
+        .as_ref()
+        .and_then(|snapshot| trim_group_profile_field(snapshot.metadata.about.as_deref()))
+        .unwrap_or_else(|| group.description.clone());
+    let picture_url = snapshot
+        .and_then(|snapshot| trim_group_profile_field(snapshot.metadata.picture.as_deref()));
+
+    Ok(GroupProfileOut {
+        nostr_group_id: group.nostr_group_id_hex,
+        owner_pubkey: local_pubkey.to_hex(),
+        name,
+        about,
+        picture_url,
+    })
+}
+
+fn decode_group_profile_image(
+    image_base64: &str,
+) -> Result<Vec<u8>, DaemonGroupProfileWorkflowError> {
+    let trimmed = image_base64.trim();
+    if trimmed.is_empty() {
+        return Err(DaemonGroupProfileWorkflowError::bad_request(
+            "image_base64 must not be empty",
+        ));
+    }
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(trimmed)
+        .map_err(|err| {
+            DaemonGroupProfileWorkflowError::bad_request(format!("invalid image data: {err}"))
+        })?;
+    if bytes.is_empty() {
+        return Err(DaemonGroupProfileWorkflowError::bad_request(
+            "image data must not be empty",
+        ));
+    }
+    if bytes.len() > MAX_GROUP_PROFILE_IMAGE_BYTES {
+        return Err(DaemonGroupProfileWorkflowError::bad_request(
+            "image too large (max 8 MB)",
+        ));
+    }
+
+    Ok(bytes)
+}
+
+fn normalize_group_profile_image_mime_type(
+    mime_type: &str,
+) -> Result<String, DaemonGroupProfileWorkflowError> {
+    let normalized = mime_type.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Err(DaemonGroupProfileWorkflowError::bad_mime_type(
+            "mime_type must not be empty",
+        ));
+    }
+    if !normalized.starts_with("image/") {
+        return Err(DaemonGroupProfileWorkflowError::bad_mime_type(
+            "mime_type must start with image/",
+        ));
+    }
+    Ok(normalized)
+}
+
+fn group_profile_image_filename(mime_type: &str) -> String {
+    match mime_type {
+        "image/jpeg" | "image/jpg" => "group-profile.jpg".to_string(),
+        "image/png" => "group-profile.png".to_string(),
+        "image/webp" => "group-profile.webp".to_string(),
+        "image/gif" => "group-profile.gif".to_string(),
+        _ => {
+            let extension = mime_type
+                .strip_prefix("image/")
+                .filter(|extension| !extension.is_empty())
+                .unwrap_or("bin");
+            format!("group-profile.{extension}")
+        }
+    }
+}
+
+async fn publish_group_profile_metadata_with<Publish, PublishFut>(
+    host: &DaemonHostContext<'_>,
+    nostr_group_id: &str,
+    metadata_json: String,
+    tags: Vec<Tag>,
+    mut publish_prepared: Publish,
+) -> Result<String, DaemonGroupProfileWorkflowError>
+where
+    Publish: FnMut(PreparedConversationAction) -> PublishFut,
+    PublishFut: Future<Output = anyhow::Result<EventId>>,
+{
+    let prepared = match host.prepare_outbound_action(
+        nostr_group_id,
+        OutboundConversationAction::Message {
+            kind: Kind::Metadata,
+            content: metadata_json,
+            tags,
+            created_at: Timestamp::now(),
+        },
+    ) {
+        Ok(prepared) => prepared,
+        Err(DaemonPrepareError::BadGroup(err)) => {
+            return Err(DaemonGroupProfileWorkflowError::bad_group(format!(
+                "{err:#}"
+            )));
+        }
+        Err(DaemonPrepareError::Prepare(err)) => {
+            return Err(DaemonGroupProfileWorkflowError::prepare(err));
+        }
+    };
+
+    let publish_status = match publish_prepared(prepared.clone()).await {
+        Ok(wrapper_event_id) => {
+            pika_marmot_runtime::outbound::OutboundConversationPublishStatus::Published {
+                wrapper_event_id,
+            }
+        }
+        Err(err) => {
+            pika_marmot_runtime::outbound::OutboundConversationPublishStatus::PublishFailed(
+                format!("{err:#}"),
+            )
+        }
+    };
+
+    host.complete_outbound_publish_operation(prepared, publish_status)
+        .into_outbound_conversation_publish_result()
+        .map(|result| result.target.nostr_group_id_hex)
+        .map_err(DaemonGroupProfileWorkflowError::publish)
+}
+
 async fn handle_update_group_profile_request_with<Publish, PublishFut>(
     request_id: Option<String>,
     host: &DaemonHostContext<'_>,
@@ -935,7 +1124,7 @@ async fn handle_update_group_profile_request_with<Publish, PublishFut>(
     nostr_group_id: &str,
     name: &str,
     about: &str,
-    mut publish_prepared: Publish,
+    publish_prepared: Publish,
 ) -> OutMsg
 where
     Publish: FnMut(PreparedConversationAction) -> PublishFut,
@@ -955,52 +1144,23 @@ where
             Err(err) => return out_error(request_id, err.code, err.message),
         };
 
-    let prepared = match host.prepare_outbound_action(
+    let nostr_group_id = match publish_group_profile_metadata_with(
+        host,
         nostr_group_id,
-        OutboundConversationAction::Message {
-            kind: Kind::Metadata,
-            content: metadata_json,
-            tags: vec![],
-            created_at: Timestamp::now(),
-        },
-    ) {
-        Ok(prepared) => prepared,
-        Err(DaemonPrepareError::BadGroup(err)) => {
-            let mapped = DaemonGroupProfileWorkflowError::bad_group(format!("{err:#}"));
-            return out_error(request_id, mapped.code, mapped.message);
-        }
-        Err(DaemonPrepareError::Prepare(err)) => {
-            let mapped = DaemonGroupProfileWorkflowError::prepare(err);
-            return out_error(request_id, mapped.code, mapped.message);
-        }
-    };
-
-    let publish_status = match publish_prepared(prepared.clone()).await {
-        Ok(wrapper_event_id) => {
-            pika_marmot_runtime::outbound::OutboundConversationPublishStatus::Published {
-                wrapper_event_id,
-            }
-        }
-        Err(err) => {
-            pika_marmot_runtime::outbound::OutboundConversationPublishStatus::PublishFailed(
-                format!("{err:#}"),
-            )
-        }
-    };
-
-    let result = match host
-        .complete_outbound_publish_operation(prepared, publish_status)
-        .into_outbound_conversation_publish_result()
+        metadata_json,
+        vec![],
+        publish_prepared,
+    )
+    .await
     {
-        Ok(result) => result,
+        Ok(nostr_group_id) => nostr_group_id,
         Err(err) => {
-            let mapped = DaemonGroupProfileWorkflowError::publish(err);
-            return out_error(request_id, mapped.code, mapped.message);
+            return out_error(request_id, err.code, err.message);
         }
     };
 
     let result = UpdateGroupProfileResultOut {
-        nostr_group_id: result.target.nostr_group_id_hex,
+        nostr_group_id,
         name: normalized_name,
         about: normalized_about,
     };
@@ -1036,6 +1196,185 @@ async fn handle_update_group_profile_request(
         },
     )
     .await
+}
+
+fn handle_get_group_profile_request(
+    request_id: Option<String>,
+    host: &DaemonHostContext<'_>,
+    local_pubkey: &PublicKey,
+    nostr_group_id: &str,
+) -> OutMsg {
+    match get_group_profile_result(host, local_pubkey, nostr_group_id) {
+        Ok(result) => out_ok(
+            request_id,
+            Some(serde_json::to_value(result).expect("serialize get_group_profile result")),
+        ),
+        Err(err) => out_error(request_id, err.code, err.message),
+    }
+}
+
+async fn handle_upload_group_profile_image_request_with<Upload, UploadFut, Publish, PublishFut>(
+    request_id: Option<String>,
+    host: &DaemonHostContext<'_>,
+    local_pubkey: &PublicKey,
+    input: GroupProfileImageUploadInput<'_>,
+    mut upload_blob: Upload,
+    publish_prepared: Publish,
+) -> OutMsg
+where
+    Upload: FnMut(Vec<u8>, String, String) -> UploadFut,
+    UploadFut: Future<Output = anyhow::Result<UploadedBlob>>,
+    Publish: FnMut(PreparedConversationAction) -> PublishFut,
+    PublishFut: Future<Output = anyhow::Result<EventId>>,
+{
+    let current_profile = match get_group_profile_result(host, local_pubkey, input.nostr_group_id) {
+        Ok(result) => result,
+        Err(err) => return out_error(request_id, err.code, err.message),
+    };
+    let image_bytes = match decode_group_profile_image(input.image_base64) {
+        Ok(bytes) => bytes,
+        Err(err) => return out_error(request_id, err.code, err.message),
+    };
+    let normalized_mime_type = match normalize_group_profile_image_mime_type(input.mime_type) {
+        Ok(mime_type) => mime_type,
+        Err(err) => return out_error(request_id, err.code, err.message),
+    };
+    let mls_group_id = match host.resolve_group(input.nostr_group_id) {
+        Ok(group_id) => group_id,
+        Err(err) => {
+            let mapped = DaemonGroupProfileWorkflowError::bad_group(format!("{err:#}"));
+            return out_error(request_id, mapped.code, mapped.message);
+        }
+    };
+    let filename = group_profile_image_filename(&normalized_mime_type);
+
+    let PreparedMediaUpload {
+        upload,
+        encrypted_data,
+    } = match host.prepare_upload(
+        &mls_group_id,
+        &image_bytes,
+        Some(&normalized_mime_type),
+        Some(&filename),
+    ) {
+        Ok(prepared) => prepared,
+        Err(err) => {
+            let mapped = DaemonGroupProfileWorkflowError::prepare(err);
+            return out_error(request_id, mapped.code, mapped.message);
+        }
+    };
+    let expected_hash_hex = hex::encode(upload.encrypted_hash);
+    let media_upload_status =
+        match upload_blob(encrypted_data, upload.mime_type.clone(), expected_hash_hex).await {
+            Ok(uploaded) => MediaUploadStatus::Uploaded(uploaded),
+            Err(err) => MediaUploadStatus::UploadFailed(format!("{err:#}")),
+        };
+    let completed = match host
+        .complete_media_upload_operation(
+            &mls_group_id,
+            input.nostr_group_id.to_string(),
+            &upload,
+            media_upload_status,
+        )
+        .into_media_upload_result()
+    {
+        Ok(completed) => completed,
+        Err(err) => {
+            let mapped = DaemonGroupProfileWorkflowError::upload(err);
+            return out_error(request_id, mapped.code, mapped.message);
+        }
+    };
+    if completed.result.uploaded_blob.uploaded_url.is_empty() {
+        let mapped =
+            DaemonGroupProfileWorkflowError::upload("uploaded profile image URL was empty");
+        return out_error(request_id, mapped.code, mapped.message);
+    }
+
+    let metadata_json = match build_group_profile_metadata_json(
+        Some(&current_profile.name),
+        Some(&current_profile.about),
+        Some(completed.result.uploaded_blob.uploaded_url.clone()),
+    ) {
+        Ok(metadata_json) => metadata_json,
+        Err(err) => return out_error(request_id, err.code, err.message),
+    };
+    let picture_url = completed.result.uploaded_blob.uploaded_url.clone();
+    let nostr_group_id = match publish_group_profile_metadata_with(
+        host,
+        input.nostr_group_id,
+        metadata_json,
+        vec![completed.result.imeta_tag.clone()],
+        publish_prepared,
+    )
+    .await
+    {
+        Ok(nostr_group_id) => nostr_group_id,
+        Err(err) => return out_error(request_id, err.code, err.message),
+    };
+
+    let result = GroupProfileOut {
+        nostr_group_id,
+        owner_pubkey: current_profile.owner_pubkey,
+        name: current_profile.name,
+        about: current_profile.about,
+        picture_url: Some(picture_url),
+    };
+    out_ok(
+        request_id,
+        Some(serde_json::to_value(result).expect("serialize upload_group_profile_image result")),
+    )
+}
+
+async fn handle_upload_group_profile_image_request(
+    request_id: Option<String>,
+    host: &DaemonHostContext<'_>,
+    keys: &Keys,
+    local_pubkey: &PublicKey,
+    nostr_group_id: &str,
+    image_base64: &str,
+    mime_type: &str,
+) -> OutMsg {
+    let blossom_servers = blossom_servers_or_default(&[]);
+    handle_upload_group_profile_image_request_with(
+        request_id,
+        host,
+        local_pubkey,
+        GroupProfileImageUploadInput {
+            nostr_group_id,
+            image_base64,
+            mime_type,
+        },
+        |encrypted_data, upload_mime_type, expected_hash_hex| {
+            let keys = keys.clone();
+            let blossom_servers = blossom_servers.clone();
+            async move {
+                upload_encrypted_blob(
+                    &keys,
+                    encrypted_data,
+                    &upload_mime_type,
+                    &expected_hash_hex,
+                    &blossom_servers,
+                )
+                .await
+            }
+        },
+        |prepared| {
+            let host_ctx = host;
+            async move {
+                host_ctx
+                    .publish_prepared(&prepared, "upload_group_profile_image")
+                    .await
+                    .map(|wrapper| wrapper.id)
+            }
+        },
+    )
+    .await
+}
+
+struct GroupProfileImageUploadInput<'a> {
+    nostr_group_id: &'a str,
+    image_base64: &'a str,
+    mime_type: &'a str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3296,6 +3635,40 @@ pub async fn daemon_main(
                             &nostr_group_id,
                             &name,
                             &about,
+                        )
+                        .await;
+                        let _ = reply_tx.send(reply);
+                    }
+                    InCmd::GetGroupProfile {
+                        request_id,
+                        nostr_group_id,
+                    } => {
+                        let host =
+                            DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let reply = handle_get_group_profile_request(
+                            request_id,
+                            &host,
+                            &keys.public_key(),
+                            &nostr_group_id,
+                        );
+                        let _ = reply_tx.send(reply);
+                    }
+                    InCmd::UploadGroupProfileImage {
+                        request_id,
+                        nostr_group_id,
+                        image_base64,
+                        mime_type,
+                    } => {
+                        let host =
+                            DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let reply = handle_upload_group_profile_image_request(
+                            request_id,
+                            &host,
+                            &keys,
+                            &keys.public_key(),
+                            &nostr_group_id,
+                            &image_base64,
+                            &mime_type,
                         )
                         .await;
                         let _ = reply_tx.send(reply);
@@ -5784,6 +6157,7 @@ mod tests {
         )
         .await;
 
+        dbg!(&reply);
         let OutMsg::Ok {
             request_id,
             result: Some(result),
@@ -6260,6 +6634,289 @@ mod tests {
         assert_eq!(request_id.as_deref(), Some("req-profile-empty"));
         assert_eq!(code, "bad_request");
         assert!(message.contains("name or about"));
+    }
+
+    #[test]
+    fn daemon_get_group_profile_request_returns_latest_profile_snapshot() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Daemon get group profile".to_string(),
+            "Fallback description".to_string(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
+
+        let profile = UnsignedEvent::new(
+            inviter_keys.public_key(),
+            Timestamp::from(10_u64),
+            Kind::Metadata,
+            Tags::new(),
+            r#"{"display_name":"Latest Name","about":"Latest About","picture":"https://example.com/group.png"}"#,
+        );
+        let wrapper = inviter_mdk
+            .create_message(&created.group.mls_group_id, profile)
+            .expect("create group profile");
+        inviter_mdk
+            .process_message(&wrapper)
+            .expect("process group profile");
+
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+
+        let reply = handle_get_group_profile_request(
+            Some("req-get-profile".to_string()),
+            &host,
+            &inviter_keys.public_key(),
+            &hex::encode(created.group.nostr_group_id),
+        );
+
+        let OutMsg::Ok {
+            request_id,
+            result: Some(result),
+        } = reply
+        else {
+            panic!("expected successful get_group_profile reply");
+        };
+        assert_eq!(request_id.as_deref(), Some("req-get-profile"));
+        let result: GroupProfileOut =
+            serde_json::from_value(result).expect("deserialize get_group_profile result");
+        assert_eq!(
+            result.nostr_group_id,
+            hex::encode(created.group.nostr_group_id)
+        );
+        assert_eq!(result.owner_pubkey, inviter_keys.public_key().to_hex());
+        assert_eq!(result.name, "Latest Name");
+        assert_eq!(result.about, "Latest About");
+        assert_eq!(
+            result.picture_url.as_deref(),
+            Some("https://example.com/group.png")
+        );
+    }
+
+    #[test]
+    fn daemon_get_group_profile_request_rejects_unknown_group() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let keys = Keys::generate();
+        let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let mdk = crate::open_mdk(dir.path()).expect("open mdk");
+        let host = test_host(&mdk, &keys, &client, &relay_urls);
+
+        let reply = handle_get_group_profile_request(
+            Some("req-get-missing".to_string()),
+            &host,
+            &keys.public_key(),
+            "deadbeef",
+        );
+
+        let OutMsg::Error {
+            request_id,
+            code,
+            message,
+        } = reply
+        else {
+            panic!("expected get_group_profile error reply");
+        };
+        assert_eq!(request_id.as_deref(), Some("req-get-missing"));
+        assert_eq!(code, "bad_group_id");
+        assert!(message.contains("deadbeef") || message.contains("group"));
+    }
+
+    #[tokio::test]
+    async fn daemon_upload_group_profile_image_request_succeeds_on_production_handler() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Daemon image profile".to_string(),
+            "Fallback about".to_string(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
+
+        let existing_profile = UnsignedEvent::new(
+            inviter_keys.public_key(),
+            Timestamp::from(10_u64),
+            Kind::Metadata,
+            Tags::new(),
+            r#"{"display_name":"Profile Name","about":"Profile About"}"#,
+        );
+        let existing_wrapper = inviter_mdk
+            .create_message(&created.group.mls_group_id, existing_profile)
+            .expect("create existing group profile");
+        inviter_mdk
+            .process_message(&existing_wrapper)
+            .expect("process existing group profile");
+
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
+        let uploaded_url = "https://blossom.example.com/group-profile.jpg";
+        let image_base64 = base64::engine::general_purpose::STANDARD
+            .encode(include_bytes!("../../../fixtures/test-images/red.jpg"));
+
+        let reply = handle_upload_group_profile_image_request_with(
+            Some("req-upload-profile".to_string()),
+            &host,
+            &inviter_keys.public_key(),
+            GroupProfileImageUploadInput {
+                nostr_group_id: &nostr_group_id_hex,
+                image_base64: &image_base64,
+                mime_type: "image/jpeg",
+            },
+            |_encrypted_data, upload_mime_type, expected_hash_hex| async move {
+                assert_eq!(upload_mime_type, "image/jpeg");
+                Ok(UploadedBlob {
+                    blossom_server: "https://blossom.example.com".to_string(),
+                    uploaded_url: uploaded_url.to_string(),
+                    descriptor_sha256_hex: expected_hash_hex,
+                })
+            },
+            |prepared| {
+                let mdk = &inviter_mdk;
+                async move {
+                    let processed = mdk
+                        .process_message(&prepared.wrapper)
+                        .expect("process prepared profile image");
+                    match processed {
+                        MessageProcessingResult::ApplicationMessage(message) => {
+                            let metadata: Metadata =
+                                serde_json::from_str(&message.content).expect("parse metadata");
+                            assert_eq!(message.kind, Kind::Metadata);
+                            assert_eq!(metadata.display_name.as_deref(), Some("Profile Name"));
+                            assert_eq!(metadata.about.as_deref(), Some("Profile About"));
+                            assert_eq!(metadata.picture.as_deref(), Some(uploaded_url));
+                            assert!(
+                                message
+                                    .tags
+                                    .iter()
+                                    .any(pika_marmot_runtime::media::is_imeta_tag),
+                                "profile image update should publish an imeta tag"
+                            );
+                        }
+                        other => panic!("expected application message, got {other:?}"),
+                    }
+                    Ok(EventId::all_zeros())
+                }
+            },
+        )
+        .await;
+
+        let (request_id, result) = match reply {
+            OutMsg::Ok {
+                request_id,
+                result: Some(result),
+            } => (request_id, result),
+            other => panic!("expected successful upload_group_profile_image reply, got {other:?}"),
+        };
+        assert_eq!(request_id.as_deref(), Some("req-upload-profile"));
+        let result: GroupProfileOut =
+            serde_json::from_value(result).expect("deserialize upload_group_profile_image result");
+        assert_eq!(result.nostr_group_id, nostr_group_id_hex);
+        assert_eq!(result.owner_pubkey, inviter_keys.public_key().to_hex());
+        assert_eq!(result.name, "Profile Name");
+        assert_eq!(result.about, "Profile About");
+        assert_eq!(result.picture_url.as_deref(), Some(uploaded_url));
+    }
+
+    #[tokio::test]
+    async fn daemon_upload_group_profile_image_request_rejects_invalid_mime_type() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Daemon invalid profile image".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
+
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
+        let image_base64 = base64::engine::general_purpose::STANDARD
+            .encode(include_bytes!("../../../fixtures/test-images/red.jpg"));
+
+        let reply = handle_upload_group_profile_image_request_with(
+            Some("req-upload-bad-mime".to_string()),
+            &host,
+            &inviter_keys.public_key(),
+            GroupProfileImageUploadInput {
+                nostr_group_id: &nostr_group_id_hex,
+                image_base64: &image_base64,
+                mime_type: "text/plain",
+            },
+            |_encrypted_data, _upload_mime_type, _expected_hash_hex| async move {
+                panic!("upload should not run for invalid mime type");
+            },
+            |_prepared| async move {
+                panic!("publish should not run for invalid mime type");
+            },
+        )
+        .await;
+
+        let OutMsg::Error {
+            request_id,
+            code,
+            message,
+        } = reply
+        else {
+            panic!("expected upload_group_profile_image error reply");
+        };
+        assert_eq!(request_id.as_deref(), Some("req-upload-bad-mime"));
+        assert_eq!(code, "bad_mime_type");
+        assert!(message.contains("image/"));
     }
 
     #[tokio::test]

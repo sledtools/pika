@@ -62,6 +62,18 @@ pub enum InCmd {
         name: String,
         about: String,
     },
+    GetGroupProfile {
+        #[serde(default)]
+        request_id: Option<String>,
+        nostr_group_id: String,
+    },
+    UploadGroupProfileImage {
+        #[serde(default)]
+        request_id: Option<String>,
+        nostr_group_id: String,
+        image_base64: String,
+        mime_type: String,
+    },
     HypernoteCatalog {
         #[serde(default)]
         request_id: Option<String>,
@@ -348,6 +360,15 @@ pub struct UpdateGroupProfileResultOut {
     pub about: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GroupProfileOut {
+    pub nostr_group_id: String,
+    pub owner_pubkey: String,
+    pub name: String,
+    pub about: String,
+    pub picture_url: Option<String>,
+}
+
 /// Wrapper that optionally carries a per-command response sender for socket connections.
 pub struct DaemonCmd {
     pub cmd: InCmd,
@@ -574,6 +595,52 @@ mod tests {
                 assert_eq!(about, "New about");
             }
             other => panic!("expected UpdateGroupProfile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_get_group_profile_cmd() {
+        let json = r#"{
+            "cmd": "get_group_profile",
+            "request_id": "r-get-profile",
+            "nostr_group_id": "aa"
+        }"#;
+        let cmd: InCmd = serde_json::from_str(json).expect("deserialize");
+        match cmd {
+            InCmd::GetGroupProfile {
+                request_id,
+                nostr_group_id,
+            } => {
+                assert_eq!(request_id.as_deref(), Some("r-get-profile"));
+                assert_eq!(nostr_group_id, "aa");
+            }
+            other => panic!("expected GetGroupProfile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_upload_group_profile_image_cmd() {
+        let json = r#"{
+            "cmd": "upload_group_profile_image",
+            "request_id": "r-upload-profile",
+            "nostr_group_id": "aa",
+            "image_base64": "AQID",
+            "mime_type": "image/png"
+        }"#;
+        let cmd: InCmd = serde_json::from_str(json).expect("deserialize");
+        match cmd {
+            InCmd::UploadGroupProfileImage {
+                request_id,
+                nostr_group_id,
+                image_base64,
+                mime_type,
+            } => {
+                assert_eq!(request_id.as_deref(), Some("r-upload-profile"));
+                assert_eq!(nostr_group_id, "aa");
+                assert_eq!(image_base64, "AQID");
+                assert_eq!(mime_type, "image/png");
+            }
+            other => panic!("expected UploadGroupProfileImage, got {other:?}"),
         }
     }
 

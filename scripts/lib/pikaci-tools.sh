@@ -9,7 +9,8 @@ resolve_pikaci_tools() {
     && [[ -n "${PIKACI_PREPARED_OUTPUT_FULFILL_BINARY:-}" ]] \
     && [[ -n "${PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY:-}" ]]; then
     resolution="env"
-  elif command -v pikaci >/dev/null 2>&1 \
+  elif [[ "${PIKACI_USE_PATH_TOOLS:-0}" == "1" ]] \
+    && command -v pikaci >/dev/null 2>&1 \
     && command -v pikaci-fulfill-prepared-output >/dev/null 2>&1 \
     && command -v pikaci-launch-fulfill-prepared-output >/dev/null 2>&1; then
     PIKACI_BIN="$(command -v pikaci)"

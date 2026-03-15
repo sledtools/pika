@@ -1610,6 +1610,24 @@ struct DaemonMediaUploadInput<'a> {
     require_uploaded_url: bool,
 }
 
+struct DaemonSendMediaRequestInput<'a> {
+    nostr_group_id: &'a str,
+    file_path: &'a str,
+    mime_type: Option<&'a str>,
+    filename: Option<&'a str>,
+    caption: &'a str,
+    blossom_servers: &'a [String],
+}
+
+struct OwnedDaemonMediaUploadInput {
+    nostr_group_id: String,
+    file_path: String,
+    mime_type: Option<String>,
+    filename: Option<String>,
+    include_path_in_validation_errors: bool,
+    require_uploaded_url: bool,
+}
+
 fn batch_media_fields_from_completed_uploads(
     completed_uploads: &[CompletedMediaUpload],
 ) -> CompletedMediaBatchFields {
@@ -1730,6 +1748,96 @@ async fn upload_daemon_media_file(
         ));
     }
     Ok(completed)
+}
+
+async fn handle_send_media_request_with<Upload, UploadFut, Publish, PublishFut>(
+    request_id: Option<String>,
+    host: &DaemonHostContext<'_>,
+    keys: &Keys,
+    input: DaemonSendMediaRequestInput<'_>,
+    upload_file: Upload,
+    publish_rumor: Publish,
+) -> OutMsg
+where
+    Upload: FnOnce(GroupId, Vec<String>, OwnedDaemonMediaUploadInput) -> UploadFut,
+    UploadFut: Future<Output = Result<CompletedMediaUpload, DaemonMediaWorkflowError>>,
+    Publish: FnOnce(GroupId, UnsignedEvent) -> PublishFut,
+    PublishFut: Future<Output = anyhow::Result<Event>>,
+{
+    let mls_group_id = match host.resolve_group(input.nostr_group_id) {
+        Ok(id) => id,
+        Err(err) => return out_error(request_id, "bad_group_id", format!("{err:#}")),
+    };
+    let upload_servers = blossom_servers_or_default(input.blossom_servers);
+    let completed = match upload_file(
+        mls_group_id.clone(),
+        upload_servers,
+        OwnedDaemonMediaUploadInput {
+            nostr_group_id: input.nostr_group_id.to_string(),
+            file_path: input.file_path.to_string(),
+            mime_type: input.mime_type.map(ToOwned::to_owned),
+            filename: input.filename.map(ToOwned::to_owned),
+            include_path_in_validation_errors: false,
+            require_uploaded_url: false,
+        },
+    )
+    .await
+    {
+        Ok(completed) => completed,
+        Err(err) => return out_error(request_id, err.code, err.message),
+    };
+
+    let rumor = EventBuilder::new(Kind::ChatMessage, input.caption)
+        .tag(completed.result.imeta_tag.clone())
+        .build(keys.public_key());
+    match publish_rumor(mls_group_id, rumor).await {
+        Ok(ev) => out_ok(
+            request_id,
+            Some(json!({
+                "event_id": ev.id.to_hex(),
+                "uploaded_url": completed.result.uploaded_blob.uploaded_url,
+                "original_hash_hex": completed.result.attachment.original_hash_hex,
+            })),
+        ),
+        Err(err) => out_error(request_id, "publish_failed", format!("{err:#}")),
+    }
+}
+
+async fn handle_send_media_request(
+    request_id: Option<String>,
+    host: &DaemonHostContext<'_>,
+    keys: &Keys,
+    input: DaemonSendMediaRequestInput<'_>,
+) -> OutMsg {
+    handle_send_media_request_with(
+        request_id,
+        host,
+        keys,
+        input,
+        |mls_group_id, upload_servers, upload_input| async move {
+            upload_daemon_media_file(
+                host,
+                keys,
+                &mls_group_id,
+                &upload_servers,
+                DaemonMediaUploadInput {
+                    nostr_group_id: &upload_input.nostr_group_id,
+                    file_path: &upload_input.file_path,
+                    mime_type: upload_input.mime_type.as_deref(),
+                    filename: upload_input.filename.as_deref(),
+                    include_path_in_validation_errors: upload_input
+                        .include_path_in_validation_errors,
+                    require_uploaded_url: upload_input.require_uploaded_url,
+                },
+            )
+            .await
+        },
+        |mls_group_id, rumor| async move {
+            host.sign_and_publish_rumor(&mls_group_id, rumor, "daemon_send_media")
+                .await
+        },
+    )
+    .await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2145,6 +2253,165 @@ async fn publish_signed_call_signal_result(
             host.publish_signed_call_payload(signed, label).await,
         ),
     )
+}
+
+struct DaemonInviteCallRequestInput<'a> {
+    nostr_group_id: &'a str,
+    peer_pubkey: &'a str,
+    call_id: Option<&'a str>,
+    moq_url: &'a str,
+    broadcast_base: Option<&'a str>,
+    track_name: Option<&'a str>,
+    track_codec: Option<&'a str>,
+    relay_auth: Option<&'a str>,
+}
+
+async fn handle_invite_call_request_with<Publish, PublishFut>(
+    request_id: Option<String>,
+    host: &DaemonHostContext<'_>,
+    pending_outgoing_call_invites: &mut HashMap<String, PendingOutgoingCall>,
+    input: DaemonInviteCallRequestInput<'_>,
+    publish_invite: Publish,
+) -> OutMsg
+where
+    Publish: FnOnce(Event, String) -> PublishFut,
+    PublishFut: Future<Output = anyhow::Result<()>>,
+{
+    let peer_pubkey = match PublicKey::parse(input.peer_pubkey.trim()) {
+        Ok(pk) => pk,
+        Err(err) => {
+            return out_error(
+                request_id,
+                "bad_pubkey",
+                format!("invalid peer_pubkey: {err}"),
+            );
+        }
+    };
+    let peer_pubkey_hex = peer_pubkey.to_hex().to_lowercase();
+    let call_id = input
+        .call_id
+        .filter(|id| !id.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| {
+            let a = rand::random::<u32>();
+            let b = rand::random::<u16>();
+            let c = rand::random::<u16>();
+            let d = rand::random::<u16>();
+            let e = rand::random::<u64>() & 0x0000_FFFF_FFFF_FFFF;
+            format!("{a:08x}-{b:04x}-{c:04x}-{d:04x}-{e:012x}")
+        });
+    let track_name = input
+        .track_name
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("pty0");
+    let track_codec = input
+        .track_codec
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("bytes");
+    let mut session = CallSessionParams {
+        moq_url: input.moq_url.to_string(),
+        broadcast_base: input
+            .broadcast_base
+            .filter(|value| !value.trim().is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| format!("pika/pty/{call_id}")),
+        relay_auth: input.relay_auth.unwrap_or_default().to_string(),
+        tracks: vec![CallTrackSpec {
+            name: track_name.to_string(),
+            codec: track_codec.to_string(),
+            sample_rate: 1,
+            channels: 1,
+            frame_ms: 1,
+        }],
+    };
+    if session.relay_auth.trim().is_empty() {
+        match host.derive_relay_auth_token(
+            input.nostr_group_id,
+            &call_id,
+            &session,
+            &peer_pubkey_hex,
+        ) {
+            Ok(token) => {
+                session.relay_auth = token;
+            }
+            Err(err) => {
+                return out_error(
+                    request_id,
+                    "runtime_error",
+                    format!("derive relay auth token failed: {err:#}"),
+                );
+            }
+        }
+    }
+
+    let (pending, prepared_invite) = match host.prepare_call_invite(
+        input.nostr_group_id,
+        &peer_pubkey_hex,
+        &call_id,
+        &session,
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            return out_error(
+                request_id,
+                "runtime_error",
+                format!("prepare call invite failed: {err}"),
+            );
+        }
+    };
+    let signed_invite =
+        match host.sign_call_payload(input.nostr_group_id, prepared_invite.payload_json.clone()) {
+            Ok(signed) => signed,
+            Err(err) => {
+                return out_error(
+                    request_id,
+                    "runtime_error",
+                    format!("sign call invite failed: {err:#}"),
+                );
+            }
+        };
+
+    match complete_daemon_call_signal_publish_result(
+        host,
+        CallSignalPublishKind::Invite,
+        input.nostr_group_id.to_string(),
+        prepared_invite,
+        call_signal_publish_status(
+            signed_invite.id,
+            publish_invite(signed_invite, call_id.clone()).await,
+        ),
+    ) {
+        Ok(result) => {
+            pending_outgoing_call_invites.insert(call_id, pending);
+            out_ok(
+                request_id,
+                Some(json!({
+                    "call_id": result.call_id,
+                    "nostr_group_id": result.nostr_group_id_hex,
+                    "session": session,
+                })),
+            )
+        }
+        Err(error) => out_error(request_id, "publish_failed", error),
+    }
+}
+
+async fn handle_invite_call_request(
+    request_id: Option<String>,
+    host: &DaemonHostContext<'_>,
+    pending_outgoing_call_invites: &mut HashMap<String, PendingOutgoingCall>,
+    input: DaemonInviteCallRequestInput<'_>,
+) -> OutMsg {
+    handle_invite_call_request_with(
+        request_id,
+        host,
+        pending_outgoing_call_invites,
+        input,
+        |signed_invite, call_id| async move {
+            send_call_invite_with_retry(host, &signed_invite, &call_id, 3).await
+        },
+    )
+    .await
 }
 
 fn call_audio_track_spec(session: &CallSessionParams) -> Option<&CallTrackSpec> {
@@ -4235,60 +4502,22 @@ pub async fn daemon_main(
                         blossom_servers,
                     } => {
                         let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
-                        let mls_group_id = match host.resolve_group(&nostr_group_id) {
-                            Ok(id) => id,
-                            Err(e) => {
-                                reply_tx.send(out_error(request_id, "bad_group_id", format!("{e:#}"))).ok();
-                                continue;
-                            }
-                        };
-                        let upload_servers = blossom_servers_or_default(&blossom_servers);
-
-                        let completed = match upload_daemon_media_file(
+                        let reply = handle_send_media_request(
+                            request_id,
                             &host,
                             &keys,
-                            &mls_group_id,
-                            &upload_servers,
-                            DaemonMediaUploadInput {
+                            DaemonSendMediaRequestInput {
                                 nostr_group_id: &nostr_group_id,
                                 file_path: &file_path,
                                 mime_type: mime_type.as_deref(),
                                 filename: filename.as_deref(),
-                                include_path_in_validation_errors: false,
-                                require_uploaded_url: false,
+                                caption: &caption,
+                                blossom_servers: &blossom_servers,
                             },
                         )
                         .await
-                        {
-                            Ok(completed) => completed,
-                            Err(err) => {
-                                reply_tx
-                                    .send(out_error(request_id, err.code, err.message))
-                                    .ok();
-                                continue;
-                            }
-                        };
-
-                        // Build imeta tag and message
-                        let rumor = EventBuilder::new(Kind::ChatMessage, &caption)
-                            .tag(completed.result.imeta_tag.clone())
-                            .build(keys.public_key());
-                        match host.sign_and_publish_rumor(&mls_group_id, rumor, "daemon_send_media").await {
-                            Ok(ev) => {
-                                let _ = reply_tx.send(out_ok(request_id, Some(json!({
-                                    "event_id": ev.id.to_hex(),
-                                    "uploaded_url": completed.result.uploaded_blob.uploaded_url,
-                                    "original_hash_hex": completed.result.attachment.original_hash_hex,
-                                }))));
-                            }
-                            Err(e) => {
-                                let _ = reply_tx.send(out_error(
-                                    request_id,
-                                    "publish_failed",
-                                    format!("{e:#}"),
-                                ));
-                            }
-                        }
+                        ;
+                        let _ = reply_tx.send(reply);
                     }
                     InCmd::SendMediaBatch {
                         request_id,
@@ -4425,130 +4654,23 @@ pub async fn daemon_main(
                             continue;
                         }
                         let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
-                        let peer_pubkey = match PublicKey::parse(peer_pubkey.trim()) {
-                            Ok(pk) => pk,
-                            Err(e) => {
-                                let _ = reply_tx.send(out_error(
-                                    request_id,
-                                    "bad_pubkey",
-                                    format!("invalid peer_pubkey: {e}"),
-                                ));
-                                continue;
-                            }
-                        };
-                        let peer_pubkey_hex = peer_pubkey.to_hex().to_lowercase();
-                        let call_id = call_id
-                            .filter(|id| !id.trim().is_empty())
-                            .unwrap_or_else(|| {
-                                let a = rand::random::<u32>();
-                                let b = rand::random::<u16>();
-                                let c = rand::random::<u16>();
-                                let d = rand::random::<u16>();
-                                let e = rand::random::<u64>() & 0x0000_FFFF_FFFF_FFFF;
-                                format!("{a:08x}-{b:04x}-{c:04x}-{d:04x}-{e:012x}")
-                            });
-                        let track_name = track_name
-                            .filter(|v| !v.trim().is_empty())
-                            .unwrap_or_else(|| "pty0".to_string());
-                        let track_codec = track_codec
-                            .filter(|v| !v.trim().is_empty())
-                            .unwrap_or_else(|| "bytes".to_string());
-                        let mut session = CallSessionParams {
-                            moq_url,
-                            broadcast_base: broadcast_base
-                                .filter(|v| !v.trim().is_empty())
-                                .unwrap_or_else(|| format!("pika/pty/{call_id}")),
-                            relay_auth: relay_auth.unwrap_or_default(),
-                            tracks: vec![CallTrackSpec {
-                                name: track_name,
-                                codec: track_codec,
-                                sample_rate: 1,
-                                channels: 1,
-                                frame_ms: 1,
-                            }],
-                        };
-                        if session.relay_auth.trim().is_empty() {
-                            match host
-                                .derive_relay_auth_token(
-                                    &nostr_group_id,
-                                    &call_id,
-                                    &session,
-                                    &peer_pubkey_hex,
-                                )
-                            {
-                                Ok(token) => {
-                                    session.relay_auth = token;
-                                }
-                                Err(e) => {
-                                    let _ = reply_tx.send(out_error(
-                                        request_id,
-                                        "runtime_error",
-                                        format!("derive relay auth token failed: {e:#}"),
-                                    ));
-                                    continue;
-                                }
-                            }
-                        }
-                        let (pending, prepared_invite) = match host.prepare_call_invite(
-                            &nostr_group_id,
-                            &peer_pubkey_hex,
-                            &call_id,
-                            &session,
-                        ) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                let _ = reply_tx.send(out_error(
-                                    request_id,
-                                    "runtime_error",
-                                    format!("prepare call invite failed: {e}"),
-                                ));
-                                continue;
-                            }
-                        };
-                        let signed_invite =
-                            match host.sign_call_payload(&nostr_group_id, prepared_invite.payload_json.clone())
-                            {
-                                Ok(signed) => signed,
-                                Err(e) => {
-                                    let _ = reply_tx.send(out_error(
-                                        request_id,
-                                        "runtime_error",
-                                        format!("sign call invite failed: {e:#}"),
-                                    ));
-                                    continue;
-                                }
-                            };
-
-                        match complete_daemon_call_signal_publish_result(
+                        let reply = handle_invite_call_request(
+                            request_id,
                             &host,
-                            CallSignalPublishKind::Invite,
-                            nostr_group_id.clone(),
-                            prepared_invite,
-                            call_signal_publish_status(
-                                signed_invite.id,
-                                send_call_invite_with_retry(&host, &signed_invite, &call_id, 3)
-                                    .await,
-                            ),
-                        ) {
-                            Ok(result) => {
-                                pending_outgoing_call_invites.insert(call_id.clone(), pending);
-                                let _ = reply_tx.send(out_ok(
-                                    request_id,
-                                    Some(json!({
-                                        "call_id": result.call_id,
-                                        "nostr_group_id": result.nostr_group_id_hex,
-                                        "session": session,
-                                    })),
-                                ));
-                            }
-                            Err(error) => {
-                                let _ = reply_tx.send(out_error(
-                                    request_id,
-                                    "publish_failed",
-                                    error,
-                                ));
-                            }
-                        }
+                            &mut pending_outgoing_call_invites,
+                            DaemonInviteCallRequestInput {
+                                nostr_group_id: &nostr_group_id,
+                                peer_pubkey: &peer_pubkey,
+                                call_id: call_id.as_deref(),
+                                moq_url: &moq_url,
+                                broadcast_base: broadcast_base.as_deref(),
+                                track_name: track_name.as_deref(),
+                                track_codec: track_codec.as_deref(),
+                                relay_auth: relay_auth.as_deref(),
+                            },
+                        )
+                        .await;
+                        let _ = reply_tx.send(reply);
                     }
                     InCmd::AcceptCall { request_id, call_id } => {
                         if active_call.is_some() {
@@ -8572,6 +8694,92 @@ mod tests {
         assert!(prepared.payload_json.contains("call.invite"));
     }
 
+    #[tokio::test]
+    async fn daemon_invite_call_request_succeeds_on_production_handler() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "daemon invite call".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
+
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
+        let mut pending_outgoing_call_invites = HashMap::new();
+
+        let reply = handle_invite_call_request_with(
+            Some("req-invite-call".to_string()),
+            &host,
+            &mut pending_outgoing_call_invites,
+            DaemonInviteCallRequestInput {
+                nostr_group_id: &nostr_group_id_hex,
+                peer_pubkey: &invitee_keys.public_key().to_hex(),
+                call_id: Some("550e8400-e29b-41d4-a716-446655440012"),
+                moq_url: "https://moq.local/anon",
+                broadcast_base: None,
+                track_name: None,
+                track_codec: None,
+                relay_auth: None,
+            },
+            |signed_invite, call_id| async move {
+                assert_eq!(call_id, "550e8400-e29b-41d4-a716-446655440012");
+                assert_eq!(signed_invite.kind, Kind::MlsGroupMessage);
+                assert!(!signed_invite.content.is_empty());
+                Ok(())
+            },
+        )
+        .await;
+
+        let OutMsg::Ok {
+            request_id,
+            result: Some(result),
+        } = reply
+        else {
+            panic!("expected successful invite_call reply");
+        };
+        assert_eq!(request_id.as_deref(), Some("req-invite-call"));
+        assert_eq!(
+            result["call_id"].as_str(),
+            Some("550e8400-e29b-41d4-a716-446655440012")
+        );
+        assert_eq!(
+            result["nostr_group_id"].as_str(),
+            Some(nostr_group_id_hex.as_str())
+        );
+        assert_eq!(
+            result["session"]["moq_url"].as_str(),
+            Some("https://moq.local/anon")
+        );
+        assert!(
+            result["session"]["relay_auth"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+        assert!(
+            pending_outgoing_call_invites.contains_key("550e8400-e29b-41d4-a716-446655440012"),
+            "successful invite_call should retain pending outgoing state"
+        );
+    }
+
     #[test]
     fn daemon_prepare_accept_call_uses_shared_command_boundary() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -9084,6 +9292,120 @@ mod tests {
                 .contains("no valid Blossom servers configured"),
             "real daemon media send flow should surface shared upload failure details"
         );
+    }
+
+    #[tokio::test]
+    async fn daemon_send_media_request_succeeds_on_production_handler() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let upload_dir = tempfile::tempdir().expect("upload tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "daemon send media".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
+
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let file_path = upload_dir.path().join("daemon-send-media.txt");
+        std::fs::write(&file_path, b"daemon send media payload").expect("write media file");
+        let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
+        let blossom_servers = vec!["https://example.com".to_string()];
+        let signing_keys = inviter_keys.clone();
+
+        let reply = handle_send_media_request_with(
+            Some("req-send-media".to_string()),
+            &host,
+            &inviter_keys,
+            DaemonSendMediaRequestInput {
+                nostr_group_id: &nostr_group_id_hex,
+                file_path: file_path.to_str().expect("file path"),
+                mime_type: Some("text/plain"),
+                filename: Some("daemon-send-media.txt"),
+                caption: "daemon media caption",
+                blossom_servers: &blossom_servers,
+            },
+            |mls_group_id, _servers, upload_input| {
+                let host = &host;
+                let group_id_hex = nostr_group_id_hex.clone();
+                async move {
+                    let bytes = std::fs::read(&upload_input.file_path).expect("read media file");
+                    let resolved = resolve_upload_metadata(
+                        Path::new(&upload_input.file_path),
+                        upload_input.mime_type.as_deref(),
+                        upload_input.filename.as_deref(),
+                    );
+                    let prepared = host
+                        .prepare_upload(
+                            &mls_group_id,
+                            &bytes,
+                            Some(&resolved.mime_type),
+                            Some(&resolved.filename),
+                        )
+                        .expect("prepare upload");
+                    host.complete_media_upload_operation(
+                        &mls_group_id,
+                        group_id_hex,
+                        &prepared.upload,
+                        MediaUploadStatus::Uploaded(UploadedBlob {
+                            blossom_server: "https://example.com".to_string(),
+                            uploaded_url: "https://example.com/blob".to_string(),
+                            descriptor_sha256_hex: hex::encode(prepared.upload.encrypted_hash),
+                        }),
+                    )
+                    .into_media_upload_result()
+                    .map_err(DaemonMediaWorkflowError::upload)
+                }
+            },
+            |mls_group_id, rumor| async move {
+                assert_eq!(rumor.kind, Kind::ChatMessage);
+                assert_eq!(rumor.content, "daemon media caption");
+                assert!(
+                    rumor
+                        .tags
+                        .iter()
+                        .any(pika_marmot_runtime::media::is_imeta_tag),
+                    "daemon send_media should publish imeta tags"
+                );
+                let _ = mls_group_id;
+                EventBuilder::new(Kind::ChatMessage, "published")
+                    .sign_with_keys(&signing_keys)
+                    .context("sign published media event")
+            },
+        )
+        .await;
+
+        let OutMsg::Ok {
+            request_id,
+            result: Some(result),
+        } = reply
+        else {
+            panic!("expected successful send_media reply");
+        };
+        assert_eq!(request_id.as_deref(), Some("req-send-media"));
+        assert_eq!(
+            result["uploaded_url"].as_str(),
+            Some("https://example.com/blob")
+        );
+        assert!(result["event_id"].as_str().is_some());
+        assert!(result["original_hash_hex"].as_str().is_some());
     }
 
     #[test]

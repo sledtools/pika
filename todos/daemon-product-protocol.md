@@ -110,7 +110,6 @@ Current group-update observability is intentionally focused, not generic:
   poll after receiving `group_updated`
 - remote welcome/join lifecycle follow-through and broader governance/admin-role observability are
   still future product work rather than part of this MVP
-
 The shared runtime already has most of the underlying membership machinery:
 
 - membership prep in `prepare_add_members(...)`

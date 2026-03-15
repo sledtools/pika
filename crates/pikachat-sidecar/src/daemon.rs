@@ -5382,6 +5382,10 @@ pub async fn daemon_main(
                 let Some(subscribed_group_id) = group_subs.get(&subscription_id).cloned() else {
                     continue;
                 };
+                // Capture the pre-processing group snapshot so remote commit handling can derive a
+                // before/after membership transition. This adds one joined-group lookup for inbound
+                // subscribed-group events, which is acceptable for the current focused
+                // group-updated MVP.
                 let before_group_snapshot =
                     host.lookup_joined_group_snapshot(&subscribed_group_id).ok();
                 let inbound =

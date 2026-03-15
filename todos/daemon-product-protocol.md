@@ -103,6 +103,10 @@ Current group-update observability is intentionally focused, not generic:
   remote membership commits and remote group-profile metadata messages
 - each event carries the `nostr_group_id`, an update kind, and current member/profile snapshots
   when they are still cheap to query after the mutation or inbound update
+- if a single remote membership commit both adds and removes members, `kind` is still reduced to a
+  single best-effort membership direction (`members_added` or `members_removed`); consumers that
+  need the full truth should diff the snapshot payload rather than treating `kind` as a complete
+  change log
 - `leave_group` emits a lifecycle event without member/profile snapshots because the group is no
   longer joined at that point; the same shape is reused if an inbound remote membership commit
   removes the local member

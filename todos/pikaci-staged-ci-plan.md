@@ -1335,13 +1335,33 @@ We have at least one important Linux Rust lane where:
         - docs/justfile contract checks,
       - the real lane passed locally as `20260312T074905Z-64a134b6`,
       - so the broader `check-pika` family is no longer split between `pikaci` and legacy Linux shell steps,
-    - the workflow and policy shape are now:
+    - the last real staged-remote Linux blocker is now closed as well:
+      - the reduced staged `pika-core` workspace lockfile on this branch had drifted from the actual staged source graph,
+      - specifically, `nix/ci/pika-core-workspace/Cargo.lock` still listed `pika-desktop` without its `pulldown-cmark` crates.io dependency,
+      - that stale lock drift was why `pika-build` failed in `ci.x86_64-linux.workspaceDeps` with `no matching package named pulldown-cmark found`,
+      - regenerating the lock against the real staged workspace shape showed the fix was minimal and specific:
+        - add `pulldown-cmark v0.10.3` to the staged lock,
+        - and add it to the `pika-desktop` dependency list in that same checked-in lock,
+      - after that lock correction, the direct staged remote rerun succeeded on current tip:
+        - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-rust`
+        - run `20260315T213808Z-5031dbf5`
+        - `workspaceDeps` succeeded remotely on `pika-build`,
+        - `workspaceBuild` succeeded remotely on `pika-build`,
+        - `pika-core-messaging-e2e-tests` passed,
+        - `pika-core-lib-app-flows-tests` passed,
+      - that means the old `pulldown-cmark` failure was a real staged-input integrity bug, not a deeper remote-fulfillment or remote-execute instability,
+    - the workflow and policy shape are now finally clean:
       - all required Linux pre-merge job families gate through `pikaci`,
-      - legacy Linux GitHub jobs remain advisory-only comparison signal where they still exist,
+      - the stale advisory legacy Linux GitHub jobs were removed from `.github/workflows/pre-merge.yml`,
       - there is no longer a `check-fixture` carve-out,
+      - and the remaining non-blocking Linux surfaces are the explicit staged-remote/nightly observation paths rather than duplicate legacy required-family jobs,
     - updated Linux-required coverage picture:
       - full under `pikaci`: `check-pika`, `check-pikachat`, `check-pikachat-openclaw-e2e`, `check-agent-contracts`, `check-rmp`, `check-notifications`, `check-fixture`,
       - Linux required coverage under `pikaci`: `7 / 7`,
-    - after this point, the next strategic questions are no longer Linux coverage questions:
-      - whether to keep any advisory legacy Linux jobs around for a short comparison window,
-      - and when to start applying the same replacement pressure to non-Linux / Apple paths.
+      - staged remote `pika-build` path for `pre-merge-pika-rust`: healthy on current tip,
+    - Linux can now be treated as operationally complete for this migration:
+      - required Linux coverage is under `pikaci`,
+      - the staged remote `pika-build` path is green again,
+      - and the remaining strategic questions are no longer Linux-migration cleanup:
+        - when to start applying the same replacement pressure to non-Linux / Apple paths,
+        - and whether later platform work wants a broader daemon/direct-push shape rather than more Linux-specific churn.

@@ -924,40 +924,7 @@ jobs:
             echo "### Linux CI Policy"
             echo
             echo "- All required Linux pre-merge families now gate through <code>pikaci</code>."
-            echo "- Legacy Linux GitHub jobs remain advisory only while we watch parity and flake rate."
           } >> "$GITHUB_STEP_SUMMARY"
-
-  check-pikachat:
-    name: legacy check-pikachat (advisory)
-    needs: [detect-changes]
-    if: needs.detect-changes.outputs.pikachat == 'true'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
-    environment:
-      name: ${{ github.event_name == 'pull_request' && github.actor != 'justinmoon' && github.actor != 'futurepaul' && github.actor != 'AnthonyRonning' && github.actor != 'benthecarman' && github.actor != 'clarkmoody' && 'ci-approval' || 'ci-auto' }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
-          path: /nix
-      - name: Fix /nix ownership
-        run: |
-          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R "$(id -u):$(id -g)" /nix
-          fi
-      - uses: nixbuild/nix-quick-install-action@v30
-
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
-          path: ~/.cargo
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
-          path: target
-
-      - run: nix develop .#default -c just pre-merge-pikachat
 
   check-pikachat-openclaw-e2e:
     name: check-pikachat-openclaw-e2e (pikaci)
@@ -996,96 +963,6 @@ jobs:
           fi
 
       - run: OPENCLAW_DIR=openclaw ./scripts/pikaci-ci-run.sh pre-merge-pikachat-openclaw-e2e
-
-  check-agent-contracts:
-    name: legacy check-agent-contracts (advisory)
-    needs: [detect-changes]
-    if: needs.detect-changes.outputs.agent_contracts == 'true'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
-          path: /nix
-      - name: Fix /nix ownership
-        run: |
-          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R "$(id -u):$(id -g)" /nix
-          fi
-      - uses: nixbuild/nix-quick-install-action@v30
-
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
-          path: ~/.cargo
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
-          path: target
-
-      - run: nix develop .#default -c just pre-merge-agent-contracts
-
-  check-rmp:
-    name: legacy check-rmp (advisory)
-    needs: [detect-changes]
-    if: needs.detect-changes.outputs.rmp == 'true'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
-          path: /nix
-      - name: Fix /nix ownership
-        run: |
-          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R "$(id -u):$(id -g)" /nix
-          fi
-      - uses: nixbuild/nix-quick-install-action@v30
-
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
-          path: ~/.cargo
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
-          path: target
-
-      - run: nix develop .#rmp -c just pre-merge-rmp
-
-  check-notifications:
-    name: legacy check-notifications (advisory)
-    needs: [detect-changes]
-    if: needs.detect-changes.outputs.notifications == 'true'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
-          path: /nix
-      - name: Fix /nix ownership
-        run: |
-          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
-            sudo chown -R "$(id -u):$(id -g)" /nix
-          fi
-      - uses: nixbuild/nix-quick-install-action@v30
-
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
-          path: ~/.cargo
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
-          path: target
-
-      - run: nix develop .#default -c just pre-merge-notifications
 
   check-fixture:
     name: check-fixture (pikaci)
@@ -1187,7 +1064,9 @@ jobs:
           report_advisory_pikaci_lane "check-agent-contracts" "${{ needs.detect-changes.outputs.agent_contracts }}" "${{ needs.shadow-pikaci-pre-merge-agent-contracts.result }}" "${{ needs.shadow-pikaci-pre-merge-agent-contracts.outputs.result }}"
           report_advisory_pikaci_lane "check-rmp" "${{ needs.detect-changes.outputs.rmp }}" "${{ needs.shadow-pikaci-pre-merge-rmp.result }}" "${{ needs.shadow-pikaci-pre-merge-rmp.outputs.result }}"
           report_advisory_pikaci_lane "check-notifications" "${{ needs.detect-changes.outputs.notifications }}" "${{ needs.shadow-pikaci-pre-merge-notifications.result }}" "${{ needs.shadow-pikaci-pre-merge-notifications.outputs.result }}"
-          echo "legacy Linux jobs are advisory; nightly-* jobs remain non-blocking and run only on schedule/manual nightly mode."
+          echo "Non-blocking lanes:"
+          echo "shadow pikaci integration lanes are advisory."
+          echo "nightly-* jobs remain non-blocking and run only on schedule/manual nightly mode."
 
           if [[ -n "$failed" ]]; then
             echo "::error::Failed lanes: $failed"

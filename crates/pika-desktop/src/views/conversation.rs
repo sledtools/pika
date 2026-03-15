@@ -1,7 +1,8 @@
 use base64::Engine as _;
 use iced::widget::{
-    button, column, container, operation, row, scrollable, text, text_input, Space, Stack,
+    button, column, container, operation, row, scrollable, text, text_editor, Space, Stack,
 };
+use iced::widget::text_editor::{Binding, Content, KeyPress};
 use iced::{Alignment, Element, Fill, Task, Theme};
 use pika_core::{CallState, CallStatus, ChatMessage, ChatViewState};
 use std::collections::HashMap;
@@ -18,7 +19,7 @@ const CONVERSATION_SCROLL_ID: &str = "conversation-scroll";
 // ── State ───────────────────────────────────────────────────────────────────
 
 pub struct State {
-    pub message_input: String,
+    pub message_input: Content,
     pub reply_to_message_id: Option<String>,
     pub emoji_picker_message_id: Option<String>,
     pub hovered_message_id: Option<String>,
@@ -31,7 +32,7 @@ pub struct State {
 #[derive(Debug, Clone)]
 #[allow(clippy::enum_variant_names)]
 pub enum Message {
-    MessageChanged(String),
+    EditorAction(text_editor::Action),
     SendMessage,
     SetReplyTarget(String),
     CancelReplyTarget,
@@ -104,7 +105,7 @@ pub enum Event {
 impl State {
     pub fn new() -> Self {
         Self {
-            message_input: String::new(),
+            message_input: Content::new(),
             reply_to_message_id: None,
             emoji_picker_message_id: None,
             hovered_message_id: None,
@@ -118,25 +119,23 @@ impl State {
     /// only case that produces an `iced::Task` the caller must execute.
     pub fn update(&mut self, message: Message) -> (Option<Event>, Option<Task<Message>>) {
         match message {
-            Message::MessageChanged(value) => {
-                let was_empty = self.message_input.trim().is_empty();
-                self.message_input = value;
-                let is_empty = self.message_input.trim().is_empty();
-                if was_empty && !is_empty {
-                    return (Some(Event::TypingStarted), None);
-                }
-                if !is_empty {
+            Message::EditorAction(action) => {
+                let was_empty = self.message_input.text().trim().is_empty();
+                self.message_input.perform(action);
+                let is_empty = self.message_input.text().trim().is_empty();
+                if !is_empty && (was_empty || !is_empty) {
                     return (Some(Event::TypingStarted), None);
                 }
                 (None, None)
             }
             Message::SendMessage => {
-                let content = self.message_input.trim().to_string();
+                let content = self.message_input.text();
+                let content = content.trim().to_string();
                 if content.is_empty() {
                     return (None, None);
                 }
                 let reply_to = self.reply_to_message_id.take();
-                self.message_input.clear();
+                self.message_input = Content::new();
                 self.emoji_picker_message_id = None;
                 (
                     Some(Event::SendMessage {
@@ -442,7 +441,7 @@ impl State {
             .width(Fill);
 
         // ── Input bar ───────────────────────────────────────────────────
-        let send_enabled = !self.message_input.trim().is_empty();
+        let send_enabled = !self.message_input.text().trim().is_empty();
 
         let attach_button = button(
             text(icons::PAPERCLIP)
@@ -505,17 +504,34 @@ impl State {
             })
         };
 
-        let mut msg_input = text_input("Message\u{2026}", &self.message_input)
+        let mut msg_input = text_editor(&self.message_input)
+            .placeholder("Message\u{2026}")
             .padding(10)
-            .width(Fill)
-            .style(theme::dark_input_style);
+            .height(iced::Length::Shrink)
+            .max_height(120)
+            .style(theme::dark_editor_style)
+            .key_binding(|key_press: KeyPress| {
+                let is_enter = matches!(
+                    key_press.key,
+                    iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter)
+                );
+                if is_enter {
+                    if key_press.modifiers.shift() {
+                        // Shift+Enter → insert newline
+                        Some(Binding::Enter)
+                    } else {
+                        // Enter → send message
+                        Some(Binding::Custom(Message::SendMessage))
+                    }
+                } else {
+                    None // use default bindings for everything else
+                }
+            });
 
         // When an overlay (command palette / theme picker) is open, disable the
         // conversation input so it cannot steal focus or intercept key events.
         if !overlay_open {
-            msg_input = msg_input
-                .on_input(Message::MessageChanged)
-                .on_submit(Message::SendMessage);
+            msg_input = msg_input.on_action(Message::EditorAction);
         }
 
         let composer = row![attach_button, msg_input, send_button,]

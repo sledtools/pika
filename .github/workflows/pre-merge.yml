@@ -248,6 +248,11 @@ jobs:
         with:
           key: ${{ github.repository }}-pikaci-cache-v1-${{ runner.os }}
           path: .pikaci/cache
+      - name: Fix .pikaci ownership
+        run: |
+          if [ -d .pikaci ] && [ "$(stat -c %u .pikaci)" != "$(id -u)" ]; then
+            sudo chown -R "$(id -u):$(id -g)" .pikaci
+          fi
 
       - uses: useblacksmith/stickydisk@v1
         with:
@@ -984,6 +989,11 @@ jobs:
         with:
           key: ${{ github.repository }}-pikaci-cache-v1-${{ runner.os }}
           path: .pikaci/cache
+      - name: Fix .pikaci ownership
+        run: |
+          if [ -d .pikaci ] && [ "$(stat -c %u .pikaci)" != "$(id -u)" ]; then
+            sudo chown -R "$(id -u):$(id -g)" .pikaci
+          fi
 
       - run: OPENCLAW_DIR=openclaw ./scripts/pikaci-ci-run.sh pre-merge-pikachat-openclaw-e2e
 
@@ -1100,6 +1110,11 @@ jobs:
         with:
           key: ${{ github.repository }}-pikaci-cache-v1-${{ runner.os }}
           path: .pikaci/cache
+      - name: Fix .pikaci ownership
+        run: |
+          if [ -d .pikaci ] && [ "$(stat -c %u .pikaci)" != "$(id -u)" ]; then
+            sudo chown -R "$(id -u):$(id -g)" .pikaci
+          fi
 
       - run: ./scripts/pikaci-ci-run.sh pre-merge-fixture-rust
 

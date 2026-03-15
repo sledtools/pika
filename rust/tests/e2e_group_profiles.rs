@@ -1,8 +1,8 @@
 //! Focused relay-backed multi-app FFI profile semantics for groups and DMs.
 //!
 //! These tests stay below `pikahut` because they are the clearest owner for per-chat/profile MLS
-//! behavior. `pikahut` should eventually own higher-level deterministic selectors for the most
-//! important user-facing profile flows, but not every narrow semantic edge belongs there.
+//! behavior. `pikahut` now owns the main user-facing deterministic selectors in this family, but
+//! not every narrow semantic/profile-state edge belongs there.
 
 use std::time::Duration;
 
@@ -286,7 +286,10 @@ fn rebroadcasted_group_profiles_reach_late_joiner_member_state() {
 }
 
 #[test]
-fn dm_profile_visible_to_peer() {
+fn dm_profile_override_updates_owner_chat_state() {
+    // `pikahut` now owns the broader DM-local visibility/scoping contract: Bob sees the override
+    // inside the DM and it does not leak into a separate group chat. This test stays as the
+    // narrower semantic owner for the owner-side per-chat profile state that backs that behavior.
     let infra = support::TestInfra::start_relay();
 
     let dir_a = tempdir().unwrap();
@@ -325,7 +328,7 @@ fn dm_profile_visible_to_peer() {
         about: "dm only".to_owned(),
     });
 
-    // Verify Alice sees her own per-chat profile.
+    // Verify Alice sees her own per-chat profile state.
     alice.dispatch(AppAction::OpenChat {
         chat_id: chat_id.clone(),
     });
@@ -335,27 +338,7 @@ fn dm_profile_visible_to_peer() {
             .current_chat
             .as_ref()
             .and_then(|c| c.my_group_profile.as_ref())
-            .map(|p| p.name == "DM Alice")
+            .map(|p| p.name == "DM Alice" && p.about == "dm only")
             .unwrap_or(false)
     });
-
-    // Bob opens the DM and should see Alice's per-chat name.
-    bob.dispatch(AppAction::OpenChat {
-        chat_id: chat_id.clone(),
-    });
-    wait_until(
-        "bob sees alice dm profile name",
-        Duration::from_secs(30),
-        || {
-            bob.state()
-                .current_chat
-                .as_ref()
-                .map(|c| {
-                    c.members
-                        .iter()
-                        .any(|m| m.name.as_deref() == Some("DM Alice"))
-                })
-                .unwrap_or(false)
-        },
-    );
 }

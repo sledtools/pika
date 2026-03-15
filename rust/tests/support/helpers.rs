@@ -98,17 +98,17 @@ pub fn get_logged_in_npub(app: &FfiApp) -> String {
 
 pub fn dm_chat_id_for_peer(app: &FfiApp, peer_npub: &str) -> Option<String> {
     let state = app.state();
-    if let Some(chat) = state
-        .current_chat
-        .as_ref()
-        .filter(|chat| chat.members.iter().any(|member| member.npub == peer_npub))
-    {
+    if let Some(chat) = state.current_chat.as_ref().filter(|chat| {
+        chat.group_name.is_none() && chat.members.iter().any(|member| member.npub == peer_npub)
+    }) {
         return Some(chat.chat_id.clone());
     }
     state
         .chat_list
         .iter()
-        .find(|chat| chat.members.iter().any(|member| member.npub == peer_npub))
+        .find(|chat| {
+            chat.group_name.is_none() && chat.members.iter().any(|member| member.npub == peer_npub)
+        })
         .map(|chat| chat.chat_id.clone())
 }
 

@@ -394,6 +394,21 @@ fn late_joiner_group_profile_visibility_after_refresh_boundary() -> Result<()> {
 }
 
 #[test]
+#[ignore = "deterministic messaging/profile selector"]
+fn dm_local_profile_override_visibility_boundary() -> Result<()> {
+    // Keep the narrower per-chat profile-state semantics in
+    // `rust/tests/e2e_group_profiles.rs`; this selector owns the readable DM-local contract that
+    // the override is visible in the DM and does not leak into a separate chat with the same
+    // peer.
+    let mut context = TestContext::builder("dm-local-profile-override-visibility")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_dm_local_profile_override_visibility(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
 #[ignore = "deterministic post-rebase regression selector"]
 fn post_rebase_invalid_event_rejection_boundary() -> Result<()> {
     // Keep the narrow invalid-invite semantics owned by `rust/tests/e2e_messaging.rs`; this

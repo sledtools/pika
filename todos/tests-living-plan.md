@@ -174,6 +174,12 @@ Working assumptions:
    - `crates/pikahut/tests/support.rs` now drives that selector directly through relay-backed local fixtures and the same `FfiApp` state the apps render: Charlie joins late, existing members refresh their profiles, and Charlie opens the group and sees those member names
    - `rust/tests/e2e_group_profiles.rs` keeps the narrower rebroadcast/member-state semantics underneath that selector and still explicitly owns reciprocal existing-member propagation (`Alice sees Bob`) that the selector does not cover
    - true already-established late-joiner rebroadcast is still not owned by a selector in this harness, so that remains an open profile gap alongside DM-local profile override visibility
+17. Slice 18 finished the DM-local profile side of this family:
+   - `crates/pikahut/tests/integration_deterministic.rs::dm_local_profile_override_visibility_boundary` now gives DM-local profile override visibility a readable deterministic CI-facing owner
+   - `crates/pikahut/tests/support.rs` now drives that selector directly through relay-backed local fixtures and the same `FfiApp` state the apps render: Alice sets a per-chat profile override, Bob sees it inside the DM, and that name does not leak into a separate group chat with the same peer
+   - `rust/tests/e2e_group_profiles.rs` now keeps only the narrower owner-side per-chat profile state for this behavior instead of also owning the broader DM-local visibility/scoping contract
+   - the DM helper in both `rust/tests/support/helpers.rs` and `crates/pikahut/tests/support.rs` now explicitly ignores group chats, so messaging/profile selectors and semantic tests no longer rely on a fuzzy "chat with this peer" lookup
+   - the messaging/profile family is now coherent at the selector layer for the main user-facing flows; the remaining caveat is still the harness-limited true pre-existing late-joiner rebroadcast case, not a broad ownership blur
 ## Progress Update
 
 Completed on 2026-03-10:
@@ -270,13 +276,13 @@ Verified in the repo today:
    - The DM-first-message UX contract is now intentionally split: `pikahut` owns the end-user selector boundary, while this file keeps the narrower semantic state transition underneath it.
 
 3. `rust/tests/e2e_group_profiles.rs`
-   - Owns focused relay-backed multi-app profile semantics: per-group profile visibility, late-joiner rebroadcast into member state, and DM-local profile overrides.
+   - Owns focused relay-backed multi-app profile semantics: per-group profile visibility, late-joiner rebroadcast into member state, reciprocal existing-member profile propagation, and owner-side DM-local profile state.
    - This layer is still the clearest semantic owner today because the tests assert MLS/profile state directly through `FfiApp`.
-   - The late-joiner area is now intentionally split: `pikahut` owns a readable late-joiner visibility-after-refresh contract, while this file keeps the narrower rebroadcast/member-state semantics and the reciprocal existing-member propagation underneath it.
+   - The profile area is now intentionally split: `pikahut` owns the readable user-facing contracts, while this file keeps the narrower rebroadcast/member-state semantics underneath them.
 
 4. `crates/pikahut/tests/integration_deterministic.rs`
    - Owns the CI-facing deterministic selector contract.
-   - For this audit area it now owns one clear end-user messaging contract (`dm_creation_and_first_message_delivery_boundary`) and one readable late-joiner profile visibility-after-refresh contract (`late_joiner_group_profile_visibility_after_refresh_boundary`), plus the narrower post-rebase regression boundaries `post_rebase_invalid_event_rejection_boundary` and `post_rebase_logout_session_convergence_boundary`.
+   - For this audit area it now owns the main readable user-facing contracts: `dm_creation_and_first_message_delivery_boundary`, `late_joiner_group_profile_visibility_after_refresh_boundary`, and `dm_local_profile_override_visibility_boundary`, plus the narrower post-rebase regression boundaries `post_rebase_invalid_event_rejection_boundary` and `post_rebase_logout_session_convergence_boundary`.
    - That split is acceptable when the selector is clearly pinning a narrower Rust semantic owner, but it would be questionable if `pikahut` tried to become a second full owner of every messaging/profile assertion.
 
 5. `ios/UITests/PikaUITests.swift`
@@ -291,8 +297,8 @@ Verified in the repo today:
 7. Obvious redundancies and gaps in this area today:
    - relay-backed multi-app helper logic was duplicated across `rust/tests/e2e_messaging.rs` and `rust/tests/e2e_group_profiles.rs`; this slice collapses that Rust-side duplication into shared `rust/tests/support`
    - similar DM bootstrap helpers still exist in `crates/pikahut/tests/support.rs`, but that duplication is currently intentional because selector-side fixture/orchestration support cannot depend on the private `rust/tests` layer
-   - DM creation plus first-message delivery has a selector-owned deterministic `pikahut` contract, and late-joiner profile visibility now has a selector-owned post-join refresh boundary, but true pre-existing late-joiner rebroadcast and DM-local profile override visibility still live only in `rust/tests/e2e_group_profiles.rs`
-   - the clearest remaining selector gaps are now true already-established late-joiner rebroadcast and DM-local profile override visibility
+   - both helper layers now at least agree on one important boundary: DM lookup excludes group chats with the same peer instead of relying on a fuzzy member-only match
+   - the main user-facing message/profile flows now have selector-owned deterministic `pikahut` contracts; the remaining confusing area is the harness-limited true pre-existing late-joiner rebroadcast case, not general ownership drift across this family
 
 ## Strongest Problems
 

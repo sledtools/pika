@@ -484,6 +484,130 @@ pub fn run_late_joiner_group_profile_visibility_after_refresh(context: &TestCont
     })
 }
 
+// CI-facing readable DM-profile contract: Alice sets a per-chat profile override, Bob sees that
+// name inside the DM, and the override does not leak into a separate group chat with the same peer.
+pub fn run_dm_local_profile_override_visibility(context: &TestContext) -> Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    with_relay_fixture(context, |fixture| {
+        let relay_url = fixture
+            .relay_url()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| anyhow!("fixture manifest missing relay_url"))?;
+
+        let alice_dir = context.state_dir().join("alice");
+        let bob_dir = context.state_dir().join("bob");
+        write_config_with_relay(&alice_dir, &relay_url)?;
+        write_config_with_relay(&bob_dir, &relay_url)?;
+
+        let alice = FfiApp::new(path_arg(&alice_dir), String::new(), String::new());
+        let bob = FfiApp::new(path_arg(&bob_dir), String::new(), String::new());
+
+        alice.dispatch(AppAction::CreateAccount);
+        bob.dispatch(AppAction::CreateAccount);
+        wait_until("alice logged in", Duration::from_secs(10), || {
+            matches!(alice.state().auth, AuthState::LoggedIn { .. })
+        })?;
+        wait_until("bob logged in", Duration::from_secs(10), || {
+            matches!(bob.state().auth, AuthState::LoggedIn { .. })
+        })?;
+
+        let bob_npub = match bob.state().auth {
+            AuthState::LoggedIn { npub, .. } => npub,
+            _ => bail!("bob failed to enter logged-in state"),
+        };
+
+        let dm_chat_id = create_or_open_dm_chat(&alice, &bob_npub, Duration::from_secs(60))?;
+        wait_until("bob sees dm shell", Duration::from_secs(30), || {
+            bob.state()
+                .chat_list
+                .iter()
+                .any(|chat| chat.chat_id == dm_chat_id)
+        })?;
+
+        let group_chat_id = create_group_chat(
+            &alice,
+            &bob_npub,
+            "DmProfileScopeGroup",
+            Duration::from_secs(60),
+        )?;
+        wait_until("bob sees group shell", Duration::from_secs(30), || {
+            bob.state()
+                .chat_list
+                .iter()
+                .any(|chat| chat.chat_id == group_chat_id)
+        })?;
+
+        alice.dispatch(AppAction::SaveGroupProfile {
+            chat_id: dm_chat_id.clone(),
+            name: "DM Alice".to_owned(),
+            about: "dm only".to_owned(),
+        });
+
+        alice.dispatch(AppAction::OpenChat {
+            chat_id: dm_chat_id.clone(),
+        });
+        wait_until(
+            "alice sees own dm-local profile",
+            Duration::from_secs(10),
+            || {
+                alice
+                    .state()
+                    .current_chat
+                    .as_ref()
+                    .and_then(|chat| chat.my_group_profile.as_ref())
+                    .map(|profile| profile.name == "DM Alice" && profile.about == "dm only")
+                    .unwrap_or(false)
+            },
+        )?;
+
+        bob.dispatch(AppAction::OpenChat {
+            chat_id: dm_chat_id.clone(),
+        });
+        wait_until(
+            "bob sees alice dm-local name",
+            Duration::from_secs(30),
+            || {
+                bob.state()
+                    .current_chat
+                    .as_ref()
+                    .map(|chat| {
+                        chat.members
+                            .iter()
+                            .any(|member| member.name.as_deref() == Some("DM Alice"))
+                    })
+                    .unwrap_or(false)
+            },
+        )?;
+
+        bob.dispatch(AppAction::OpenChat {
+            chat_id: group_chat_id.clone(),
+        });
+        wait_until("bob opened group chat", Duration::from_secs(20), || {
+            bob.state()
+                .current_chat
+                .as_ref()
+                .map(|chat| chat.chat_id == group_chat_id)
+                .unwrap_or(false)
+        })?;
+        anyhow::ensure!(
+            bob.state()
+                .current_chat
+                .as_ref()
+                .map(|chat| {
+                    !chat
+                        .members
+                        .iter()
+                        .any(|member| member.name.as_deref() == Some("DM Alice"))
+                })
+                .unwrap_or(false),
+            "dm-local profile override leaked into a separate group chat"
+        );
+
+        Ok(())
+    })
+}
+
 pub fn run_call_with_pikachat_daemon(context: &TestContext) -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -1289,17 +1413,17 @@ fn call_stats_snapshot(app: &FfiApp) -> Result<CallStatsSnapshot> {
 // `rust/tests` support layer that the narrower FFI semantic tests use.
 fn dm_chat_id_for_peer(app: &FfiApp, peer_npub: &str) -> Option<String> {
     let state = app.state();
-    if let Some(chat) = state
-        .current_chat
-        .as_ref()
-        .filter(|chat| chat.members.iter().any(|member| member.npub == peer_npub))
-    {
+    if let Some(chat) = state.current_chat.as_ref().filter(|chat| {
+        chat.group_name.is_none() && chat.members.iter().any(|member| member.npub == peer_npub)
+    }) {
         return Some(chat.chat_id.clone());
     }
     state
         .chat_list
         .iter()
-        .find(|chat| chat.members.iter().any(|member| member.npub == peer_npub))
+        .find(|chat| {
+            chat.group_name.is_none() && chat.members.iter().any(|member| member.npub == peer_npub)
+        })
         .map(|chat| chat.chat_id.clone())
 }
 

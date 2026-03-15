@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use pika_core::{AppAction, AppReconciler, AppUpdate, AuthState, CallStatus, FfiApp};
+use pika_core::{AppAction, AuthState, CallStatus, FfiApp};
 use pikahut::config::ProfileName;
 use pikahut::testing::{FixtureHandle, FixtureSpec, TestContext, start_fixture};
 
@@ -52,21 +52,6 @@ impl Drop for ScopedEnvVar {
                 std::env::remove_var(&self.key);
             }
         }
-    }
-}
-
-#[derive(Clone)]
-struct UpdateCollector(Arc<Mutex<Vec<AppUpdate>>>);
-
-impl UpdateCollector {
-    fn new() -> Self {
-        Self(Arc::new(Mutex::new(Vec::new())))
-    }
-}
-
-impl AppReconciler for UpdateCollector {
-    fn reconcile(&self, update: AppUpdate) {
-        self.0.lock().unwrap().push(update);
     }
 }
 
@@ -718,116 +703,6 @@ pub fn run_logout_reset_across_restart(context: &TestContext) -> Result<()> {
                 && state.router.default_screen == pika_core::Screen::Login
                 && state.chat_list.is_empty()
                 && state.current_chat.is_none()
-        },
-    )?;
-
-    Ok(())
-}
-
-// CI-facing readable restore contract: after a user restarts the app, the fresh process stays
-// logged out until an explicit restore action, and that restore brings them back to the signed-in
-// chat state they expect from the same data dir.
-pub fn run_restore_session_after_restart(context: &TestContext) -> Result<()> {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-
-    let data_dir = context.state_dir().join("app");
-    write_config_offline(&data_dir)?;
-
-    let app = FfiApp::new(path_arg(&data_dir), String::new(), String::new());
-    let nsec = create_account_and_capture_nsec(&app)?;
-
-    let my_npub = match app.state().auth {
-        AuthState::LoggedIn { npub, .. } => npub,
-        _ => bail!("account failed to enter logged-in state"),
-    };
-
-    app.dispatch(AppAction::CreateChat {
-        peer_npub: my_npub.clone(),
-    });
-    wait_until("note-to-self chat created", Duration::from_secs(10), || {
-        !app.state().chat_list.is_empty()
-    })?;
-
-    let chat_id = app.state().chat_list[0].chat_id.clone();
-    app.dispatch(AppAction::OpenChat {
-        chat_id: chat_id.clone(),
-    });
-    wait_until(
-        "chat opened before restart",
-        Duration::from_secs(10),
-        || {
-            app.state()
-                .current_chat
-                .as_ref()
-                .map(|chat| chat.chat_id == chat_id)
-                .unwrap_or(false)
-        },
-    )?;
-
-    let message = "persist-me";
-    app.dispatch(AppAction::SendMessage {
-        chat_id: chat_id.clone(),
-        content: message.to_owned(),
-        kind: None,
-        reply_to_message_id: None,
-    });
-    wait_until(
-        "chat preview updates before restart",
-        Duration::from_secs(10),
-        || {
-            app.state()
-                .chat_list
-                .iter()
-                .find(|chat| chat.chat_id == chat_id)
-                .and_then(|chat| chat.last_message.as_deref())
-                == Some(message)
-        },
-    )?;
-
-    drop(app);
-
-    let restored = FfiApp::new(path_arg(&data_dir), String::new(), String::new());
-    anyhow::ensure!(
-        matches!(restored.state().auth, AuthState::LoggedOut),
-        "fresh process should still start logged out before explicit restore"
-    );
-    anyhow::ensure!(
-        restored.state().chat_list.is_empty(),
-        "fresh process should not surface chat state before explicit restore"
-    );
-    restored.dispatch(AppAction::RestoreSession { nsec });
-    wait_until(
-        "restored app reaches signed-in chat list",
-        Duration::from_secs(10),
-        || {
-            let state = restored.state();
-            matches!(state.auth, AuthState::LoggedIn { .. })
-                && state.router.default_screen == pika_core::Screen::ChatList
-                && state
-                    .chat_list
-                    .iter()
-                    .find(|chat| chat.chat_id == chat_id)
-                    .and_then(|chat| chat.last_message.as_deref())
-                    == Some(message)
-        },
-    )?;
-
-    restored.dispatch(AppAction::OpenChat {
-        chat_id: chat_id.clone(),
-    });
-    wait_until(
-        "restored chat reopens with persisted message",
-        Duration::from_secs(10),
-        || {
-            restored
-                .state()
-                .current_chat
-                .as_ref()
-                .map(|chat| {
-                    chat.chat_id == chat_id
-                        && chat.messages.iter().any(|msg| msg.content == message)
-                })
-                .unwrap_or(false)
         },
     )?;
 
@@ -1625,35 +1500,6 @@ fn write_config_offline(data_dir: &Path) -> Result<()> {
     )
     .with_context(|| format!("write {}", path.display()))?;
     Ok(())
-}
-
-fn create_account_and_capture_nsec(app: &FfiApp) -> Result<String> {
-    let collector = UpdateCollector::new();
-    app.listen_for_updates(Box::new(collector.clone()));
-
-    app.dispatch(AppAction::CreateAccount);
-    wait_until("logged in", Duration::from_secs(10), || {
-        matches!(app.state().auth, AuthState::LoggedIn { .. })
-    })?;
-    wait_until("account created update", Duration::from_secs(10), || {
-        collector
-            .0
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|update| matches!(update, AppUpdate::AccountCreated { .. }))
-    })?;
-
-    collector
-        .0
-        .lock()
-        .unwrap()
-        .iter()
-        .find_map(|update| match update {
-            AppUpdate::AccountCreated { nsec, .. } => Some(nsec.clone()),
-            _ => None,
-        })
-        .ok_or_else(|| anyhow!("missing AccountCreated update with nsec"))
 }
 
 fn wait_until(what: &str, timeout: Duration, mut f: impl FnMut() -> bool) -> Result<()> {

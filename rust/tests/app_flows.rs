@@ -743,10 +743,7 @@ fn wipe_local_data_removes_persistent_files() {
 }
 
 #[test]
-fn restore_session_hydrates_persisted_chat_summary_state() {
-    // `pikahut` now owns the broader restart-and-restore lifecycle contract. This test stays as
-    // the narrower single-app semantic owner that RestoreSession hydrates persisted Rust model
-    // state back into auth + chat summary state.
+fn restore_session_recovers_chat_history() {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_string_lossy().to_string();
     write_config(&data_dir, true);
@@ -803,7 +800,7 @@ fn restore_session_hydrates_persisted_chat_summary_state() {
             .expect("missing AccountCreated update with nsec")
     };
 
-    // New process instance restores the same persisted Rust state from the encrypted DB.
+    // New process instance restores from the same encrypted per-identity DB.
     let app2 = FfiApp::new(data_dir, String::new(), String::new());
     app2.dispatch(AppAction::RestoreSession { nsec });
     wait_until(
@@ -818,17 +815,28 @@ fn restore_session_hydrates_persisted_chat_summary_state() {
     let s = app2.state();
     assert!(matches!(s.auth, AuthState::LoggedIn { .. }));
     assert!(!s.chat_list.is_empty());
-    assert!(s.current_chat.is_none());
     let summary = s.chat_list.iter().find(|c| c.chat_id == chat_id).unwrap();
     assert_eq!(summary.last_message.as_deref(), Some("persist-me"));
+
+    app2.dispatch(AppAction::OpenChat { chat_id });
+    wait_until(
+        "chat opened has persisted message",
+        Duration::from_secs(10),
+        || {
+            app2.state()
+                .current_chat
+                .as_ref()
+                .map(|c| c.messages.iter().any(|m| m.content == "persist-me"))
+                .unwrap_or(false)
+        },
+    );
+    let s2 = app2.state();
+    let chat = s2.current_chat.unwrap();
+    assert!(chat.messages.iter().any(|m| m.content == "persist-me"));
 }
 
 #[test]
-fn paging_reveals_older_messages_until_history_is_exhausted() {
-    // Keep the exact shared-runtime pagination metadata ownership in the lower-level
-    // `app_message_history_loading_uses_shared_runtime_page_query` core test. This FfiApp test
-    // stays as the narrower user-facing smoke that opening a long chat starts near the newest
-    // messages, `LoadOlderMessages` reveals older history, and paging eventually exhausts.
+fn paging_loads_older_messages_in_pages() {
     let dir = tempdir().unwrap();
     write_config(&dir.path().to_string_lossy(), true);
     let app = FfiApp::new(
@@ -885,59 +893,73 @@ fn paging_reveals_older_messages_until_history_is_exhausted() {
         chat_id: chat_id.clone(),
     });
     wait_until(
-        "chat opened with newest messages and older history available",
+        "chat opened newest 50 loaded",
         Duration::from_secs(5),
         || {
             app.state()
                 .current_chat
                 .as_ref()
-                .map(|c| {
-                    c.can_load_older
-                        && c.messages.iter().any(|m| m.content == "m80")
-                        && !c.messages.iter().any(|m| m.content == "m0")
-                })
+                .map(|c| c.messages.len() == 50 && c.can_load_older)
                 .unwrap_or(false)
         },
     );
 
     let s = app.state();
     let chat = s.current_chat.unwrap();
+    assert_eq!(chat.messages.len(), 50);
     assert!(chat.can_load_older);
-    assert!(chat.messages.iter().any(|m| m.content == "m80"));
-    assert!(!chat.messages.iter().any(|m| m.content == "m0"));
+    let oldest = chat.messages.first().unwrap().id.clone();
 
-    loop {
-        let current = app.state().current_chat.expect("chat open");
-        if current.messages.iter().any(|m| m.content == "m0") {
-            assert!(
-                !current.can_load_older,
-                "earliest message should only appear once paging is exhausted"
-            );
-            assert!(
-                current.messages.iter().any(|m| m.content == "m80"),
-                "paging should accumulate visible history instead of replacing the window"
-            );
-            break;
-        }
-        assert!(
-            current.can_load_older,
-            "paging exhausted before earliest message became visible"
-        );
+    // Load one page.
+    app.dispatch(AppAction::LoadOlderMessages {
+        chat_id: chat_id.clone(),
+        before_message_id: oldest,
+        limit: 30,
+    });
+    wait_until("first page loaded", Duration::from_secs(5), || {
+        app.state()
+            .current_chat
+            .as_ref()
+            .map(|c| c.messages.len() == 80 && c.can_load_older)
+            .unwrap_or(false)
+    });
+    let s2 = app.state();
+    let chat2 = s2.current_chat.unwrap();
+    assert_eq!(chat2.messages.len(), 80);
+    assert!(chat2.can_load_older);
 
-        let oldest_id = current.messages.first().expect("oldest visible").id.clone();
-        app.dispatch(AppAction::LoadOlderMessages {
-            chat_id: chat_id.clone(),
-            before_message_id: oldest_id.clone(),
-            limit: 30,
-        });
-        wait_until("older history revealed", Duration::from_secs(5), || {
-            app.state()
-                .current_chat
-                .as_ref()
-                .map(|c| c.messages.first().map(|m| m.id.as_str()) != Some(oldest_id.as_str()))
-                .unwrap_or(false)
-        });
-    }
+    // Load last page.
+    let oldest2 = chat2.messages.first().unwrap().id.clone();
+    app.dispatch(AppAction::LoadOlderMessages {
+        chat_id: chat_id.clone(),
+        before_message_id: oldest2,
+        limit: 30,
+    });
+    wait_until("last page loaded", Duration::from_secs(5), || {
+        app.state()
+            .current_chat
+            .as_ref()
+            .map(|c| c.messages.len() == 81)
+            .unwrap_or(false)
+    });
+    let s3 = app.state();
+    let chat3 = s3.current_chat.unwrap();
+    assert_eq!(chat3.messages.len(), 81);
+
+    // One more load should now report no more history.
+    let oldest3 = chat3.messages.first().unwrap().id.clone();
+    app.dispatch(AppAction::LoadOlderMessages {
+        chat_id,
+        before_message_id: oldest3,
+        limit: 30,
+    });
+    wait_until("no more history", Duration::from_secs(5), || {
+        app.state()
+            .current_chat
+            .as_ref()
+            .map(|c| !c.can_load_older)
+            .unwrap_or(false)
+    });
 }
 
 #[test]

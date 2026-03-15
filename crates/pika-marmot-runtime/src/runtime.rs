@@ -941,6 +941,40 @@ impl<'a> RuntimeCommands<'a> {
         self.prepare_add_members(&group.mls_group_id, key_package_events)
     }
 
+    pub fn prepare_remove_members(
+        &self,
+        mls_group_id: &GroupId,
+        removed_pubkeys: &[PublicKey],
+    ) -> Result<PreparedMembershipEvolution> {
+        MembershipRuntime::new(self.mdk).prepare_remove_members(mls_group_id, removed_pubkeys)
+    }
+
+    pub fn prepare_remove_members_for_nostr_group_id(
+        &self,
+        nostr_group_id_hex: &str,
+        removed_pubkeys: &[PublicKey],
+    ) -> Result<PreparedMembershipEvolution> {
+        let group =
+            RuntimeQueries::new(self.mdk).lookup_joined_group_snapshot(nostr_group_id_hex)?;
+        self.prepare_remove_members(&group.mls_group_id, removed_pubkeys)
+    }
+
+    pub fn prepare_leave_group(
+        &self,
+        mls_group_id: &GroupId,
+    ) -> Result<PreparedMembershipEvolution> {
+        MembershipRuntime::new(self.mdk).prepare_leave_group(mls_group_id)
+    }
+
+    pub fn prepare_leave_group_for_nostr_group_id(
+        &self,
+        nostr_group_id_hex: &str,
+    ) -> Result<PreparedMembershipEvolution> {
+        let group =
+            RuntimeQueries::new(self.mdk).lookup_joined_group_snapshot(nostr_group_id_hex)?;
+        self.prepare_leave_group(&group.mls_group_id)
+    }
+
     pub fn prepare_evolution(
         &self,
         mls_group_id: GroupId,
@@ -1515,6 +1549,39 @@ impl<'a> MarmotRuntime<'a> {
     ) -> Result<PreparedMembershipEvolution> {
         self.commands()
             .prepare_add_members_for_nostr_group_id(nostr_group_id_hex, key_package_events)
+    }
+
+    pub fn prepare_remove_members(
+        &self,
+        mls_group_id: &GroupId,
+        removed_pubkeys: &[PublicKey],
+    ) -> Result<PreparedMembershipEvolution> {
+        self.commands()
+            .prepare_remove_members(mls_group_id, removed_pubkeys)
+    }
+
+    pub fn prepare_remove_members_for_nostr_group_id(
+        &self,
+        nostr_group_id_hex: &str,
+        removed_pubkeys: &[PublicKey],
+    ) -> Result<PreparedMembershipEvolution> {
+        self.commands()
+            .prepare_remove_members_for_nostr_group_id(nostr_group_id_hex, removed_pubkeys)
+    }
+
+    pub fn prepare_leave_group(
+        &self,
+        mls_group_id: &GroupId,
+    ) -> Result<PreparedMembershipEvolution> {
+        self.commands().prepare_leave_group(mls_group_id)
+    }
+
+    pub fn prepare_leave_group_for_nostr_group_id(
+        &self,
+        nostr_group_id_hex: &str,
+    ) -> Result<PreparedMembershipEvolution> {
+        self.commands()
+            .prepare_leave_group_for_nostr_group_id(nostr_group_id_hex)
     }
 
     pub fn prepare_evolution(
@@ -3145,6 +3212,88 @@ mod tests {
                 .expect("welcome delivery")
                 .recipients,
             vec![peer_keys.public_key()]
+        );
+    }
+
+    #[test]
+    fn runtime_commands_prepare_remove_members_through_explicit_boundary() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir);
+        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let created = inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData::new(
+                    "runtime remove members test".to_string(),
+                    String::new(),
+                    None,
+                    None,
+                    None,
+                    vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+                    vec![inviter_keys.public_key(), invitee_keys.public_key()],
+                ),
+            )
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
+        let commands = RuntimeCommands::new(&inviter_mdk);
+
+        let prepared = commands
+            .prepare_remove_members(&created.group.mls_group_id, &[invitee_keys.public_key()])
+            .expect("prepare remove members");
+
+        assert!(prepared.added_pubkeys.is_empty());
+        assert!(prepared.welcome_rumors.is_empty());
+        assert_eq!(
+            prepared.nostr_group_id_hex,
+            hex::encode(created.group.nostr_group_id)
+        );
+    }
+
+    #[test]
+    fn runtime_commands_prepare_leave_group_through_explicit_boundary() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = open_test_mdk(&inviter_dir);
+        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let created = inviter_mdk
+            .create_group(
+                &inviter_keys.public_key(),
+                vec![invitee_kp],
+                NostrGroupConfigData::new(
+                    "runtime leave group test".to_string(),
+                    String::new(),
+                    None,
+                    None,
+                    None,
+                    vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+                    vec![inviter_keys.public_key(), invitee_keys.public_key()],
+                ),
+            )
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
+        let commands = RuntimeCommands::new(&inviter_mdk);
+
+        let prepared = commands
+            .prepare_leave_group(&created.group.mls_group_id)
+            .expect("prepare leave group");
+
+        assert!(prepared.added_pubkeys.is_empty());
+        assert!(prepared.welcome_rumors.is_empty());
+        assert_eq!(
+            prepared.nostr_group_id_hex,
+            hex::encode(created.group.nostr_group_id)
         );
     }
 

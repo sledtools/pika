@@ -57,8 +57,8 @@ use crate::acp::{AcpBackendConfig, AcpBackendManager, AcpTurnCompletion};
 use crate::call_audio::OpusToAudioPipeline;
 use crate::call_tts::synthesize_tts_pcm;
 use crate::protocol::{
-    AddMembersResultOut, DaemonCmd, GroupMemberOut, InCmd, ListMembersResultOut,
-    MediaAttachmentOut, OutMsg, out_error, out_ok,
+    AddMembersResultOut, DaemonCmd, GroupMemberOut, InCmd, LeaveGroupResultOut,
+    ListMembersResultOut, MediaAttachmentOut, OutMsg, RemoveMembersResultOut, out_error, out_ok,
 };
 use host_context::{DaemonHostContext, DaemonPrepareError};
 
@@ -520,12 +520,20 @@ where
         }
     };
 
-    if let Some(merge_error) = result.merge_error.clone() {
+    let pika_marmot_runtime::membership::MembershipUpdateResult {
+        mls_group_id: _,
+        nostr_group_id_hex,
+        added_pubkeys,
+        merge_error,
+        welcome_delivery,
+    } = result;
+
+    if let Some(merge_error) = merge_error {
         let mapped = DaemonMembershipWorkflowError::merge_failed(merge_error);
         return out_error(request_id, mapped.code, mapped.message);
     }
 
-    let welcome_delivery_count = if let Some(plan) = result.welcome_delivery.clone() {
+    let welcome_delivery_count = if let Some(plan) = welcome_delivery {
         match publish_welcome_rumors(
             keys,
             &plan.welcome_rumors,
@@ -545,7 +553,7 @@ where
         0
     };
 
-    let member_count = match host.lookup_joined_group_snapshot(&result.nostr_group_id_hex) {
+    let member_count = match host.lookup_joined_group_snapshot(&nostr_group_id_hex) {
         Ok(snapshot) => snapshot.member_count(),
         Err(err) => {
             let mapped = DaemonMembershipWorkflowError::runtime(format!(
@@ -556,9 +564,8 @@ where
     };
 
     let result = AddMembersResultOut {
-        nostr_group_id: result.nostr_group_id_hex,
-        added_pubkeys: result
-            .added_pubkeys
+        nostr_group_id: nostr_group_id_hex,
+        added_pubkeys: added_pubkeys
             .into_iter()
             .map(|pubkey| pubkey.to_hex())
             .collect(),
@@ -646,6 +653,211 @@ fn handle_list_members_request(
         request_id,
         Some(serde_json::to_value(result).expect("serialize list_members result")),
     )
+}
+
+async fn handle_remove_members_request_with<Publish, PublishFut>(
+    request_id: Option<String>,
+    host: &DaemonHostContext<'_>,
+    nostr_group_id: &str,
+    peer_pubkeys: &[String],
+    mut publish_event: Publish,
+) -> OutMsg
+where
+    Publish: FnMut(Event, &'static str) -> PublishFut,
+    PublishFut: Future<Output = anyhow::Result<()>>,
+{
+    let requested_pubkeys = match normalize_requested_member_pubkeys(peer_pubkeys) {
+        Ok(pubkeys) => pubkeys,
+        Err(err) => return out_error(request_id, err.code, err.message),
+    };
+    let removed_pubkeys: Vec<String> = requested_pubkeys
+        .iter()
+        .map(|pubkey| pubkey.to_hex())
+        .collect();
+
+    let prepared = match host.prepare_remove_members(nostr_group_id, &requested_pubkeys) {
+        Ok(prepared) => prepared,
+        Err(DaemonPrepareError::BadGroup(err)) => {
+            let mapped = DaemonMembershipWorkflowError::bad_group(format!("{err:#}"));
+            return out_error(request_id, mapped.code, mapped.message);
+        }
+        Err(DaemonPrepareError::Prepare(err)) => {
+            let mapped = DaemonMembershipWorkflowError::mdk(err);
+            return out_error(request_id, mapped.code, mapped.message);
+        }
+    };
+
+    let publish_status =
+        match publish_event(prepared.evolution_event.clone(), "remove_members").await {
+            Ok(()) => pika_marmot_runtime::membership::EvolutionPublishStatus::Published,
+            Err(err) => pika_marmot_runtime::membership::EvolutionPublishStatus::PublishFailed(
+                format!("{err:#}"),
+            ),
+        };
+
+    let result = match host
+        .complete_membership_evolution_operation(prepared, publish_status)
+        .into_membership_evolution_result()
+    {
+        Ok(result) => result,
+        Err(err) => {
+            let mapped = DaemonMembershipWorkflowError::publish_failed(err);
+            return out_error(request_id, mapped.code, mapped.message);
+        }
+    };
+
+    let pika_marmot_runtime::membership::MembershipUpdateResult {
+        mls_group_id: _,
+        nostr_group_id_hex,
+        added_pubkeys: _,
+        merge_error,
+        welcome_delivery: _,
+    } = result;
+
+    if let Some(merge_error) = merge_error {
+        let mapped = DaemonMembershipWorkflowError::merge_failed(merge_error);
+        return out_error(request_id, mapped.code, mapped.message);
+    }
+
+    let member_count = match host.lookup_joined_group_snapshot(&nostr_group_id_hex) {
+        Ok(snapshot) => snapshot.member_count(),
+        Err(err) => {
+            let mapped = DaemonMembershipWorkflowError::runtime(format!(
+                "lookup joined group after remove_members: {err:#}"
+            ));
+            return out_error(request_id, mapped.code, mapped.message);
+        }
+    };
+
+    let result = RemoveMembersResultOut {
+        nostr_group_id: nostr_group_id_hex,
+        removed_pubkeys,
+        member_count,
+    };
+    out_ok(
+        request_id,
+        Some(serde_json::to_value(result).expect("serialize remove_members result")),
+    )
+}
+
+async fn handle_remove_members_request(
+    request_id: Option<String>,
+    host: &DaemonHostContext<'_>,
+    client: &Client,
+    relay_urls: &[RelayUrl],
+    nostr_group_id: &str,
+    peer_pubkeys: &[String],
+) -> OutMsg {
+    if relay_urls.is_empty() {
+        let err = DaemonMembershipWorkflowError::bad_relays("no relays configured");
+        return out_error(request_id, err.code, err.message);
+    }
+
+    handle_remove_members_request_with(
+        request_id,
+        host,
+        nostr_group_id,
+        peer_pubkeys,
+        |event, label| {
+            let client = client.clone();
+            let relay_urls = relay_urls.to_vec();
+            async move {
+                publish_and_confirm_multi(&client, &relay_urls, &event, label)
+                    .await
+                    .map(|_| ())
+            }
+        },
+    )
+    .await
+}
+
+async fn leave_group_result_with<Publish, PublishFut>(
+    host: &DaemonHostContext<'_>,
+    nostr_group_id: &str,
+    mut publish_event: Publish,
+) -> Result<LeaveGroupResultOut, DaemonMembershipWorkflowError>
+where
+    Publish: FnMut(Event, &'static str) -> PublishFut,
+    PublishFut: Future<Output = anyhow::Result<()>>,
+{
+    let prepared = match host.prepare_leave_group(nostr_group_id) {
+        Ok(prepared) => prepared,
+        Err(DaemonPrepareError::BadGroup(err)) => {
+            return Err(DaemonMembershipWorkflowError::bad_group(format!("{err:#}")));
+        }
+        Err(DaemonPrepareError::Prepare(err)) => {
+            return Err(DaemonMembershipWorkflowError::mdk(err));
+        }
+    };
+
+    let publish_status = match publish_event(prepared.evolution_event.clone(), "leave_group").await
+    {
+        Ok(()) => pika_marmot_runtime::membership::EvolutionPublishStatus::Published,
+        Err(err) => pika_marmot_runtime::membership::EvolutionPublishStatus::PublishFailed(
+            format!("{err:#}"),
+        ),
+    };
+
+    let result = host
+        .complete_membership_evolution_operation(prepared, publish_status)
+        .into_membership_evolution_result()
+        .map_err(DaemonMembershipWorkflowError::publish_failed)?;
+
+    if let Some(merge_error) = result.merge_error {
+        return Err(DaemonMembershipWorkflowError::merge_failed(merge_error));
+    }
+
+    Ok(LeaveGroupResultOut {
+        nostr_group_id: result.nostr_group_id_hex,
+    })
+}
+
+async fn handle_leave_group_request(
+    request_id: Option<String>,
+    host: &DaemonHostContext<'_>,
+    client: &Client,
+    relay_urls: &[RelayUrl],
+    nostr_group_id: &str,
+) -> OutMsg {
+    if relay_urls.is_empty() {
+        let err = DaemonMembershipWorkflowError::bad_relays("no relays configured");
+        return out_error(request_id, err.code, err.message);
+    }
+
+    match leave_group_result_with(host, nostr_group_id, |event, label| {
+        let client = client.clone();
+        let relay_urls = relay_urls.to_vec();
+        async move {
+            publish_and_confirm_multi(&client, &relay_urls, &event, label)
+                .await
+                .map(|_| ())
+        }
+    })
+    .await
+    {
+        Ok(result) => out_ok(
+            request_id,
+            Some(serde_json::to_value(result).expect("serialize leave_group result")),
+        ),
+        Err(err) => out_error(request_id, err.code, err.message),
+    }
+}
+
+async fn unsubscribe_group_subscriptions(
+    client: &Client,
+    group_subs: &mut HashMap<SubscriptionId, String>,
+    nostr_group_id: &str,
+) {
+    let stale_sub_ids: Vec<SubscriptionId> = group_subs
+        .iter()
+        .filter(|(_, group_id)| group_id.as_str() == nostr_group_id)
+        .map(|(sub_id, _)| sub_id.clone())
+        .collect();
+
+    for sub_id in stale_sub_ids {
+        let _ = client.unsubscribe(&sub_id).await;
+        group_subs.remove(&sub_id);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2853,6 +3065,44 @@ pub async fn daemon_main(
                         let _ = reply_tx
                             .send(handle_list_members_request(request_id, &host, &nostr_group_id));
                     }
+                    InCmd::RemoveMembers {
+                        request_id,
+                        nostr_group_id,
+                        peer_pubkeys,
+                    } => {
+                        let host =
+                            DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let reply = handle_remove_members_request(
+                            request_id,
+                            &host,
+                            &client,
+                            &relay_urls,
+                            &nostr_group_id,
+                            &peer_pubkeys,
+                        )
+                        .await;
+                        let _ = reply_tx.send(reply);
+                    }
+                    InCmd::LeaveGroup {
+                        request_id,
+                        nostr_group_id,
+                    } => {
+                        let host =
+                            DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let reply = handle_leave_group_request(
+                            request_id.clone(),
+                            &host,
+                            &client,
+                            &relay_urls,
+                            &nostr_group_id,
+                        )
+                        .await;
+                        if matches!(reply, OutMsg::Ok { .. }) {
+                            unsubscribe_group_subscriptions(&client, &mut group_subs, &nostr_group_id)
+                                .await;
+                        }
+                        let _ = reply_tx.send(reply);
+                    }
                     InCmd::GetMessages { request_id, nostr_group_id, limit } => {
                         let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
                         let query =
@@ -3954,18 +4204,10 @@ pub async fn daemon_main(
                         {
                             Ok(ev) => ev,
                             Err(e) => {
-                                let (code, message) = if e
-                                    .chain()
-                                    .any(|cause| cause.to_string().contains("no keypackage found for"))
-                                {
-                                    (
-                                        "no_key_packages",
-                                        "no key package found for peer".to_string(),
-                                    )
-                                } else {
-                                    ("fetch_failed", format!("fetch key package: {e:#}"))
-                                };
-                                reply_tx.send(out_error(request_id, code, message)).ok();
+                                let mapped = map_member_key_package_fetch_error(&peer_pubkey, &e);
+                                reply_tx
+                                    .send(out_error(request_id, mapped.code, mapped.message))
+                                    .ok();
                                 continue;
                             }
                         };
@@ -5513,6 +5755,163 @@ mod tests {
         assert_eq!(request_id.as_deref(), Some("req-4"));
         assert_eq!(code, "bad_group_id");
         assert!(message.contains("deadbeef") || message.contains("group"));
+    }
+
+    #[tokio::test]
+    async fn daemon_remove_members_request_succeeds_on_production_handler() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Daemon remove members request".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
+
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+
+        let reply = handle_remove_members_request_with(
+            Some("req-remove".to_string()),
+            &host,
+            &hex::encode(created.group.nostr_group_id),
+            &[invitee_keys.public_key().to_hex()],
+            |_event, _label| async move { Ok(()) },
+        )
+        .await;
+
+        let OutMsg::Ok {
+            request_id,
+            result: Some(result),
+        } = reply
+        else {
+            panic!("expected successful remove_members reply");
+        };
+        assert_eq!(request_id.as_deref(), Some("req-remove"));
+        let result: RemoveMembersResultOut =
+            serde_json::from_value(result).expect("deserialize remove_members result");
+        assert_eq!(
+            result.nostr_group_id,
+            hex::encode(created.group.nostr_group_id)
+        );
+        assert_eq!(
+            result.removed_pubkeys,
+            vec![invitee_keys.public_key().to_hex()]
+        );
+        assert_eq!(result.member_count, 1);
+    }
+
+    #[tokio::test]
+    async fn daemon_remove_members_request_rejects_invalid_pubkey() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let keys = Keys::generate();
+        let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let mdk = crate::open_mdk(dir.path()).expect("open mdk");
+        let host = test_host(&mdk, &keys, &client, &relay_urls);
+
+        let reply = handle_remove_members_request_with(
+            Some("req-remove-bad".to_string()),
+            &host,
+            "deadbeef",
+            &["not-a-pubkey".to_string()],
+            |_event, _label| async move { Ok(()) },
+        )
+        .await;
+
+        let OutMsg::Error {
+            request_id,
+            code,
+            message,
+        } = reply
+        else {
+            panic!("expected remove_members error reply");
+        };
+        assert_eq!(request_id.as_deref(), Some("req-remove-bad"));
+        assert_eq!(code, "bad_pubkey");
+        assert!(message.contains("invalid peer_pubkey"));
+    }
+
+    #[tokio::test]
+    async fn daemon_leave_group_request_succeeds_on_production_handler() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Daemon leave group request".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
+
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+
+        let result = leave_group_result_with(
+            &host,
+            &hex::encode(created.group.nostr_group_id),
+            |_event, _label| async move { Ok(()) },
+        )
+        .await
+        .expect("leave group result");
+
+        assert_eq!(
+            result.nostr_group_id,
+            hex::encode(created.group.nostr_group_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn daemon_leave_group_request_rejects_unknown_group() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let keys = Keys::generate();
+        let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let mdk = crate::open_mdk(dir.path()).expect("open mdk");
+        let host = test_host(&mdk, &keys, &client, &relay_urls);
+
+        let err =
+            leave_group_result_with(&host, "deadbeef", |_event, _label| async move { Ok(()) })
+                .await
+                .expect_err("leave group should fail for unknown group");
+
+        assert_eq!(err.code, "bad_group_id");
+        assert!(err.message.contains("deadbeef") || err.message.contains("group"));
     }
 
     #[tokio::test]

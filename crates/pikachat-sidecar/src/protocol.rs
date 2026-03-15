@@ -44,6 +44,17 @@ pub enum InCmd {
         request_id: Option<String>,
         nostr_group_id: String,
     },
+    RemoveMembers {
+        #[serde(default)]
+        request_id: Option<String>,
+        nostr_group_id: String,
+        peer_pubkeys: Vec<String>,
+    },
+    LeaveGroup {
+        #[serde(default)]
+        request_id: Option<String>,
+        nostr_group_id: String,
+    },
     HypernoteCatalog {
         #[serde(default)]
         request_id: Option<String>,
@@ -311,6 +322,18 @@ pub struct ListMembersResultOut {
     pub member_count: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoveMembersResultOut {
+    pub nostr_group_id: String,
+    pub removed_pubkeys: Vec<String>,
+    pub member_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LeaveGroupResultOut {
+    pub nostr_group_id: String,
+}
+
 /// Wrapper that optionally carries a per-command response sender for socket connections.
 pub struct DaemonCmd {
     pub cmd: InCmd,
@@ -468,6 +491,49 @@ mod tests {
                 assert_eq!(nostr_group_id, "aa");
             }
             other => panic!("expected ListMembers, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_remove_members_cmd() {
+        let json = r#"{
+            "cmd": "remove_members",
+            "request_id": "r-remove",
+            "nostr_group_id": "aa",
+            "peer_pubkeys": ["npub1foo", "abcdef"]
+        }"#;
+        let cmd: InCmd = serde_json::from_str(json).expect("deserialize");
+        match cmd {
+            InCmd::RemoveMembers {
+                request_id,
+                nostr_group_id,
+                peer_pubkeys,
+            } => {
+                assert_eq!(request_id.as_deref(), Some("r-remove"));
+                assert_eq!(nostr_group_id, "aa");
+                assert_eq!(peer_pubkeys, vec!["npub1foo", "abcdef"]);
+            }
+            other => panic!("expected RemoveMembers, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_leave_group_cmd() {
+        let json = r#"{
+            "cmd": "leave_group",
+            "request_id": "r-leave",
+            "nostr_group_id": "aa"
+        }"#;
+        let cmd: InCmd = serde_json::from_str(json).expect("deserialize");
+        match cmd {
+            InCmd::LeaveGroup {
+                request_id,
+                nostr_group_id,
+            } => {
+                assert_eq!(request_id.as_deref(), Some("r-leave"));
+                assert_eq!(nostr_group_id, "aa");
+            }
+            other => panic!("expected LeaveGroup, got {other:?}"),
         }
     }
 

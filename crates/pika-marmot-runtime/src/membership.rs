@@ -74,6 +74,38 @@ impl<'a> MembershipRuntime<'a> {
         )
     }
 
+    pub fn prepare_remove_members(
+        &self,
+        mls_group_id: &GroupId,
+        removed_pubkeys: &[PublicKey],
+    ) -> Result<PreparedMembershipEvolution> {
+        let result = self
+            .mdk
+            .remove_members(mls_group_id, removed_pubkeys)
+            .context("remove members")?;
+
+        self.prepare_evolution(
+            mls_group_id.clone(),
+            result.evolution_event,
+            None,
+            Vec::new(),
+        )
+    }
+
+    pub fn prepare_leave_group(
+        &self,
+        mls_group_id: &GroupId,
+    ) -> Result<PreparedMembershipEvolution> {
+        let result = self.mdk.leave_group(mls_group_id).context("leave group")?;
+
+        self.prepare_evolution(
+            mls_group_id.clone(),
+            result.evolution_event,
+            None,
+            Vec::new(),
+        )
+    }
+
     pub fn prepare_evolution(
         &self,
         mls_group_id: GroupId,
@@ -251,6 +283,39 @@ mod tests {
                 .recipients,
             vec![peer_keys.public_key()]
         );
+    }
+
+    #[test]
+    fn prepare_remove_members_returns_publishable_evolution_without_welcomes() {
+        let (_inviter_dir, _invitee_dir, inviter_mdk, group_id, inviter_keys) = create_base_group();
+        let members = inviter_mdk
+            .get_members(&group_id)
+            .expect("get members before removal");
+        let peer_pubkey = members
+            .into_iter()
+            .find(|pubkey| *pubkey != inviter_keys.public_key())
+            .expect("invitee pubkey");
+
+        let prepared = MembershipRuntime::new(&inviter_mdk)
+            .prepare_remove_members(&group_id, &[peer_pubkey])
+            .expect("prepare remove members");
+
+        assert!(prepared.added_pubkeys.is_empty());
+        assert!(prepared.welcome_rumors.is_empty());
+        assert_eq!(prepared.evolution_event.kind, Kind::MlsGroupMessage);
+    }
+
+    #[test]
+    fn prepare_leave_group_returns_publishable_evolution_without_welcomes() {
+        let (_inviter_dir, _invitee_dir, inviter_mdk, group_id, _keys) = create_base_group();
+
+        let prepared = MembershipRuntime::new(&inviter_mdk)
+            .prepare_leave_group(&group_id)
+            .expect("prepare leave group");
+
+        assert!(prepared.added_pubkeys.is_empty());
+        assert!(prepared.welcome_rumors.is_empty());
+        assert_eq!(prepared.evolution_event.kind, Kind::MlsGroupMessage);
     }
 
     #[tokio::test]

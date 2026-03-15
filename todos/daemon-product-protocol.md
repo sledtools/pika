@@ -55,6 +55,8 @@ The current native daemon protocol already supports real production commands for
 - group list + message history read
 - member listing
 - group membership add
+- group membership remove
+- leave group
 - message send
 - media send
 - typing send
@@ -65,7 +67,6 @@ The current native daemon protocol does **not** expose real production commands 
 
 - other membership/group evolution operations
 - group profile updates
-- leave/remove flows
 - explicit group-update eventing
 
 The shared runtime already has most of the underlying membership machinery:
@@ -195,11 +196,11 @@ What should remain daemon-local:
 
 ## Likely Follow-On Commands
 
-After `add_members` / `list_members`, the next most likely protocol candidates are:
+After the membership/group-management MVP, the next most likely protocol candidates are:
 
 1. `update_group_profile`
-2. `leave_group`
-3. remove-member / admin-role changes if product needs them
+2. admin-role changes if product needs them
+3. richer group-update observability if product consumers need push state
 
 I would not start with all of these at once.
 
@@ -247,7 +248,7 @@ Highest-value current request-level gaps:
 
 ### Phase A: Expand Beyond Membership MVP
 
-1. Keep `add_members` / `list_members` stable
+1. Keep `add_members` / `list_members` / `remove_members` / `leave_group` stable
 2. Add the next highest-value production mutation
 3. Reuse the same shared membership/group runtime seams
 4. Keep daemon-local error mapping explicit and stable
@@ -279,21 +280,17 @@ Acceptance:
 
 ## Open Questions
 
-These are the main questions I still want answered before we lock the first implementation slice:
+These are the main questions I still want answered as we broaden the daemon product surface:
 
 1. Should the daemon aim to be a generally complete first-party product surface for group
    management, or just enough for agent/automation use cases?
 
-2. For `add_members`, do we want the request surface to accept:
-   - raw pubkeys only
-   - npubs too
-   - or one canonical form only?
+2. The membership commands currently accept whatever `PublicKey::parse(...)` accepts, which is
+   convenient but not a tightly-specified product contract yet. Do we want to freeze that, or
+   eventually narrow the protocol to one canonical input form?
 
 3. Do we want membership changes to remain request/response only at first, or do we want to add a
    daemon event like `group_updated` as part of the first slice?
-
-4. Is `list_members` required immediately for the consumer you have in mind, or can it wait until
-   after `add_members` lands?
 
 ## Non-Goals
 

@@ -185,6 +185,23 @@ Working assumptions:
    - that selector now proves the readable Rust-owned reset story here: logout clears app state, and a fresh `FfiApp` from the same data dir still starts logged out with no surfaced chat state until some outer layer explicitly restores a session
    - `rust/tests/app_flows.rs` now keeps the narrower immediate runtime-reset semantics in `logout_clears_runtime_state` instead of also carrying the broader relaunch-readable contract
    - the iOS and Android local logout/relaunch tests are now labeled more honestly as platform shell/auth-store smoke, and `ios/Tests/AppManagerTests.swift` now says explicitly that stored-auth restore dispatch is native glue ownership rather than the owner of Rust restore semantics
+19. Slice 20 finished the restore side of that same auth/session family:
+   - `crates/pikahut/tests/integration_deterministic.rs::session_restore_after_restart_boundary` now gives restore-across-relaunch a readable deterministic CI-facing owner instead of leaving it mainly in `rust/tests/app_flows.rs`
+   - `crates/pikahut/tests/support.rs` now drives that selector directly through the same `FfiApp` surface the apps exercise: create account, create note-to-self state, restart from the same data dir, prove the fresh process is still logged out until explicit restore, then verify the signed-in chat list plus persisted message come back
+   - `rust/tests/app_flows.rs` now keeps the narrower restored-state semantic owner in `restore_session_hydrates_persisted_chat_summary_state`: after `RestoreSession`, auth and chat summary state are hydrated back into the Rust model without reasserting the full relaunch-and-reopen user contract
+   - the auth/session/persistence family now has a coherent ownership split: `pikahut` owns readable logout/reset and restore/relaunch contracts, `app_flows.rs` keeps the narrower runtime-reset and persisted-state semantics underneath them, and native tests stay as platform shell/auth-store glue smoke
+20. Slice 21 tackled the recurring paging flake in `rust/tests/app_flows.rs`:
+   - the actual flake mechanism was that `paging_loads_older_messages_in_pages` tried to own exact page-count behavior (`50 -> 80 -> 81`) at the asynchronous `FfiApp` layer, where chat open + paging state is rebuilt through actor-driven projection and local outbox/storage merging
+   - that made the test a brittle second owner of exact pagination metadata that the lower-level core test `app_message_history_loading_uses_shared_runtime_page_query` already covers more deterministically
+   - `rust/tests/app_flows.rs` now keeps the narrower end-user paging smoke in `paging_reveals_older_messages_until_history_is_exhausted`: opening a long chat starts near the newest messages, `LoadOlderMessages` reveals older history without replacing already-visible messages, and paging eventually reaches the earliest message with `can_load_older == false`
+   - `just pre-merge-pika` no longer carries the stale skip for the removed test name, so the stabilized replacement now actually runs in the checked-in pre-merge recipe instead of changing CI behavior implicitly
+   - this reduces the flake rather than inventing a larger harness rewrite; exact shared-runtime page counts stay owned below the `FfiApp` layer, while the app-facing test now asserts the contract users actually feel
+21. Slice 22 tackled the recurring OpenClaw autostart timeout flake in `crates/pika-agent-microvm/src/lib.rs::openclaw_autostart_reports_keypackage_publish_timeout_separately_from_service_timeout`:
+   - the actual flake mechanism was that the timeout case stopped exercising the real OpenClaw readiness contract: it swapped the test onto a special `log_contains` ready-log path, then waited a full 30-second timeout for a dedicated keypackage failure reason
+   - that made the owner both slower and more brittle than it needed to be, because it depended on a harness-only readiness shortcut instead of the same `/health` probe path the real OpenClaw startup plan uses
+   - the timeout scenario now stays on the normal OpenClaw `http_get_ok` readiness path, forces deterministic curl success through the fake harness, and uses a short dedicated timeout window for the always-fail keypackage publish branch
+   - the test now also asserts that the health-check path actually ran and that the failed marker reports the dedicated OpenClaw keypackage timeout rather than the service-health timeout
+   - this should materially reduce the flake without broad harness work; if it recurs, the next step should be a smaller autostart-script harness unit, not another longer timeout on the mixed readiness path
 ## Progress Update
 
 Completed on 2026-03-10:
@@ -357,8 +374,9 @@ Verified in the repo today:
    - We should keep watching for native logic drift, but the highest-value remaining cleanup is now policy/alignment work rather than another Rust-side ownership seam.
 
 10. We should keep a short explicit list of recurring flakes even when another branch temporarily disables them.
-   - `rust/tests/app_flows.rs::paging_loads_older_messages_in_pages` has been flaking across unrelated PRs.
-   - If another branch disables it, we should still come back and either stabilize it or replace it with a more deterministic boundary around the same paging behavior.
+   - `rust/tests/app_flows.rs::paging_loads_older_messages_in_pages` has been replaced by the narrower `paging_reveals_older_messages_until_history_is_exhausted` smoke because the old exact-count assertion was the flaky part.
+   - We still need to watch for any renewed paging flakes below the `FfiApp` layer; if they recur, the next step should be the shared-runtime/core pagination owner, not another broad app-layer timeout tweak.
+   - `crates/pika-agent-microvm/src/lib.rs::openclaw_autostart_reports_keypackage_publish_timeout_separately_from_service_timeout` now stays on the real OpenClaw health-probe path with a short deterministic keypackage timeout window; if it recurs, the remaining issue is likely generic autostart-script test harness timing, not the OpenClaw-specific timeout-kind split.
 
 11. We now have a canonical fast local smoke layer for catching common CI failures before full lanes run.
    - The supported habitual command is `just pre-commit`.

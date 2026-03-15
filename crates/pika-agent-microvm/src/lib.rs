@@ -1378,6 +1378,10 @@ mod tests {
         StdDuration::from_secs(secs)
     }
 
+    fn keypackage_timeout_test_secs() -> &'static str {
+        "6"
+    }
+
     fn test_guest_startup_plan() -> GuestStartupPlan {
         guest_startup_plan(&ResolvedMicrovmParams {
             spawner_url: DEFAULT_SPAWNER_URL.to_string(),
@@ -1693,9 +1697,10 @@ done
                     .env("PIKA_TEST_CURL_RESULTS", "1,0,1");
             }
             KeypackagePublishOutcome::TimesOut { .. } => {
-                command
-                    .env("PIKA_TEST_PUBLISH_ALWAYS_FAIL", "1")
-                    .env("PIKA_AGENT_READY_TIMEOUT_SECS", "30");
+                command.env("PIKA_TEST_PUBLISH_ALWAYS_FAIL", "1").env(
+                    "PIKA_AGENT_READY_TIMEOUT_SECS",
+                    keypackage_timeout_test_secs(),
+                );
             }
         }
 
@@ -1750,26 +1755,16 @@ done
                         "TEST_JQ_SERVICE_CONFIG_PATH",
                         root_relative(&openclaw_config_path),
                     )
-                    .env("TEST_JQ_GATEWAY_PORT", openclaw_gateway_port.to_string());
-                if matches!(outcome, KeypackagePublishOutcome::TimesOut { .. }) {
-                    command
-                        .env("TEST_JQ_READY_PROBE", "openclaw_gateway_ready")
-                        .env("TEST_JQ_READINESS_KIND", "log_contains")
-                        .env("TEST_JQ_READINESS_PATH", root_relative(&ready_log_path))
-                        .env("TEST_JQ_READINESS_PATTERN", "openclaw-ready")
-                        .env("TEST_JQ_READINESS_URL", "")
-                        .env("PIKA_TEST_OPENCLAW_READY_LOG_PATH", &ready_log_path);
-                } else {
-                    command
-                        .env("TEST_JQ_READY_PROBE", "openclaw_gateway_health")
-                        .env("TEST_JQ_READINESS_KIND", "http_get_ok")
-                        .env("TEST_JQ_READINESS_PATH", "")
-                        .env("TEST_JQ_READINESS_PATTERN", "")
-                        .env(
-                            "TEST_JQ_READINESS_URL",
-                            format!("http://127.0.0.1:{openclaw_gateway_port}/health"),
-                        );
-                }
+                    .env("TEST_JQ_GATEWAY_PORT", openclaw_gateway_port.to_string())
+                    .env("TEST_JQ_READY_PROBE", "openclaw_gateway_health")
+                    .env("TEST_JQ_READINESS_KIND", "http_get_ok")
+                    .env("TEST_JQ_READINESS_PATH", "")
+                    .env("TEST_JQ_READINESS_PATTERN", "")
+                    .env(
+                        "TEST_JQ_READINESS_URL",
+                        format!("http://127.0.0.1:{openclaw_gateway_port}/health"),
+                    )
+                    .env("PIKA_TEST_CURL_RESULTS", "1");
             }
         }
 
@@ -1835,7 +1830,7 @@ done
                 let _ = child.wait().expect("wait for autostart script shutdown");
             }
             KeypackagePublishOutcome::TimesOut { expected_reason } => {
-                poll_until(Duration::from_secs(45), || {
+                poll_until(async_test_timeout(), || {
                     read_counter(&publish_count_path) >= 1 || failed_marker_path.exists()
                 });
                 let publish_count = read_counter(&publish_count_path);
@@ -1851,6 +1846,16 @@ done
                 );
                 let failed_marker =
                     fs::read_to_string(&failed_marker_path).expect("read failed marker");
+                if matches!(scenario, KeypackageReadyScenario::Openclaw) {
+                    assert!(
+                        read_counter(&curl_count_path) >= 1,
+                        "OpenClaw timeout harness should still exercise the health-check path"
+                    );
+                    assert!(
+                        !failed_marker.contains("timeout_waiting_for_openclaw_health"),
+                        "keypackage timeout test must not fail through the service-timeout path; got {failed_marker}"
+                    );
+                }
                 assert!(
                     failed_marker.contains(expected_reason),
                     "failed marker should report the dedicated keypackage publish timeout reason; got {failed_marker}"

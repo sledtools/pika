@@ -208,12 +208,12 @@ Working assumptions:
    - `rust/tests/app_flows.rs` now keeps the narrower callback-gating semantic owner in `begin_nostr_connect_login_waits_for_callback_before_bunker_connect` instead of also owning the fuller launch/URL/auth success contract
    - Android `NostrConnectIntentTest` is now labeled honestly as intent/callback glue only, not the owner of Rust Nostr Connect handshake semantics; callback augmentation remains a native glue responsibility while Rust owns the pending/login state machine
    - the remaining open edges in this family are the richer retry/reconnect/current-user-hint paths, not the basic success-path ownership split
-23. Slice 24 substantially finished the signer/auth family cleanup:
-   - `crates/pikahut/tests/integration_deterministic.rs` now owns the readable signer lifecycle contracts that users actually feel: `nostr_connect_login_success_boundary`, `pending_nostr_connect_login_survives_restart_boundary`, `restore_session_bunker_signs_in_boundary`, `nostr_connect_new_secret_retry_boundary`, and `nostr_connect_non_secret_rejection_stops_without_retry_boundary`
+23. Slice 24 substantially improved the signer/auth family cleanup:
+   - `crates/pikahut/tests/integration_deterministic.rs` now has checked-in deterministic selector contracts for the main Nostr Connect/bunker restore lifecycle stories: `nostr_connect_login_success_boundary`, `pending_nostr_connect_login_survives_restart_boundary`, `restore_session_bunker_signs_in_boundary`, `nostr_connect_new_secret_retry_boundary`, and `nostr_connect_non_secret_rejection_stops_without_retry_boundary`
    - `crates/pikahut/tests/support.rs` now drives those selector contracts directly through deterministic `FfiApp` setups: pending Nostr Connect restart/recovery, bunker restore sign-in, retry-after-"new secret" rejection, and no-retry surfacing for ordinary signer rejection
    - `rust/tests/app_flows.rs` now keeps the narrower state-machine and plumbing owners underneath them: callback-gating before bunker connect, retry URI mutation semantics, pending-state restoration before callback, persisted secret/client-pair reuse, pairing reset rotation, stored bunker client-key reuse, and callback/connect-response ordering no-ops
    - native overlap is now called out more honestly: Android intent tests own callback/intent glue only, and `ios/Tests/AppManagerTests.swift` owns AppManager stored-auth dispatch into Rust rather than Rust signer semantics
-   - the signer/auth family is now close to done; the main remaining Rust-only caveat is the lower-level external-signer current-user-hint/current-user retention plumbing, not a broad ownership blur
+   - the signer/auth family is much cleaner, but not fully closed: direct bunker-login success/invalid-URI UX still lives only in `rust/tests/app_flows.rs`, these selector contracts are checked-in deterministic surfaces rather than current lane-selected blockers, and the lower-level external-signer current-user-hint/current-user retention plumbing still remains Rust-only
 ## Progress Update
 
 Completed on 2026-03-10:
@@ -334,7 +334,7 @@ Verified in the repo today:
    - similar DM bootstrap helpers still exist in `crates/pikahut/tests/support.rs`, but that duplication is currently intentional because selector-side fixture/orchestration support cannot depend on the private `rust/tests` layer
    - both helper layers now at least agree on one important boundary: DM lookup excludes group chats with the same peer instead of relying on a fuzzy member-only match
    - the main user-facing message/profile flows now have selector-owned deterministic `pikahut` contracts; the remaining confusing area is the harness-limited true pre-existing late-joiner rebroadcast case, not general ownership drift across this family
-   - the single-app auth/session and signer families are now broadly coherent at the selector layer; the remaining auth caveat is lower-level external-signer current-user-hint/current-user retention plumbing, not a missing readable lifecycle contract
+   - the single-app auth/session family is coherent, and the signer family is much cleaner, but signer ownership is not fully closed yet: direct bunker-login UX still lacks a selector-owned contract, current selector coverage here is checked-in but not broadly lane-selected, and lower-level external-signer current-user-hint/current-user retention plumbing remains Rust-only
 
 ## Strongest Problems
 

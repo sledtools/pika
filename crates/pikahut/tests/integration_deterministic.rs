@@ -460,9 +460,8 @@ fn post_rebase_logout_session_convergence_boundary() -> Result<()> {
 #[ignore = "deterministic external signer selector"]
 fn nostr_connect_login_success_boundary() -> Result<()> {
     // Keep the narrower callback-gating and retry semantics in `rust/tests/app_flows.rs`; this
-    // selector owns the readable user-facing contract that Rust launches the Nostr Connect
-    // handshake, waits for the return callback, and then lands signed in through the bunker
-    // signer path. Native tests still own callback URL injection/parsing glue.
+    // checked-in deterministic selector captures the readable signer success contract. Native
+    // tests still own callback URL injection/parsing glue.
     let mut context = TestContext::builder("nostr-connect-login-success")
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
@@ -474,9 +473,8 @@ fn nostr_connect_login_success_boundary() -> Result<()> {
 #[test]
 #[ignore = "deterministic external signer selector"]
 fn nostr_connect_new_secret_retry_boundary() -> Result<()> {
-    // Keep the lower-level retry branch mechanics in `rust/tests/app_flows.rs`; this selector
-    // owns the readable contract that a "new secret" rejection still recovers into a successful
-    // sign-in without asking the user to reset pairing manually.
+    // Keep the lower-level retry branch mechanics in `rust/tests/app_flows.rs`; this checked-in
+    // deterministic selector captures only the readable recovery contract.
     let mut context = TestContext::builder("nostr-connect-new-secret-retry")
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
@@ -488,9 +486,8 @@ fn nostr_connect_new_secret_retry_boundary() -> Result<()> {
 #[test]
 #[ignore = "deterministic external signer selector"]
 fn nostr_connect_non_secret_rejection_stops_without_retry_boundary() -> Result<()> {
-    // Keep the exact retry-sequence branch logic in `rust/tests/app_flows.rs`; this selector
-    // owns the readable failure contract that a normal signer rejection surfaces once and does
-    // not silently keep retrying bunker connect.
+    // Keep the exact retry-sequence branch logic in `rust/tests/app_flows.rs`; this checked-in
+    // deterministic selector captures the readable failure contract.
     let mut context = TestContext::builder("nostr-connect-non-secret-rejection")
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
@@ -503,8 +500,7 @@ fn nostr_connect_non_secret_rejection_stops_without_retry_boundary() -> Result<(
 #[ignore = "deterministic external signer selector"]
 fn pending_nostr_connect_login_survives_restart_boundary() -> Result<()> {
     // Keep the narrower pending-state persistence semantics in `rust/tests/app_flows.rs`; this
-    // selector owns the readable lifecycle contract that a pending signer flow survives app
-    // restart and can still complete after the callback arrives later.
+    // checked-in deterministic selector captures the readable restart contract.
     let mut context = TestContext::builder("nostr-connect-pending-restart")
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
@@ -516,8 +512,8 @@ fn pending_nostr_connect_login_survives_restart_boundary() -> Result<()> {
 #[test]
 #[ignore = "deterministic external signer selector"]
 fn restore_session_bunker_signs_in_boundary() -> Result<()> {
-    // Keep the exact stored-client-key plumbing in `rust/tests/app_flows.rs`; this selector owns
-    // the readable contract that a stored bunker session descriptor signs the app back in.
+    // Keep the exact stored-client-key plumbing in `rust/tests/app_flows.rs`; this checked-in
+    // deterministic selector captures the readable bunker-restore sign-in contract.
     let mut context = TestContext::builder("restore-session-bunker")
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;

@@ -6,16 +6,21 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use nostr_sdk::prelude::{Keys, NostrSigner, Url};
+use nostr_sdk::prelude::{Keys, NostrSigner};
 use nostr_sdk::ToBech32;
 use pika_core::{
     AppAction, AppUpdate, AuthMode, AuthState, BunkerConnectError, BunkerConnectErrorKind,
-    BunkerConnectOutput, BunkerSignerConnector, CallStatus, ExternalSignerBridge,
-    ExternalSignerErrorKind, ExternalSignerHandshakeResult, ExternalSignerResult, FfiApp, Screen,
+    BunkerConnectOutput, BunkerSignerConnector, CallStatus, ExternalSignerErrorKind,
+    ExternalSignerHandshakeResult, FfiApp, Screen,
 };
 use tempfile::tempdir;
 
+#[path = "../../tests/support/nostr_connect.rs"]
+mod nostr_connect_support;
 mod support;
+use nostr_connect_support::{
+    nostrconnect_client_pubkey, query_param, MockBunkerSignerConnector, MockExternalSignerBridge,
+};
 use support::{wait_until_with_poll, Collector};
 
 fn wait_until(what: &str, timeout: Duration, f: impl FnMut() -> bool) {
@@ -62,233 +67,6 @@ fn write_config_ext(
         v["key_package_relay_urls"] = serde_json::json!([LOOPBACK_RELAY_URL]);
     }
     std::fs::write(path, serde_json::to_vec(&v).unwrap()).unwrap();
-}
-
-fn query_param(url: &str, key: &str) -> Option<String> {
-    let parsed = Url::parse(url).ok()?;
-    parsed
-        .query_pairs()
-        .find_map(|(k, v)| if k == key { Some(v.into_owned()) } else { None })
-}
-
-fn nostrconnect_client_pubkey(url: &str) -> Option<String> {
-    Url::parse(url)
-        .ok()
-        .and_then(|parsed| parsed.host_str().map(ToString::to_string))
-}
-
-fn nostrconnect_metadata(url: &str) -> Option<serde_json::Value> {
-    let raw = query_param(url, "metadata")?;
-    serde_json::from_str(&raw).ok()
-}
-
-#[derive(Clone)]
-struct MockExternalSignerBridge {
-    handshake_result: Arc<Mutex<ExternalSignerHandshakeResult>>,
-    last_hint: Arc<Mutex<Option<String>>>,
-    open_url_result: Arc<Mutex<ExternalSignerResult>>,
-    last_opened_url: Arc<Mutex<Option<String>>>,
-    open_url_calls: Arc<Mutex<u64>>,
-}
-
-impl MockExternalSignerBridge {
-    fn new(handshake_result: ExternalSignerHandshakeResult) -> Self {
-        Self {
-            handshake_result: Arc::new(Mutex::new(handshake_result)),
-            last_hint: Arc::new(Mutex::new(None)),
-            open_url_result: Arc::new(Mutex::new(ExternalSignerResult {
-                ok: true,
-                value: None,
-                error_kind: None,
-                error_message: None,
-            })),
-            last_opened_url: Arc::new(Mutex::new(None)),
-            open_url_calls: Arc::new(Mutex::new(0)),
-        }
-    }
-
-    fn last_hint(&self) -> Option<String> {
-        self.last_hint.lock().unwrap().clone()
-    }
-
-    fn last_opened_url(&self) -> Option<String> {
-        self.last_opened_url.lock().unwrap().clone()
-    }
-
-    fn open_url_calls(&self) -> u64 {
-        *self.open_url_calls.lock().unwrap()
-    }
-}
-
-impl ExternalSignerBridge for MockExternalSignerBridge {
-    fn open_url(&self, url: String) -> ExternalSignerResult {
-        *self.last_opened_url.lock().unwrap() = Some(url);
-        let mut calls = self.open_url_calls.lock().unwrap();
-        *calls += 1;
-        self.open_url_result.lock().unwrap().clone()
-    }
-
-    fn request_public_key(
-        &self,
-        current_user_hint: Option<String>,
-    ) -> ExternalSignerHandshakeResult {
-        *self.last_hint.lock().unwrap() = current_user_hint;
-        self.handshake_result.lock().unwrap().clone()
-    }
-
-    fn sign_event(
-        &self,
-        _signer_package: String,
-        _current_user: String,
-        _unsigned_event_json: String,
-    ) -> ExternalSignerResult {
-        ExternalSignerResult {
-            ok: false,
-            value: None,
-            error_kind: Some(ExternalSignerErrorKind::SignerUnavailable),
-            error_message: Some("signer unavailable".into()),
-        }
-    }
-
-    fn nip44_encrypt(
-        &self,
-        _signer_package: String,
-        _current_user: String,
-        _peer_pubkey: String,
-        _content: String,
-    ) -> ExternalSignerResult {
-        ExternalSignerResult {
-            ok: false,
-            value: None,
-            error_kind: Some(ExternalSignerErrorKind::SignerUnavailable),
-            error_message: Some("signer unavailable".into()),
-        }
-    }
-
-    fn nip44_decrypt(
-        &self,
-        _signer_package: String,
-        _current_user: String,
-        _peer_pubkey: String,
-        _payload: String,
-    ) -> ExternalSignerResult {
-        ExternalSignerResult {
-            ok: false,
-            value: None,
-            error_kind: Some(ExternalSignerErrorKind::SignerUnavailable),
-            error_message: Some("signer unavailable".into()),
-        }
-    }
-
-    fn nip04_encrypt(
-        &self,
-        _signer_package: String,
-        _current_user: String,
-        _peer_pubkey: String,
-        _content: String,
-    ) -> ExternalSignerResult {
-        ExternalSignerResult {
-            ok: false,
-            value: None,
-            error_kind: Some(ExternalSignerErrorKind::SignerUnavailable),
-            error_message: Some("signer unavailable".into()),
-        }
-    }
-
-    fn nip04_decrypt(
-        &self,
-        _signer_package: String,
-        _current_user: String,
-        _peer_pubkey: String,
-        _payload: String,
-    ) -> ExternalSignerResult {
-        ExternalSignerResult {
-            ok: false,
-            value: None,
-            error_kind: Some(ExternalSignerErrorKind::SignerUnavailable),
-            error_message: Some("signer unavailable".into()),
-        }
-    }
-}
-
-#[derive(Clone)]
-struct MockBunkerSignerConnector {
-    result: Arc<Mutex<Result<BunkerConnectOutput, BunkerConnectError>>>,
-    last_bunker_uri: Arc<Mutex<Option<String>>>,
-    last_client_pubkey: Arc<Mutex<Option<String>>>,
-}
-
-impl MockBunkerSignerConnector {
-    fn success(canonical_bunker_uri: &str) -> (Self, String) {
-        let signer_keys = Keys::generate();
-        let user_pubkey = signer_keys.public_key();
-        let output = BunkerConnectOutput {
-            user_pubkey,
-            canonical_bunker_uri: canonical_bunker_uri.to_string(),
-            signer: Arc::new(signer_keys) as Arc<dyn NostrSigner>,
-        };
-        (
-            Self {
-                result: Arc::new(Mutex::new(Ok(output))),
-                last_bunker_uri: Arc::new(Mutex::new(None)),
-                last_client_pubkey: Arc::new(Mutex::new(None)),
-            },
-            user_pubkey.to_hex(),
-        )
-    }
-
-    fn failure(kind: BunkerConnectErrorKind, message: &str) -> Self {
-        Self {
-            result: Arc::new(Mutex::new(Err(BunkerConnectError {
-                kind,
-                message: message.to_string(),
-            }))),
-            last_bunker_uri: Arc::new(Mutex::new(None)),
-            last_client_pubkey: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    fn last_bunker_uri(&self) -> Option<String> {
-        self.last_bunker_uri.lock().unwrap().clone()
-    }
-
-    fn last_client_pubkey(&self) -> Option<String> {
-        self.last_client_pubkey.lock().unwrap().clone()
-    }
-}
-
-impl BunkerSignerConnector for MockBunkerSignerConnector {
-    fn connect(
-        &self,
-        _runtime: &tokio::runtime::Runtime,
-        bunker_uri: &str,
-        client_keys: Keys,
-    ) -> Result<BunkerConnectOutput, BunkerConnectError> {
-        *self.last_bunker_uri.lock().unwrap() = Some(bunker_uri.to_string());
-        *self.last_client_pubkey.lock().unwrap() = Some(client_keys.public_key().to_hex());
-        self.result.lock().unwrap().clone()
-    }
-
-    fn prepare(
-        &self,
-        _runtime: &tokio::runtime::Runtime,
-        _bunker_uri: &str,
-        _client_keys: Keys,
-    ) -> Result<nostr_connect::prelude::NostrConnect, BunkerConnectError> {
-        // Mock: return an error so the code falls through to the `connect` path.
-        Err(BunkerConnectError {
-            kind: BunkerConnectErrorKind::Other,
-            message: "mock: prepare not supported".to_string(),
-        })
-    }
-
-    fn finish(
-        &self,
-        _runtime: &tokio::runtime::Runtime,
-        _signer: nostr_connect::prelude::NostrConnect,
-    ) -> Result<BunkerConnectOutput, BunkerConnectError> {
-        self.result.lock().unwrap().clone()
-    }
 }
 
 #[derive(Clone)]
@@ -1243,7 +1021,7 @@ fn begin_bunker_login_failure_shows_toast_and_clears_busy() {
 }
 
 #[test]
-fn begin_nostr_connect_login_launches_uri_and_logs_in() {
+fn begin_nostr_connect_login_waits_for_callback_before_bunker_connect() {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_string_lossy().to_string();
     write_config_with_external_signer(&data_dir, true, Some(true));
@@ -1271,10 +1049,12 @@ fn begin_nostr_connect_login_launches_uri_and_logs_in() {
         bridge.last_opened_url().is_some()
     });
 
-    // Rust should wait for the app callback before attempting the signer handshake.
+    // Keep the readable URL-launch + signed-in contract in the `pikahut` selector; this test
+    // stays as the narrower Rust owner that callback arrival gates the bunker handshake.
     assert!(matches!(app.state().auth, AuthState::LoggedOut));
     assert!(app.state().busy.logging_in);
     assert!(connector.last_bunker_uri().is_none());
+
     app.dispatch(AppAction::NostrConnectCallback {
         url: "pika://nostrconnect-return".into(),
     });
@@ -1286,26 +1066,6 @@ fn begin_nostr_connect_login_launches_uri_and_logs_in() {
     wait_until("nostrconnect logged in", Duration::from_secs(10), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
     });
-
-    let opened_url = bridge
-        .last_opened_url()
-        .expect("expected bridge open_url call");
-    assert!(opened_url.starts_with("nostrconnect://"));
-    assert!(opened_url.contains("secret="));
-    assert!(opened_url.contains("metadata="));
-    assert!(opened_url.contains("perms="));
-    assert!(opened_url.contains("relay="));
-    assert_eq!(query_param(&opened_url, "name").as_deref(), Some("Pika"));
-    assert_eq!(
-        query_param(&opened_url, "url").as_deref(),
-        Some("https://pikachat.org")
-    );
-    let metadata = nostrconnect_metadata(&opened_url).expect("metadata JSON");
-    assert_eq!(metadata.get("name").and_then(|v| v.as_str()), Some("Pika"));
-    assert_eq!(
-        metadata.get("url").and_then(|v| v.as_str()),
-        Some("https://pikachat.org")
-    );
     let connect_uri = connector
         .last_bunker_uri()
         .expect("expected bunker connect URI for signer bootstrap");

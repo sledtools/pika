@@ -6,9 +6,18 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use pika_core::{AppAction, AuthState, CallStatus, FfiApp};
+use pika_core::{
+    AppAction, AuthMode, AuthState, CallStatus, ExternalSignerErrorKind,
+    ExternalSignerHandshakeResult, FfiApp,
+};
 use pikahut::config::ProfileName;
 use pikahut::testing::{FixtureHandle, FixtureSpec, TestContext, start_fixture};
+
+#[path = "../../../tests/support/nostr_connect.rs"]
+mod nostr_connect_support;
+use nostr_connect_support::{
+    MockBunkerSignerConnector, MockExternalSignerBridge, nostrconnect_metadata, query_param,
+};
 
 #[derive(Clone, Copy, Debug)]
 struct CallStatsSnapshot {
@@ -705,6 +714,124 @@ pub fn run_logout_reset_across_restart(context: &TestContext) -> Result<()> {
                 && state.current_chat.is_none()
         },
     )?;
+
+    Ok(())
+}
+
+// CI-facing readable Nostr Connect contract: Rust launches the raw signer handshake URL, stays
+// pending until the callback arrives, then finishes bunker bootstrap and lands signed in. Native
+// intent glue still owns adding the callback URL onto the launched nostrconnect URI.
+pub fn run_nostr_connect_login_success(context: &TestContext) -> Result<()> {
+    let data_dir = context.state_dir().join("nostr-connect");
+    write_config_with_external_signer(&data_dir)?;
+
+    let app = FfiApp::new(path_arg(&data_dir), String::new(), String::new());
+    let bridge = MockExternalSignerBridge::new(ExternalSignerHandshakeResult {
+        ok: false,
+        pubkey: None,
+        signer_package: None,
+        current_user: None,
+        error_kind: Some(ExternalSignerErrorKind::SignerUnavailable),
+        error_message: Some("unused".into()),
+    });
+    app.set_external_signer_bridge(Box::new(bridge.clone()));
+
+    let canonical_bunker_uri = "bunker://79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798?relay=wss://relay.example.com";
+    let (connector, _user_pubkey) = MockBunkerSignerConnector::success(canonical_bunker_uri);
+    app.set_bunker_signer_connector_for_tests(Arc::new(connector.clone()));
+
+    app.dispatch(AppAction::BeginNostrConnectLogin);
+    wait_until("nostrconnect uri opened", Duration::from_secs(10), || {
+        bridge.last_opened_url().is_some()
+    })?;
+
+    let opened_url = bridge
+        .last_opened_url()
+        .ok_or_else(|| anyhow!("expected opened nostrconnect URL"))?;
+    anyhow::ensure!(
+        opened_url.starts_with("nostrconnect://"),
+        "expected nostrconnect URL, got {opened_url}"
+    );
+    anyhow::ensure!(
+        opened_url.contains("secret=")
+            && opened_url.contains("metadata=")
+            && opened_url.contains("perms=")
+            && opened_url.contains("relay="),
+        "nostrconnect URL missing required handshake parameters: {opened_url}"
+    );
+    anyhow::ensure!(
+        query_param(&opened_url, "name").as_deref() == Some("Pika"),
+        "nostrconnect URL should advertise Pika name"
+    );
+    anyhow::ensure!(
+        query_param(&opened_url, "url").as_deref() == Some("https://pikachat.org"),
+        "nostrconnect URL should advertise Pika URL"
+    );
+    let metadata = nostrconnect_metadata(&opened_url).ok_or_else(|| anyhow!("metadata JSON"))?;
+    anyhow::ensure!(
+        metadata.get("name").and_then(|v| v.as_str()) == Some("Pika"),
+        "nostrconnect metadata should preserve app name"
+    );
+    anyhow::ensure!(
+        metadata.get("url").and_then(|v| v.as_str()) == Some("https://pikachat.org"),
+        "nostrconnect metadata should preserve app URL"
+    );
+
+    anyhow::ensure!(
+        matches!(app.state().auth, AuthState::LoggedOut),
+        "app should remain logged out until callback"
+    );
+    anyhow::ensure!(
+        app.state().busy.logging_in,
+        "app should stay pending while waiting for callback"
+    );
+    anyhow::ensure!(
+        connector.last_bunker_uri().is_none(),
+        "bunker connect must not start before callback"
+    );
+    anyhow::ensure!(
+        bridge.last_hint().is_none(),
+        "nostr connect login should not route through external signer user hints"
+    );
+
+    app.dispatch(AppAction::NostrConnectCallback {
+        url: "pika://nostrconnect-return".into(),
+    });
+    app.inject_nostr_connect_connect_response_for_tests(
+        "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into(),
+    );
+
+    wait_until("nostrconnect logged in", Duration::from_secs(10), || {
+        matches!(app.state().auth, AuthState::LoggedIn { .. })
+            && app.state().router.default_screen == pika_core::Screen::ChatList
+            && !app.state().busy.logging_in
+    })?;
+
+    let state = app.state();
+    match state.auth {
+        AuthState::LoggedIn {
+            mode: AuthMode::BunkerSigner { bunker_uri },
+            ..
+        } => anyhow::ensure!(
+            bunker_uri == canonical_bunker_uri,
+            "expected canonical bunker signer URI, got {bunker_uri}"
+        ),
+        other => bail!("expected bunker signer auth mode, got {other:?}"),
+    }
+
+    let connect_uri = connector
+        .last_bunker_uri()
+        .ok_or_else(|| anyhow!("expected bunker connect URI for signer bootstrap"))?;
+    anyhow::ensure!(
+        connect_uri.starts_with(
+            "bunker://79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+        ),
+        "unexpected bunker connect URI: {connect_uri}"
+    );
+    anyhow::ensure!(
+        connect_uri.contains("relay=") && connect_uri.contains("secret="),
+        "bunker connect URI should carry relay and secret: {connect_uri}"
+    );
 
     Ok(())
 }
@@ -1497,6 +1624,26 @@ fn write_config_offline(data_dir: &Path) -> Result<()> {
     fs::write(
         &path,
         serde_json::to_vec(&value).context("serialize config")?,
+    )
+    .with_context(|| format!("write {}", path.display()))?;
+    Ok(())
+}
+
+fn write_config_with_external_signer(data_dir: &Path) -> Result<()> {
+    fs::create_dir_all(data_dir)
+        .with_context(|| format!("create config dir {}", data_dir.display()))?;
+    let path = data_dir.join("pika_config.json");
+    let value = serde_json::json!({
+        "disable_network": true,
+        "disable_agent_allowlist_probe": true,
+        "enable_external_signer": true,
+        "call_moq_url": "https://moq.local/anon",
+        "call_broadcast_prefix": "pika/calls",
+        "call_audio_backend": "synthetic",
+    });
+    fs::write(
+        &path,
+        serde_json::to_vec(&value).context("serialize external signer config")?,
     )
     .with_context(|| format!("write {}", path.display()))?;
     Ok(())

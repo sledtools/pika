@@ -6227,6 +6227,7 @@ dependencies = [
  "hex",
  "nix",
  "nostr-blossom",
+ "nostr-connect",
  "nostr-sdk",
  "pika-desktop",
  "pika-marmot-runtime",

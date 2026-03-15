@@ -11,6 +11,8 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class NostrConnectIntentTest {
+    // Android glue owner only: these tests cover callback/intent parsing and callback injection
+    // shape, not the canonical Rust-owned Nostr Connect handshake semantics.
     // Read scheme inside each test method body rather than at class-init time.
     // On some emulator configs, accessing `AppManager.NOSTR_CONNECT_CALLBACK_SCHEME`
     // during test class construction resolves to null because the app's BuildConfig

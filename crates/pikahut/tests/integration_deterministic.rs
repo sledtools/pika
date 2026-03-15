@@ -457,6 +457,21 @@ fn post_rebase_logout_session_convergence_boundary() -> Result<()> {
 }
 
 #[test]
+#[ignore = "deterministic external signer selector"]
+fn nostr_connect_login_success_boundary() -> Result<()> {
+    // Keep the narrower callback-gating and retry semantics in `rust/tests/app_flows.rs`; this
+    // selector owns the readable user-facing contract that Rust launches the Nostr Connect
+    // handshake, waits for the return callback, and then lands signed in through the bunker
+    // signer path. Native tests still own callback URL injection/parsing glue.
+    let mut context = TestContext::builder("nostr-connect-login-success")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_nostr_connect_login_success(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
 #[ignore = "nightly call-path regression selector"]
 fn call_over_local_moq_relay_boundary() -> Result<()> {
     let mut context = TestContext::builder("regression-call-over-local-moq-relay")

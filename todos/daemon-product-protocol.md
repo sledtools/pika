@@ -57,6 +57,7 @@ The current native daemon protocol already supports real production commands for
 - group membership add
 - group membership remove
 - leave group
+- group profile metadata update (`name` / `about`)
 - message send
 - media send
 - typing send
@@ -66,7 +67,7 @@ The current native daemon protocol already supports real production commands for
 The current native daemon protocol does **not** expose real production commands for:
 
 - other membership/group evolution operations
-- group profile updates
+- group profile image upload
 - explicit group-update eventing
 
 The shared runtime already has most of the underlying membership machinery:
@@ -198,7 +199,7 @@ What should remain daemon-local:
 
 After the membership/group-management MVP, the next most likely protocol candidates are:
 
-1. `update_group_profile`
+1. group profile image upload if a product shell actually needs it
 2. admin-role changes if product needs them
 3. richer group-update observability if product consumers need push state
 

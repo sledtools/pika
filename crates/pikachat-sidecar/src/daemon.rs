@@ -58,7 +58,8 @@ use crate::call_audio::OpusToAudioPipeline;
 use crate::call_tts::synthesize_tts_pcm;
 use crate::protocol::{
     AddMembersResultOut, DaemonCmd, GroupMemberOut, InCmd, LeaveGroupResultOut,
-    ListMembersResultOut, MediaAttachmentOut, OutMsg, RemoveMembersResultOut, out_error, out_ok,
+    ListMembersResultOut, MediaAttachmentOut, OutMsg, RemoveMembersResultOut,
+    UpdateGroupProfileResultOut, out_error, out_ok,
 };
 use host_context::{DaemonHostContext, DaemonPrepareError};
 
@@ -409,6 +410,42 @@ impl DaemonMembershipWorkflowError {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DaemonGroupProfileWorkflowError {
+    code: &'static str,
+    message: String,
+}
+
+impl DaemonGroupProfileWorkflowError {
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            code: "bad_request",
+            message: message.into(),
+        }
+    }
+
+    fn bad_group(message: impl Into<String>) -> Self {
+        Self {
+            code: "bad_group_id",
+            message: message.into(),
+        }
+    }
+
+    fn prepare(err: anyhow::Error) -> Self {
+        Self {
+            code: "mdk_error",
+            message: format!("{err:#}"),
+        }
+    }
+
+    fn publish(message: impl Into<String>) -> Self {
+        Self {
+            code: "publish_failed",
+            message: message.into(),
+        }
+    }
+}
+
 fn normalize_requested_member_pubkeys(
     peer_pubkeys: &[String],
 ) -> Result<Vec<PublicKey>, DaemonMembershipWorkflowError> {
@@ -729,6 +766,8 @@ where
         }
     };
 
+    // MVP contract: this echoes the requested removals after a successful MLS
+    // mutation, rather than diffing before/after membership state.
     let result = RemoveMembersResultOut {
         nostr_group_id: nostr_group_id_hex,
         removed_pubkeys,
@@ -855,9 +894,148 @@ async fn unsubscribe_group_subscriptions(
         .collect();
 
     for sub_id in stale_sub_ids {
-        let _ = client.unsubscribe(&sub_id).await;
+        client.unsubscribe(&sub_id).await;
         group_subs.remove(&sub_id);
     }
+}
+
+fn build_group_profile_metadata(
+    current_picture: Option<String>,
+    name: &str,
+    about: &str,
+) -> Result<(String, String, String), DaemonGroupProfileWorkflowError> {
+    let normalized_name = name.trim().to_string();
+    let normalized_about = about.trim().to_string();
+    if normalized_name.is_empty() && normalized_about.is_empty() {
+        return Err(DaemonGroupProfileWorkflowError::bad_request(
+            "name or about must not be empty",
+        ));
+    }
+
+    let mut metadata = Metadata::new();
+    if !normalized_name.is_empty() {
+        metadata.name = Some(normalized_name.clone());
+        metadata.display_name = Some(normalized_name.clone());
+    }
+    if !normalized_about.is_empty() {
+        metadata.about = Some(normalized_about.clone());
+    }
+    metadata.picture = current_picture;
+
+    let metadata_json = serde_json::to_string(&metadata)
+        .map_err(|err| DaemonGroupProfileWorkflowError::prepare(anyhow!(err)))?;
+
+    Ok((normalized_name, normalized_about, metadata_json))
+}
+
+async fn handle_update_group_profile_request_with<Publish, PublishFut>(
+    request_id: Option<String>,
+    host: &DaemonHostContext<'_>,
+    local_pubkey: &PublicKey,
+    nostr_group_id: &str,
+    name: &str,
+    about: &str,
+    mut publish_prepared: Publish,
+) -> OutMsg
+where
+    Publish: FnMut(PreparedConversationAction) -> PublishFut,
+    PublishFut: Future<Output = anyhow::Result<EventId>>,
+{
+    let current_picture = match host.lookup_group_profile_snapshot(nostr_group_id, local_pubkey) {
+        Ok(snapshot) => snapshot.and_then(|snapshot| snapshot.metadata.picture),
+        Err(err) => {
+            let mapped = DaemonGroupProfileWorkflowError::bad_group(format!("{err:#}"));
+            return out_error(request_id, mapped.code, mapped.message);
+        }
+    };
+
+    let (normalized_name, normalized_about, metadata_json) =
+        match build_group_profile_metadata(current_picture, name, about) {
+            Ok(built) => built,
+            Err(err) => return out_error(request_id, err.code, err.message),
+        };
+
+    let prepared = match host.prepare_outbound_action(
+        nostr_group_id,
+        OutboundConversationAction::Message {
+            kind: Kind::Metadata,
+            content: metadata_json,
+            tags: vec![],
+            created_at: Timestamp::now(),
+        },
+    ) {
+        Ok(prepared) => prepared,
+        Err(DaemonPrepareError::BadGroup(err)) => {
+            let mapped = DaemonGroupProfileWorkflowError::bad_group(format!("{err:#}"));
+            return out_error(request_id, mapped.code, mapped.message);
+        }
+        Err(DaemonPrepareError::Prepare(err)) => {
+            let mapped = DaemonGroupProfileWorkflowError::prepare(err);
+            return out_error(request_id, mapped.code, mapped.message);
+        }
+    };
+
+    let publish_status = match publish_prepared(prepared.clone()).await {
+        Ok(wrapper_event_id) => {
+            pika_marmot_runtime::outbound::OutboundConversationPublishStatus::Published {
+                wrapper_event_id,
+            }
+        }
+        Err(err) => {
+            pika_marmot_runtime::outbound::OutboundConversationPublishStatus::PublishFailed(
+                format!("{err:#}"),
+            )
+        }
+    };
+
+    let result = match host
+        .complete_outbound_publish_operation(prepared, publish_status)
+        .into_outbound_conversation_publish_result()
+    {
+        Ok(result) => result,
+        Err(err) => {
+            let mapped = DaemonGroupProfileWorkflowError::publish(err);
+            return out_error(request_id, mapped.code, mapped.message);
+        }
+    };
+
+    let result = UpdateGroupProfileResultOut {
+        nostr_group_id: result.target.nostr_group_id_hex,
+        name: normalized_name,
+        about: normalized_about,
+    };
+    out_ok(
+        request_id,
+        Some(serde_json::to_value(result).expect("serialize update_group_profile result")),
+    )
+}
+
+async fn handle_update_group_profile_request(
+    request_id: Option<String>,
+    host: &DaemonHostContext<'_>,
+    local_pubkey: &PublicKey,
+    nostr_group_id: &str,
+    name: &str,
+    about: &str,
+) -> OutMsg {
+    handle_update_group_profile_request_with(
+        request_id,
+        host,
+        local_pubkey,
+        nostr_group_id,
+        name,
+        about,
+        |prepared| {
+            let host_ctx = host;
+            async move {
+                host_ctx
+                    .publish_prepared(&prepared, "update_group_profile")
+                    .await
+                    .map(|wrapper| wrapper.id)
+            }
+        },
+    )
+    .await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3090,7 +3268,7 @@ pub async fn daemon_main(
                         let host =
                             DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
                         let reply = handle_leave_group_request(
-                            request_id.clone(),
+                            request_id,
                             &host,
                             &client,
                             &relay_urls,
@@ -3101,6 +3279,25 @@ pub async fn daemon_main(
                             unsubscribe_group_subscriptions(&client, &mut group_subs, &nostr_group_id)
                                 .await;
                         }
+                        let _ = reply_tx.send(reply);
+                    }
+                    InCmd::UpdateGroupProfile {
+                        request_id,
+                        nostr_group_id,
+                        name,
+                        about,
+                    } => {
+                        let host =
+                            DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let reply = handle_update_group_profile_request(
+                            request_id,
+                            &host,
+                            &keys.public_key(),
+                            &nostr_group_id,
+                            &name,
+                            &about,
+                        )
+                        .await;
                         let _ = reply_tx.send(reply);
                     }
                     InCmd::GetMessages { request_id, nostr_group_id, limit } => {
@@ -5912,6 +6109,157 @@ mod tests {
 
         assert_eq!(err.code, "bad_group_id");
         assert!(err.message.contains("deadbeef") || err.message.contains("group"));
+    }
+
+    #[tokio::test]
+    async fn daemon_update_group_profile_request_succeeds_on_production_handler() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Daemon update group profile request".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
+
+        let existing_profile = UnsignedEvent::new(
+            inviter_keys.public_key(),
+            Timestamp::from(10_u64),
+            Kind::Metadata,
+            Tags::new(),
+            r#"{"display_name":"Old Name","picture":"https://example.com/group.jpg"}"#,
+        );
+        let existing_wrapper = inviter_mdk
+            .create_message(&created.group.mls_group_id, existing_profile)
+            .expect("create existing group profile");
+        inviter_mdk
+            .process_message(&existing_wrapper)
+            .expect("process existing group profile");
+
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+
+        let reply = handle_update_group_profile_request_with(
+            Some("req-profile".to_string()),
+            &host,
+            &inviter_keys.public_key(),
+            &hex::encode(created.group.nostr_group_id),
+            "New Name",
+            "New About",
+            |prepared| {
+                let mdk = &inviter_mdk;
+                async move {
+                    let processed = mdk
+                        .process_message(&prepared.wrapper)
+                        .expect("process prepared profile");
+                    match processed {
+                        MessageProcessingResult::ApplicationMessage(message) => {
+                            let metadata: Metadata =
+                                serde_json::from_str(&message.content).expect("parse metadata");
+                            assert_eq!(message.kind, Kind::Metadata);
+                            assert_eq!(metadata.display_name.as_deref(), Some("New Name"));
+                            assert_eq!(metadata.about.as_deref(), Some("New About"));
+                            assert_eq!(
+                                metadata.picture.as_deref(),
+                                Some("https://example.com/group.jpg")
+                            );
+                        }
+                        other => panic!("expected application message, got {other:?}"),
+                    }
+                    Ok(EventId::all_zeros())
+                }
+            },
+        )
+        .await;
+
+        let OutMsg::Ok {
+            request_id,
+            result: Some(result),
+        } = reply
+        else {
+            panic!("expected successful update_group_profile reply");
+        };
+        assert_eq!(request_id.as_deref(), Some("req-profile"));
+        let result: UpdateGroupProfileResultOut =
+            serde_json::from_value(result).expect("deserialize update_group_profile result");
+        assert_eq!(
+            result.nostr_group_id,
+            hex::encode(created.group.nostr_group_id)
+        );
+        assert_eq!(result.name, "New Name");
+        assert_eq!(result.about, "New About");
+    }
+
+    #[tokio::test]
+    async fn daemon_update_group_profile_request_rejects_empty_metadata() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Daemon empty group profile".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
+
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+
+        let reply = handle_update_group_profile_request_with(
+            Some("req-profile-empty".to_string()),
+            &host,
+            &inviter_keys.public_key(),
+            &hex::encode(created.group.nostr_group_id),
+            "   ",
+            "",
+            |_prepared| async move { Ok(EventId::all_zeros()) },
+        )
+        .await;
+
+        let OutMsg::Error {
+            request_id,
+            code,
+            message,
+        } = reply
+        else {
+            panic!("expected update_group_profile error reply");
+        };
+        assert_eq!(request_id.as_deref(), Some("req-profile-empty"));
+        assert_eq!(code, "bad_request");
+        assert!(message.contains("name or about"));
     }
 
     #[tokio::test]

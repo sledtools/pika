@@ -55,6 +55,13 @@ pub enum InCmd {
         request_id: Option<String>,
         nostr_group_id: String,
     },
+    UpdateGroupProfile {
+        #[serde(default)]
+        request_id: Option<String>,
+        nostr_group_id: String,
+        name: String,
+        about: String,
+    },
     HypernoteCatalog {
         #[serde(default)]
         request_id: Option<String>,
@@ -334,6 +341,13 @@ pub struct LeaveGroupResultOut {
     pub nostr_group_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateGroupProfileResultOut {
+    pub nostr_group_id: String,
+    pub name: String,
+    pub about: String,
+}
+
 /// Wrapper that optionally carries a per-command response sender for socket connections.
 pub struct DaemonCmd {
     pub cmd: InCmd,
@@ -534,6 +548,32 @@ mod tests {
                 assert_eq!(nostr_group_id, "aa");
             }
             other => panic!("expected LeaveGroup, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_update_group_profile_cmd() {
+        let json = r#"{
+            "cmd": "update_group_profile",
+            "request_id": "r-profile",
+            "nostr_group_id": "aa",
+            "name": "New name",
+            "about": "New about"
+        }"#;
+        let cmd: InCmd = serde_json::from_str(json).expect("deserialize");
+        match cmd {
+            InCmd::UpdateGroupProfile {
+                request_id,
+                nostr_group_id,
+                name,
+                about,
+            } => {
+                assert_eq!(request_id.as_deref(), Some("r-profile"));
+                assert_eq!(nostr_group_id, "aa");
+                assert_eq!(name, "New name");
+                assert_eq!(about, "New about");
+            }
+            other => panic!("expected UpdateGroupProfile, got {other:?}"),
         }
     }
 

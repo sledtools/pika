@@ -33,6 +33,17 @@ pub enum InCmd {
         #[serde(default)]
         request_id: Option<String>,
     },
+    AddMembers {
+        #[serde(default)]
+        request_id: Option<String>,
+        nostr_group_id: String,
+        peer_pubkeys: Vec<String>,
+    },
+    ListMembers {
+        #[serde(default)]
+        request_id: Option<String>,
+        nostr_group_id: String,
+    },
     HypernoteCatalog {
         #[serde(default)]
         request_id: Option<String>,
@@ -279,6 +290,27 @@ pub struct MediaAttachmentOut {
     pub local_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GroupMemberOut {
+    pub pubkey: String,
+    pub is_admin: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AddMembersResultOut {
+    pub nostr_group_id: String,
+    pub added_pubkeys: Vec<String>,
+    pub member_count: u32,
+    pub welcome_delivery_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ListMembersResultOut {
+    pub nostr_group_id: String,
+    pub members: Vec<GroupMemberOut>,
+    pub member_count: u32,
+}
+
 /// Wrapper that optionally carries a per-command response sender for socket connections.
 pub struct DaemonCmd {
     pub cmd: InCmd,
@@ -393,6 +425,49 @@ mod tests {
                 assert_eq!(request_id.as_deref(), Some("r2"));
             }
             other => panic!("expected HypernoteCatalog, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_add_members_cmd() {
+        let json = r#"{
+            "cmd": "add_members",
+            "request_id": "r-add",
+            "nostr_group_id": "aa",
+            "peer_pubkeys": ["npub1foo", "abcdef"]
+        }"#;
+        let cmd: InCmd = serde_json::from_str(json).expect("deserialize");
+        match cmd {
+            InCmd::AddMembers {
+                request_id,
+                nostr_group_id,
+                peer_pubkeys,
+            } => {
+                assert_eq!(request_id.as_deref(), Some("r-add"));
+                assert_eq!(nostr_group_id, "aa");
+                assert_eq!(peer_pubkeys, vec!["npub1foo", "abcdef"]);
+            }
+            other => panic!("expected AddMembers, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_list_members_cmd() {
+        let json = r#"{
+            "cmd": "list_members",
+            "request_id": "r-members",
+            "nostr_group_id": "aa"
+        }"#;
+        let cmd: InCmd = serde_json::from_str(json).expect("deserialize");
+        match cmd {
+            InCmd::ListMembers {
+                request_id,
+                nostr_group_id,
+            } => {
+                assert_eq!(request_id.as_deref(), Some("r-members"));
+                assert_eq!(nostr_group_id, "aa");
+            }
+            other => panic!("expected ListMembers, got {other:?}"),
         }
     }
 

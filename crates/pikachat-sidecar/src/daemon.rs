@@ -36,7 +36,7 @@ use pika_marmot_runtime::runtime::{
     subscribe_group_messages_individual,
 };
 use pika_marmot_runtime::welcome::{
-    AcceptedWelcome, accept_welcome_and_catch_up, ingest_unwrapped_welcome,
+    AcceptedWelcome, accept_welcome_and_catch_up, ingest_unwrapped_welcome, publish_welcome_rumors,
 };
 use pika_media::codec_opus::{OpusCodec, OpusPacket};
 use pika_media::crypto::{FrameInfo, decrypt_frame, encrypt_frame};
@@ -56,7 +56,10 @@ use tracing::warn;
 use crate::acp::{AcpBackendConfig, AcpBackendManager, AcpTurnCompletion};
 use crate::call_audio::OpusToAudioPipeline;
 use crate::call_tts::synthesize_tts_pcm;
-use crate::protocol::{DaemonCmd, InCmd, MediaAttachmentOut, OutMsg, out_error, out_ok};
+use crate::protocol::{
+    AddMembersResultOut, DaemonCmd, GroupMemberOut, InCmd, ListMembersResultOut,
+    MediaAttachmentOut, OutMsg, out_error, out_ok,
+};
 use host_context::{DaemonHostContext, DaemonPrepareError};
 
 #[cfg(test)]
@@ -326,6 +329,323 @@ impl DaemonMediaWorkflowError {
             message: message.into(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DaemonMembershipWorkflowError {
+    code: &'static str,
+    message: String,
+}
+
+impl DaemonMembershipWorkflowError {
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            code: "bad_request",
+            message: message.into(),
+        }
+    }
+
+    fn bad_pubkey(message: impl Into<String>) -> Self {
+        Self {
+            code: "bad_pubkey",
+            message: message.into(),
+        }
+    }
+
+    fn bad_group(message: impl Into<String>) -> Self {
+        Self {
+            code: "bad_group_id",
+            message: message.into(),
+        }
+    }
+
+    fn bad_relays(message: impl Into<String>) -> Self {
+        Self {
+            code: "bad_relays",
+            message: message.into(),
+        }
+    }
+
+    fn no_key_packages(message: impl Into<String>) -> Self {
+        Self {
+            code: "no_key_packages",
+            message: message.into(),
+        }
+    }
+
+    fn fetch_failed(message: impl Into<String>) -> Self {
+        Self {
+            code: "fetch_failed",
+            message: message.into(),
+        }
+    }
+
+    fn mdk(err: anyhow::Error) -> Self {
+        Self {
+            code: "mdk_error",
+            message: format!("{err:#}"),
+        }
+    }
+
+    fn publish_failed(message: impl Into<String>) -> Self {
+        Self {
+            code: "publish_failed",
+            message: message.into(),
+        }
+    }
+
+    fn merge_failed(message: impl Into<String>) -> Self {
+        Self {
+            code: "merge_failed",
+            message: message.into(),
+        }
+    }
+
+    fn runtime(message: impl Into<String>) -> Self {
+        Self {
+            code: "runtime_error",
+            message: message.into(),
+        }
+    }
+}
+
+fn normalize_requested_member_pubkeys(
+    peer_pubkeys: &[String],
+) -> Result<Vec<PublicKey>, DaemonMembershipWorkflowError> {
+    if peer_pubkeys.is_empty() {
+        return Err(DaemonMembershipWorkflowError::bad_request(
+            "peer_pubkeys must not be empty",
+        ));
+    }
+
+    let mut out = Vec::with_capacity(peer_pubkeys.len());
+    let mut seen = HashSet::new();
+    for raw in peer_pubkeys {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(DaemonMembershipWorkflowError::bad_pubkey(
+                "peer_pubkey must not be empty",
+            ));
+        }
+        let pubkey = PublicKey::parse(trimmed).map_err(|err| {
+            DaemonMembershipWorkflowError::bad_pubkey(format!("invalid peer_pubkey: {err}"))
+        })?;
+        if seen.insert(pubkey) {
+            out.push(pubkey);
+        }
+    }
+    Ok(out)
+}
+
+fn map_member_key_package_fetch_error(
+    peer_pubkey: &PublicKey,
+    err: &anyhow::Error,
+) -> DaemonMembershipWorkflowError {
+    if err
+        .chain()
+        .any(|cause| cause.to_string().contains("no keypackage found for"))
+    {
+        DaemonMembershipWorkflowError::no_key_packages(format!(
+            "no key package found for peer {}",
+            peer_pubkey.to_hex()
+        ))
+    } else {
+        DaemonMembershipWorkflowError::fetch_failed(format!(
+            "fetch key package for {}: {err:#}",
+            peer_pubkey.to_hex()
+        ))
+    }
+}
+
+async fn handle_add_members_request_with<Fetch, FetchFut, Publish, PublishFut>(
+    request_id: Option<String>,
+    host: &DaemonHostContext<'_>,
+    keys: &Keys,
+    nostr_group_id: &str,
+    peer_pubkeys: &[String],
+    mut fetch_key_package: Fetch,
+    mut publish_event: Publish,
+) -> OutMsg
+where
+    Fetch: FnMut(PublicKey) -> FetchFut,
+    FetchFut: Future<Output = anyhow::Result<Event>>,
+    Publish: FnMut(Event, &'static str) -> PublishFut,
+    PublishFut: Future<Output = anyhow::Result<()>>,
+{
+    let requested_pubkeys = match normalize_requested_member_pubkeys(peer_pubkeys) {
+        Ok(pubkeys) => pubkeys,
+        Err(err) => return out_error(request_id, err.code, err.message),
+    };
+
+    let mut key_package_events = Vec::with_capacity(requested_pubkeys.len());
+    for peer_pubkey in &requested_pubkeys {
+        let key_package = match fetch_key_package(*peer_pubkey).await {
+            Ok(event) => event,
+            Err(err) => {
+                let mapped = map_member_key_package_fetch_error(peer_pubkey, &err);
+                return out_error(request_id, mapped.code, mapped.message);
+            }
+        };
+        key_package_events.push(normalize_peer_key_package_event_for_mdk(&key_package));
+    }
+
+    let prepared = match host.prepare_add_members(nostr_group_id, &key_package_events) {
+        Ok(prepared) => prepared,
+        Err(DaemonPrepareError::BadGroup(err)) => {
+            let mapped = DaemonMembershipWorkflowError::bad_group(format!("{err:#}"));
+            return out_error(request_id, mapped.code, mapped.message);
+        }
+        Err(DaemonPrepareError::Prepare(err)) => {
+            let mapped = DaemonMembershipWorkflowError::mdk(err);
+            return out_error(request_id, mapped.code, mapped.message);
+        }
+    };
+
+    let publish_status = match publish_event(prepared.evolution_event.clone(), "add_members").await
+    {
+        Ok(()) => pika_marmot_runtime::membership::EvolutionPublishStatus::Published,
+        Err(err) => pika_marmot_runtime::membership::EvolutionPublishStatus::PublishFailed(
+            format!("{err:#}"),
+        ),
+    };
+
+    let result = match host
+        .complete_membership_evolution_operation(prepared, publish_status)
+        .into_membership_evolution_result()
+    {
+        Ok(result) => result,
+        Err(err) => {
+            let mapped = DaemonMembershipWorkflowError::publish_failed(err);
+            return out_error(request_id, mapped.code, mapped.message);
+        }
+    };
+
+    if let Some(merge_error) = result.merge_error.clone() {
+        let mapped = DaemonMembershipWorkflowError::merge_failed(merge_error);
+        return out_error(request_id, mapped.code, mapped.message);
+    }
+
+    let welcome_delivery_count = if let Some(plan) = result.welcome_delivery.clone() {
+        match publish_welcome_rumors(
+            keys,
+            &plan.welcome_rumors,
+            &plan.recipients,
+            Vec::new(),
+            |_receiver, giftwrap| publish_event(giftwrap, "add_members_welcome"),
+        )
+        .await
+        {
+            Ok(published) => published.len() as u32,
+            Err(err) => {
+                let mapped = DaemonMembershipWorkflowError::publish_failed(format!("{err:#}"));
+                return out_error(request_id, mapped.code, mapped.message);
+            }
+        }
+    } else {
+        0
+    };
+
+    let member_count = match host.lookup_joined_group_snapshot(&result.nostr_group_id_hex) {
+        Ok(snapshot) => snapshot.member_count(),
+        Err(err) => {
+            let mapped = DaemonMembershipWorkflowError::runtime(format!(
+                "lookup joined group after add_members: {err:#}"
+            ));
+            return out_error(request_id, mapped.code, mapped.message);
+        }
+    };
+
+    let result = AddMembersResultOut {
+        nostr_group_id: result.nostr_group_id_hex,
+        added_pubkeys: result
+            .added_pubkeys
+            .into_iter()
+            .map(|pubkey| pubkey.to_hex())
+            .collect(),
+        member_count,
+        welcome_delivery_count,
+    };
+    out_ok(
+        request_id,
+        Some(serde_json::to_value(result).expect("serialize add_members result")),
+    )
+}
+
+async fn handle_add_members_request(
+    request_id: Option<String>,
+    host: &DaemonHostContext<'_>,
+    keys: &Keys,
+    client: &Client,
+    relay_urls: &[RelayUrl],
+    nostr_group_id: &str,
+    peer_pubkeys: &[String],
+) -> OutMsg {
+    if relay_urls.is_empty() {
+        let err = DaemonMembershipWorkflowError::bad_relays("no relays configured");
+        return out_error(request_id, err.code, err.message);
+    }
+
+    handle_add_members_request_with(
+        request_id,
+        host,
+        keys,
+        nostr_group_id,
+        peer_pubkeys,
+        |peer_pubkey| {
+            let client = client.clone();
+            let relay_urls = relay_urls.to_vec();
+            async move {
+                fetch_latest_key_package_for_mdk(
+                    &client,
+                    &peer_pubkey,
+                    &relay_urls,
+                    Duration::from_secs(10),
+                )
+                .await
+            }
+        },
+        |event, label| {
+            let client = client.clone();
+            let relay_urls = relay_urls.to_vec();
+            async move {
+                publish_and_confirm_multi(&client, &relay_urls, &event, label)
+                    .await
+                    .map(|_| ())
+            }
+        },
+    )
+    .await
+}
+
+fn handle_list_members_request(
+    request_id: Option<String>,
+    host: &DaemonHostContext<'_>,
+    nostr_group_id: &str,
+) -> OutMsg {
+    let snapshot = match host.lookup_joined_group_snapshot(nostr_group_id) {
+        Ok(snapshot) => snapshot,
+        Err(err) => return out_error(request_id, "bad_group_id", format!("{err:#}")),
+    };
+
+    let mut members: Vec<GroupMemberOut> = snapshot
+        .member_snapshots
+        .into_iter()
+        .map(|member| GroupMemberOut {
+            pubkey: member.pubkey.to_hex(),
+            is_admin: member.is_admin,
+        })
+        .collect();
+    members.sort_by(|left, right| left.pubkey.cmp(&right.pubkey));
+
+    let result = ListMembersResultOut {
+        nostr_group_id: snapshot.nostr_group_id_hex,
+        member_count: members.len() as u32,
+        members,
+    };
+    out_ok(
+        request_id,
+        Some(serde_json::to_value(result).expect("serialize list_members result")),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2504,6 +2824,34 @@ pub async fn daemon_main(
                                     .send(out_error(request_id, "mdk_error", format!("{e:#}")));
                             }
                         }
+                    }
+                    InCmd::AddMembers {
+                        request_id,
+                        nostr_group_id,
+                        peer_pubkeys,
+                    } => {
+                        let host =
+                            DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let reply = handle_add_members_request(
+                            request_id,
+                            &host,
+                            &keys,
+                            &client,
+                            &relay_urls,
+                            &nostr_group_id,
+                            &peer_pubkeys,
+                        )
+                        .await;
+                        let _ = reply_tx.send(reply);
+                    }
+                    InCmd::ListMembers {
+                        request_id,
+                        nostr_group_id,
+                    } => {
+                        let host =
+                            DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let _ = reply_tx
+                            .send(handle_list_members_request(request_id, &host, &nostr_group_id));
                     }
                     InCmd::GetMessages { request_id, nostr_group_id, limit } => {
                         let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
@@ -4946,6 +5294,225 @@ mod tests {
                 .recipients,
             vec![peer_keys.public_key()]
         );
+    }
+
+    #[tokio::test]
+    async fn daemon_add_members_request_succeeds_on_production_handler() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let peer_dir = tempfile::tempdir().expect("peer tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let peer_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let peer_mdk = crate::open_mdk(peer_dir.path()).expect("open peer mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let peer_kp = make_key_package_event(&peer_mdk, &peer_keys);
+        let config = NostrGroupConfigData::new(
+            "Daemon add members request".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
+
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+
+        let reply = handle_add_members_request_with(
+            Some("req-1".to_string()),
+            &host,
+            &inviter_keys,
+            &hex::encode(created.group.nostr_group_id),
+            &[peer_keys.public_key().to_hex()],
+            move |_| {
+                let peer_kp = peer_kp.clone();
+                async move { Ok(peer_kp) }
+            },
+            |_event, _label| async move { Ok(()) },
+        )
+        .await;
+
+        let OutMsg::Ok {
+            request_id,
+            result: Some(result),
+        } = reply
+        else {
+            panic!("expected successful add_members reply");
+        };
+        assert_eq!(request_id.as_deref(), Some("req-1"));
+        let result: AddMembersResultOut =
+            serde_json::from_value(result).expect("deserialize add_members result");
+        assert_eq!(
+            result.nostr_group_id,
+            hex::encode(created.group.nostr_group_id)
+        );
+        assert_eq!(result.added_pubkeys, vec![peer_keys.public_key().to_hex()]);
+        assert_eq!(result.member_count, 3);
+        assert_eq!(result.welcome_delivery_count, 1);
+    }
+
+    #[tokio::test]
+    async fn daemon_add_members_request_reports_missing_key_package() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let missing_peer_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Daemon add members missing kp".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
+
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let missing_pubkey = missing_peer_keys.public_key();
+
+        let reply =
+            handle_add_members_request_with(
+                Some("req-2".to_string()),
+                &host,
+                &inviter_keys,
+                &hex::encode(created.group.nostr_group_id),
+                &[missing_pubkey.to_hex()],
+                move |_| async move {
+                    anyhow::bail!("no keypackage found for {}", missing_pubkey.to_hex())
+                },
+                |_event, _label| async move { Ok(()) },
+            )
+            .await;
+
+        let OutMsg::Error {
+            request_id,
+            code,
+            message,
+        } = reply
+        else {
+            panic!("expected add_members error reply");
+        };
+        assert_eq!(request_id.as_deref(), Some("req-2"));
+        assert_eq!(code, "no_key_packages");
+        assert!(message.contains(&missing_pubkey.to_hex()));
+    }
+
+    #[test]
+    fn daemon_list_members_request_returns_shared_snapshot_members() {
+        let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
+        let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
+        let inviter_keys = Keys::generate();
+        let invitee_keys = Keys::generate();
+        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+
+        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let config = NostrGroupConfigData::new(
+            "Daemon list members request".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
+            vec![inviter_keys.public_key(), invitee_keys.public_key()],
+        );
+        let created = inviter_mdk
+            .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
+            .expect("create group");
+        inviter_mdk
+            .merge_pending_commit(&created.group.mls_group_id)
+            .expect("merge initial commit");
+
+        let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+
+        let reply = handle_list_members_request(
+            Some("req-3".to_string()),
+            &host,
+            &hex::encode(created.group.nostr_group_id),
+        );
+
+        let OutMsg::Ok {
+            request_id,
+            result: Some(result),
+        } = reply
+        else {
+            panic!("expected successful list_members reply");
+        };
+        assert_eq!(request_id.as_deref(), Some("req-3"));
+        let result: ListMembersResultOut =
+            serde_json::from_value(result).expect("deserialize list_members result");
+        assert_eq!(
+            result.nostr_group_id,
+            hex::encode(created.group.nostr_group_id)
+        );
+        assert_eq!(result.member_count, 2);
+        let mut expected_members: Vec<GroupMemberOut> = host
+            .lookup_joined_group_snapshot(&hex::encode(created.group.nostr_group_id))
+            .expect("lookup joined group snapshot")
+            .member_snapshots
+            .into_iter()
+            .map(|member| GroupMemberOut {
+                pubkey: member.pubkey.to_hex(),
+                is_admin: member.is_admin,
+            })
+            .collect();
+        expected_members.sort_by(|left, right| left.pubkey.cmp(&right.pubkey));
+        assert_eq!(result.members, expected_members);
+    }
+
+    #[test]
+    fn daemon_list_members_request_rejects_unknown_group() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let keys = Keys::generate();
+        let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
+        let client = Client::new(signer);
+        let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
+        let mdk = crate::open_mdk(dir.path()).expect("open mdk");
+        let host = test_host(&mdk, &keys, &client, &relay_urls);
+
+        let reply = handle_list_members_request(Some("req-4".to_string()), &host, "deadbeef");
+
+        let OutMsg::Error {
+            request_id,
+            code,
+            message,
+        } = reply
+        else {
+            panic!("expected list_members error reply");
+        };
+        assert_eq!(request_id.as_deref(), Some("req-4"));
+        assert_eq!(code, "bad_group_id");
+        assert!(message.contains("deadbeef") || message.contains("group"));
     }
 
     #[tokio::test]

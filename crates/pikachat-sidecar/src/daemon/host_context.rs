@@ -1,8 +1,8 @@
 use super::*;
-#[cfg(test)]
 use pika_marmot_runtime::membership::EvolutionPublishStatus;
 #[cfg(test)]
-use pika_marmot_runtime::membership::{MembershipUpdateResult, PreparedMembershipEvolution};
+use pika_marmot_runtime::membership::MembershipUpdateResult;
+use pika_marmot_runtime::membership::PreparedMembershipEvolution;
 
 #[derive(Debug)]
 pub(super) enum DaemonPrepareError {
@@ -225,7 +225,6 @@ impl<'a> DaemonHostContext<'a> {
             .map_err(DaemonPrepareError::Prepare)
     }
 
-    #[cfg(test)]
     pub(super) fn prepare_add_members(
         &self,
         nostr_group_id: &str,
@@ -247,7 +246,6 @@ impl<'a> DaemonHostContext<'a> {
         self.commands().finalize_published_evolution(prepared)
     }
 
-    #[cfg(test)]
     pub(super) fn complete_membership_evolution_operation(
         &self,
         prepared: PreparedMembershipEvolution,

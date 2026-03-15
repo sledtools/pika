@@ -74,6 +74,8 @@ final class AppManagerTests: XCTestCase {
     }
 
     func testInitRestoresSessionWhenBunkerStored() async {
+        // Native glue owner: this stays in Swift because it verifies stored bunker auth dispatch
+        // into Rust, not the Rust bunker restore/sign-in semantics themselves.
         let core = MockCore(state: makeState(rev: 1))
         let store = MockAuthStore(
             stored: StoredAuth(

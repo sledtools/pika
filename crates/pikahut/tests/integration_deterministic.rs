@@ -472,6 +472,61 @@ fn nostr_connect_login_success_boundary() -> Result<()> {
 }
 
 #[test]
+#[ignore = "deterministic external signer selector"]
+fn nostr_connect_new_secret_retry_boundary() -> Result<()> {
+    // Keep the lower-level retry branch mechanics in `rust/tests/app_flows.rs`; this selector
+    // owns the readable contract that a "new secret" rejection still recovers into a successful
+    // sign-in without asking the user to reset pairing manually.
+    let mut context = TestContext::builder("nostr-connect-new-secret-retry")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_nostr_connect_new_secret_retry(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
+#[ignore = "deterministic external signer selector"]
+fn nostr_connect_non_secret_rejection_stops_without_retry_boundary() -> Result<()> {
+    // Keep the exact retry-sequence branch logic in `rust/tests/app_flows.rs`; this selector
+    // owns the readable failure contract that a normal signer rejection surfaces once and does
+    // not silently keep retrying bunker connect.
+    let mut context = TestContext::builder("nostr-connect-non-secret-rejection")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_nostr_connect_non_secret_rejection_stops_without_retry(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
+#[ignore = "deterministic external signer selector"]
+fn pending_nostr_connect_login_survives_restart_boundary() -> Result<()> {
+    // Keep the narrower pending-state persistence semantics in `rust/tests/app_flows.rs`; this
+    // selector owns the readable lifecycle contract that a pending signer flow survives app
+    // restart and can still complete after the callback arrives later.
+    let mut context = TestContext::builder("nostr-connect-pending-restart")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_pending_nostr_connect_login_survives_restart(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
+#[ignore = "deterministic external signer selector"]
+fn restore_session_bunker_signs_in_boundary() -> Result<()> {
+    // Keep the exact stored-client-key plumbing in `rust/tests/app_flows.rs`; this selector owns
+    // the readable contract that a stored bunker session descriptor signs the app back in.
+    let mut context = TestContext::builder("restore-session-bunker")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_restore_session_bunker_signs_in(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
 #[ignore = "nightly call-path regression selector"]
 fn call_over_local_moq_relay_boundary() -> Result<()> {
     let mut context = TestContext::builder("regression-call-over-local-moq-relay")

@@ -208,6 +208,12 @@ Working assumptions:
    - `rust/tests/app_flows.rs` now keeps the narrower callback-gating semantic owner in `begin_nostr_connect_login_waits_for_callback_before_bunker_connect` instead of also owning the fuller launch/URL/auth success contract
    - Android `NostrConnectIntentTest` is now labeled honestly as intent/callback glue only, not the owner of Rust Nostr Connect handshake semantics; callback augmentation remains a native glue responsibility while Rust owns the pending/login state machine
    - the remaining open edges in this family are the richer retry/reconnect/current-user-hint paths, not the basic success-path ownership split
+23. Slice 24 substantially finished the signer/auth family cleanup:
+   - `crates/pikahut/tests/integration_deterministic.rs` now owns the readable signer lifecycle contracts that users actually feel: `nostr_connect_login_success_boundary`, `pending_nostr_connect_login_survives_restart_boundary`, `restore_session_bunker_signs_in_boundary`, `nostr_connect_new_secret_retry_boundary`, and `nostr_connect_non_secret_rejection_stops_without_retry_boundary`
+   - `crates/pikahut/tests/support.rs` now drives those selector contracts directly through deterministic `FfiApp` setups: pending Nostr Connect restart/recovery, bunker restore sign-in, retry-after-"new secret" rejection, and no-retry surfacing for ordinary signer rejection
+   - `rust/tests/app_flows.rs` now keeps the narrower state-machine and plumbing owners underneath them: callback-gating before bunker connect, retry URI mutation semantics, pending-state restoration before callback, persisted secret/client-pair reuse, pairing reset rotation, stored bunker client-key reuse, and callback/connect-response ordering no-ops
+   - native overlap is now called out more honestly: Android intent tests own callback/intent glue only, and `ios/Tests/AppManagerTests.swift` owns AppManager stored-auth dispatch into Rust rather than Rust signer semantics
+   - the signer/auth family is now close to done; the main remaining Rust-only caveat is the lower-level external-signer current-user-hint/current-user retention plumbing, not a broad ownership blur
 ## Progress Update
 
 Completed on 2026-03-10:
@@ -294,10 +300,10 @@ Verified in the repo today:
 ## FFI Behavioral Surface Map (Account / Chat / Messaging / Group / Profile)
 
 1. `rust/tests/app_flows.rs`
-   - Owns single-app `FfiApp` state/lifecycle behavior: account creation, router changes, immediate logout/reset semantics, persistence/restore state, paging, reactions, and external-signer/bunker/Nostr Connect flows.
+   - Owns single-app `FfiApp` state/lifecycle behavior: account creation, router changes, immediate logout/reset semantics, persistence/restore state, paging, reactions, and the lower-level external-signer/bunker/Nostr Connect state-machine semantics underneath the selector-owned signer contracts.
    - This is the right ownership layer when the product question is “what does one app instance do after this action/update?” rather than “can two apps talk over local fixtures?”
    - The main overlap with native UI is shell-level: iOS/Android can still validate that login/chat/logout/navigation render correctly, but they should not be the primary owners of these Rust semantics.
-   - The auth/session area is now intentionally split: `pikahut` owns the readable logout-reset boundary, while this file keeps the narrower runtime-reset and restore-state semantics underneath it.
+   - The auth/session and signer areas are now intentionally split: `pikahut` owns the readable logout/reset, restore/relaunch, and signer lifecycle contracts, while this file keeps the narrower runtime-reset, restored-state, callback-gating, retry-sequence, pending-state, and stored-key semantics underneath them.
 
 2. `rust/tests/e2e_messaging.rs`
    - Owns focused relay-backed multi-app `FfiApp` messaging/call-signaling semantics: relay-backed DM delivery into peer chat state, invalid call invite rejection, optimistic send behavior, and peer-visible call-end signaling.
@@ -311,7 +317,7 @@ Verified in the repo today:
 
 4. `crates/pikahut/tests/integration_deterministic.rs`
    - Owns the CI-facing deterministic selector contract.
-   - For this audit area it now owns the main readable user-facing contracts: `dm_creation_and_first_message_delivery_boundary`, `late_joiner_group_profile_visibility_after_refresh_boundary`, `dm_local_profile_override_visibility_boundary`, and the direct logout-reset lifecycle boundary `post_rebase_logout_session_convergence_boundary`, plus the narrower post-rebase invalid-event regression boundary.
+   - For this audit area it now owns the main readable user-facing contracts: `dm_creation_and_first_message_delivery_boundary`, `late_joiner_group_profile_visibility_after_refresh_boundary`, `dm_local_profile_override_visibility_boundary`, the direct logout-reset lifecycle boundary `post_rebase_logout_session_convergence_boundary`, `session_restore_after_restart_boundary`, and the signer-family boundaries `nostr_connect_login_success_boundary`, `nostr_connect_new_secret_retry_boundary`, `nostr_connect_non_secret_rejection_stops_without_retry_boundary`, `pending_nostr_connect_login_survives_restart_boundary`, and `restore_session_bunker_signs_in_boundary`, plus the narrower post-rebase invalid-event regression boundary.
    - That split is acceptable when the selector is clearly pinning a narrower Rust semantic owner, but it would be questionable if `pikahut` tried to become a second full owner of every messaging/profile assertion.
 
 5. `ios/UITests/PikaUITests.swift`
@@ -328,7 +334,7 @@ Verified in the repo today:
    - similar DM bootstrap helpers still exist in `crates/pikahut/tests/support.rs`, but that duplication is currently intentional because selector-side fixture/orchestration support cannot depend on the private `rust/tests` layer
    - both helper layers now at least agree on one important boundary: DM lookup excludes group chats with the same peer instead of relying on a fuzzy member-only match
    - the main user-facing message/profile flows now have selector-owned deterministic `pikahut` contracts; the remaining confusing area is the harness-limited true pre-existing late-joiner rebroadcast case, not general ownership drift across this family
-   - the single-app auth/session family is cleaner but not fully closed: logout/reset now has a direct selector-owned contract, while session restore after restart still lives mainly in `rust/tests/app_flows.rs` plus platform shell smoke instead of a dedicated selector boundary
+   - the single-app auth/session and signer families are now broadly coherent at the selector layer; the remaining auth caveat is lower-level external-signer current-user-hint/current-user retention plumbing, not a missing readable lifecycle contract
 
 ## Strongest Problems
 

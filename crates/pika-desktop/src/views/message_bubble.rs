@@ -291,6 +291,8 @@ fn push_message_content<'a>(
                 MessageSegment::Markdown { text } if !text.is_empty() => {
                     Some((text.as_str(), true))
                 }
+                // PikaHtml segments (interactive widgets / hypernotes) are
+                // rendered separately via the hypernote system; skip here.
                 _ => None,
             })
             .collect()

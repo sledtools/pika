@@ -85,6 +85,26 @@ fn flush_spans<'a>(
     }
 }
 
+/// Wrap a list of elements in a blockquote bar and return it.
+fn wrap_blockquote<'a>(
+    inner: Vec<Element<'a, Message, Theme>>,
+    is_mine: bool,
+) -> Element<'a, Message, Theme> {
+    let bar_color = blockquote_bar(is_mine);
+    row![
+        container(Space::new(3, iced::Fill)).style(move |_: &Theme| {
+            container::Style {
+                background: Some(Background::Color(bar_color)),
+                border: border::rounded(1),
+                ..Default::default()
+            }
+        }),
+        column(inner).spacing(2),
+    ]
+    .spacing(8)
+    .into()
+}
+
 /// Render a markdown string as an Iced element.
 ///
 /// `text_color` is the base text colour (white for sent, primary for received).
@@ -102,14 +122,23 @@ pub fn render_markdown<'a>(
     let mut in_code_block = false;
     let mut code_block_text = String::new();
     let mut list_index: Option<u64> = None;
-    let mut in_blockquote = false;
-    let mut blockquote_elements: Vec<Element<'a, Message, Theme>> = Vec::new();
+    // Stack of blockquote element lists to support nesting.
+    let mut bq_stack: Vec<Vec<Element<'a, Message, Theme>>> = Vec::new();
+
+    /// Returns a mutable reference to the current output target: the top of
+    /// the blockquote stack if inside a blockquote, otherwise `blocks`.
+    fn target<'a, 'b>(
+        blocks: &'b mut Vec<Element<'a, Message, Theme>>,
+        bq_stack: &'b mut Vec<Vec<Element<'a, Message, Theme>>>,
+    ) -> &'b mut Vec<Element<'a, Message, Theme>> {
+        bq_stack.last_mut().unwrap_or(blocks)
+    }
 
     for event in parser {
         match event {
             // ── Block-level tags ────────────────────────────────
             Event::Start(Tag::CodeBlock(_)) => {
-                flush_spans(&mut inline_spans, &mut blocks);
+                flush_spans(&mut inline_spans, target(&mut blocks, &mut bq_stack));
                 in_code_block = true;
                 code_block_text.clear();
             }
@@ -132,37 +161,22 @@ pub fn render_markdown<'a>(
                     ..Default::default()
                 })
                 .into();
-                if in_blockquote {
-                    blockquote_elements.push(el);
-                } else {
-                    blocks.push(el);
-                }
+                target(&mut blocks, &mut bq_stack).push(el);
             }
             Event::Start(Tag::BlockQuote) => {
-                flush_spans(&mut inline_spans, &mut blocks);
-                in_blockquote = true;
+                flush_spans(&mut inline_spans, target(&mut blocks, &mut bq_stack));
+                bq_stack.push(Vec::new());
             }
             Event::End(TagEnd::BlockQuote) => {
-                flush_spans(&mut inline_spans, &mut blockquote_elements);
-                in_blockquote = false;
-                let bar_color = blockquote_bar(is_mine);
-                let inner = std::mem::take(&mut blockquote_elements);
-                let el: Element<'a, Message, Theme> = row![
-                    container(Space::new(3, iced::Fill)).style(move |_: &Theme| {
-                        container::Style {
-                            background: Some(Background::Color(bar_color)),
-                            border: border::rounded(1),
-                            ..Default::default()
-                        }
-                    }),
-                    column(inner).spacing(2),
-                ]
-                .spacing(8)
-                .into();
-                blocks.push(el);
+                flush_spans(&mut inline_spans, target(&mut blocks, &mut bq_stack));
+                let inner = bq_stack.pop().unwrap_or_default();
+                if !inner.is_empty() {
+                    let el = wrap_blockquote(inner, is_mine);
+                    target(&mut blocks, &mut bq_stack).push(el);
+                }
             }
             Event::Start(Tag::List(ordered)) => {
-                flush_spans(&mut inline_spans, &mut blocks);
+                flush_spans(&mut inline_spans, target(&mut blocks, &mut bq_stack));
                 list_index = ordered;
             }
             Event::End(TagEnd::List(_)) => {
@@ -187,36 +201,20 @@ pub fn render_markdown<'a>(
                     ]
                     .spacing(6)
                     .into();
-                    if in_blockquote {
-                        blockquote_elements.push(item);
-                    } else {
-                        blocks.push(item);
-                    }
+                    target(&mut blocks, &mut bq_stack).push(item);
                 }
             }
             Event::Start(Tag::Paragraph) => {}
             Event::End(TagEnd::Paragraph) => {
-                if in_blockquote {
-                    flush_spans(&mut inline_spans, &mut blockquote_elements);
-                } else {
-                    flush_spans(&mut inline_spans, &mut blocks);
-                }
+                flush_spans(&mut inline_spans, target(&mut blocks, &mut bq_stack));
             }
             Event::Start(Tag::Heading { .. }) => {
-                if in_blockquote {
-                    flush_spans(&mut inline_spans, &mut blockquote_elements);
-                } else {
-                    flush_spans(&mut inline_spans, &mut blocks);
-                }
+                flush_spans(&mut inline_spans, target(&mut blocks, &mut bq_stack));
                 style.bold = true;
             }
             Event::End(TagEnd::Heading(_)) => {
                 style.bold = false;
-                if in_blockquote {
-                    flush_spans(&mut inline_spans, &mut blockquote_elements);
-                } else {
-                    flush_spans(&mut inline_spans, &mut blocks);
-                }
+                flush_spans(&mut inline_spans, target(&mut blocks, &mut bq_stack));
             }
 
             // ── Inline tags ────────────────────────────────────
@@ -267,29 +265,15 @@ pub fn render_markdown<'a>(
         }
     }
 
-    // Flush any remaining content.
-    if in_blockquote {
-        flush_spans(&mut inline_spans, &mut blockquote_elements);
-        if !blockquote_elements.is_empty() {
-            let bar_color = blockquote_bar(is_mine);
-            let inner = std::mem::take(&mut blockquote_elements);
-            blocks.push(
-                row![
-                    container(Space::new(3, iced::Fill)).style(move |_: &Theme| {
-                        container::Style {
-                            background: Some(Background::Color(bar_color)),
-                            border: border::rounded(1),
-                            ..Default::default()
-                        }
-                    }),
-                    column(inner).spacing(2),
-                ]
-                .spacing(8)
-                .into(),
-            );
+    // Flush any remaining inline spans.
+    flush_spans(&mut inline_spans, target(&mut blocks, &mut bq_stack));
+
+    // Close any unclosed blockquotes (malformed input).
+    while let Some(inner) = bq_stack.pop() {
+        if !inner.is_empty() {
+            let el = wrap_blockquote(inner, is_mine);
+            target(&mut blocks, &mut bq_stack).push(el);
         }
-    } else {
-        flush_spans(&mut inline_spans, &mut blocks);
     }
 
     match blocks.len() {

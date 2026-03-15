@@ -741,7 +741,7 @@ fn create_chat_with_invalid_peer_npub_shows_toast_and_does_not_navigate() {
 }
 
 #[test]
-fn begin_external_signer_login_is_owned_by_rust_and_logs_in() {
+fn begin_external_signer_login_passes_current_user_hint_to_bridge() {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_string_lossy().to_string();
     write_config_with_external_signer(&data_dir, true, Some(true));
@@ -760,68 +760,15 @@ fn begin_external_signer_login_is_owned_by_rust_and_logs_in() {
     app.dispatch(AppAction::BeginExternalSignerLogin {
         current_user_hint: Some("hint-user".into()),
     });
-    wait_until("external signer logged in", Duration::from_secs(10), || {
-        let s = app.state();
-        matches!(s.auth, AuthState::LoggedIn { .. }) && s.router.default_screen == Screen::ChatList
-    });
 
-    let s = app.state();
-    assert!(!s.busy.logging_in);
-    assert_eq!(s.router.default_screen, Screen::ChatList);
-    match s.auth {
-        AuthState::LoggedIn {
-            mode:
-                AuthMode::ExternalSigner {
-                    pubkey,
-                    signer_package,
-                    current_user,
-                },
-            ..
-        } => {
-            assert_eq!(
-                pubkey,
-                "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
-            );
-            assert_eq!(signer_package, "com.greenart7c3.nostrsigner");
-            assert_eq!(current_user, "amber-user-1");
-        }
-        other => panic!("expected external signer auth mode, got {other:?}"),
-    }
+    // Keep the readable signed-in success/failure contracts in `pikahut`; this test stays as the
+    // lower-level Rust owner that the current-user hint is passed through to the bridge.
+    wait_until(
+        "bridge receives current-user hint",
+        Duration::from_secs(10),
+        || bridge.last_hint().as_deref() == Some("hint-user") && !app.state().busy.logging_in,
+    );
     assert_eq!(bridge.last_hint().as_deref(), Some("hint-user"));
-}
-
-#[test]
-fn begin_external_signer_login_failure_shows_rust_toast_and_clears_busy() {
-    let dir = tempdir().unwrap();
-    let data_dir = dir.path().to_string_lossy().to_string();
-    write_config_with_external_signer(&data_dir, true, Some(true));
-
-    let app = FfiApp::new(data_dir, String::new(), String::new());
-    let bridge = MockExternalSignerBridge::new(ExternalSignerHandshakeResult {
-        ok: false,
-        pubkey: None,
-        signer_package: None,
-        current_user: None,
-        error_kind: Some(ExternalSignerErrorKind::Timeout),
-        error_message: Some("timeout".into()),
-    });
-    app.set_external_signer_bridge(Box::new(bridge));
-
-    app.dispatch(AppAction::BeginExternalSignerLogin {
-        current_user_hint: None,
-    });
-
-    wait_until("toast shown", Duration::from_secs(10), || {
-        app.state().toast.is_some()
-    });
-    let s = app.state();
-    assert!(matches!(s.auth, AuthState::LoggedOut));
-    assert!(!s.busy.logging_in);
-    assert!(s
-        .toast
-        .unwrap_or_default()
-        .to_lowercase()
-        .contains("timed out"));
 }
 
 #[test]
@@ -864,7 +811,7 @@ fn restore_session_external_signer_keeps_current_user_in_auth_state() {
 }
 
 #[test]
-fn begin_bunker_login_is_owned_by_rust_and_emits_descriptor_update() {
+fn begin_bunker_login_emits_restorable_descriptor_update() {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_string_lossy().to_string();
     write_config_with_external_signer(&data_dir, true, Some(true));
@@ -885,30 +832,8 @@ fn begin_bunker_login_is_owned_by_rust_and_emits_descriptor_update() {
                 .into(),
     });
 
-    wait_until("bunker logged in", Duration::from_secs(10), || {
-        let s = app.state();
-        matches!(s.auth, AuthState::LoggedIn { .. }) && s.router.default_screen == Screen::ChatList
-    });
-
-    let s = app.state();
-    assert!(!s.busy.logging_in);
-    assert_eq!(s.router.default_screen, Screen::ChatList);
-    match s.auth {
-        AuthState::LoggedIn {
-            pubkey,
-            mode: AuthMode::BunkerSigner { bunker_uri },
-            ..
-        } => {
-            assert_eq!(pubkey, expected_user_pubkey);
-            assert_eq!(bunker_uri, canonical_bunker_uri);
-        }
-        other => panic!("expected bunker signer auth mode, got {other:?}"),
-    }
-    assert_eq!(
-        connector.last_bunker_uri().as_deref(),
-        Some("bunker://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?relay=wss://relay.input")
-    );
-
+    // Keep the readable signed-in and invalid-URI UX contracts in `pikahut`; this test stays as
+    // the lower-level Rust owner for descriptor emission and URI canonicalization/plumbing.
     wait_until("bunker descriptor update", Duration::from_secs(10), || {
         collector
             .0
@@ -926,38 +851,18 @@ fn begin_bunker_login_is_owned_by_rust_and_emits_descriptor_update() {
         _ => None,
     });
     let (descriptor_uri, descriptor_client_nsec) = descriptor.expect("descriptor update");
+    match app.state().auth {
+        AuthState::LoggedIn { pubkey, .. } => assert_eq!(pubkey, expected_user_pubkey),
+        other => panic!("expected logged in bunker auth state, got {other:?}"),
+    }
+    assert_eq!(
+        connector.last_bunker_uri().as_deref(),
+        Some(
+            "bunker://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?relay=wss://relay.input"
+        )
+    );
     assert_eq!(descriptor_uri, canonical_bunker_uri);
     assert!(!descriptor_client_nsec.trim().is_empty());
-}
-
-#[test]
-fn begin_bunker_login_failure_shows_toast_and_clears_busy() {
-    let dir = tempdir().unwrap();
-    let data_dir = dir.path().to_string_lossy().to_string();
-    write_config_with_external_signer(&data_dir, true, Some(true));
-
-    let app = FfiApp::new(data_dir, String::new(), String::new());
-    let connector = MockBunkerSignerConnector::failure(
-        BunkerConnectErrorKind::InvalidUri,
-        "invalid bunker URI",
-    );
-    app.set_bunker_signer_connector_for_tests(Arc::new(connector));
-
-    app.dispatch(AppAction::BeginBunkerLogin {
-        bunker_uri: "not-a-uri".into(),
-    });
-
-    wait_until("toast shown", Duration::from_secs(10), || {
-        app.state().toast.is_some()
-    });
-    let s = app.state();
-    assert!(matches!(s.auth, AuthState::LoggedOut));
-    assert!(!s.busy.logging_in);
-    assert!(s
-        .toast
-        .unwrap_or_default()
-        .to_lowercase()
-        .contains("invalid bunker uri"));
 }
 
 #[test]

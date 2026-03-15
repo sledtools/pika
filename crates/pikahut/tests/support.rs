@@ -724,6 +724,17 @@ pub fn run_logout_reset_across_restart(context: &TestContext) -> Result<()> {
 
 const NOSTR_CONNECT_CANONICAL_BUNKER_URI: &str = "bunker://79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798?relay=wss://relay.example.com";
 
+fn build_external_signer_app(
+    data_dir: &Path,
+    handshake_result: ExternalSignerHandshakeResult,
+) -> Result<(Arc<FfiApp>, MockExternalSignerBridge)> {
+    write_config_with_external_signer(data_dir)?;
+    let app = FfiApp::new(path_arg(data_dir), String::new(), String::new());
+    let bridge = MockExternalSignerBridge::new(handshake_result);
+    app.set_external_signer_bridge(Box::new(bridge.clone()));
+    Ok((app, bridge))
+}
+
 fn new_unavailable_external_signer_bridge() -> MockExternalSignerBridge {
     MockExternalSignerBridge::new(ExternalSignerHandshakeResult {
         ok: false,
@@ -738,11 +749,17 @@ fn new_unavailable_external_signer_bridge() -> MockExternalSignerBridge {
 fn build_pending_nostr_connect_app(
     data_dir: &Path,
 ) -> Result<(Arc<FfiApp>, MockExternalSignerBridge)> {
-    write_config_with_external_signer(data_dir)?;
-    let app = FfiApp::new(path_arg(data_dir), String::new(), String::new());
-    let bridge = new_unavailable_external_signer_bridge();
-    app.set_external_signer_bridge(Box::new(bridge.clone()));
-    Ok((app, bridge))
+    build_external_signer_app(
+        data_dir,
+        ExternalSignerHandshakeResult {
+            ok: false,
+            pubkey: None,
+            signer_package: None,
+            current_user: None,
+            error_kind: Some(ExternalSignerErrorKind::SignerUnavailable),
+            error_message: Some("unused".into()),
+        },
+    )
 }
 
 fn dispatch_nostr_connect_callback_and_response(app: &FfiApp, remote_signer_pubkey: &str) {
@@ -752,7 +769,7 @@ fn dispatch_nostr_connect_callback_and_response(app: &FfiApp, remote_signer_pubk
     app.inject_nostr_connect_connect_response_for_tests(remote_signer_pubkey.to_string());
 }
 
-// CI-facing readable Nostr Connect contract: Rust launches the raw signer handshake URL, stays
+// Checked-in deterministic Nostr Connect contract: Rust launches the raw signer handshake URL, stays
 // pending until the callback arrives, then finishes bunker bootstrap and lands signed in. Native
 // intent glue still owns adding the callback URL onto the launched nostrconnect URI.
 pub fn run_nostr_connect_login_success(context: &TestContext) -> Result<()> {
@@ -854,6 +871,192 @@ pub fn run_nostr_connect_login_success(context: &TestContext) -> Result<()> {
         "bunker connect URI should carry relay and secret: {connect_uri}"
     );
 
+    Ok(())
+}
+
+// Checked-in deterministic external-signer contract: a direct signer login should land the app
+// signed in without bouncing through bunker/Nostr Connect handshake state.
+pub fn run_external_signer_login_success(context: &TestContext) -> Result<()> {
+    let data_dir = context.state_dir().join("external-signer-login-success");
+    let (app, _bridge) = build_external_signer_app(
+        &data_dir,
+        ExternalSignerHandshakeResult {
+            ok: true,
+            pubkey: Some("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into()),
+            signer_package: Some("com.greenart7c3.nostrsigner".into()),
+            current_user: Some("amber-user-1".into()),
+            error_kind: None,
+            error_message: None,
+        },
+    )?;
+
+    app.dispatch(AppAction::BeginExternalSignerLogin {
+        current_user_hint: Some("hint-user".into()),
+    });
+
+    wait_until("external signer logged in", Duration::from_secs(10), || {
+        let state = app.state();
+        matches!(state.auth, AuthState::LoggedIn { .. })
+            && state.router.default_screen == pika_core::Screen::ChatList
+            && !state.busy.logging_in
+    })?;
+
+    match app.state().auth {
+        AuthState::LoggedIn {
+            mode:
+                AuthMode::ExternalSigner {
+                    pubkey,
+                    signer_package,
+                    current_user,
+                },
+            ..
+        } => {
+            anyhow::ensure!(
+                pubkey == "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+                "unexpected external signer pubkey: {pubkey}"
+            );
+            anyhow::ensure!(
+                signer_package == "com.greenart7c3.nostrsigner",
+                "unexpected external signer package: {signer_package}"
+            );
+            anyhow::ensure!(
+                current_user == "amber-user-1",
+                "unexpected external signer current_user: {current_user}"
+            );
+        }
+        other => bail!("expected external signer auth mode, got {other:?}"),
+    }
+
+    Ok(())
+}
+
+// Checked-in deterministic external-signer failure contract: a direct signer timeout should
+// leave the app logged out, clear busy state, and surface a user-visible timeout toast.
+pub fn run_external_signer_login_timeout_failure(context: &TestContext) -> Result<()> {
+    let data_dir = context.state_dir().join("external-signer-login-timeout");
+    let (app, _bridge) = build_external_signer_app(
+        &data_dir,
+        ExternalSignerHandshakeResult {
+            ok: false,
+            pubkey: None,
+            signer_package: None,
+            current_user: None,
+            error_kind: Some(ExternalSignerErrorKind::Timeout),
+            error_message: Some("timeout".into()),
+        },
+    )?;
+
+    app.dispatch(AppAction::BeginExternalSignerLogin {
+        current_user_hint: None,
+    });
+
+    wait_until(
+        "external signer timeout surfaced",
+        Duration::from_secs(10),
+        || {
+            let state = app.state();
+            matches!(state.auth, AuthState::LoggedOut)
+                && !state.busy.logging_in
+                && state.toast.is_some()
+        },
+    )?;
+
+    anyhow::ensure!(
+        app.state()
+            .toast
+            .clone()
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("timed out"),
+        "expected timeout toast, got {:?}",
+        app.state().toast
+    );
+    Ok(())
+}
+
+// Checked-in deterministic bunker-login contract: entering a bunker URI should sign the app in
+// and land it on the normal signed-in chat shell. Descriptor/client-key plumbing stays below this layer.
+pub fn run_bunker_login_success(context: &TestContext) -> Result<()> {
+    let data_dir = context.state_dir().join("bunker-login-success");
+    write_config_with_external_signer(&data_dir)?;
+
+    let app = FfiApp::new(path_arg(&data_dir), String::new(), String::new());
+    let (connector, expected_user_pubkey) =
+        MockBunkerSignerConnector::success(NOSTR_CONNECT_CANONICAL_BUNKER_URI);
+    app.set_bunker_signer_connector_for_tests(Arc::new(connector));
+
+    app.dispatch(AppAction::BeginBunkerLogin {
+        bunker_uri:
+            "bunker://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?relay=wss://relay.input"
+                .into(),
+    });
+
+    wait_until("bunker login signed in", Duration::from_secs(10), || {
+        let state = app.state();
+        matches!(state.auth, AuthState::LoggedIn { .. })
+            && state.router.default_screen == pika_core::Screen::ChatList
+            && !state.busy.logging_in
+    })?;
+
+    match app.state().auth {
+        AuthState::LoggedIn {
+            pubkey,
+            mode: AuthMode::BunkerSigner { bunker_uri },
+            ..
+        } => {
+            anyhow::ensure!(
+                pubkey == expected_user_pubkey,
+                "unexpected bunker signer pubkey: {pubkey}"
+            );
+            anyhow::ensure!(
+                bunker_uri == NOSTR_CONNECT_CANONICAL_BUNKER_URI,
+                "unexpected canonical bunker URI: {bunker_uri}"
+            );
+        }
+        other => bail!("expected bunker signer auth mode, got {other:?}"),
+    }
+
+    Ok(())
+}
+
+// Checked-in deterministic bunker-login failure contract: an invalid bunker URI should surface a
+// user-visible error and leave the app cleanly logged out.
+pub fn run_bunker_login_invalid_uri_failure(context: &TestContext) -> Result<()> {
+    let data_dir = context.state_dir().join("bunker-login-invalid-uri");
+    write_config_with_external_signer(&data_dir)?;
+
+    let app = FfiApp::new(path_arg(&data_dir), String::new(), String::new());
+    let connector = MockBunkerSignerConnector::failure(
+        BunkerConnectErrorKind::InvalidUri,
+        "invalid bunker URI",
+    );
+    app.set_bunker_signer_connector_for_tests(Arc::new(connector));
+
+    app.dispatch(AppAction::BeginBunkerLogin {
+        bunker_uri: "not-a-uri".into(),
+    });
+
+    wait_until(
+        "bunker invalid uri surfaced",
+        Duration::from_secs(10),
+        || {
+            let state = app.state();
+            matches!(state.auth, AuthState::LoggedOut)
+                && !state.busy.logging_in
+                && state.toast.is_some()
+        },
+    )?;
+
+    anyhow::ensure!(
+        app.state()
+            .toast
+            .clone()
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("invalid bunker uri"),
+        "expected invalid bunker URI toast, got {:?}",
+        app.state().toast
+    );
     Ok(())
 }
 

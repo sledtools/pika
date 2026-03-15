@@ -458,6 +458,58 @@ fn post_rebase_logout_session_convergence_boundary() -> Result<()> {
 
 #[test]
 #[ignore = "deterministic external signer selector"]
+fn external_signer_login_success_boundary() -> Result<()> {
+    // Keep current-user hint and restored current-user plumbing in `rust/tests/app_flows.rs`;
+    // this checked-in deterministic selector captures the readable direct signer login contract.
+    let mut context = TestContext::builder("external-signer-login-success")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_external_signer_login_success(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
+#[ignore = "deterministic external signer selector"]
+fn external_signer_login_timeout_failure_boundary() -> Result<()> {
+    // Keep error-kind/current-user plumbing in `rust/tests/app_flows.rs`; this checked-in
+    // deterministic selector captures the readable direct signer failure contract.
+    let mut context = TestContext::builder("external-signer-login-timeout")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_external_signer_login_timeout_failure(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
+#[ignore = "deterministic external signer selector"]
+fn bunker_login_success_boundary() -> Result<()> {
+    // Keep descriptor/client-key plumbing in `rust/tests/app_flows.rs`; this checked-in
+    // deterministic selector captures the readable direct bunker login contract.
+    let mut context = TestContext::builder("bunker-login-success")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_bunker_login_success(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
+#[ignore = "deterministic external signer selector"]
+fn bunker_login_invalid_uri_failure_boundary() -> Result<()> {
+    // Keep lower-level bunker URI plumbing in `rust/tests/app_flows.rs`; this checked-in
+    // deterministic selector captures the readable invalid-URI failure contract.
+    let mut context = TestContext::builder("bunker-login-invalid-uri")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_bunker_login_invalid_uri_failure(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
+#[ignore = "deterministic external signer selector"]
 fn nostr_connect_login_success_boundary() -> Result<()> {
     // Keep the narrower callback-gating and retry semantics in `rust/tests/app_flows.rs`; this
     // checked-in deterministic selector captures the readable signer success contract. Native

@@ -303,7 +303,7 @@ pub fn run_dm_creation_and_first_message_delivery(context: &TestContext) -> Resu
         })?;
 
         wait_until(
-            "bob preview/unread updated",
+            "bob preview and unread updated",
             Duration::from_secs(20),
             || {
                 bob.state()
@@ -311,7 +311,7 @@ pub fn run_dm_creation_and_first_message_delivery(context: &TestContext) -> Resu
                     .iter()
                     .find(|chat| chat.chat_id == chat_id)
                     .map(|chat| {
-                        chat.unread_count > 0 || chat.last_message.as_deref() == Some(message)
+                        chat.unread_count > 0 && chat.last_message.as_deref() == Some(message)
                     })
                     .unwrap_or(false)
             },
@@ -342,20 +342,6 @@ pub fn run_dm_creation_and_first_message_delivery(context: &TestContext) -> Resu
             !received.is_mine,
             "peer-delivered message must not be marked as mine"
         );
-
-        wait_until(
-            "bob preview matches first message",
-            Duration::from_secs(10),
-            || {
-                bob.state()
-                    .chat_list
-                    .iter()
-                    .find(|chat| chat.chat_id == chat_id)
-                    .and_then(|chat| chat.last_message.clone())
-                    .as_deref()
-                    == Some(message)
-            },
-        )?;
 
         Ok(())
     })

@@ -761,14 +761,60 @@ fn begin_external_signer_login_passes_current_user_hint_to_bridge() {
         current_user_hint: Some("hint-user".into()),
     });
 
-    // Keep the readable signed-in success/failure contracts in `pikahut`; this test stays as the
-    // lower-level Rust owner that the current-user hint is passed through to the bridge.
+    // Keep the fuller readable lifecycle contract in `pikahut`; this test stays as the
+    // default-exercised Rust smoke for the direct success path plus current-user-hint plumbing.
     wait_until(
-        "bridge receives current-user hint",
+        "bridge receives current-user hint and login completes",
         Duration::from_secs(10),
-        || bridge.last_hint().as_deref() == Some("hint-user") && !app.state().busy.logging_in,
+        || {
+            bridge.last_hint().as_deref() == Some("hint-user")
+                && matches!(app.state().auth, AuthState::LoggedIn { .. })
+                && !app.state().busy.logging_in
+        },
     );
     assert_eq!(bridge.last_hint().as_deref(), Some("hint-user"));
+    assert!(matches!(
+        app.state().auth,
+        AuthState::LoggedIn {
+            mode: AuthMode::ExternalSigner { .. },
+            ..
+        }
+    ));
+}
+
+#[test]
+fn begin_external_signer_login_timeout_maps_error_into_toast() {
+    let dir = tempdir().unwrap();
+    let data_dir = dir.path().to_string_lossy().to_string();
+    write_config_with_external_signer(&data_dir, true, Some(true));
+
+    let app = FfiApp::new(data_dir, String::new(), String::new());
+    let bridge = MockExternalSignerBridge::new(ExternalSignerHandshakeResult {
+        ok: false,
+        pubkey: None,
+        signer_package: None,
+        current_user: None,
+        error_kind: Some(ExternalSignerErrorKind::Timeout),
+        error_message: Some("timeout".into()),
+    });
+    app.set_external_signer_bridge(Box::new(bridge));
+
+    // Keep the fuller readable failure contract in `pikahut`; this stays as the default-exercised
+    // Rust owner for timeout error mapping and busy-state clearing.
+    app.dispatch(AppAction::BeginExternalSignerLogin {
+        current_user_hint: None,
+    });
+
+    wait_until("timeout toast shown", Duration::from_secs(10), || {
+        app.state().toast.is_some() && !app.state().busy.logging_in
+    });
+    let s = app.state();
+    assert!(matches!(s.auth, AuthState::LoggedOut));
+    assert!(s
+        .toast
+        .unwrap_or_default()
+        .to_lowercase()
+        .contains("timed out"));
 }
 
 #[test]
@@ -832,8 +878,8 @@ fn begin_bunker_login_emits_restorable_descriptor_update() {
                 .into(),
     });
 
-    // Keep the readable signed-in and invalid-URI UX contracts in `pikahut`; this test stays as
-    // the lower-level Rust owner for descriptor emission and URI canonicalization/plumbing.
+    // Keep the fuller readable bunker UX contract in `pikahut`; this test stays as the
+    // default-exercised Rust smoke for direct bunker login plus descriptor/canonicalization plumbing.
     wait_until("bunker descriptor update", Duration::from_secs(10), || {
         collector
             .0
@@ -863,6 +909,39 @@ fn begin_bunker_login_emits_restorable_descriptor_update() {
     );
     assert_eq!(descriptor_uri, canonical_bunker_uri);
     assert!(!descriptor_client_nsec.trim().is_empty());
+}
+
+#[test]
+fn begin_bunker_login_invalid_uri_maps_error_into_toast() {
+    let dir = tempdir().unwrap();
+    let data_dir = dir.path().to_string_lossy().to_string();
+    write_config_with_external_signer(&data_dir, true, Some(true));
+
+    let app = FfiApp::new(data_dir, String::new(), String::new());
+    let connector = MockBunkerSignerConnector::failure(
+        BunkerConnectErrorKind::InvalidUri,
+        "invalid bunker URI",
+    );
+    app.set_bunker_signer_connector_for_tests(Arc::new(connector));
+
+    // Keep the fuller readable invalid-URI contract in `pikahut`; this stays as the
+    // default-exercised Rust owner for invalid-URI error mapping and busy-state clearing.
+    app.dispatch(AppAction::BeginBunkerLogin {
+        bunker_uri: "not-a-uri".into(),
+    });
+
+    wait_until(
+        "invalid bunker uri toast shown",
+        Duration::from_secs(10),
+        || app.state().toast.is_some() && !app.state().busy.logging_in,
+    );
+    let s = app.state();
+    assert!(matches!(s.auth, AuthState::LoggedOut));
+    assert!(s
+        .toast
+        .unwrap_or_default()
+        .to_lowercase()
+        .contains("invalid bunker uri"));
 }
 
 #[test]

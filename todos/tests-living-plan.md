@@ -217,8 +217,8 @@ Working assumptions:
 24. Slice 25 finished the remaining obvious signer/auth UX ownership seams:
    - `crates/pikahut/tests/integration_deterministic.rs` now also has checked-in deterministic selector contracts for direct external-signer and direct bunker-login UX: `external_signer_login_success_boundary`, `external_signer_login_timeout_failure_boundary`, `bunker_login_success_boundary`, and `bunker_login_invalid_uri_failure_boundary`
    - `crates/pikahut/tests/support.rs` now drives those selectors directly through deterministic `FfiApp` setups, so direct signer login success/failure and direct bunker login success/invalid-URI failure are no longer stranded only in `rust/tests/app_flows.rs`
-   - `rust/tests/app_flows.rs` was narrowed accordingly: the direct external-signer success test now owns only current-user-hint plumbing into the bridge, the direct bunker login success test now owns only descriptor/canonicalization plumbing, and the duplicate direct failure UX tests were removed
-   - this effectively finishes the signer/auth family cleanup in ownership terms: `pikahut` now owns the readable user-facing signer lifecycle contracts, while Rust keeps only the lower-level callback-gating, retry-branch, persisted-pairing, stored-key, descriptor, and current-user plumbing semantics
+   - `rust/tests/app_flows.rs` was narrowed accordingly, but not emptied of exercised coverage: the direct external-signer and direct bunker success/failure paths now remain as small default-exercised Rust smokes for hint/error/descriptor plumbing, while `pikahut` owns the fuller readable lifecycle contracts
+   - this effectively finishes the signer/auth family cleanup in ownership terms: `pikahut` now owns the readable user-facing signer lifecycle contracts, while Rust keeps the smaller default-exercised smokes plus the lower-level callback-gating, retry-branch, persisted-pairing, stored-key, descriptor, and current-user plumbing semantics
    - remaining caveat is narrow and intentional rather than another missing UX owner: the selector contracts here are checked-in deterministic surfaces, but many are still `#[ignore]` and only become blocking when a lane explicitly selects them
 ## Progress Update
 
@@ -309,7 +309,7 @@ Verified in the repo today:
    - Owns single-app `FfiApp` state/lifecycle behavior: account creation, router changes, immediate logout/reset semantics, persistence/restore state, paging, reactions, and the lower-level external-signer/bunker/Nostr Connect state-machine semantics underneath the selector-owned signer contracts.
    - This is the right ownership layer when the product question is “what does one app instance do after this action/update?” rather than “can two apps talk over local fixtures?”
    - The main overlap with native UI is shell-level: iOS/Android can still validate that login/chat/logout/navigation render correctly, but they should not be the primary owners of these Rust semantics.
-   - The auth/session and signer areas are now intentionally split: `pikahut` owns the readable logout/reset, restore/relaunch, and signer lifecycle contracts, while this file keeps the narrower runtime-reset, restored-state, callback-gating, retry-sequence, pending-state, stored-key, descriptor, and current-user semantics underneath them.
+   - The auth/session and signer areas are now intentionally split: `pikahut` owns the readable logout/reset, restore/relaunch, and signer lifecycle contracts, while this file keeps the narrower runtime-reset, restored-state, callback-gating, retry-sequence, pending-state, stored-key, descriptor, current-user, and small default-exercised signer smoke semantics underneath them.
 
 2. `rust/tests/e2e_messaging.rs`
    - Owns focused relay-backed multi-app `FfiApp` messaging/call-signaling semantics: relay-backed DM delivery into peer chat state, invalid call invite rejection, optimistic send behavior, and peer-visible call-end signaling.
@@ -340,7 +340,7 @@ Verified in the repo today:
    - similar DM bootstrap helpers still exist in `crates/pikahut/tests/support.rs`, but that duplication is currently intentional because selector-side fixture/orchestration support cannot depend on the private `rust/tests` layer
    - both helper layers now at least agree on one important boundary: DM lookup excludes group chats with the same peer instead of relying on a fuzzy member-only match
    - the main user-facing message/profile flows now have selector-owned deterministic `pikahut` contracts; the remaining confusing area is the harness-limited true pre-existing late-joiner rebroadcast case, not general ownership drift across this family
-   - the single-app auth/session family is coherent, and the signer family is now effectively closed in ownership terms: the readable signer UX contracts live in checked-in deterministic `pikahut` selectors, while lower-level external-signer current-user-hint/current-user and bunker descriptor/client-key plumbing remains Rust-only by design
+   - the single-app auth/session family is coherent, and the signer family is now effectively closed in ownership terms: the readable signer UX contracts live in checked-in deterministic `pikahut` selectors, while lower-level external-signer current-user-hint/current-user and bunker descriptor/client-key plumbing, plus small default-exercised signer smokes, remain Rust-only by design
 
 ## Strongest Problems
 

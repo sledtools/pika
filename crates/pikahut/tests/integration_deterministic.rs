@@ -472,8 +472,9 @@ fn external_signer_login_success_boundary() -> Result<()> {
 #[test]
 #[ignore = "deterministic external signer selector"]
 fn external_signer_login_timeout_failure_boundary() -> Result<()> {
-    // Keep error-kind/current-user plumbing in `rust/tests/app_flows.rs`; this checked-in
-    // deterministic selector captures the readable direct signer failure contract.
+    // Keep lower-level timeout-to-toast mapping and current-user plumbing in
+    // `rust/tests/app_flows.rs`; this checked-in deterministic selector captures the fuller
+    // readable direct signer failure contract.
     let mut context = TestContext::builder("external-signer-login-timeout")
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;

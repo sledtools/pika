@@ -13,7 +13,11 @@ mod support;
 use support::{create_or_open_dm_chat, wait_until, write_config};
 
 #[test]
-fn alice_sends_bob_receives() {
+fn relay_backed_dm_delivery_reaches_peer_chat_state() {
+    // `pikahut` now owns the fuller end-user contract for "create DM, send first message, peer
+    // sees chat shell + preview/unread state". This test stays as the narrower semantic owner for
+    // the relay-backed `FfiApp` state transition that the peer can open the DM and observe the
+    // delivered message.
     let infra = support::TestInfra::start_relay();
 
     let dir_a = tempdir().unwrap();
@@ -69,19 +73,6 @@ fn alice_sends_bob_receives() {
             .unwrap_or(false)
     });
 
-    wait_until(
-        "bob preview/unread updated",
-        Duration::from_secs(20),
-        || {
-            bob.state()
-                .chat_list
-                .iter()
-                .find(|c| c.chat_id == chat_id)
-                .map(|c| c.unread_count > 0 || c.last_message.is_some())
-                .unwrap_or(false)
-        },
-    );
-
     bob.dispatch(AppAction::OpenChat {
         chat_id: chat_id.clone(),
     });
@@ -106,16 +97,6 @@ fn alice_sends_bob_receives() {
         .find(|m| m.content == "hi-from-alice")
         .unwrap();
     assert!(!msg.is_mine);
-
-    wait_until("bob preview updated", Duration::from_secs(10), || {
-        bob.state()
-            .chat_list
-            .iter()
-            .find(|c| c.chat_id == bob.state().current_chat.as_ref().unwrap().chat_id)
-            .and_then(|c| c.last_message.clone())
-            .as_deref()
-            == Some("hi-from-alice")
-    });
 }
 
 #[test]

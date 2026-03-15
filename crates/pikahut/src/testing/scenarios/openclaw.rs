@@ -6,6 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow, bail};
 use nostr_sdk::prelude::{Client, PublicKey, RelayUrl};
 use pika_marmot_runtime::relay::fetch_latest_key_package;
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::config::{self, ProfileName};
@@ -19,6 +20,11 @@ use super::common::{pick_free_port, resolve_openclaw_dir, tail_lines};
 use super::types::{OpenclawE2eRequest, ScenarioRunOutput};
 
 const PIKACHAT_BIN_ENV: &str = "PIKAHUT_TEST_PIKACHAT_BIN";
+
+#[derive(Debug, Deserialize)]
+struct OpenclawBuildStamp {
+    head: Option<String>,
+}
 
 fn pikachat_peer_spec(
     root: &Path,
@@ -73,6 +79,105 @@ fn emit_gateway_failure_logs(context: &TestContext, openclaw_log: &Path, opencla
     if !stderr_tail.trim().is_empty() {
         eprintln!("openclaw gateway stderr tail:\n{stderr_tail}");
     }
+}
+
+fn read_openclaw_buildstamp_head(buildstamp_path: &Path) -> Option<String> {
+    let raw = fs::read_to_string(buildstamp_path).ok()?;
+    let stamp: OpenclawBuildStamp = serde_json::from_str(&raw).ok()?;
+    stamp.head.and_then(|head| {
+        let trimmed = head.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn openclaw_runtime_needs_prebuild(openclaw_dir: &Path, git_head: Option<&str>) -> bool {
+    let dist_entry = openclaw_dir.join("dist/entry.js");
+    if !dist_entry.is_file() {
+        return true;
+    }
+
+    let buildstamp_path = openclaw_dir.join("dist/.buildstamp");
+    let recorded_head = read_openclaw_buildstamp_head(&buildstamp_path);
+    match (git_head, recorded_head.as_deref()) {
+        (Some(current), Some(recorded)) => current.trim() != recorded.trim(),
+        _ => true,
+    }
+}
+
+fn resolve_openclaw_git_head(
+    openclaw_dir: &Path,
+    runner: &CommandRunner,
+    command_outcomes: &mut Vec<CommandOutcomeRecord>,
+) -> Result<Option<String>> {
+    let git_head = runner.run(
+        &CommandSpec::new("git")
+            .cwd(openclaw_dir)
+            .args(["rev-parse", "HEAD"])
+            .capture_name("openclaw-git-head"),
+    )?;
+    command_outcomes.push(CommandOutcomeRecord::from_output(
+        "openclaw-git-head",
+        &git_head,
+    ));
+
+    let head = String::from_utf8(git_head.stdout)
+        .context("decode `git rev-parse HEAD` output for openclaw checkout")?;
+    Ok(Some(head.trim().to_string()))
+}
+
+fn write_openclaw_buildstamp(openclaw_dir: &Path, git_head: Option<&str>) -> Result<()> {
+    let dist_dir = openclaw_dir.join("dist");
+    fs::create_dir_all(&dist_dir)?;
+    let stamp_path = dist_dir.join(".buildstamp");
+    let stamp = json!({
+        "builtAt": SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
+        "head": git_head.map(str::trim),
+    });
+    fs::write(&stamp_path, format!("{}\n", serde_json::to_string(&stamp)?))
+        .with_context(|| format!("write {}", stamp_path.display()))?;
+    Ok(())
+}
+
+fn ensure_openclaw_runtime_ready(
+    openclaw_dir: &Path,
+    runner: &CommandRunner,
+    command_outcomes: &mut Vec<CommandOutcomeRecord>,
+) -> Result<()> {
+    let git_head = resolve_openclaw_git_head(openclaw_dir, runner, command_outcomes)?;
+    if !openclaw_runtime_needs_prebuild(openclaw_dir, git_head.as_deref()) {
+        return Ok(());
+    }
+
+    let build_cmd = runner.run(
+        &CommandSpec::node()
+            .cwd(openclaw_dir)
+            .env("OPENCLAW_BUILD_VERBOSE", "1")
+            .arg("scripts/tsdown-build.mjs")
+            .arg("--no-clean")
+            .capture_name("openclaw-tsdown-build"),
+    )?;
+    command_outcomes.push(CommandOutcomeRecord::from_output(
+        "openclaw-tsdown-build",
+        &build_cmd,
+    ));
+
+    let runtime_postbuild_cmd = runner.run(
+        &CommandSpec::node()
+            .cwd(openclaw_dir)
+            .arg("scripts/runtime-postbuild.mjs")
+            .capture_name("openclaw-runtime-postbuild"),
+    )?;
+    command_outcomes.push(CommandOutcomeRecord::from_output(
+        "openclaw-runtime-postbuild",
+        &runtime_postbuild_cmd,
+    ));
+
+    write_openclaw_buildstamp(openclaw_dir, git_head.as_deref())?;
+    Ok(())
 }
 
 async fn wait_for_sidecar_keypackage(
@@ -230,6 +335,8 @@ pub async fn run_openclaw_e2e(args: OpenclawE2eRequest) -> Result<ScenarioRunOut
         ));
     }
 
+    ensure_openclaw_runtime_ready(&openclaw_dir, &runner, &mut command_outcomes)?;
+
     let gw_port = pick_free_port()?;
     let gw_token = format!(
         "e2e-{}-{}",
@@ -300,6 +407,7 @@ pub async fn run_openclaw_e2e(args: OpenclawE2eRequest) -> Result<ScenarioRunOut
             .env("OPENCLAW_SKIP_GMAIL_WATCHER", "1")
             .env("OPENCLAW_SKIP_CANVAS_HOST", "1")
             .env("OPENCLAW_SKIP_CRON", "1")
+            .env("OPENCLAW_BUILD_VERBOSE", "1")
             .arg("scripts/run-node.mjs")
             .arg("gateway")
             .arg("--port")
@@ -377,4 +485,46 @@ pub async fn run_openclaw_e2e(args: OpenclawE2eRequest) -> Result<ScenarioRunOut
 
     context.mark_success();
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::openclaw_runtime_needs_prebuild;
+
+    #[test]
+    fn runtime_needs_prebuild_when_dist_entry_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(openclaw_runtime_needs_prebuild(dir.path(), Some("abc123")));
+    }
+
+    #[test]
+    fn runtime_skips_prebuild_when_dist_matches_head() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("dist")).unwrap();
+        std::fs::write(dir.path().join("dist/entry.js"), "export {};\n").unwrap();
+        std::fs::write(
+            dir.path().join("dist/.buildstamp"),
+            "{\"builtAt\": 1, \"head\": \"abc123\"}\n",
+        )
+        .unwrap();
+
+        assert!(!openclaw_runtime_needs_prebuild(dir.path(), Some("abc123")));
+    }
+
+    #[test]
+    fn runtime_needs_prebuild_when_buildstamp_head_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("dist")).unwrap();
+        std::fs::write(dir.path().join("dist/entry.js"), "export {};\n").unwrap();
+        std::fs::write(
+            dir.path().join("dist/.buildstamp"),
+            "{\"builtAt\": 1, \"head\": \"old-head\"}\n",
+        )
+        .unwrap();
+
+        assert!(openclaw_runtime_needs_prebuild(
+            dir.path(),
+            Some("new-head")
+        ));
+    }
 }

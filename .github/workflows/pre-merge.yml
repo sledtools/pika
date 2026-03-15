@@ -82,6 +82,7 @@ jobs:
               - 'rust/**'
               - 'scripts/pikaci-ci-run.sh'
               - 'scripts/pikaci-staged-linux-remote.sh'
+              - 'scripts/ci-add-known-host.sh'
               - 'scripts/pika-build-prewarm-workspace-deps.sh'
               - 'scripts/pika-build-run-workspace-deps.sh'
               - 'scripts/lib/pikaci-tools.sh'
@@ -104,6 +105,7 @@ jobs:
               - 'pikachat-openclaw/openclaw/extensions/pikachat-openclaw/**'
               - 'scripts/pikaci-ci-run.sh'
               - 'scripts/pikaci-staged-linux-remote.sh'
+              - 'scripts/ci-add-known-host.sh'
               - 'scripts/pika-build-prewarm-workspace-deps.sh'
               - 'scripts/pika-build-run-workspace-deps.sh'
               - 'scripts/lib/pikaci-tools.sh'
@@ -119,6 +121,7 @@ jobs:
               - 'just/infra.just'
               - '.github/workflows/pre-merge.yml'
               - 'scripts/pikaci-staged-linux-remote.sh'
+              - 'scripts/ci-add-known-host.sh'
               - 'crates/pikaci/**'
               - 'crates/pika-agent-control-plane/**'
               - 'crates/pika-agent-protocol/**'
@@ -151,6 +154,7 @@ jobs:
               - '.github/workflows/pre-merge.yml'
               - 'crates/rmp-cli/**'
               - 'scripts/pikaci-staged-linux-remote.sh'
+              - 'scripts/ci-add-known-host.sh'
               - 'scripts/pika-build-prewarm-workspace-deps.sh'
               - 'scripts/pika-build-run-workspace-deps.sh'
               - 'scripts/lib/pikaci-tools.sh'
@@ -165,6 +169,7 @@ jobs:
               - 'just/infra.just'
               - '.github/workflows/pre-merge.yml'
               - 'scripts/pikaci-staged-linux-remote.sh'
+              - 'scripts/ci-add-known-host.sh'
               - 'crates/pikaci/**'
               - 'crates/pika-agent-control-plane/**'
               - 'crates/pika-agent-microvm/**'
@@ -202,6 +207,7 @@ jobs:
               - 'crates/pikahut/**'
               - 'scripts/pikaci-ci-run.sh'
               - 'scripts/pikaci-staged-linux-remote.sh'
+              - 'scripts/ci-add-known-host.sh'
               - 'scripts/pika-build-prewarm-workspace-deps.sh'
               - 'scripts/pika-build-run-workspace-deps.sh'
               - 'scripts/lib/pikaci-tools.sh'
@@ -317,8 +323,7 @@ jobs:
             mkdir -p "$HOME/.ssh"
             chmod 700 "$HOME/.ssh"
             host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
-            ssh-keyscan -H "$host" >> "$HOME/.ssh/known_hosts"
-            chmod 600 "$HOME/.ssh/known_hosts"
+            ./scripts/ci-add-known-host.sh "$host"
 
             eval "$(ssh-agent -s)"
             trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
@@ -432,8 +437,7 @@ jobs:
             mkdir -p "$HOME/.ssh"
             chmod 700 "$HOME/.ssh"
             host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
-            ssh-keyscan -H "$host" >> "$HOME/.ssh/known_hosts"
-            chmod 600 "$HOME/.ssh/known_hosts"
+            ./scripts/ci-add-known-host.sh "$host"
 
             eval "$(ssh-agent -s)"
             trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
@@ -547,8 +551,7 @@ jobs:
             mkdir -p "$HOME/.ssh"
             chmod 700 "$HOME/.ssh"
             host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
-            ssh-keyscan -H "$host" >> "$HOME/.ssh/known_hosts"
-            chmod 600 "$HOME/.ssh/known_hosts"
+            ./scripts/ci-add-known-host.sh "$host"
 
             eval "$(ssh-agent -s)"
             trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
@@ -662,8 +665,7 @@ jobs:
             mkdir -p "$HOME/.ssh"
             chmod 700 "$HOME/.ssh"
             host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
-            ssh-keyscan -H "$host" >> "$HOME/.ssh/known_hosts"
-            chmod 600 "$HOME/.ssh/known_hosts"
+            ./scripts/ci-add-known-host.sh "$host"
 
             eval "$(ssh-agent -s)"
             trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
@@ -777,8 +779,7 @@ jobs:
             mkdir -p "$HOME/.ssh"
             chmod 700 "$HOME/.ssh"
             host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
-            ssh-keyscan -H "$host" >> "$HOME/.ssh/known_hosts"
-            chmod 600 "$HOME/.ssh/known_hosts"
+            ./scripts/ci-add-known-host.sh "$host"
 
             eval "$(ssh-agent -s)"
             trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
@@ -1001,8 +1002,7 @@ jobs:
           mkdir -p "$HOME/.ssh"
           chmod 700 "$HOME/.ssh"
           host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
-          ssh-keyscan -H "$host" >> "$HOME/.ssh/known_hosts"
-          chmod 600 "$HOME/.ssh/known_hosts"
+          ./scripts/ci-add-known-host.sh "$host"
 
           eval "$(ssh-agent -s)"
           trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT

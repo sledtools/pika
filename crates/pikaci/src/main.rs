@@ -512,6 +512,16 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                     },
                     staged_linux_rust_lane: None,
                 },
+                JobSpec {
+                    id: "pika-rust-deps-hygiene",
+                    description: "Run cargo machete dependency hygiene on a host-local Linux runner",
+                    timeout_secs: 900,
+                    writable_workspace: true,
+                    guest_command: GuestCommand::HostShellCommand {
+                        command: "./scripts/check-cargo-machete",
+                    },
+                    staged_linux_rust_lane: None,
+                },
             ],
         }),
         "pre-merge-pikachat-apple-followup" => Ok(TargetSpec {
@@ -1751,7 +1761,13 @@ mod tests {
     fn pre_merge_pika_followup_target_uses_host_local_runner() {
         let target = target_spec("pre-merge-pika-followup").expect("pika followup target");
 
-        assert_eq!(target.jobs.len(), 5);
+        assert_eq!(target.jobs.len(), 6);
+        assert!(
+            target
+                .jobs
+                .iter()
+                .any(|job| job.id == "pika-rust-deps-hygiene")
+        );
         assert!(
             target
                 .jobs

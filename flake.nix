@@ -527,6 +527,7 @@
             pkgs.diesel-cli
             pkgs.openssl
             pkgs.pkg-config
+            pkgs.cargo-machete
             pkgs.cargo-watch
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.xcodegen

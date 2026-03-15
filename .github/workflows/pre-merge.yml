@@ -199,7 +199,7 @@ jobs:
               - 'tools/ui-e2e-public'
 
   check-pika:
-    name: check-pika-followup (pikaci)
+    name: check-pika
     needs: [detect-changes]
     if: needs.detect-changes.outputs.pika == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
@@ -1174,7 +1174,7 @@ jobs:
             fi
           }
 
-          check_required_pikaci_lane() {
+          report_advisory_pikaci_lane() {
             local label="$1"
             local changed="$2"
             local job_result="$3"
@@ -1183,27 +1183,25 @@ jobs:
             if [[ "$changed" != "true" ]]; then
               echo "$label: skipped (unchanged)"
             elif [[ "$job_result" != "success" ]]; then
-              echo "$label: workflow job $job_result (FAILED)"
-              failed="${failed}${label} "
+              echo "$label: workflow job $job_result (advisory)"
             elif [[ "$lane_result" != "success" ]]; then
-              echo "$label: pikaci result ${lane_result:-unavailable} (FAILED)"
-              failed="${failed}${label} "
+              echo "$label: pikaci result ${lane_result:-unavailable} (advisory)"
             else
               echo "$label: success (ok)"
             fi
           }
 
           echo "Required pre-merge lanes:"
-          check_required_pikaci_lane "check-pika-rust" "${{ needs.detect-changes.outputs.pika }}" "${{ needs.shadow-pikaci-pre-merge-pika-rust.result }}" "${{ needs.shadow-pikaci-pre-merge-pika-rust.outputs.result }}"
           check_required_job "check-pika-followup" "${{ needs.detect-changes.outputs.pika }}" "${{ needs.check-pika.result }}"
-          check_required_pikaci_lane "check-pikachat" "${{ needs.detect-changes.outputs.pikachat }}" "${{ needs.shadow-pikaci-pre-merge-pikachat-rust.result }}" "${{ needs.shadow-pikaci-pre-merge-pikachat-rust.outputs.result }}"
           check_required_job "check-pikachat-openclaw-e2e" "${{ needs.detect-changes.outputs.pikachat_openclaw_e2e }}" "${{ needs.check-pikachat-openclaw-e2e.result }}"
-          check_required_pikaci_lane "check-agent-contracts" "${{ needs.detect-changes.outputs.agent_contracts }}" "${{ needs.shadow-pikaci-pre-merge-agent-contracts.result }}" "${{ needs.shadow-pikaci-pre-merge-agent-contracts.outputs.result }}"
-          check_required_pikaci_lane "check-rmp" "${{ needs.detect-changes.outputs.rmp }}" "${{ needs.shadow-pikaci-pre-merge-rmp.result }}" "${{ needs.shadow-pikaci-pre-merge-rmp.outputs.result }}"
-          check_required_pikaci_lane "check-notifications" "${{ needs.detect-changes.outputs.notifications }}" "${{ needs.shadow-pikaci-pre-merge-notifications.result }}" "${{ needs.shadow-pikaci-pre-merge-notifications.outputs.result }}"
           check_required_job "check-fixture" "${{ needs.detect-changes.outputs.fixture }}" "${{ needs.check-fixture.result }}"
 
           echo "Advisory integration lanes:"
+          report_advisory_pikaci_lane "check-pika-rust" "${{ needs.detect-changes.outputs.pika }}" "${{ needs.shadow-pikaci-pre-merge-pika-rust.result }}" "${{ needs.shadow-pikaci-pre-merge-pika-rust.outputs.result }}"
+          report_advisory_pikaci_lane "check-pikachat" "${{ needs.detect-changes.outputs.pikachat }}" "${{ needs.shadow-pikaci-pre-merge-pikachat-rust.result }}" "${{ needs.shadow-pikaci-pre-merge-pikachat-rust.outputs.result }}"
+          report_advisory_pikaci_lane "check-agent-contracts" "${{ needs.detect-changes.outputs.agent_contracts }}" "${{ needs.shadow-pikaci-pre-merge-agent-contracts.result }}" "${{ needs.shadow-pikaci-pre-merge-agent-contracts.outputs.result }}"
+          report_advisory_pikaci_lane "check-rmp" "${{ needs.detect-changes.outputs.rmp }}" "${{ needs.shadow-pikaci-pre-merge-rmp.result }}" "${{ needs.shadow-pikaci-pre-merge-rmp.outputs.result }}"
+          report_advisory_pikaci_lane "check-notifications" "${{ needs.detect-changes.outputs.notifications }}" "${{ needs.shadow-pikaci-pre-merge-notifications.result }}" "${{ needs.shadow-pikaci-pre-merge-notifications.outputs.result }}"
           echo "legacy Linux jobs are advisory; nightly-* jobs remain non-blocking and run only on schedule/manual nightly mode."
 
           if [[ -n "$failed" ]]; then

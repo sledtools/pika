@@ -1,5 +1,5 @@
 use super::*;
-use axum::body::{Body, Bytes, HttpBody};
+use axum::body::{to_bytes, Body, Bytes};
 use axum::extract::ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Form, FromRequestParts, Query};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
@@ -397,18 +397,12 @@ fn websocket_proxy_url(upstream_url: &str) -> Result<String, (StatusCode, String
 }
 
 async fn read_request_body(body: Body) -> Result<Bytes, (StatusCode, String)> {
-    let mut body = body;
-    let mut bytes = Vec::new();
-    while let Some(chunk) = body.data().await {
-        let chunk = chunk.map_err(|err| {
-            (
-                StatusCode::BAD_REQUEST,
-                format!("failed to read proxied request body: {err}"),
-            )
-        })?;
-        bytes.extend_from_slice(chunk.as_ref());
-    }
-    Ok(Bytes::from(bytes))
+    to_bytes(body, usize::MAX).await.map_err(|err| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("failed to read proxied request body: {err}"),
+        )
+    })
 }
 
 fn axum_message_to_tungstenite(message: AxumWsMessage) -> Option<TungsteniteMessage> {

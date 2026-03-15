@@ -808,7 +808,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use axum::body::{Body, HttpBody};
+    use axum::body::{to_bytes, Body};
     use axum::extract::ws::Message as AxumWsMessage;
     use axum::extract::{Path, Query, WebSocketUpgrade};
     use axum::http::{header, HeaderValue, Method, Request};
@@ -1026,12 +1026,10 @@ mod tests {
     }
 
     async fn response_body_string(response: Response) -> String {
-        let mut body = response.into_body();
-        let mut bytes = Vec::new();
-        while let Some(chunk) = body.data().await {
-            bytes.extend_from_slice(&chunk.expect("read response chunk"));
-        }
-        String::from_utf8(bytes).expect("utf8 response body")
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        String::from_utf8(bytes.to_vec()).expect("utf8 response body")
     }
 
     fn upsert_allowlist(db_pool: &Pool<ConnectionManager<PgConnection>>, npub: &str, active: bool) {
@@ -1128,11 +1126,8 @@ mod tests {
             .await
             .expect("bind axum test server");
         let addr = listener.local_addr().expect("read axum test server addr");
-        let std_listener = listener.into_std().expect("convert test listener");
         tokio::spawn(async move {
-            axum::Server::from_tcp(std_listener)
-                .expect("create axum test server")
-                .serve(app.into_make_service())
+            axum::serve(listener, app)
                 .await
                 .expect("run axum test server");
         });

@@ -34,6 +34,7 @@ use crate::routes::{
     broadcast, health_check, min_version, register, subscribe_groups, unsubscribe_groups,
 };
 use a2::Client as ApnsClient;
+use axum::body::Body;
 use axum::http::{HeaderName, HeaderValue, Request, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::Response;
@@ -92,7 +93,7 @@ fn generate_request_id() -> String {
     hex::encode(bytes)
 }
 
-async fn trace_http_request<B>(mut request: Request<B>, next: Next<B>) -> Response {
+async fn trace_http_request(mut request: Request<Body>, next: Next) -> Response {
     let method = request.method().clone();
     let path = request.uri().path().to_string();
     let request_id = request_id_from_headers(&request).unwrap_or_else(generate_request_id);
@@ -124,7 +125,7 @@ async fn trace_http_request<B>(mut request: Request<B>, next: Next<B>) -> Respon
     response
 }
 
-async fn route_openclaw_ui_host<B>(mut request: Request<B>, next: Next<B>) -> Response {
+async fn route_openclaw_ui_host(mut request: Request<Body>, next: Next) -> Response {
     let Some(host) = request
         .headers()
         .get(axum::http::header::HOST)
@@ -357,7 +358,8 @@ async fn main() -> anyhow::Result<()> {
         .layer(middleware::from_fn(route_openclaw_ui_host))
         .service(server_router);
 
-    let server = axum::Server::bind(&addr).serve(Shared::new(server_service));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let server = axum::serve(listener, Shared::new(server_service));
 
     info!("Webserver running on http://{addr}");
 
@@ -400,17 +402,15 @@ async fn fallback(uri: Uri) -> (StatusCode, String) {
 mod tests {
     use super::*;
 
-    use axum::body::{Body, HttpBody};
+    use axum::body::{to_bytes, Body};
     use axum::http::{header, Request};
     use tower::ServiceExt;
 
     async fn response_body_string(response: Response) -> String {
-        let mut body = response.into_body();
-        let mut bytes = Vec::new();
-        while let Some(chunk) = body.data().await {
-            bytes.extend_from_slice(&chunk.expect("read response chunk"));
-        }
-        String::from_utf8(bytes).expect("utf8 response body")
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        String::from_utf8(bytes.to_vec()).expect("utf8 response body")
     }
 
     fn rewrite_test_app(

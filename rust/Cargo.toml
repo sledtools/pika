@@ -34,7 +34,6 @@ pika-tls = { path = "../crates/pika-tls" }
 rand = { workspace = true }
 reqwest = { workspace = true, features = ["json", "native-tls"] }
 rusqlite = { workspace = true }
-rustls = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -69,7 +68,7 @@ nostr-connect = { workspace = true }
 pikahut = { path = "../crates/pikahut" }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
-tokio-tungstenite = "0.27"
+tokio-tungstenite = { workspace = true }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 apple-native-keyring-store = { workspace = true }

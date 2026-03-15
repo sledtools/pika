@@ -8,7 +8,7 @@ publish = false
 anyhow = { workspace = true }
 flume = { workspace = true }
 iced = { version = "0.14", features = ["tokio", "image", "wgpu", "advanced"] }
-image = "0.24"
+image = "0.25"
 nokhwa = { version = "0.10", features = ["input-native"] }
 openh264 = "0.6"
 pika_core = { path = "../../rust" }

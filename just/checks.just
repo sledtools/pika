@@ -12,12 +12,16 @@ fmt:
 clippy *ARGS:
     cargo clippy --all-targets {{ ARGS }} -- -D warnings
 
-# Local pre-commit checks (fmt + clippy + justfile + docs checks).
-pre-commit: fmt clippy
+# Canonical fast local smoke: formatting, workspace clippy, and just/docs contract drift.
+pre-commit:
+    cargo fmt --all --check
     just --fmt --check --unstable
     npx --yes @justinmoon/agent-tools check-docs
     npx --yes @justinmoon/agent-tools check-justfile
-    just clippy --lib --tests
+    cargo clippy --all-targets -- -D warnings
+
+# Optional richer local follow-up when you want extra package-specific clippy coverage.
+pre-commit-full: pre-commit
     cargo clippy -p pikachat --tests -- -D warnings
     cargo clippy -p pikachat-sidecar --tests -- -D warnings
     cargo clippy -p pika-server --tests -- -D warnings

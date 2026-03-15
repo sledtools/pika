@@ -7,6 +7,9 @@ default:
     @echo
     @just --list
     @echo
+    @echo 'Common fast local smoke: `just pre-commit`'
+    @echo 'Richer local follow-up: `just checks::pre-commit-full`'
+    @echo
     @echo 'Humans: use `just info` for common run flows.'
     @echo 'Agents: use `./scripts/agent-brief` for expanded discovery.'
     @echo 'Full module tree: `JUST_UNSTABLE=1 just --list --list-submodules`.'
@@ -19,6 +22,10 @@ info:
     @echo "  Curated root surface:"
     @echo "    just"
     @echo "    just --list"
+    @echo "  Fast local smoke:"
+    @echo "    just pre-commit"
+    @echo "  Richer local follow-up:"
+    @echo "    just checks::pre-commit-full"
     @echo "  Human-oriented workflow help:"
     @echo "    just info"
     @echo "  Expanded module tree:"

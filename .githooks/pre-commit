@@ -1,3 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Canonical fast local smoke for habitual local use.
 output=$(just pre-commit 2>&1) || { echo "$output"; exit 1; }

@@ -84,6 +84,7 @@ done
 printf "# Agent Brief\n\n"
 printf "Live context snapshot for AI agents.\n\n"
 printf '%s\n\n' 'Supported expanded discovery path for this repo. Root `just --list` stays curated for humans.'
+printf '%s\n\n' 'Before handoff on substantive code/config changes, run `just pre-commit` as the canonical fast local smoke command. Use `just checks::pre-commit-full` only when you want the slower richer local follow-up tier.'
 printf "_Generated:_ %s\n\n" "$(date -u +"%Y-%m-%d %H:%M:%SZ")"
 
 # --- Private context (gitignored) ---

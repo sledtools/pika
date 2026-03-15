@@ -12,6 +12,8 @@ Rerun only if asked, if you switch worktrees, or if the first run failed.
 
 ## Before committing
 
+- On substantive code/config changes, run `just pre-commit` before handoff or commit. This is the repo's canonical fast local smoke command.
+- Use `just checks::pre-commit-full` only when you want the slower richer local follow-up tier.
 - Run `cargo fmt` to format Rust code before committing.
 - Always add tests for changes when possible.
 

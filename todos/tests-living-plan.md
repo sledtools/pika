@@ -257,10 +257,10 @@ Verified in the repo today:
    - `rust/tests/app_flows.rs::paging_loads_older_messages_in_pages` has been flaking across unrelated PRs.
    - If another branch disables it, we should still come back and either stabilize it or replace it with a more deterministic boundary around the same paging behavior.
 
-11. We need a fast local smoke layer that catches common CI failures before full lanes run.
-   - The main goal is quick high-signal feedback on things like formatting drift, clippy failures, and obvious build/test breakage, not running the whole suite locally.
-   - The exact enforcement surface is still open: pre-commit hooks, agent prompts, or both could be reasonable, but the priority is defining a cheap smoke command that catches most dumb failures early.
-   - This should stay in scope as a lane-definition/supporting-tooling problem for `pikaci`, not just a GitHub Actions convenience.
+11. We now have a canonical fast local smoke layer for catching common CI failures before full lanes run.
+   - The supported habitual command is `just pre-commit`.
+   - It is intentionally optimized for signal per second: formatting drift, workspace clippy/obvious compile failures, and just/docs contract drift.
+   - The Git hook and agent guidance now point at that same command, while the slower richer local follow-up lives at `just checks::pre-commit-full`.
 
 ## Tradeoffs
 
@@ -385,6 +385,11 @@ Updated recommendation after Slice 13:
 2. The next lane-definition follow-up is Apple-host execution/ownership for `pre-merge-pikachat-apple-followup`.
 3. If we pivot from lane-definition into developer-signal tooling, fast local smoke / pre-commit should be the next tracked slice instead of more workflow/filter gardening.
 4. Keep lane coverage stable and avoid broad root CI/workflow churn.
+Updated recommendation after Slice 14:
+1. `just pre-commit` is now the canonical fast local smoke command, and both the Git hook and agent guidance use that same checked-in contract.
+2. The broader package-specific local follow-up still exists at `just checks::pre-commit-full`, but it is no longer the default habit path.
+3. The next likely follow-up is either extending the same fast-signal philosophy to one more developer workflow surface or stopping this rationalization track and letting the parallel `pikaci` effort absorb the remaining infra-specific follow-ups.
+4. Keep avoiding broad root CI/workflow churn unless a concrete developer-signal problem requires it.
 Default bias:
 1. Keep the `pikahut` selector contract when practical.
 2. Do not preserve wrapper-over-opaque-legacy-test shapes when the behavior can be owned more directly.
@@ -394,8 +399,8 @@ Recommended next slice:
 2. The desktop Rust-side seam is now done; do not reintroduce a wrapper-over-ignored-test owner there.
 3. Explicit CI tier clarification is now done in checked-in docs, the staged-lane filter-alignment cleanup is done for `pikachat`, `agent_contracts`, `notifications`, and `fixture`, and the staged Linux target-model normalization now covers `pre-merge-pika-rust`, `pre-merge-agent-contracts`, `pre-merge-notifications`, `pre-merge-pikachat-rust`, `pre-merge-fixture-rust`, and `pre-merge-rmp`.
 4. The lane-definition cleanup pass is now effectively done for the current pre-merge contracts.
-5. The next best target is fast local smoke / pre-commit developer-signal work.
-6. Apple-host provisioning/long-term ownership for `pre-merge-pikachat-apple-followup` remains a follow-up, but it is no longer a lane-definition gap.
+5. Fast local smoke / pre-commit developer-signal work is now in place as a checked-in default.
+6. Apple-host provisioning/long-term ownership for `pre-merge-pikachat-apple-followup` remains a follow-up, but it is no longer a lane-definition gap and no longer blocks the local developer-signal path.
 7. Keep avoiding broad root CI/workflow churn while the parallel `pikaci` shadow-lane work is active.
 
 ### Phase 3: Define Explicit CI Policy Tiers
@@ -469,18 +474,18 @@ This is intentionally not a “coverage improvement” slice.
 
 ## Recommended Next Slice
 
-The next implementation slice should target one documented root CI / `pikaci` alignment mismatch rather than another ownership or docs-only pass.
+The next implementation slice should either extend the same fast-signal philosophy to another developer workflow surface or stop and let the parallel `pikaci` effort absorb the remaining infra follow-ups.
 
 Shape:
-1. Pick exactly one documented mismatch and align it with the now-explicit policy truth.
+1. Prefer one small developer-signal surface at a time rather than reopening lane-definition cleanup.
 2. Stay conflict-aware around `.github/workflows`, `just`, `nix/ci`, and `crates/pikaci`.
-3. The current best candidate is fast local smoke / pre-commit work; the Apple-host provisioning/ownership follow-up is now separate from lane-definition cleanup.
+3. The current best candidates are another cheap local workflow improvement or simply stopping here and letting the parallel `pikaci` effort carry the remaining infra-specific follow-ups.
 4. Keep scope tight: do not combine this with iOS/Android ownership rewrites or another broad docs sweep.
 
 Why this is next:
-1. The policy/tiering truth is now explicit, so the next slice can act on one mismatch instead of arguing about labels.
-2. It improves future shardability and eventual `pikaci` portability without reopening settled ownership seams.
-3. It stays aligned with the Rust-first architecture while avoiding native iOS/Android churn.
+1. The main lane-definition cleanup is now done, so further work should either improve day-to-day developer signal or stop before sliding back into incidental CI churn.
+2. The new fast local smoke contract already catches the common wasteful failures early; any next step should have a similarly clear payoff.
+3. This stays aligned with the Rust-first architecture while avoiding native iOS/Android churn.
 
 Non-goals for the next slice:
 1. Do not add new public-network tests.

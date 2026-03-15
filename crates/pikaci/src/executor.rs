@@ -174,6 +174,17 @@ fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOut
     fs::create_dir_all(&artifacts_dir)
         .with_context(|| format!("create {}", artifacts_dir.display()))?;
 
+    // Ensure a target/ directory exists in the snapshot workspace so that
+    // non-Rust builds (e.g. `go build -o <workspace>/target/pika-relay`)
+    // can write their output there.  The snapshot excludes target/ to avoid
+    // copying the full Rust build cache, but downstream code may still
+    // expect the directory to exist.
+    let snapshot_target = ctx.workspace_snapshot_dir.join("target");
+    if !snapshot_target.exists() {
+        fs::create_dir_all(&snapshot_target)
+            .with_context(|| format!("create snapshot target dir {}", snapshot_target.display()))?;
+    }
+
     let (command, run_as_root) = compiled_guest_command(job);
     if run_as_root {
         bail!("host-local jobs do not support root commands");

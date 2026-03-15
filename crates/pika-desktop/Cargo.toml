@@ -7,12 +7,13 @@ publish = false
 [dependencies]
 anyhow = { workspace = true }
 flume = { workspace = true }
-iced = { version = "0.14", features = ["tokio", "image", "wgpu"] }
+iced = { version = "0.14", features = ["tokio", "image", "wgpu", "advanced"] }
 image = "0.24"
 nokhwa = { version = "0.10", features = ["input-native"] }
 openh264 = "0.6"
 pika_core = { path = "../../rust" }
 pika-media = { path = "../pika-media" }
+pulldown-cmark = { version = "0.10", default-features = false }
 rfd = "0.15"
 base64 = { workspace = true }
 tracing-subscriber = { workspace = true }

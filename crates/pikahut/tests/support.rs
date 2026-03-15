@@ -243,6 +243,124 @@ pub fn run_call_over_local_moq_relay(context: &TestContext) -> Result<()> {
     })
 }
 
+// CI-facing readable DM contract: a new DM appears, the first message sends, and the peer sees
+// that delivery through the same `FfiApp` state the apps render.
+pub fn run_dm_creation_and_first_message_delivery(context: &TestContext) -> Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    with_relay_fixture(context, |fixture| {
+        let relay_url = fixture
+            .relay_url()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| anyhow!("fixture manifest missing relay_url"))?;
+
+        let alice_dir = context.state_dir().join("alice");
+        let bob_dir = context.state_dir().join("bob");
+        write_config_with_relay(&alice_dir, &relay_url)?;
+        write_config_with_relay(&bob_dir, &relay_url)?;
+
+        let alice = FfiApp::new(path_arg(&alice_dir), String::new(), String::new());
+        let bob = FfiApp::new(path_arg(&bob_dir), String::new(), String::new());
+
+        alice.dispatch(AppAction::CreateAccount);
+        bob.dispatch(AppAction::CreateAccount);
+        wait_until("alice logged in", Duration::from_secs(10), || {
+            matches!(alice.state().auth, AuthState::LoggedIn { .. })
+        })?;
+        wait_until("bob logged in", Duration::from_secs(10), || {
+            matches!(bob.state().auth, AuthState::LoggedIn { .. })
+        })?;
+
+        let bob_npub = match bob.state().auth {
+            AuthState::LoggedIn { npub, .. } => npub,
+            _ => bail!("bob failed to enter logged-in state"),
+        };
+
+        let chat_id = create_or_open_dm_chat(&alice, &bob_npub, Duration::from_secs(60))?;
+        wait_until("bob sees dm shell", Duration::from_secs(20), || {
+            bob.state()
+                .chat_list
+                .iter()
+                .any(|chat| chat.chat_id == chat_id)
+        })?;
+
+        let message = "hi-from-alice";
+        alice.dispatch(AppAction::SendMessage {
+            chat_id: chat_id.clone(),
+            content: message.into(),
+            kind: None,
+            reply_to_message_id: None,
+        });
+
+        wait_until("alice first message sent", Duration::from_secs(10), || {
+            alice
+                .state()
+                .current_chat
+                .as_ref()
+                .and_then(|chat| chat.messages.iter().find(|msg| msg.content == message))
+                .map(|msg| matches!(msg.delivery, pika_core::MessageDeliveryState::Sent))
+                .unwrap_or(false)
+        })?;
+
+        wait_until(
+            "bob preview/unread updated",
+            Duration::from_secs(20),
+            || {
+                bob.state()
+                    .chat_list
+                    .iter()
+                    .find(|chat| chat.chat_id == chat_id)
+                    .map(|chat| {
+                        chat.unread_count > 0 || chat.last_message.as_deref() == Some(message)
+                    })
+                    .unwrap_or(false)
+            },
+        )?;
+
+        bob.dispatch(AppAction::OpenChat {
+            chat_id: chat_id.clone(),
+        });
+        wait_until(
+            "bob opened chat has message",
+            Duration::from_secs(20),
+            || {
+                bob.state()
+                    .current_chat
+                    .as_ref()
+                    .and_then(|chat| chat.messages.iter().find(|msg| msg.content == message))
+                    .is_some()
+            },
+        )?;
+
+        let bob_state = bob.state();
+        let received = bob_state
+            .current_chat
+            .as_ref()
+            .and_then(|chat| chat.messages.iter().find(|msg| msg.content == message))
+            .ok_or_else(|| anyhow!("bob chat missing first delivered message"))?;
+        anyhow::ensure!(
+            !received.is_mine,
+            "peer-delivered message must not be marked as mine"
+        );
+
+        wait_until(
+            "bob preview matches first message",
+            Duration::from_secs(10),
+            || {
+                bob.state()
+                    .chat_list
+                    .iter()
+                    .find(|chat| chat.chat_id == chat_id)
+                    .and_then(|chat| chat.last_message.clone())
+                    .as_deref()
+                    == Some(message)
+            },
+        )?;
+
+        Ok(())
+    })
+}
+
 pub fn run_call_with_pikachat_daemon(context: &TestContext) -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -612,6 +730,30 @@ fn with_relay_and_moq_fixture(
     Ok(())
 }
 
+fn with_relay_fixture(
+    context: &TestContext,
+    run: impl FnOnce(&FixtureHandle) -> Result<()>,
+) -> Result<()> {
+    let fixture_context = fixture_context(context)?;
+    let fixture = match start_relay(&fixture_context) {
+        Ok(fixture) => fixture,
+        Err(err) => {
+            preserve_fixture_diagnostics(context, fixture_context.state_dir())
+                .context("preserve fixture startup diagnostics")?;
+            return Err(err);
+        }
+    };
+    let result = run(&fixture);
+
+    if let Err(err) = result {
+        preserve_fixture_diagnostics(context, fixture.state_dir())
+            .context("preserve fixture diagnostics after selector failure")?;
+        return Err(err);
+    }
+
+    Ok(())
+}
+
 fn fixture_context(context: &TestContext) -> Result<TestContext> {
     // Keep the fixture under a child path so fixture teardown never removes the
     // selector root that PreserveOnFailure is responsible for retaining.
@@ -631,6 +773,19 @@ fn start_relay_and_moq(context: &TestContext) -> Result<FixtureHandle> {
             &FixtureSpec::builder(ProfileName::RelayMoq).build(),
         ))
         .context("start relay+moq fixture")
+}
+
+fn start_relay(context: &TestContext) -> Result<FixtureHandle> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("create tokio runtime for local relay selector")?;
+    runtime
+        .block_on(start_fixture(
+            context,
+            &FixtureSpec::builder(ProfileName::Relay).build(),
+        ))
+        .context("start relay fixture")
 }
 
 fn preserve_fixture_diagnostics(context: &TestContext, fixture_state_dir: &Path) -> Result<()> {
@@ -926,6 +1081,27 @@ fn write_config_with_moq(
             serde_json::json!([kp]),
         );
     }
+    fs::write(
+        &path,
+        serde_json::to_vec(&value).context("serialize config")?,
+    )
+    .with_context(|| format!("write {}", path.display()))?;
+    Ok(())
+}
+
+fn write_config_with_relay(data_dir: &Path, relay_url: &str) -> Result<()> {
+    fs::create_dir_all(data_dir)
+        .with_context(|| format!("create config dir {}", data_dir.display()))?;
+    let path = data_dir.join("pika_config.json");
+    let value = serde_json::json!({
+        "disable_network": false,
+        "disable_agent_allowlist_probe": true,
+        "relay_urls": [relay_url],
+        "key_package_relay_urls": [relay_url],
+        "call_moq_url": "ws://moq.local/anon",
+        "call_broadcast_prefix": "pika/calls",
+        "call_audio_backend": "synthetic",
+    });
     fs::write(
         &path,
         serde_json::to_vec(&value).context("serialize config")?,

@@ -164,6 +164,11 @@ Working assumptions:
    - duplicated relay-backed multi-app DM/account bootstrap helpers in `rust/tests/e2e_messaging.rs` and `rust/tests/e2e_group_profiles.rs` are now collapsed into shared `rust/tests/support`
    - the code now says more clearly why that Rust-side helper sharing is different from the still-intentional selector-side duplication in `crates/pikahut/tests/support.rs`
    - the next audit slice should stay in this quality phase and target another behavior family rather than reopening CI/lane-definition cleanup
+15. Slice 16 promoted DM creation plus first-message delivery into a real selector-owned contract:
+   - `crates/pikahut/tests/integration_deterministic.rs::dm_creation_and_first_message_delivery_boundary` now gives this behavior a readable deterministic CI-facing owner instead of leaving it implicit inside `rust/tests/e2e_messaging.rs`
+   - `crates/pikahut/tests/support.rs` now drives that selector directly through relay-backed local fixtures and the same `FfiApp` state the apps render: DM shell appears, first message sends, preview/unread state updates, and the peer opens the chat and sees the message
+   - `rust/tests/e2e_messaging.rs` now keeps the narrower relay-backed semantic owner for peer chat state delivery instead of also owning the fuller preview/unread end-user contract
+   - the next audit slice should apply the same pattern to one profile flow, most likely late-joiner rebroadcast or DM-local profile override visibility
 ## Progress Update
 
 Completed on 2026-03-10:
@@ -255,9 +260,9 @@ Verified in the repo today:
    - The main overlap with native UI is shell-level: iOS can still validate that login/chat/logout/navigation render correctly, but it should not be the primary owner of these Rust semantics.
 
 2. `rust/tests/e2e_messaging.rs`
-   - Owns focused relay-backed multi-app `FfiApp` messaging/call-signaling semantics: DM creation, message delivery state, invalid call invite rejection, optimistic send behavior, and peer-visible call-end signaling.
+   - Owns focused relay-backed multi-app `FfiApp` messaging/call-signaling semantics: relay-backed DM delivery into peer chat state, invalid call invite rejection, optimistic send behavior, and peer-visible call-end signaling.
    - This is still the clearest owner for narrow multi-app Rust behavior because the assertions are on `FfiApp` state, not on fixture orchestration.
-   - `pikahut` currently pins only a subset of this file through regression selectors; that is a selector contract, not semantic ownership.
+   - The DM-first-message UX contract is now intentionally split: `pikahut` owns the end-user selector boundary, while this file keeps the narrower semantic state transition underneath it.
 
 3. `rust/tests/e2e_group_profiles.rs`
    - Owns focused relay-backed multi-app profile semantics: per-group profile visibility, rebroadcast to late joiners, and DM-local profile overrides.
@@ -266,7 +271,7 @@ Verified in the repo today:
 
 4. `crates/pikahut/tests/integration_deterministic.rs`
    - Owns the CI-facing deterministic selector contract.
-   - For this audit area it currently owns only a small number of explicit boundaries: `post_rebase_invalid_event_rejection_boundary` and `post_rebase_logout_session_convergence_boundary`, while broader message/profile semantics still live in `rust/tests`.
+   - For this audit area it now owns one clear end-user messaging contract, `dm_creation_and_first_message_delivery_boundary`, plus the narrower post-rebase regression boundaries `post_rebase_invalid_event_rejection_boundary` and `post_rebase_logout_session_convergence_boundary`.
    - That split is acceptable when the selector is clearly pinning a narrower Rust semantic owner, but it would be questionable if `pikahut` tried to become a second full owner of every messaging/profile assertion.
 
 5. `ios/UITests/PikaUITests.swift`
@@ -281,7 +286,8 @@ Verified in the repo today:
 7. Obvious redundancies and gaps in this area today:
    - relay-backed multi-app helper logic was duplicated across `rust/tests/e2e_messaging.rs` and `rust/tests/e2e_group_profiles.rs`; this slice collapses that Rust-side duplication into shared `rust/tests/support`
    - similar DM bootstrap helpers still exist in `crates/pikahut/tests/support.rs`, but that duplication is currently intentional because selector-side fixture/orchestration support cannot depend on the private `rust/tests` layer
-   - there is still no selector-owned deterministic `pikahut` contract for the clearest end-user message-delivery/profile flows, only the narrower post-rebase regression boundaries
+   - DM creation plus first-message delivery now has a selector-owned deterministic `pikahut` contract, but the strongest profile flows still live only in `rust/tests/e2e_group_profiles.rs`
+   - the clearest remaining gap is a selector-owned deterministic contract for either late-joiner group-profile rebroadcast or DM-local profile override visibility
 
 ## Strongest Problems
 

@@ -364,6 +364,21 @@ async fn openclaw_scenario_audio_echo() -> Result<()> {
 }
 
 #[test]
+#[ignore = "deterministic messaging/profile selector"]
+fn dm_creation_and_first_message_delivery_boundary() -> Result<()> {
+    // Keep the narrower relay-backed message-state semantics in `rust/tests/e2e_messaging.rs`;
+    // this selector owns the readable end-user contract that a DM shell appears, the first
+    // message sends, and the peer sees that delivery through the same `FfiApp` surface the apps
+    // exercise in CI.
+    let mut context = TestContext::builder("dm-creation-and-first-message-delivery")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_dm_creation_and_first_message_delivery(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
 #[ignore = "deterministic post-rebase regression selector"]
 fn post_rebase_invalid_event_rejection_boundary() -> Result<()> {
     // Keep the narrow invalid-invite semantics owned by `rust/tests/e2e_messaging.rs`; this

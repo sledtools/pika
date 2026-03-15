@@ -190,6 +190,11 @@ Working assumptions:
    - `crates/pikahut/tests/support.rs` now drives that selector directly through the same `FfiApp` surface the apps exercise: create account, create note-to-self state, restart from the same data dir, prove the fresh process is still logged out until explicit restore, then verify the signed-in chat list plus persisted message come back
    - `rust/tests/app_flows.rs` now keeps the narrower restored-state semantic owner in `restore_session_hydrates_persisted_chat_summary_state`: after `RestoreSession`, auth and chat summary state are hydrated back into the Rust model without reasserting the full relaunch-and-reopen user contract
    - the auth/session/persistence family now has a coherent ownership split: `pikahut` owns readable logout/reset and restore/relaunch contracts, `app_flows.rs` keeps the narrower runtime-reset and persisted-state semantics underneath them, and native tests stay as platform shell/auth-store glue smoke
+20. Slice 21 tackled the recurring paging flake in `rust/tests/app_flows.rs`:
+   - the actual flake mechanism was that `paging_loads_older_messages_in_pages` tried to own exact page-count behavior (`50 -> 80 -> 81`) at the asynchronous `FfiApp` layer, where chat open + paging state is rebuilt through actor-driven projection and local outbox/storage merging
+   - that made the test a brittle second owner of exact pagination metadata that the lower-level core test `app_message_history_loading_uses_shared_runtime_page_query` already covers more deterministically
+   - `rust/tests/app_flows.rs` now keeps the narrower end-user paging smoke in `paging_reveals_older_messages_until_history_is_exhausted`: opening a long chat starts near the newest messages, `LoadOlderMessages` reveals older history, and paging eventually reaches the earliest message with `can_load_older == false`
+   - this reduces the flake rather than inventing a larger harness rewrite; exact shared-runtime page counts stay owned below the `FfiApp` layer, while the app-facing test now asserts the contract users actually feel
 ## Progress Update
 
 Completed on 2026-03-10:
@@ -227,7 +232,7 @@ Verified in the repo today:
 4. Many important `pikahut` selectors are intentionally `#[ignore]` and only matter because CI lanes select them explicitly.
 
 5. Current pre-merge enforcement is spread across separate lanes:
-   - `pre-merge-pika`: `cargo test -p pika_core --lib --tests` with a temporary CI skip for `paging_loads_older_messages_in_pages`, Android instrumentation compilation, `pikachat` build, desktop build-check, formatting/lint/docs/justfile checks
+   - `pre-merge-pika`: `cargo test -p pika_core --lib --tests` plus Android instrumentation compilation, `pikachat` build, desktop build-check, and formatting/lint/docs/justfile checks; a follow-up CI slice should revisit the old paging skip now that the flaky exact-count test has been replaced by `paging_reveals_older_messages_until_history_is_exhausted`
    - `pre-merge-pikachat`: `pikachat` + `pikachat-sidecar` tests plus selected deterministic `pikahut` selectors
    - separate `agent-contracts`, `notifications`, `fixture`, `rmp`, and path-scoped heavy OpenClaw lanes
 
@@ -280,6 +285,7 @@ Verified in the repo today:
    - This is the right ownership layer when the product question is “what does one app instance do after this action/update?” rather than “can two apps talk over local fixtures?”
    - The main overlap with native UI is shell-level: iOS/Android can still validate that login/chat/logout/navigation render correctly, but they should not be the primary owners of these Rust semantics.
    - The auth/session area is now intentionally split: `pikahut` owns the readable logout-reset and restore-after-restart boundaries, while this file keeps the narrower runtime-reset and restored model-state hydration semantics underneath them.
+   - Paging is now intentionally split too: this file keeps the app-facing “older history becomes visible and eventually exhausts” smoke, while exact shared-runtime pagination counts/offset behavior stay owned by the lower-level core pagination test.
 
 2. `rust/tests/e2e_messaging.rs`
    - Owns focused relay-backed multi-app `FfiApp` messaging/call-signaling semantics: relay-backed DM delivery into peer chat state, invalid call invite rejection, optimistic send behavior, and peer-visible call-end signaling.
@@ -311,6 +317,7 @@ Verified in the repo today:
    - both helper layers now at least agree on one important boundary: DM lookup excludes group chats with the same peer instead of relying on a fuzzy member-only match
    - the main user-facing message/profile flows now have selector-owned deterministic `pikahut` contracts; the remaining confusing area is the harness-limited true pre-existing late-joiner rebroadcast case, not general ownership drift across this family
    - the single-app auth/session family is now coherent at the selector layer for the main user-facing lifecycle contracts; the remaining native overlap is intentional platform auth-store/app-shell glue smoke, not another full owner of Rust restore semantics
+   - the paging flake in `app_flows` is now reduced rather than fully “solved in infrastructure”: the brittle exact page-count owner was removed from the async `FfiApp` layer, but we should still watch whether any lower-level shared-runtime paging regressions suggest a deeper MDK/runtime ordering issue
 
 ## Strongest Problems
 
@@ -362,8 +369,8 @@ Verified in the repo today:
    - We should keep watching for native logic drift, but the highest-value remaining cleanup is now policy/alignment work rather than another Rust-side ownership seam.
 
 10. We should keep a short explicit list of recurring flakes even when another branch temporarily disables them.
-   - `rust/tests/app_flows.rs::paging_loads_older_messages_in_pages` has been flaking across unrelated PRs.
-   - If another branch disables it, we should still come back and either stabilize it or replace it with a more deterministic boundary around the same paging behavior.
+   - `rust/tests/app_flows.rs::paging_loads_older_messages_in_pages` has been replaced by the narrower `paging_reveals_older_messages_until_history_is_exhausted` smoke because the old exact-count assertion was the flaky part.
+   - We still need to watch for any renewed paging flakes below the `FfiApp` layer; if they recur, the next step should be the shared-runtime/core pagination owner, not another broad app-layer timeout tweak.
 
 11. We now have a canonical fast local smoke layer for catching common CI failures before full lanes run.
    - The supported habitual command is `just pre-commit`.

@@ -26,16 +26,12 @@ EOF
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 prepare_snapshot_root=""
-pikaci_bin="$repo_root/target/debug/pikaci"
-
-build_pikaci_bin() {
-  cd "$repo_root"
-  cargo build -p pikaci --bin pikaci >/dev/null
-}
+source "$script_dir/lib/pikaci-tools.sh"
 
 export_remote_defaults() {
-  build_pikaci_bin
-  eval "$("$pikaci_bin" staged-linux-remote-defaults)"
+  resolve_pikaci_tools "$repo_root"
+  log_pikaci_tool_resolution "staged-linux-remote"
+  eval "$("$PIKACI_BIN" staged-linux-remote-defaults)"
   export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY:-$default_ssh_binary}"
   export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY:-$default_ssh_nix_binary}"
   export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-$default_ssh_host}"
@@ -46,8 +42,7 @@ export_remote_defaults() {
 
 resolve_target() {
   local target_name="$1"
-  build_pikaci_bin
-  eval "$("$pikaci_bin" staged-linux-target-info "$target_name")"
+  eval "$("$PIKACI_BIN" staged-linux-target-info "$target_name")"
 }
 
 prepare_lane() {
@@ -90,10 +85,9 @@ run_lane() {
   export PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_TRANSPORT=ssh_launcher_transport_v1
 
   cd "$repo_root"
-  cargo build -p pikaci --bins >/dev/null
-  export PIKACI_PREPARED_OUTPUT_FULFILL_BINARY="$repo_root/target/debug/pikaci-fulfill-prepared-output"
-  export PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY="$repo_root/target/debug/pikaci-launch-fulfill-prepared-output"
-  exec "$pikaci_bin" run "$target_id"
+  export PIKACI_PREPARED_OUTPUT_FULFILL_BINARY
+  export PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY
+  exec "$PIKACI_BIN" run "$target_id"
 }
 
 case "${1:-}" in

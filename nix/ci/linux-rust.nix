@@ -51,11 +51,7 @@ let
       pkgs.mesa
       pkgs.vulkan-loader
     ];
-<<<<<<< HEAD
   } // pkgs.lib.optionalAttrs (lane == "pika-core" || lane == "agent-contracts" || lane == "pikachat" || lane == "fixture") {
-=======
-  } // pkgs.lib.optionalAttrs (lane == "agent-contracts" || lane == "pikachat" || lane == "fixture") {
->>>>>>> 342ac5e8 (Provision libclang for staged fixture lane)
     LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
     BINDGEN_EXTRA_CLANG_ARGS = builtins.concatStringsSep " " [
       "-I${pkgs.linuxHeaders}/include"

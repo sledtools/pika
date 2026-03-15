@@ -556,10 +556,10 @@ where
 {
     let env_dir = host_local_dev_env_cache_dir(cache_dir);
     fs::create_dir_all(&env_dir).with_context(|| format!("create {}", env_dir.display()))?;
-    let script_path = host_local_dev_env_script_path(cache_dir);
     let cached_state = read_host_local_dev_env_state(cache_dir).ok();
+    let cached_env_usable = cached_host_local_dev_env_is_usable(cache_dir);
 
-    if script_path.is_file()
+    if cached_env_usable
         && cached_state.as_ref().map(|state| state.shell.as_str()) == Some(shell)
         && cached_state
             .as_ref()
@@ -570,7 +570,7 @@ where
     }
 
     let shell_fingerprint = fingerprint(source_dir, shell)?;
-    if script_path.is_file()
+    if cached_env_usable
         && cached_state.as_ref().map(|state| state.shell.as_str()) == Some(shell)
         && cached_state
             .as_ref()
@@ -686,6 +686,17 @@ fn host_local_dev_env_shell_program(env_script_path: &Path) -> anyhow::Result<Pa
         "cached host-local nix environment {} did not declare a BASH path",
         env_script_path.display()
     );
+}
+
+fn cached_host_local_dev_env_is_usable(cache_dir: &Path) -> bool {
+    let script_path = host_local_dev_env_script_path(cache_dir);
+    if !script_path.is_file() {
+        return false;
+    }
+
+    host_local_dev_env_shell_program(&script_path)
+        .map(|shell_path| shell_path.is_file())
+        .unwrap_or(false)
 }
 
 fn acquire_host_local_cache_lock(
@@ -2935,12 +2946,12 @@ mod tests {
         GuestFlakePaths, HostContext, HostLocalCommandMode, HostLocalDevEnvState,
         HostLocalEnvironmentRefresh, REMOTE_MICROVM_VIRTIOFS_SOCKETS, RemoteMicrovmContext,
         build_remote_microvm_launch_command, builders_supports_aarch64_linux,
-        ensure_staged_linux_rust_lane_matches_vfkit_guest, guest_runner_config_for,
-        host_local_command_mode, host_local_dev_env_script_path, host_local_dev_env_shell_program,
-        prepare_host_local_cached_dev_env_with, read_host_local_dev_env_state, render_guest_flake,
-        render_local_guest_flake, run_job_on_runner, staged_linux_remote_defaults,
-        staged_linux_remote_snapshot_dir, vfkit_socket_path, write_host_local_dev_env_script,
-        write_host_local_dev_env_state,
+        cached_host_local_dev_env_is_usable, ensure_staged_linux_rust_lane_matches_vfkit_guest,
+        guest_runner_config_for, host_local_command_mode, host_local_dev_env_script_path,
+        host_local_dev_env_shell_program, prepare_host_local_cached_dev_env_with,
+        read_host_local_dev_env_state, render_guest_flake, render_local_guest_flake,
+        run_job_on_runner, staged_linux_remote_defaults, staged_linux_remote_snapshot_dir,
+        vfkit_socket_path, write_host_local_dev_env_script, write_host_local_dev_env_state,
     };
     use crate::model::{GuestCommand, JobSpec, RunStatus, RunnerKind};
 
@@ -3650,10 +3661,17 @@ mod tests {
         ));
         let cache_dir = root.join("cache");
         let source_dir = root.join("snapshot");
+        let existing_shell = std::env::var("SHELL").unwrap();
         std::fs::create_dir_all(&cache_dir).expect("create cache dir");
         std::fs::create_dir_all(&source_dir).expect("create source dir");
-        write_host_local_dev_env_script(&cache_dir, "export TEST_ENV=1\n")
-            .expect("write cached env script");
+        write_host_local_dev_env_script(
+            &cache_dir,
+            &format!(
+                "BASH='{}'\nexport BASH\nexport TEST_ENV=1\n",
+                existing_shell
+            ),
+        )
+        .expect("write cached env script");
         write_host_local_dev_env_state(
             &cache_dir,
             &HostLocalDevEnvState {
@@ -3707,10 +3725,17 @@ mod tests {
         ));
         let cache_dir = root.join("cache");
         let source_dir = root.join("snapshot");
+        let existing_shell = std::env::var("SHELL").unwrap();
         std::fs::create_dir_all(&cache_dir).expect("create cache dir");
         std::fs::create_dir_all(&source_dir).expect("create source dir");
-        write_host_local_dev_env_script(&cache_dir, "export TEST_ENV=1\n")
-            .expect("write cached env script");
+        write_host_local_dev_env_script(
+            &cache_dir,
+            &format!(
+                "BASH='{}'\nexport BASH\nexport TEST_ENV=1\n",
+                existing_shell
+            ),
+        )
+        .expect("write cached env script");
         write_host_local_dev_env_state(
             &cache_dir,
             &HostLocalDevEnvState {
@@ -3761,10 +3786,17 @@ mod tests {
         ));
         let cache_dir = root.join("cache");
         let source_dir = root.join("snapshot");
+        let existing_shell = std::env::var("SHELL").unwrap();
         std::fs::create_dir_all(&cache_dir).expect("create cache dir");
         std::fs::create_dir_all(&source_dir).expect("create source dir");
-        write_host_local_dev_env_script(&cache_dir, "export TEST_ENV=old\n")
-            .expect("write cached env script");
+        write_host_local_dev_env_script(
+            &cache_dir,
+            &format!(
+                "BASH='{}'\nexport BASH\nexport TEST_ENV=old\n",
+                existing_shell
+            ),
+        )
+        .expect("write cached env script");
         write_host_local_dev_env_state(
             &cache_dir,
             &HostLocalDevEnvState {
@@ -3799,6 +3831,72 @@ mod tests {
         let script = std::fs::read_to_string(host_local_dev_env_script_path(&cache_dir))
             .expect("read cached env script");
         assert_eq!(script, "export TEST_ENV=new\n");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn host_local_dev_env_cache_refreshes_when_cached_shell_path_is_missing() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-host-local-dev-env-missing-shell-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let cache_dir = root.join("cache");
+        let source_dir = root.join("snapshot");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+        std::fs::create_dir_all(&source_dir).expect("create source dir");
+        write_host_local_dev_env_script(
+            &cache_dir,
+            "BASH='/nix/store/does-not-exist/bin/bash'\nexport BASH\n",
+        )
+        .expect("write cached env script");
+        write_host_local_dev_env_state(
+            &cache_dir,
+            &HostLocalDevEnvState {
+                schema_version: 1,
+                shell: "default".to_string(),
+                shell_fingerprint: "shell-fingerprint".to_string(),
+                validated_source_content_hash: Some("same-hash".to_string()),
+            },
+        )
+        .expect("write cached env state");
+
+        assert!(!cached_host_local_dev_env_is_usable(&cache_dir));
+
+        let fingerprint_calls = Arc::new(AtomicUsize::new(0));
+        let render_calls = Arc::new(AtomicUsize::new(0));
+        let refresh = prepare_host_local_cached_dev_env_with(
+            &cache_dir,
+            &source_dir,
+            Some("same-hash"),
+            "default",
+            {
+                let fingerprint_calls = Arc::clone(&fingerprint_calls);
+                move |_, _| {
+                    fingerprint_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok("shell-fingerprint".to_string())
+                }
+            },
+            {
+                let render_calls = Arc::clone(&render_calls);
+                move |_, _| {
+                    render_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(format!(
+                        "BASH='{}'\nexport BASH\n",
+                        std::env::var("SHELL").unwrap()
+                    ))
+                }
+            },
+        )
+        .expect("prepare cached env");
+
+        assert_eq!(
+            refresh,
+            HostLocalEnvironmentRefresh::RefreshedFromNixPrintDevEnv
+        );
+        assert_eq!(fingerprint_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(render_calls.load(Ordering::SeqCst), 1);
+        assert!(cached_host_local_dev_env_is_usable(&cache_dir));
 
         let _ = std::fs::remove_dir_all(root);
     }

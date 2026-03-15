@@ -394,7 +394,7 @@ Daemon host target:
 - daemon becomes a protocol adapter over shared services
 - duplicate Marmot business logic is removed subsystem by subsystem
 
-Current thin-host slice:
+Landed thin-host closeout slices:
 - single-item media send/upload completion in app and daemon now unwraps shared media upload operation results via runtime-owned helpers instead of host-local `match` trees; the app media workflow keeps shared `PreparedMediaUpload` through pending single/batch state, stores shared `RuntimeMediaUploadResult` on completed batch items, and resumes retry/finalize flow directly from those shared runtime types, while the daemon media workflow now routes both `SendMedia` and `SendMediaBatch` through one shared per-file prepare/upload/complete path and carries shared `CompletedMediaUpload` results until final protocol formatting instead of splitting uploads back into daemon-local URL/hash/tag tuples
 - uploaded-hash validation remains explicit in the app, while optimistic UI/outbox state, batch scheduling, upload execution, file staging, and protocol formatting stay host-local
 - fresh outbound message send/publish in app and daemon now unwraps shared outbound publish operation results via runtime-owned helpers instead of host-local tuple or nested-match translation; retry send and other send policies stay host-local
@@ -402,6 +402,11 @@ Current thin-host slice:
 - add-members publish/finalize handling now unwraps shared membership operation results directly, and membership prep now resolves joined-group context through shared runtime commands instead of duplicated host-side group lookup; welcome delivery execution policy remains host-local
 - app create-group follow-through now operates on the shared `PlannedGroupCreation` result directly instead of re-unpacking group + welcome fields in each host path, while daemon `init_group` now delegates its shared create-plus-welcome execution directly to `create_group_and_publish_welcomes(...)` before applying its stricter confirm/subscription policy; daemon still has no production protocol-level `add_members` command, so that remains the largest honest production seam adjacent to membership/group-update behavior today
 - shared base session sync execution now owns relay connect plus welcome-inbox subscription from `RuntimeSessionSyncPlan`, and the remaining honest session follow-through now leans directly on shared open-state: app startup and recompute seed notification ingress plus current group targets from `RuntimeSessionOpenState`, daemon startup does the same for inbound seen state plus individual group subscription targets, and the old host-local “plan session sync” wrappers are gone while app startup’s deferred connect-only step, app combined group subscriptions, daemon individual group subscriptions, notification loops, and reconnect policy still stay host-local
+
+Intentional host-local / future product work:
+- app UI/projection, daemon protocol mapping, notification-loop ownership, reconnect/retry policy, and call/media runtime ownership remain local by design; the refactor stops short of a session manager or host-neutral media/call manager
+- daemon protocol-level feature exposure that still does not exist, especially a production `add_members` command, remains product/protocol work rather than a runtime-boundary gap
+- deeper daemon request-loop integration harnesses would improve confidence further, but that is separate test infrastructure/product work, not another Marmot/runtime boundary extraction
 
 Only later:
 - formalize `pikad`

@@ -7582,6 +7582,127 @@ mod tests {
         }
 
         #[test]
+        fn app_send_chat_media_entry_path_flows_into_shared_prepare_and_upload_result() {
+            use base64::Engine as _;
+            use sha2::Digest as _;
+
+            let (mut core, chat_id, keys, _group_id) = make_core_with_group();
+            let caption = "caption".to_string();
+            let filename = "workflow.txt".to_string();
+            let mime_type = "text/plain".to_string();
+            let media_bytes = b"workflow media payload".to_vec();
+            let media_base64 = base64::engine::general_purpose::STANDARD.encode(&media_bytes);
+
+            core.send_chat_media(
+                chat_id.clone(),
+                media_base64,
+                mime_type.clone(),
+                filename.clone(),
+                caption.clone(),
+            );
+
+            let temp_rumor_id = core
+                .local_outbox
+                .get(&chat_id)
+                .expect("placeholder outbox entry")
+                .keys()
+                .next()
+                .cloned()
+                .expect("temp rumor id");
+            let account_pubkey = keys.public_key().to_hex();
+            let pre_hash_hex = hex::encode(sha2::Sha256::digest(&media_bytes));
+            let local_path = std::path::Path::new(&core.data_dir)
+                .join("chat-media-workflow.txt")
+                .to_string_lossy()
+                .into_owned();
+            std::fs::write(&local_path, &media_bytes).expect("write local media file");
+
+            core.handle_internal(crate::updates::InternalEvent::ChatMediaPreprocessed {
+                chat_id: chat_id.clone(),
+                caption: caption.clone(),
+                temp_rumor_id: temp_rumor_id.clone(),
+                account_pubkey: account_pubkey.clone(),
+                media_data: media_bytes.clone(),
+                media_mime: mime_type,
+                local_filename: filename.clone(),
+                pre_hash_hex,
+                local_path: local_path.clone(),
+                width: None,
+                height: None,
+                blurhash: None,
+                error: None,
+            });
+
+            let (request_id, expected_hash_hex) = {
+                let (request_id, pending) = core
+                    .pending_media_sends
+                    .iter()
+                    .next()
+                    .expect("pending single media upload");
+                assert_eq!(pending.chat_id, chat_id);
+                assert_eq!(pending.caption, caption);
+                (
+                    request_id.clone(),
+                    hex::encode(pending.prepared.upload.encrypted_hash),
+                )
+            };
+
+            assert_eq!(
+                core.local_outbox
+                    .get(&chat_id)
+                    .and_then(|outbox| outbox.get(&temp_rumor_id))
+                    .and_then(|entry| entry.media.first())
+                    .and_then(|attachment| attachment.encrypted_hash_hex.as_deref()),
+                Some(expected_hash_hex.as_str()),
+                "real app media preprocessing should seed the placeholder from shared prepared upload state"
+            );
+
+            core.handle_chat_media_upload_completed(
+                request_id,
+                pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(
+                    pika_marmot_runtime::media::UploadedBlob {
+                        blossom_server: "https://example.com".to_string(),
+                        uploaded_url: "https://example.com/workflow".to_string(),
+                        descriptor_sha256_hex: expected_hash_hex,
+                    },
+                ),
+            );
+
+            assert!(
+                core.pending_media_sends.is_empty(),
+                "single media upload should finish and hand off to the normal publish path"
+            );
+            let outbox = core
+                .local_outbox
+                .get(&chat_id)
+                .expect("published media outbox entry");
+            assert_eq!(outbox.len(), 1);
+            let sent = outbox.values().next().expect("published media message");
+            assert_eq!(sent.content, caption);
+            assert_eq!(sent.media.len(), 1);
+            assert_eq!(sent.media[0].url, "https://example.com/workflow");
+            assert_eq!(
+                sent.media[0].encrypted_hash_hex.as_deref(),
+                Some(
+                    core.media_cache
+                        .get(&chat_id)
+                        .and_then(|records| records.values().next())
+                        .expect("persisted media metadata")
+                        .encrypted_hash_hex
+                        .as_str()
+                )
+            );
+            assert_eq!(
+                core.pending_sends
+                    .map
+                    .get(&chat_id)
+                    .map(|entries| entries.len()),
+                Some(1),
+                "the real app media path should continue into the shared outbound publish path"
+            );
+        }
+
+        #[test]
         fn chat_message_on_current_chat_increments_loaded() {
             let (mut core, chat_id, _keys, group_id) = make_core_with_group();
             // Simulate the chat being currently open.

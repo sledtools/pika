@@ -743,7 +743,10 @@ fn wipe_local_data_removes_persistent_files() {
 }
 
 #[test]
-fn restore_session_recovers_chat_history() {
+fn restore_session_hydrates_persisted_chat_summary_state() {
+    // `pikahut` now owns the broader restart-and-restore lifecycle contract. This test stays as
+    // the narrower single-app semantic owner that RestoreSession hydrates persisted Rust model
+    // state back into auth + chat summary state.
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_string_lossy().to_string();
     write_config(&data_dir, true);
@@ -800,7 +803,7 @@ fn restore_session_recovers_chat_history() {
             .expect("missing AccountCreated update with nsec")
     };
 
-    // New process instance restores from the same encrypted per-identity DB.
+    // New process instance restores the same persisted Rust state from the encrypted DB.
     let app2 = FfiApp::new(data_dir, String::new(), String::new());
     app2.dispatch(AppAction::RestoreSession { nsec });
     wait_until(
@@ -815,24 +818,9 @@ fn restore_session_recovers_chat_history() {
     let s = app2.state();
     assert!(matches!(s.auth, AuthState::LoggedIn { .. }));
     assert!(!s.chat_list.is_empty());
+    assert!(s.current_chat.is_none());
     let summary = s.chat_list.iter().find(|c| c.chat_id == chat_id).unwrap();
     assert_eq!(summary.last_message.as_deref(), Some("persist-me"));
-
-    app2.dispatch(AppAction::OpenChat { chat_id });
-    wait_until(
-        "chat opened has persisted message",
-        Duration::from_secs(10),
-        || {
-            app2.state()
-                .current_chat
-                .as_ref()
-                .map(|c| c.messages.iter().any(|m| m.content == "persist-me"))
-                .unwrap_or(false)
-        },
-    );
-    let s2 = app2.state();
-    let chat = s2.current_chat.unwrap();
-    assert!(chat.messages.iter().any(|m| m.content == "persist-me"));
 }
 
 #[test]

@@ -5,4 +5,4 @@ edition = "2021"
 
 [dependencies]
 rustls = { workspace = true, features = ["std", "tls12"] }
-webpki-roots = "0.26"
+webpki-roots = "1"

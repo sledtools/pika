@@ -4,7 +4,7 @@ mod manager;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::body::{Body, Bytes, HttpBody};
+use axum::body::{to_bytes, Body, Bytes};
 use axum::extract::ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Extension, FromRequestParts, Path, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
@@ -50,7 +50,7 @@ fn generate_request_id() -> String {
     Uuid::new_v4().simple().to_string()
 }
 
-async fn trace_http_request<B>(mut request: Request<B>, next: Next<B>) -> Response {
+async fn trace_http_request(mut request: Request<Body>, next: Next) -> Response {
     let method = request.method().clone();
     let path = request.uri().path().to_string();
     let request_id = request_id_from_headers(&request).unwrap_or_else(generate_request_id);
@@ -125,9 +125,8 @@ async fn main() -> anyhow::Result<()> {
 
     info!(bind = %config.bind, "vm-spawner starting");
 
-    axum::Server::bind(&config.bind)
-        .serve(app.into_make_service())
-        .await?;
+    let listener = tokio::net::TcpListener::bind(config.bind).await?;
+    axum::serve(listener, app).await?;
 
     Ok(())
 }
@@ -569,18 +568,12 @@ fn websocket_proxy_url(upstream_url: &str) -> anyhow::Result<String> {
 }
 
 async fn read_request_body(body: Body) -> Result<Bytes, ApiError> {
-    let mut body = body;
-    let mut bytes = Vec::new();
-    while let Some(chunk) = body.data().await {
-        let chunk = chunk.map_err(|err| {
-            ApiError::new(
-                StatusCode::BAD_REQUEST,
-                format!("failed to read proxied request body: {err}"),
-            )
-        })?;
-        bytes.extend_from_slice(chunk.as_ref());
-    }
-    Ok(Bytes::from(bytes))
+    to_bytes(body, usize::MAX).await.map_err(|err| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("failed to read proxied request body: {err}"),
+        )
+    })
 }
 
 fn axum_message_to_tungstenite(message: AxumWsMessage) -> Option<TungsteniteMessage> {
@@ -687,7 +680,7 @@ fn response_header_should_replace_existing(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::HttpBody;
+    use axum::body::to_bytes;
     use axum::response::IntoResponse;
 
     #[test]
@@ -743,12 +736,9 @@ mod tests {
         let response = ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "boom")
             .with_request_id("req-123")
             .into_response();
-        let mut body = response.into_body();
-        let mut bytes = Vec::new();
-        while let Some(chunk_result) = body.data().await {
-            let chunk = chunk_result.expect("read response chunk");
-            bytes.extend_from_slice(chunk.as_ref());
-        }
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
         let json: serde_json::Value = serde_json::from_slice(&bytes).expect("parse error body");
         assert_eq!(json["error"], "boom");
         assert_eq!(json["request_id"], "req-123");
@@ -759,12 +749,9 @@ mod tests {
         let response = ApiError::from(anyhow::anyhow!("systemctl failed for /nix/store/secret"))
             .with_request_id("req-456")
             .into_response();
-        let mut body = response.into_body();
-        let mut bytes = Vec::new();
-        while let Some(chunk_result) = body.data().await {
-            let chunk = chunk_result.expect("read response chunk");
-            bytes.extend_from_slice(chunk.as_ref());
-        }
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
         let json: serde_json::Value = serde_json::from_slice(&bytes).expect("parse error body");
         assert_eq!(json["error"], "internal server error");
         assert_eq!(json["request_id"], "req-456");

@@ -7,5 +7,3 @@ edition = "2021"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
-flume = { workspace = true }
-uniffi = { workspace = true }

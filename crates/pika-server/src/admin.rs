@@ -824,7 +824,7 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
 
-    use axum::body::HttpBody;
+    use axum::body::to_bytes;
     use axum::http::header;
     use diesel::prelude::*;
     use diesel::r2d2::{ConnectionManager, Pool};
@@ -949,12 +949,10 @@ mod tests {
     }
 
     async fn response_body_string(response: Response) -> String {
-        let mut body = response.into_body();
-        let mut bytes = Vec::new();
-        while let Some(chunk) = body.data().await {
-            bytes.extend_from_slice(&chunk.expect("read response chunk"));
-        }
-        String::from_utf8(bytes).expect("utf8 response body")
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        String::from_utf8(bytes.to_vec()).expect("utf8 response body")
     }
 
     fn request_context() -> Extension<RequestContext> {

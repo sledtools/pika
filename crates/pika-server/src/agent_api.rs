@@ -1651,7 +1651,7 @@ mod tests {
     use crate::browser_auth::BrowserAuthConfig;
     use crate::models::group_subscription::GroupFilterInfo;
     use crate::test_support::serial_test_guard;
-    use axum::body::HttpBody;
+    use axum::body::to_bytes;
     use axum::http::header;
     use base64::Engine;
     use chrono::NaiveDate;
@@ -2653,11 +2653,9 @@ mod tests {
         let response = AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
             .with_request_id("req-123")
             .into_response();
-        let mut body = response.into_body();
-        let mut bytes = Vec::new();
-        while let Some(chunk) = body.data().await {
-            bytes.extend_from_slice(&chunk.expect("read response chunk"));
-        }
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
         let json: serde_json::Value = serde_json::from_slice(&bytes).expect("parse error body");
         assert_eq!(json["error"], AgentApiErrorCode::RecoverFailed.as_str());
         assert_eq!(json["request_id"], "req-123");

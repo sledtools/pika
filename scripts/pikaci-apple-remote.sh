@@ -158,20 +158,32 @@ artifact_dir="${artifact_dir:-$repo_root/.pikaci/apple-remote/$run_id}"
 mkdir -p "$artifact_dir"
 
 tmp_dir="$(mktemp -d)"
+prepared_schema_version=2
 bundle_ref="refs/pikaci-apple/${command}/${run_id}"
 bundle_path="$tmp_dir/source.bundle"
 ssh_target="${ssh_user}@${ssh_host}"
+bundle_created=0
+prepared_probe="unknown"
+upload_skipped=0
 
 cleanup() {
   set +e
-  git update-ref -d "$bundle_ref" >/dev/null 2>&1 || true
+  if [[ "$bundle_created" -eq 1 ]]; then
+    git update-ref -d "$bundle_ref" >/dev/null 2>&1 || true
+  fi
   rm -rf "$tmp_dir"
 }
 trap cleanup EXIT
 
-git update-ref "$bundle_ref" "$resolved_commit"
-git bundle create "$bundle_path" "$bundle_ref" >/dev/null
-git update-ref -d "$bundle_ref" >/dev/null 2>&1 || true
+create_source_bundle() {
+  if [[ "$bundle_created" -eq 1 ]]; then
+    return
+  fi
+  git update-ref "$bundle_ref" "$resolved_commit"
+  git bundle create "$bundle_path" "$bundle_ref" >/dev/null
+  git update-ref -d "$bundle_ref" >/dev/null 2>&1 || true
+  bundle_created=1
+}
 
 "$script_dir/ci-add-known-host.sh" "$ssh_host"
 
@@ -194,6 +206,78 @@ remote_artifact_path="${remote_run_dir}/artifact.tgz"
 local_remote_artifact="${artifact_dir}/remote-artifact.tgz"
 local_log="${artifact_dir}/wrapper.log"
 
+query_remote_prepared_status() {
+  "$ssh_binary" "$ssh_target" \
+    "bash -s -- $(printf '%q' "$resolved_remote_root") $(printf '%q' "$resolved_commit") $(printf '%q' "$prepared_schema_version")" <<'REMOTE_STATUS'
+set -euo pipefail
+
+resolved_remote_root="$1"
+resolved_commit="$2"
+prepared_schema_version="$3"
+prepared_dir="${resolved_remote_root}/prepared/${resolved_commit}"
+prepared_worktree_dir="${prepared_dir}/worktree"
+prepared_marker="${prepared_dir}/prepared.env"
+
+prepared_hit=0
+prepared_reason="missing-worktree"
+
+if [[ -e "${prepared_worktree_dir}/.git" ]]; then
+  prepared_reason="missing-marker"
+  if [[ -f "$prepared_marker" ]]; then
+    marker_schema_version=""
+    marker_resolved_commit=""
+    marker_worktree_dir=""
+    while IFS='=' read -r key value; do
+      case "$key" in
+        SCHEMA_VERSION) marker_schema_version="$value" ;;
+        RESOLVED_COMMIT) marker_resolved_commit="$value" ;;
+        PREPARED_WORKTREE_DIR) marker_worktree_dir="$value" ;;
+      esac
+    done < "$prepared_marker"
+    head_commit="$(git -C "$prepared_worktree_dir" rev-parse HEAD 2>/dev/null || true)"
+    if [[ "$marker_schema_version" == "$prepared_schema_version" ]] \
+      && [[ "$marker_resolved_commit" == "$resolved_commit" ]] \
+      && [[ "$marker_worktree_dir" == "$prepared_worktree_dir" ]] \
+      && [[ "$head_commit" == "$resolved_commit" ]]; then
+      prepared_hit=1
+      prepared_reason="prepared-hit"
+    elif [[ "$marker_schema_version" != "$prepared_schema_version" ]]; then
+      prepared_reason="schema-mismatch"
+    elif [[ "$marker_resolved_commit" != "$resolved_commit" ]] || [[ "$head_commit" != "$resolved_commit" ]]; then
+      prepared_reason="commit-mismatch"
+    else
+      prepared_reason="worktree-mismatch"
+    fi
+  fi
+fi
+
+printf 'PREPARED_HIT=%s\n' "$prepared_hit"
+printf 'PREPARED_REASON=%s\n' "$prepared_reason"
+REMOTE_STATUS
+}
+
+prepared_hit=0
+prepared_reason="probe-failed"
+while IFS='=' read -r key value; do
+  case "$key" in
+    PREPARED_HIT) prepared_hit="$value" ;;
+    PREPARED_REASON) prepared_reason="$value" ;;
+  esac
+done < <(query_remote_prepared_status)
+
+if [[ "$prepared_hit" == "1" ]]; then
+  prepared_probe="prepared-hit"
+  upload_skipped=1
+else
+  prepared_probe="prepared-miss:${prepared_reason}"
+fi
+
+upload_source_bundle() {
+  create_source_bundle
+  "$ssh_binary" "$ssh_target" "mkdir -p $(shell_quote "$remote_run_dir")"
+  cat "$bundle_path" | "$ssh_binary" "$ssh_target" "cat > $(shell_quote "${remote_run_dir}/source.bundle")"
+}
+
 cat >"${artifact_dir}/metadata.env" <<EOF
 COMMAND=${command}
 RUN_ID=${run_id}
@@ -209,12 +293,15 @@ LOCK_TIMEOUT_SEC=${lock_timeout_sec}
 EOF
 
 "$ssh_binary" "$ssh_target" "mkdir -p $(shell_quote "$remote_run_dir")"
-cat "$bundle_path" | "$ssh_binary" "$ssh_target" "cat > $(shell_quote "${remote_run_dir}/source.bundle")"
+: >"$local_log"
 
-set +e
-"$ssh_binary" "$ssh_target" \
-  "bash -s -- $(printf '%q' "$resolved_remote_root") $(printf '%q' "$command") $(printf '%q' "$run_id") $(printf '%q' "$bundle_ref") $(printf '%q' "$resolved_commit") $(printf '%q' "$keep_runs") $(printf '%q' "$keep_prepared") $(printf '%q' "$lock_timeout_sec")" \
-  2>&1 <<'REMOTE_RUN' | tee "$local_log"
+run_remote_operation() {
+  local skip_source_import="$1"
+  local remote_exit_local
+  set +e
+  "$ssh_binary" "$ssh_target" \
+    "bash -s -- $(printf '%q' "$resolved_remote_root") $(printf '%q' "$command") $(printf '%q' "$run_id") $(printf '%q' "$bundle_ref") $(printf '%q' "$resolved_commit") $(printf '%q' "$keep_runs") $(printf '%q' "$keep_prepared") $(printf '%q' "$lock_timeout_sec") $(printf '%q' "$prepared_schema_version") $(printf '%q' "$skip_source_import")" \
+    2>&1 <<'REMOTE_RUN' | tee -a "$local_log"
 set -euo pipefail
 
 resolved_remote_root="$1"
@@ -225,6 +312,8 @@ resolved_commit="$5"
 keep_runs="$6"
 keep_prepared="$7"
 lock_timeout_sec="$8"
+prepared_schema_version="$9"
+skip_source_import="${10}"
 
 run_dir="${resolved_remote_root}/runs/${run_id}"
 bundle_path="${run_dir}/source.bundle"
@@ -236,7 +325,6 @@ prepared_dir="${prepared_root}/${resolved_commit}"
 prepared_worktree_dir="${prepared_dir}/worktree"
 prepared_ref="refs/pikaci-apple/prepared/${resolved_commit}"
 prepared_marker="${prepared_dir}/prepared.env"
-prepared_schema_version=2
 artifacts_dir="${run_dir}/artifacts"
 logs_dir="${run_dir}/logs"
 remote_artifact_path="${run_dir}/artifact.tgz"
@@ -277,19 +365,32 @@ ensure_prepared_checkout() {
   local marker_worktree_dir=""
   prepare_started_at="$(date +%s)"
 
-  ensure_mirror
   mkdir -p "$prepared_root" "$shared_target_dir"
 
-  git -C "$mirror_dir" fetch --force "$bundle_path" "${bundle_ref}:${prepared_ref}" >/dev/null
-
-  if [[ ! -e "${prepared_worktree_dir}/.git" ]]; then
-    rm -rf "$prepared_dir"
-    mkdir -p "$prepared_dir"
-    git -C "$mirror_dir" worktree add --force --detach "$prepared_worktree_dir" "$prepared_ref" >/dev/null
-    should_prewarm=1
-    prepare_status="prepared-new"
-  else
+  if [[ "$skip_source_import" == "1" ]]; then
+    if [[ ! -e "${prepared_worktree_dir}/.git" ]]; then
+      echo "error: prepared fast path stale; worktree missing for ${resolved_commit}" >&2
+      exit 86
+    fi
+    current_head="$(git -C "$prepared_worktree_dir" rev-parse HEAD 2>/dev/null || true)"
+    if [[ "$current_head" != "$resolved_commit" ]]; then
+      echo "error: prepared fast path stale; worktree head ${current_head:-missing} != ${resolved_commit}" >&2
+      exit 86
+    fi
     prepare_status="prepared-reused"
+  else
+    ensure_mirror
+    git -C "$mirror_dir" fetch --force "$bundle_path" "${bundle_ref}:${prepared_ref}" >/dev/null
+
+    if [[ ! -e "${prepared_worktree_dir}/.git" ]]; then
+      rm -rf "$prepared_dir"
+      mkdir -p "$prepared_dir"
+      git -C "$mirror_dir" worktree add --force --detach "$prepared_worktree_dir" "$prepared_ref" >/dev/null
+      should_prewarm=1
+      prepare_status="prepared-new"
+    else
+      prepare_status="prepared-reused"
+    fi
   fi
 
   cd "$prepared_worktree_dir"
@@ -463,8 +564,29 @@ prune_prepared
 
 exit "$bundle_exit"
 REMOTE_RUN
-remote_exit=${PIPESTATUS[0]}
-set -e
+  remote_exit_local=${PIPESTATUS[0]}
+  set -e
+  return "$remote_exit_local"
+}
+
+if [[ "$upload_skipped" -ne 1 ]]; then
+  upload_source_bundle
+fi
+
+remote_exit=0
+if ! run_remote_operation "$upload_skipped"; then
+  remote_exit=$?
+  if [[ "$remote_exit" -eq 86 ]] && [[ "$upload_skipped" -eq 1 ]]; then
+    prepared_probe="prepared-hit-fallback"
+    upload_skipped=0
+    upload_source_bundle
+    if ! run_remote_operation 0; then
+      remote_exit=$?
+    else
+      remote_exit=0
+    fi
+  fi
+fi
 
 artifact_fetch_exit=0
 if ! "$ssh_binary" "$ssh_target" "test -f $(shell_quote "$remote_artifact_path")"; then
@@ -493,6 +615,8 @@ fi
 {
   echo "REMOTE_EXIT=${remote_exit}"
   echo "ARTIFACT_FETCH_EXIT=${artifact_fetch_exit}"
+  echo "PREPARED_PROBE=${prepared_probe}"
+  echo "UPLOAD_SKIPPED=${upload_skipped}"
   echo "PREPARE_STATUS=${prepare_status_output}"
   echo "PREPARE_DURATION_SEC=${prepare_duration_output}"
   echo "BUNDLE_DURATION_SEC=${bundle_duration_output}"
@@ -508,6 +632,8 @@ if [[ -n "$github_output" ]]; then
     echo "remote_prepared_dir=${remote_prepared_dir}"
     echo "remote_exit=${remote_exit}"
     echo "artifact_fetch_exit=${artifact_fetch_exit}"
+    echo "prepared_probe=${prepared_probe}"
+    echo "upload_skipped=${upload_skipped}"
     echo "prepare_status=${prepare_status_output}"
     echo "prepare_duration_sec=${prepare_duration_output}"
     echo "bundle_duration_sec=${bundle_duration_output}"

@@ -1618,6 +1618,8 @@ jobs:
             echo "- remote run dir: \`${{ steps.remote.outputs.remote_run_dir || 'none' }}\`"
             echo "- remote prepared dir: \`${{ steps.remote.outputs.remote_prepared_dir || 'none' }}\`"
             echo "- local artifact dir: \`${{ steps.remote.outputs.artifact_dir || 'none' }}\`"
+            echo "- prepared probe: \`${{ steps.remote.outputs.prepared_probe || 'unknown' }}\`"
+            echo "- upload skipped: \`${{ steps.remote.outputs.upload_skipped || 'unknown' }}\`"
             echo "- prepare status: \`${{ steps.remote.outputs.prepare_status || 'unknown' }}\`"
             echo "- prepare duration sec: \`${{ steps.remote.outputs.prepare_duration_sec || 'unknown' }}\`"
             echo "- bundle duration sec: \`${{ steps.remote.outputs.bundle_duration_sec || 'unknown' }}\`"

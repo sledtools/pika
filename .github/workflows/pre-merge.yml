@@ -256,29 +256,27 @@ jobs:
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
-      - name: Run staged remote pika follow-up lane
+      - name: Run pika follow-up lane
         env:
           PIKA_BUILD_SSH_KEY: ${{ secrets.PIKA_BUILD_SSH_KEY }}
           PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST: ${{ vars.PIKA_BUILD_SSH_HOST }}
         run: |
           set -euo pipefail
-          if [ -z "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}" ]; then
-            echo "error: set repository variable PIKA_BUILD_SSH_HOST for check-pika-followup" >&2
-            exit 2
+          if [ -n "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}" ] && [ -n "${PIKA_BUILD_SSH_KEY:-}" ]; then
+            mkdir -p "$HOME/.ssh"
+            chmod 700 "$HOME/.ssh"
+            host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
+            ssh-keyscan -H "$host" >> "$HOME/.ssh/known_hosts"
+            chmod 600 "$HOME/.ssh/known_hosts"
+            eval "$(ssh-agent -s)"
+            trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
+            ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
+            ./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-followup
+            exit 0
           fi
-          if [ -z "${PIKA_BUILD_SSH_KEY:-}" ]; then
-            echo "error: set repository secret PIKA_BUILD_SSH_KEY for check-pika-followup" >&2
-            exit 2
-          fi
-          mkdir -p "$HOME/.ssh"
-          chmod 700 "$HOME/.ssh"
-          host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
-          ssh-keyscan -H "$host" >> "$HOME/.ssh/known_hosts"
-          chmod 600 "$HOME/.ssh/known_hosts"
-          eval "$(ssh-agent -s)"
-          trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
-          ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
-          ./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-followup
+
+          echo "warning: PIKA_BUILD_SSH_HOST / PIKA_BUILD_SSH_KEY not set; using host-local pre-merge-pika-followup" >&2
+          nix run .#pikaci -- run pre-merge-pika-followup
 
   shadow-pikaci-pre-merge-pika-rust:
     name: check-pika-rust (pikaci)
@@ -961,29 +959,27 @@ jobs:
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
-      - name: Run staged remote OpenClaw E2E lane
+      - name: Run OpenClaw E2E lane
         env:
           PIKA_BUILD_SSH_KEY: ${{ secrets.PIKA_BUILD_SSH_KEY }}
           PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST: ${{ vars.PIKA_BUILD_SSH_HOST }}
         run: |
           set -euo pipefail
-          if [ -z "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}" ]; then
-            echo "error: set repository variable PIKA_BUILD_SSH_HOST for check-pikachat-openclaw-e2e" >&2
-            exit 2
+          if [ -n "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}" ] && [ -n "${PIKA_BUILD_SSH_KEY:-}" ]; then
+            mkdir -p "$HOME/.ssh"
+            chmod 700 "$HOME/.ssh"
+            host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
+            ssh-keyscan -H "$host" >> "$HOME/.ssh/known_hosts"
+            chmod 600 "$HOME/.ssh/known_hosts"
+            eval "$(ssh-agent -s)"
+            trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
+            ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
+            ./scripts/pikaci-staged-linux-remote.sh run pre-merge-pikachat-openclaw-e2e
+            exit 0
           fi
-          if [ -z "${PIKA_BUILD_SSH_KEY:-}" ]; then
-            echo "error: set repository secret PIKA_BUILD_SSH_KEY for check-pikachat-openclaw-e2e" >&2
-            exit 2
-          fi
-          mkdir -p "$HOME/.ssh"
-          chmod 700 "$HOME/.ssh"
-          host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
-          ssh-keyscan -H "$host" >> "$HOME/.ssh/known_hosts"
-          chmod 600 "$HOME/.ssh/known_hosts"
-          eval "$(ssh-agent -s)"
-          trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
-          ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
-          ./scripts/pikaci-staged-linux-remote.sh run pre-merge-pikachat-openclaw-e2e
+
+          echo "warning: PIKA_BUILD_SSH_HOST / PIKA_BUILD_SSH_KEY not set; using host-local pre-merge-pikachat-openclaw-e2e" >&2
+          nix run .#pikaci -- run pre-merge-pikachat-openclaw-e2e
 
   check-fixture:
     name: check-fixture (pikaci)

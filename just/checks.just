@@ -132,6 +132,25 @@ pre-merge-pikachat:
     fi
     echo "pre-merge-pikachat complete"
 
+# Canonical Apple-host-owned bundle for the provisioned mini / future thin triggers.
+apple-host-bundle:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname -s)" != "Darwin" ]] || [[ "$(uname -m)" != "arm64" ]]; then
+        echo "error: apple-host-bundle requires Apple Silicon macOS" >&2
+        exit 1
+    fi
+    if [[ "${PIKA_DEV_SHELL:-}" != "apple-host" ]]; then
+        export PIKA_XCODE_INSTALL_PROMPT="${PIKA_XCODE_INSTALL_PROMPT:-0}"
+        exec nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c just checks::apple-host-bundle
+    fi
+    cargo run -q -p pikaci --bin pikaci -- run pre-merge-pikachat-apple-followup
+    just cli-smoke
+    just openclaw-pikachat-deterministic
+    just desktop-ui-test
+    just ios-ui-test
+    echo "apple-host-bundle complete"
+
 # Deterministic HTTP control-plane contracts (mocked MicroVM spawner).
 pre-merge-agent-contracts:
     #!/usr/bin/env bash

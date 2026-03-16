@@ -106,17 +106,22 @@ final class PikaUITests: XCTestCase {
         XCTFail("Login screen not shown")
     }
 
+    private func swipeLoginScreenUp(_ app: XCUIApplication) {
+        let collectionView = app.collectionViews.firstMatch
+        if collectionView.exists {
+            collectionView.swipeUp()
+        } else {
+            app.swipeUp()
+        }
+    }
+
     private func expandAdvancedLoginOptionsIfNeeded(_ app: XCUIApplication, timeout: TimeInterval = 5) {
         let nostrConnectButton = app.buttons.matching(identifier: "login_nostr_connect_submit").firstMatch
         if nostrConnectButton.exists {
             return
         }
 
-        let advancedCandidates = [
-            app.buttons["Advanced"].firstMatch,
-            app.otherElements["Advanced"].firstMatch,
-            app.staticTexts["Advanced"].firstMatch,
-        ]
+        let advancedButton = app.buttons["Advanced"].firstMatch
         let deadline = Date().addingTimeInterval(timeout)
 
         while Date() < deadline {
@@ -124,15 +129,20 @@ final class PikaUITests: XCTestCase {
                 return
             }
 
-            for candidate in advancedCandidates {
-                if candidate.exists {
-                    candidate.tap()
-                    if nostrConnectButton.waitForExistence(timeout: 1) {
-                        return
-                    }
+            if advancedButton.exists {
+                if !advancedButton.isHittable {
+                    swipeLoginScreenUp(app)
+                    Thread.sleep(forTimeInterval: 0.2)
+                    continue
+                }
+
+                advancedButton.tap()
+                if nostrConnectButton.waitForExistence(timeout: 1) {
+                    return
                 }
             }
 
+            swipeLoginScreenUp(app)
             Thread.sleep(forTimeInterval: 0.1)
         }
     }
@@ -147,7 +157,7 @@ final class PikaUITests: XCTestCase {
                 return
             }
 
-            app.swipeUp()
+            swipeLoginScreenUp(app)
             Thread.sleep(forTimeInterval: 0.2)
         }
     }

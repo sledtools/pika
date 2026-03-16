@@ -952,6 +952,8 @@ fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<(
         "integration_deterministic::agent_http_cli_new_local",
         "integration_deterministic::agent_http_cli_new_idempotent_local",
         "integration_deterministic::agent_http_cli_new_me_recover_local",
+        "integration_deterministic::agent_launch_provisioning_boundary",
+        "integration_deterministic::agent_launch_provisioning_failure_boundary",
     ];
     for selector in expected_host_selectors {
         assert!(
@@ -1246,6 +1248,25 @@ fn pre_merge_fixture_filter_tracks_checked_in_lane_surface() -> Result<()> {
             );
         }
     }
+
+    Ok(())
+}
+
+#[test]
+fn pre_merge_fixture_remote_lane_skips_fork_pull_requests() -> Result<()> {
+    let root = workspace_root();
+    let workflow = fs::read_to_string(root.join(".github/workflows/pre-merge.yml"))?;
+
+    assert!(
+        workflow.contains(
+            "if: needs.detect-changes.outputs.fixture == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)"
+        ),
+        "check-fixture must skip fork pull_request runs because repository secrets are unavailable there"
+    );
+    assert!(
+        workflow.contains("check-fixture: skipped (fork PR; remote secrets unavailable)"),
+        "check-pika summary must treat fork pull_request fixture skips as expected rather than failed required lanes"
+    );
 
     Ok(())
 }

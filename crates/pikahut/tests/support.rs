@@ -9,9 +9,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use nostr_sdk::ToBech32;
 use nostr_sdk::prelude::{Keys, NostrSigner};
 use pika_core::{
-    AppAction, AuthMode, AuthState, BunkerConnectError, BunkerConnectErrorKind,
-    BunkerConnectOutput, CallStatus, ExternalSignerErrorKind, ExternalSignerHandshakeResult,
-    FfiApp,
+    AgentProvisioningPhase, AppAction, AuthMode, AuthState, BunkerConnectError,
+    BunkerConnectErrorKind, BunkerConnectOutput, CallStatus, ExternalSignerErrorKind,
+    ExternalSignerHandshakeResult, FfiApp, Screen,
 };
 use pikahut::config::ProfileName;
 use pikahut::testing::{FixtureHandle, FixtureSpec, TestContext, start_fixture};
@@ -617,6 +617,255 @@ pub fn run_dm_local_profile_override_visibility(context: &TestContext) -> Result
                 })
                 .unwrap_or(false),
             "dm-local profile override leaked into a separate group chat"
+        );
+
+        Ok(())
+    })
+}
+
+// CI-facing readable agent-launch contract: the app sees the launch button, kicks off
+// provisioning through the same FfiApp actions the native shells use, shows meaningful
+// provisioning phases, and lands in the direct chat once the mocked backend reports ready.
+pub fn run_agent_launch_provisioning_success(context: &TestContext) -> Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    with_backend_fixture(context, |fixture| {
+        let relay_url = fixture
+            .relay_url()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| anyhow!("fixture manifest missing relay_url"))?;
+        let moq_url = fixture
+            .manifest()
+            .moq_url
+            .as_deref()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| anyhow!("fixture manifest missing moq_url"))?;
+        let server_url = fixture
+            .server_url()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| anyhow!("fixture manifest missing server_url"))?;
+        let database_url = fixture
+            .manifest()
+            .database_url
+            .as_deref()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| anyhow!("fixture manifest missing database_url"))?;
+
+        let alice_dir = context.state_dir().join("alice");
+        let bob_dir = context.state_dir().join("bob");
+        write_config_with_agent_backend(&alice_dir, &relay_url, &moq_url, &server_url)?;
+        write_config_with_relay(&bob_dir, &relay_url)?;
+
+        let alice_keys = Keys::generate();
+        let alice_npub = alice_keys
+            .public_key()
+            .to_bech32()
+            .context("encode alice npub")?;
+        let alice_nsec = alice_keys
+            .secret_key()
+            .to_bech32()
+            .context("encode alice nsec")?;
+        insert_agent_allowlist_row(&database_url, &alice_npub)?;
+
+        let alice = FfiApp::new(path_arg(&alice_dir), String::new(), String::new());
+        let bob = FfiApp::new(path_arg(&bob_dir), String::new(), String::new());
+
+        alice.dispatch(AppAction::RestoreSession { nsec: alice_nsec });
+        bob.dispatch(AppAction::CreateAccount);
+        wait_until("alice logged in", Duration::from_secs(10), || {
+            matches!(alice.state().auth, AuthState::LoggedIn { .. })
+        })?;
+        wait_until("bob logged in", Duration::from_secs(10), || {
+            matches!(bob.state().auth, AuthState::LoggedIn { .. })
+        })?;
+
+        let bob_npub = match bob.state().auth {
+            AuthState::LoggedIn { npub, .. } => npub,
+            _ => bail!("bob failed to enter logged-in state"),
+        };
+
+        wait_until(
+            "alice sees agent launch button",
+            Duration::from_secs(10),
+            || {
+                alice
+                    .state()
+                    .agent_button
+                    .as_ref()
+                    .map(|button| button.title == "New Agent" && !button.is_busy)
+                    .unwrap_or(false)
+            },
+        )?;
+
+        alice.dispatch(AppAction::EnsureAgent);
+        wait_until(
+            "agent provisioning started",
+            Duration::from_secs(10),
+            || alice.state().agent_provisioning.is_some(),
+        )?;
+        wait_until("agent button marked busy", Duration::from_secs(10), || {
+            alice
+                .state()
+                .agent_button
+                .as_ref()
+                .map(|button| button.is_busy)
+                .unwrap_or(false)
+        })?;
+
+        rewrite_active_agent_identity(
+            &database_url,
+            &alice_npub,
+            &bob_npub,
+            Duration::from_secs(10),
+        )?;
+
+        let phase_history =
+            wait_for_agent_chat_outcome(&alice, &bob_npub, Duration::from_secs(45))?;
+        assert_phase_sequence(
+            &phase_history,
+            &[
+                AgentProvisioningPhase::BootingGuest,
+                AgentProvisioningPhase::WaitingForServiceReady,
+            ],
+        )?;
+
+        let state = alice.state();
+        let chat = state
+            .current_chat
+            .as_ref()
+            .ok_or_else(|| anyhow!("agent launch did not open a chat"))?;
+        anyhow::ensure!(
+            chat.group_name.is_none(),
+            "agent launch should land in a direct chat"
+        );
+        anyhow::ensure!(
+            chat.members.iter().any(|member| member.npub == bob_npub),
+            "agent chat should target the provisioned peer identity"
+        );
+        anyhow::ensure!(
+            state
+                .router
+                .screen_stack
+                .iter()
+                .any(|screen| matches!(screen, Screen::Chat { .. })),
+            "agent launch should leave the app on the chat screen"
+        );
+        anyhow::ensure!(
+            state.agent_provisioning.is_none(),
+            "provisioning state should clear after chat opens"
+        );
+        anyhow::ensure!(
+            !state.busy.starting_agent,
+            "launch busy state should clear after success"
+        );
+
+        Ok(())
+    })
+}
+
+// CI-facing readable agent-launch failure contract: after the launch button is tapped, a backend
+// provisioning failure stays visible in agent_provisioning state instead of collapsing into a
+// toast or disappearing.
+pub fn run_agent_launch_provisioning_failure(context: &TestContext) -> Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    with_backend_fixture(context, |fixture| {
+        let relay_url = fixture
+            .relay_url()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| anyhow!("fixture manifest missing relay_url"))?;
+        let moq_url = fixture
+            .manifest()
+            .moq_url
+            .as_deref()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| anyhow!("fixture manifest missing moq_url"))?;
+        let server_url = fixture
+            .server_url()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| anyhow!("fixture manifest missing server_url"))?;
+        let database_url = fixture
+            .manifest()
+            .database_url
+            .as_deref()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| anyhow!("fixture manifest missing database_url"))?;
+
+        let alice_dir = context.state_dir().join("alice");
+        write_config_with_agent_backend(&alice_dir, &relay_url, &moq_url, &server_url)?;
+
+        let alice_keys = Keys::generate();
+        let alice_npub = alice_keys
+            .public_key()
+            .to_bech32()
+            .context("encode alice npub")?;
+        let alice_nsec = alice_keys
+            .secret_key()
+            .to_bech32()
+            .context("encode alice nsec")?;
+        insert_agent_allowlist_row(&database_url, &alice_npub)?;
+
+        let alice = FfiApp::new(path_arg(&alice_dir), String::new(), String::new());
+        alice.dispatch(AppAction::RestoreSession { nsec: alice_nsec });
+        wait_until("alice logged in", Duration::from_secs(10), || {
+            matches!(alice.state().auth, AuthState::LoggedIn { .. })
+        })?;
+        wait_until(
+            "alice sees agent launch button",
+            Duration::from_secs(10),
+            || {
+                alice
+                    .state()
+                    .agent_button
+                    .as_ref()
+                    .map(|button| button.title == "New Agent" && !button.is_busy)
+                    .unwrap_or(false)
+            },
+        )?;
+
+        alice.dispatch(AppAction::EnsureAgent);
+        wait_until(
+            "agent provisioning entered error state",
+            Duration::from_secs(10),
+            || {
+                alice
+                    .state()
+                    .agent_provisioning
+                    .as_ref()
+                    .map(|prov| prov.phase == AgentProvisioningPhase::Error)
+                    .unwrap_or(false)
+            },
+        )?;
+
+        let state = alice.state();
+        let provisioning = state
+            .agent_provisioning
+            .as_ref()
+            .ok_or_else(|| anyhow!("agent provisioning should stay visible on failure"))?;
+        anyhow::ensure!(
+            provisioning.status_message.contains("Agent request failed"),
+            "expected backend failure message to stay on provisioning screen, got: {}",
+            provisioning.status_message
+        );
+        anyhow::ensure!(
+            state
+                .router
+                .screen_stack
+                .iter()
+                .any(|screen| matches!(screen, Screen::AgentProvisioning)),
+            "provisioning screen should remain visible on launch failure"
+        );
+        anyhow::ensure!(
+            state.current_chat.is_none(),
+            "failed agent launch must not open a chat"
+        );
+        anyhow::ensure!(
+            state.toast.is_none(),
+            "failed agent launch should use provisioning state, not a toast"
+        );
+        anyhow::ensure!(
+            !state.busy.starting_agent,
+            "launch busy state should clear after failure"
         );
 
         Ok(())
@@ -1629,6 +1878,30 @@ fn with_relay_and_moq_fixture(
     Ok(())
 }
 
+fn with_backend_fixture(
+    context: &TestContext,
+    run: impl FnOnce(&FixtureHandle) -> Result<()>,
+) -> Result<()> {
+    let fixture_context = fixture_context(context)?;
+    let fixture = match start_backend(&fixture_context) {
+        Ok(fixture) => fixture,
+        Err(err) => {
+            preserve_fixture_diagnostics(context, fixture_context.state_dir())
+                .context("preserve fixture startup diagnostics")?;
+            return Err(err);
+        }
+    };
+    let result = run(&fixture);
+
+    if let Err(err) = result {
+        preserve_fixture_diagnostics(context, fixture.state_dir())
+            .context("preserve fixture diagnostics after selector failure")?;
+        return Err(err);
+    }
+
+    Ok(())
+}
+
 fn with_relay_fixture(
     context: &TestContext,
     run: impl FnOnce(&FixtureHandle) -> Result<()>,
@@ -1710,6 +1983,22 @@ fn start_relay(context: &TestContext) -> Result<FixtureHandle> {
             &FixtureSpec::builder(ProfileName::Relay).build(),
         ))
         .context("start relay fixture")
+}
+
+fn start_backend(context: &TestContext) -> Result<FixtureHandle> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("create tokio runtime for local agent selector")?;
+    runtime
+        .block_on(start_fixture(
+            context,
+            &FixtureSpec::builder(ProfileName::Backend)
+                .server_port(0)
+                .moq_port(0)
+                .build(),
+        ))
+        .context("start backend fixture")
 }
 
 fn preserve_fixture_diagnostics(context: &TestContext, fixture_state_dir: &Path) -> Result<()> {
@@ -2013,6 +2302,32 @@ fn write_config_with_moq(
     Ok(())
 }
 
+fn write_config_with_agent_backend(
+    data_dir: &Path,
+    relay_url: &str,
+    moq_url: &str,
+    agent_api_url: &str,
+) -> Result<()> {
+    fs::create_dir_all(data_dir)
+        .with_context(|| format!("create config dir {}", data_dir.display()))?;
+    let path = data_dir.join("pika_config.json");
+    let value = serde_json::json!({
+        "disable_network": false,
+        "relay_urls": [relay_url],
+        "key_package_relay_urls": [relay_url],
+        "agent_api_url": agent_api_url,
+        "call_moq_url": moq_url,
+        "call_broadcast_prefix": "pika/calls",
+        "call_audio_backend": "synthetic",
+    });
+    fs::write(
+        &path,
+        serde_json::to_vec(&value).context("serialize config")?,
+    )
+    .with_context(|| format!("write {}", path.display()))?;
+    Ok(())
+}
+
 fn write_config_with_relay(data_dir: &Path, relay_url: &str) -> Result<()> {
     fs::create_dir_all(data_dir)
         .with_context(|| format!("create config dir {}", data_dir.display()))?;
@@ -2082,6 +2397,139 @@ fn wait_until(what: &str, timeout: Duration, mut f: impl FnMut() -> bool) -> Res
         std::thread::sleep(Duration::from_millis(50));
     }
     bail!("{what}: condition not met within {timeout:?}");
+}
+
+fn insert_agent_allowlist_row(database_url: &str, npub: &str) -> Result<()> {
+    let escaped_npub = npub.replace('\'', "''");
+    let sql = format!(
+        "INSERT INTO agent_allowlist (npub, active, note, updated_by, updated_at) \
+         VALUES ('{escaped_npub}', TRUE, 'deterministic', '{escaped_npub}', now()) \
+         ON CONFLICT (npub) DO UPDATE \
+         SET active = EXCLUDED.active, note = EXCLUDED.note, updated_by = EXCLUDED.updated_by, updated_at = now();"
+    );
+    let output = Command::new("psql")
+        .args(["-v", "ON_ERROR_STOP=1", "-d", database_url, "-c", &sql])
+        .output()
+        .context("run psql to upsert agent allowlist")?;
+    if !output.status.success() {
+        bail!(
+            "psql failed upserting agent allowlist row: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
+fn rewrite_active_agent_identity(
+    database_url: &str,
+    owner_npub: &str,
+    agent_npub: &str,
+    timeout: Duration,
+) -> Result<()> {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if update_active_agent_identity(database_url, owner_npub, agent_npub)? {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    bail!("timed out rewriting active agent identity for owner {owner_npub} to {agent_npub}");
+}
+
+fn update_active_agent_identity(
+    database_url: &str,
+    owner_npub: &str,
+    agent_npub: &str,
+) -> Result<bool> {
+    let escaped_owner = owner_npub.replace('\'', "''");
+    let escaped_agent = agent_npub.replace('\'', "''");
+    let sql = format!(
+        "WITH updated AS ( \
+            UPDATE agent_instances \
+            SET agent_id = '{escaped_agent}' \
+            WHERE owner_npub = '{escaped_owner}' AND phase IN ('creating', 'ready') \
+            RETURNING agent_id \
+         ) \
+         SELECT COUNT(*) FROM updated;"
+    );
+    let output = Command::new("psql")
+        .args([
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-d",
+            database_url,
+            "-At",
+            "-c",
+            &sql,
+        ])
+        .output()
+        .context("run psql to rewrite active agent identity")?;
+    if !output.status.success() {
+        bail!(
+            "psql failed rewriting active agent identity: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim() == "1")
+}
+
+fn wait_for_agent_chat_outcome(
+    app: &FfiApp,
+    peer_npub: &str,
+    timeout: Duration,
+) -> Result<Vec<(AgentProvisioningPhase, String)>> {
+    let start = Instant::now();
+    let mut phase_history = Vec::new();
+    let mut last_phase = None;
+    while start.elapsed() < timeout {
+        let state = app.state();
+        if let Some(provisioning) = state.agent_provisioning.as_ref()
+            && last_phase.as_ref() != Some(&provisioning.phase)
+        {
+            phase_history.push((
+                provisioning.phase.clone(),
+                provisioning.status_message.clone(),
+            ));
+            last_phase = Some(provisioning.phase.clone());
+        }
+        let chat_open = state
+            .current_chat
+            .as_ref()
+            .map(|chat| {
+                chat.group_name.is_none()
+                    && chat.members.iter().any(|member| member.npub == peer_npub)
+            })
+            .unwrap_or(false);
+        if chat_open && state.agent_provisioning.is_none() {
+            return Ok(phase_history);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    bail!(
+        "timed out waiting for agent chat outcome; observed provisioning phases: {:?}",
+        phase_history
+    );
+}
+
+fn assert_phase_sequence(
+    history: &[(AgentProvisioningPhase, String)],
+    expected: &[AgentProvisioningPhase],
+) -> Result<()> {
+    let phases = history
+        .iter()
+        .map(|(phase, _)| phase.clone())
+        .collect::<Vec<_>>();
+    let mut cursor = 0usize;
+    for expected_phase in expected {
+        let Some(offset) = phases[cursor..]
+            .iter()
+            .position(|phase| phase == expected_phase)
+        else {
+            bail!("expected provisioning phase {expected_phase:?} in history {history:?}");
+        };
+        cursor += offset + 1;
+    }
+    Ok(())
 }
 
 fn call_stats_snapshot(app: &FfiApp) -> Result<CallStatsSnapshot> {

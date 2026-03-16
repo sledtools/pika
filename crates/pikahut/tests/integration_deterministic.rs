@@ -119,16 +119,22 @@ impl Drop for ScopedEnvVar {
     }
 }
 
-fn spawn_mock_vm_spawner(
-    expected_requests: usize,
+struct MockSpawnerExchange {
+    expected_request_prefix: &'static str,
+    status: &'static str,
+    body: &'static str,
+}
+
+fn spawn_scripted_mock_vm_spawner(
+    script: Vec<MockSpawnerExchange>,
 ) -> Result<(String, thread::JoinHandle<Result<Vec<String>>>)> {
     let listener = TcpListener::bind("127.0.0.1:0").context("bind mock vm-spawner")?;
     let addr = listener.local_addr().context("read mock vm-spawner addr")?;
     let url = format!("http://{}", addr);
 
     let handle = thread::spawn(move || -> Result<Vec<String>> {
-        let mut request_lines = Vec::with_capacity(expected_requests);
-        for _ in 0..expected_requests {
+        let mut request_lines = Vec::with_capacity(script.len());
+        for exchange in script {
             let (mut stream, _) = listener.accept().context("accept spawner request")?;
             stream
                 .set_read_timeout(Some(Duration::from_secs(10)))
@@ -151,6 +157,13 @@ fn spawn_mock_vm_spawner(
             let header_end = header_end.ok_or_else(|| anyhow!("missing HTTP header terminator"))?;
             let header_text = String::from_utf8_lossy(&buf[..header_end]);
             let request_line = header_text.lines().next().unwrap_or_default().to_string();
+            if !request_line.starts_with(exchange.expected_request_prefix) {
+                bail!(
+                    "expected spawner request starting with {:?}, got {:?}",
+                    exchange.expected_request_prefix,
+                    request_line
+                );
+            }
 
             let mut content_length = 0usize;
             for line in header_text.lines().skip(1) {
@@ -171,23 +184,11 @@ fn spawn_mock_vm_spawner(
                 buf.extend_from_slice(&remaining);
             }
 
-            let is_known = request_line.starts_with("POST /vms ")
-                || request_line.starts_with("POST /vms/vm-test-1/recover ")
-                || request_line.starts_with("GET /vms/vm-test-1 ");
-            let (status, body) = if is_known {
-                let body = if request_line.starts_with("POST /vms/vm-test-1/recover ") {
-                    r#"{"id":"vm-test-1","status":"running","guest_ready":true}"#
-                } else {
-                    r#"{"id":"vm-test-1","status":"starting","guest_ready":false}"#
-                };
-                ("200 OK", body)
-            } else {
-                ("404 Not Found", r#"{"error":"unexpected path"}"#)
-            };
-
             let response = format!(
                 "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
+                exchange.body.len(),
+                status = exchange.status,
+                body = exchange.body,
             );
             stream
                 .write_all(response.as_bytes())
@@ -201,6 +202,49 @@ fn spawn_mock_vm_spawner(
     });
 
     Ok((url, handle))
+}
+
+fn spawn_mock_vm_spawner(
+    expected_requests: usize,
+) -> Result<(String, thread::JoinHandle<Result<Vec<String>>>)> {
+    let script = match expected_requests {
+        1 => vec![MockSpawnerExchange {
+            expected_request_prefix: "POST /vms ",
+            status: "200 OK",
+            body: r#"{"id":"vm-test-1","status":"starting","guest_ready":false}"#,
+        }],
+        2 => vec![
+            MockSpawnerExchange {
+                expected_request_prefix: "POST /vms ",
+                status: "200 OK",
+                body: r#"{"id":"vm-test-1","status":"starting","guest_ready":false}"#,
+            },
+            MockSpawnerExchange {
+                expected_request_prefix: "GET /vms/vm-test-1 ",
+                status: "200 OK",
+                body: r#"{"id":"vm-test-1","status":"starting","guest_ready":false}"#,
+            },
+        ],
+        3 => vec![
+            MockSpawnerExchange {
+                expected_request_prefix: "POST /vms ",
+                status: "200 OK",
+                body: r#"{"id":"vm-test-1","status":"starting","guest_ready":false}"#,
+            },
+            MockSpawnerExchange {
+                expected_request_prefix: "GET /vms/vm-test-1 ",
+                status: "200 OK",
+                body: r#"{"id":"vm-test-1","status":"starting","guest_ready":false}"#,
+            },
+            MockSpawnerExchange {
+                expected_request_prefix: "POST /vms/vm-test-1/recover ",
+                status: "200 OK",
+                body: r#"{"id":"vm-test-1","status":"running","guest_ready":true}"#,
+            },
+        ],
+        _ => bail!("unsupported default mock vm-spawner request count: {expected_requests}"),
+    };
+    spawn_scripted_mock_vm_spawner(script)
 }
 
 fn build_nip98_authorization_header(keys: &Keys, method: Method, url: &str) -> Result<String> {
@@ -598,6 +642,84 @@ fn call_with_pikachat_daemon_boundary() -> Result<()> {
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
     support::run_call_with_pikachat_daemon(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
+#[ignore = "deterministic app-facing agent provisioning selector"]
+fn agent_launch_provisioning_boundary() -> Result<()> {
+    let _env_lock = ENV_LOCK.blocking_lock();
+    let _tmpdir_env = ScopedEnvVar::set("TMPDIR", "/tmp");
+    let mut context = TestContext::builder("agent-launch-provisioning")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+
+    let (spawner_url, spawner_thread) = spawn_scripted_mock_vm_spawner(vec![
+        MockSpawnerExchange {
+            expected_request_prefix: "POST /vms ",
+            status: "200 OK",
+            body: r#"{"id":"vm-test-1","status":"starting","guest_ready":false}"#,
+        },
+        MockSpawnerExchange {
+            expected_request_prefix: "GET /vms/vm-test-1 ",
+            status: "200 OK",
+            body: r#"{"id":"vm-test-1","status":"starting","guest_ready":false}"#,
+        },
+        MockSpawnerExchange {
+            expected_request_prefix: "GET /vms/vm-test-1 ",
+            status: "200 OK",
+            body: r#"{"id":"vm-test-1","status":"running","guest_ready":false,"startup_probe_satisfied":false}"#,
+        },
+        MockSpawnerExchange {
+            expected_request_prefix: "GET /vms/vm-test-1 ",
+            status: "200 OK",
+            body: r#"{"id":"vm-test-1","status":"running","guest_ready":true}"#,
+        },
+    ])?;
+    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
+    support::run_agent_launch_provisioning_success(&context)?;
+
+    let spawner_request_lines = spawner_thread
+        .join()
+        .map_err(|_| anyhow!("mock vm-spawner thread panicked"))??;
+    if spawner_request_lines.len() != 4 {
+        bail!(
+            "expected four vm-spawner requests for app-facing provisioning, got: {spawner_request_lines:?}"
+        );
+    }
+
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
+#[ignore = "deterministic app-facing agent provisioning selector"]
+fn agent_launch_provisioning_failure_boundary() -> Result<()> {
+    let _env_lock = ENV_LOCK.blocking_lock();
+    let _tmpdir_env = ScopedEnvVar::set("TMPDIR", "/tmp");
+    let mut context = TestContext::builder("agent-launch-provisioning-failure")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+
+    let (spawner_url, spawner_thread) =
+        spawn_scripted_mock_vm_spawner(vec![MockSpawnerExchange {
+            expected_request_prefix: "POST /vms ",
+            status: "500 Internal Server Error",
+            body: r#"{"error":"spawner down"}"#,
+        }])?;
+    let _spawner_env = ScopedEnvVar::set("PIKA_AGENT_MICROVM_SPAWNER_URL", &spawner_url);
+    support::run_agent_launch_provisioning_failure(&context)?;
+
+    let spawner_request_lines = spawner_thread
+        .join()
+        .map_err(|_| anyhow!("mock vm-spawner thread panicked"))??;
+    if spawner_request_lines.len() != 1 || !spawner_request_lines[0].starts_with("POST /vms ") {
+        bail!(
+            "expected exactly one failing vm-spawner provision request, got: {spawner_request_lines:?}"
+        );
+    }
+
     context.mark_success();
     Ok(())
 }

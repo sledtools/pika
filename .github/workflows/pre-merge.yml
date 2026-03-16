@@ -985,6 +985,89 @@ jobs:
         if: always() && steps.lane.outputs.result != 'success'
         run: exit 1
 
+  check-apple-host-sanity:
+    name: check-apple-host-sanity
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.pikachat == 'true' && (github.event_name == 'pull_request_target' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: apple-host-sanity-${{ vars.PIKACI_APPLE_SSH_HOST || 'default' }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Join Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.PIKACI_APPLE_TAILSCALE_AUTHKEY }}
+          hostname: gha-pikaci-apple-sanity-${{ github.run_id }}
+          ping: ${{ vars.PIKACI_APPLE_SSH_HOST }}
+
+      - name: Run Apple host sanity bundle
+        id: remote
+        env:
+          PIKACI_APPLE_SSH_HOST: ${{ vars.PIKACI_APPLE_SSH_HOST }}
+          PIKACI_APPLE_SSH_USER: ${{ vars.PIKACI_APPLE_SSH_USER }}
+          PIKACI_APPLE_REMOTE_ROOT: ${{ vars.PIKACI_APPLE_REMOTE_ROOT }}
+          PIKACI_APPLE_KEEP_RUNS: ${{ vars.PIKACI_APPLE_KEEP_RUNS }}
+          PIKACI_APPLE_SSH_KEY: ${{ secrets.PIKACI_APPLE_SSH_KEY }}
+        run: |
+          if [ -z "${PIKACI_APPLE_SSH_HOST:-}" ]; then
+            echo "error: set repository variable PIKACI_APPLE_SSH_HOST for the Apple mini sanity lane" >&2
+            exit 2
+          fi
+          if [ -z "${PIKACI_APPLE_SSH_USER:-}" ]; then
+            echo "error: set repository variable PIKACI_APPLE_SSH_USER for the Apple mini sanity lane" >&2
+            exit 2
+          fi
+          if [ -z "${PIKACI_APPLE_SSH_KEY:-}" ]; then
+            echo "error: set repository secret PIKACI_APPLE_SSH_KEY for the Apple mini sanity lane" >&2
+            exit 2
+          fi
+
+          eval "$(ssh-agent -s)"
+          trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
+          ssh-add - <<<"$PIKACI_APPLE_SSH_KEY"
+
+          ./scripts/pikaci-apple-remote.sh run \
+            --ref "${GITHUB_SHA}" \
+            --just-recipe apple-host-sanity \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload Apple host sanity debug bundle
+        if: always() && steps.remote.outputs.artifact_dir != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-host-sanity-${{ github.run_id }}
+          path: ${{ steps.remote.outputs.artifact_dir }}
+          if-no-files-found: error
+
+      - name: Summarize Apple host sanity bundle
+        if: always()
+        run: |
+          {
+            echo "- command: \`./scripts/pikaci-apple-remote.sh run --ref ${GITHUB_SHA} --just-recipe apple-host-sanity\`"
+            echo "- ssh target: \`${{ vars.PIKACI_APPLE_SSH_USER || 'unset' }}@${{ vars.PIKACI_APPLE_SSH_HOST || 'unset' }}\`"
+            echo "- remote root: \`${{ vars.PIKACI_APPLE_REMOTE_ROOT || '.cache/pikaci-apple' }}\`"
+            echo "- run id: \`${{ steps.remote.outputs.run_id || 'none' }}\`"
+            echo "- resolved commit: \`${{ steps.remote.outputs.resolved_commit || 'none' }}\`"
+            echo "- remote run dir: \`${{ steps.remote.outputs.remote_run_dir || 'none' }}\`"
+            echo "- remote prepared dir: \`${{ steps.remote.outputs.remote_prepared_dir || 'none' }}\`"
+            echo "- local artifact dir: \`${{ steps.remote.outputs.artifact_dir || 'none' }}\`"
+            echo "- prepared probe: \`${{ steps.remote.outputs.prepared_probe || 'unknown' }}\`"
+            echo "- upload skipped: \`${{ steps.remote.outputs.upload_skipped || 'unknown' }}\`"
+            echo "- prepare status: \`${{ steps.remote.outputs.prepare_status || 'unknown' }}\`"
+            echo "- prepare duration sec: \`${{ steps.remote.outputs.prepare_duration_sec || 'unknown' }}\`"
+            echo "- bundle duration sec: \`${{ steps.remote.outputs.bundle_duration_sec || 'unknown' }}\`"
+            echo "- remote exit: \`${{ steps.remote.outputs.remote_exit || 'unknown' }}\`"
+            echo "- artifact fetch exit: \`${{ steps.remote.outputs.artifact_fetch_exit || 'unknown' }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   summarize-pikaci-linux-lanes:
     if: always() && (github.event_name == 'pull_request_target' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
     needs:
@@ -1534,23 +1617,6 @@ jobs:
           PIKA_ANDROID_EMULATOR_ARGS="-no-window" \
           nix develop .#default -c just android-ui-e2e-local
 
-  nightly-pika-ui-ios:
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'nightly')
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: nixbuild/nix-quick-install-action@v30
-      - run: nix develop .#default -c just ios-ui-test
-
-  nightly-primal-ios-interop:
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'nightly')
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: nixbuild/nix-quick-install-action@v30
-      - run: nix develop .#default -c just ios-ui-test
-      - run: nix develop .#default -c just nightly-primal-ios-interop
-
   nightly-apple-host-bundle:
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'nightly')
     runs-on: ubuntu-latest
@@ -1596,6 +1662,7 @@ jobs:
 
           ./scripts/pikaci-apple-remote.sh run \
             --ref "${GITHUB_SHA}" \
+            --just-recipe apple-host-bundle \
             --github-output "$GITHUB_OUTPUT"
 
       - name: Upload Apple host debug bundle
@@ -1610,7 +1677,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "- command: \`./scripts/pikaci-apple-remote.sh run --ref ${GITHUB_SHA}\`"
+            echo "- command: \`./scripts/pikaci-apple-remote.sh run --ref ${GITHUB_SHA} --just-recipe apple-host-bundle\`"
             echo "- ssh target: \`${{ vars.PIKACI_APPLE_SSH_USER || 'unset' }}@${{ vars.PIKACI_APPLE_SSH_HOST || 'unset' }}\`"
             echo "- remote root: \`${{ vars.PIKACI_APPLE_REMOTE_ROOT || '.cache/pikaci-apple' }}\`"
             echo "- run id: \`${{ steps.remote.outputs.run_id || 'none' }}\`"
@@ -1629,7 +1696,7 @@ jobs:
 
   nightly:
     if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'nightly'))
-    needs: [nightly-linux, nightly-pika, nightly-pikachat, nightly-pika-ui-android, nightly-pika-ui-ios, nightly-primal-ios-interop, nightly-apple-host-bundle]
+    needs: [nightly-linux, nightly-pika, nightly-pikachat, nightly-pika-ui-android, nightly-apple-host-bundle]
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -1653,14 +1720,6 @@ jobs:
           if [[ "${{ needs.nightly-pika-ui-android.result }}" != "success" ]]; then
             echo "nightly-pika-ui-android failed"
             failed="${failed}- **nightly-pika-ui-android**: ${{ needs.nightly-pika-ui-android.result }}\n"
-          fi
-          if [[ "${{ needs.nightly-pika-ui-ios.result }}" != "success" ]]; then
-            echo "nightly-pika-ui-ios failed"
-            failed="${failed}- **nightly-pika-ui-ios**: ${{ needs.nightly-pika-ui-ios.result }}\n"
-          fi
-          if [[ "${{ needs.nightly-primal-ios-interop.result }}" != "success" ]]; then
-            echo "nightly-primal-ios-interop failed"
-            failed="${failed}- **nightly-primal-ios-interop**: ${{ needs.nightly-primal-ios-interop.result }}\n"
           fi
           if [[ "${{ needs.nightly-apple-host-bundle.result }}" != "success" ]]; then
             echo "nightly-apple-host-bundle failed"

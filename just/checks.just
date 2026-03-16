@@ -132,7 +132,23 @@ pre-merge-pikachat:
     fi
     echo "pre-merge-pikachat complete"
 
-# Canonical Apple-host-owned bundle for the provisioned mini / future thin triggers.
+# Canonical pre-merge Apple-host sanity bundle for the provisioned mini.
+apple-host-sanity:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname -s)" != "Darwin" ]] || [[ "$(uname -m)" != "arm64" ]]; then
+        echo "error: apple-host-sanity requires Apple Silicon macOS" >&2
+        exit 1
+    fi
+    if [[ "${PIKA_DEV_SHELL:-}" != "apple-host" ]]; then
+        export PIKA_XCODE_INSTALL_PROMPT="${PIKA_XCODE_INSTALL_PROMPT:-0}"
+        exec nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c just apple-host-sanity
+    fi
+    cargo run -q -p pikaci --bin pikaci -- run pre-merge-pikachat-apple-followup
+    just desktop-ui-test
+    echo "apple-host-sanity complete"
+
+# Canonical nightly Apple-host bundle for the provisioned mini / future thin triggers.
 apple-host-bundle:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -142,16 +158,15 @@ apple-host-bundle:
     fi
     if [[ "${PIKA_DEV_SHELL:-}" != "apple-host" ]]; then
         export PIKA_XCODE_INSTALL_PROMPT="${PIKA_XCODE_INSTALL_PROMPT:-0}"
-        exec nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c just checks::apple-host-bundle
+        exec nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c just apple-host-bundle
     fi
-    cargo clippy -p pikachat -- -D warnings
-    cargo clippy -p pikachat-sidecar -- -D warnings
-    just desktop-e2e-local
-    npx --yes tsx --test pikachat-openclaw/openclaw/extensions/pikachat-openclaw/src/channel-behavior.test.ts
+    just apple-host-sanity
     just cli-smoke
     just openclaw-pikachat-deterministic
+    just shared-runtime-regression
     just desktop-ui-test
     just ios-ui-test
+    just nightly-primal-ios-interop
     echo "apple-host-bundle complete"
 
 # Deterministic HTTP control-plane contracts (mocked MicroVM spawner).

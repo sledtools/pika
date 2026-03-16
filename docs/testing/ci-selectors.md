@@ -27,6 +27,7 @@ This document defines the selector-first contract and current policy ownership f
 | Lane / recipe | Canonical contract |
 | --- | --- |
 | `pre-merge-pikachat` | `integration_deterministic::cli_smoke_local`, `integration_deterministic::ui_e2e_local_desktop`, `integration_deterministic::post_rebase_invalid_event_rejection_boundary`, `integration_deterministic::post_rebase_logout_session_convergence_boundary`, and all `openclaw-pikachat-deterministic` selectors. On Apple Silicon, the checked-in lane now composes staged Linux `pre-merge-pikachat-rust` plus the explicit `pikaci` target `pre-merge-pikachat-apple-followup`, which owns the remaining Apple-host `pikachat`/`pikachat-sidecar` clippy plus desktop/TypeScript follow-up work. |
+| `check-apple-host-sanity` | `just apple-host-sanity` on the Mac mini via `./scripts/pikaci-apple-remote.sh run --just-recipe apple-host-sanity`. This is the narrow blocking Mac sanity lane: `pre-merge-pikachat-apple-followup` plus `just desktop-ui-test`. |
 | `pre-merge-agent-contracts` | `integration_deterministic::agent_http_ensure_local`, `integration_deterministic::agent_http_cli_new_local`, `integration_deterministic::agent_http_cli_new_idempotent_local`, `integration_deterministic::agent_http_cli_new_me_recover_local`, `integration_deterministic::agent_launch_provisioning_boundary`, `integration_deterministic::agent_launch_provisioning_failure_boundary`, and `integration_deterministic::agent_launch_first_reply_boundary`. |
 | Path-scoped heavy OpenClaw lane (`check-pikachat-openclaw-e2e`) | `integration_openclaw::openclaw_gateway_e2e` |
 
@@ -37,8 +38,7 @@ This document defines the selector-first contract and current policy ownership f
 | `nightly-pika-e2e` | `integration_deterministic::call_over_local_moq_relay_boundary`, `integration_deterministic::call_with_pikachat_daemon_boundary`, `integration_deterministic::cli_smoke_media_local` |
 | `nightly-pikachat` | `integration_openclaw::openclaw_gateway_e2e` |
 | `nightly-pika-ui-android` | Android bot/media fixture selector via `integration_deterministic::ui_e2e_local_android` |
-| `nightly-pika-ui-ios` | retained non-selector iOS XCTest lane via `just ios-ui-test`; fixture-backed bot/media UI flows remain manual-only under `ios-ui-e2e-local` |
-| `nightly-primal-ios-interop` | retained non-selector iOS XCTest lane via `just ios-ui-test`, plus `integration_primal::primal_nostrconnect_smoke`; fixture-backed bot/media UI flows remain manual-only under `ios-ui-e2e-local` |
+| `nightly-apple-host-bundle` | `just apple-host-bundle` on the Mac mini via `./scripts/pikaci-apple-remote.sh run --just-recipe apple-host-bundle`. This owns the retained heavy Apple coverage: `just ios-ui-test`, `just nightly-primal-ios-interop`, `just shared-runtime-regression`, `just openclaw-pikachat-deterministic`, and the narrower `apple-host-sanity` subset. |
 
 ## Direct Selector Recipes (Not Owners By Themselves)
 
@@ -66,14 +66,14 @@ This document defines the selector-first contract and current policy ownership f
 
 - `just pre-merge` and `just nightly` are repo-level aggregates, not canonical policy definitions.
 - `just e2e-local-relay` is a convenience bundle for the iOS + Android local UI recipes; it is not a CI lane contract.
-- `just shared-runtime-regression` is an advisory rerun set for shared-runtime changes, not a standing lane.
-- `just desktop-ui-test` is a desktop package-test/developer smoke entrypoint, not the selector-owned desktop local UI contract.
+- `just shared-runtime-regression` is a direct rerun entrypoint, but standing CI ownership now sits with `nightly-apple-host-bundle`.
+- `just desktop-ui-test` is a direct rerun entrypoint, but standing CI ownership now sits with `check-apple-host-sanity`.
 - `just pre-merge-apple-deterministic` is a checked-in Tart/`pikaci` entrypoint, but it is not part of current GitHub pre-merge enforcement.
 
 ## Deferred Root CI / `pikaci` Mismatches
 
-- On Apple Silicon, `just pre-merge-pikachat` is now explicitly composed from staged Linux `pre-merge-pikachat-rust` plus the `pikaci` target `pre-merge-pikachat-apple-followup`, which owns the remaining Apple-host clippy + desktop/TypeScript work. The next follow-up there is Apple-host execution provisioning/long-term ownership, not clarifying the split shape again.
-- `nightly-pika-ui-ios` is CI-owned only through `just ios-ui-test`; the local-fixture selector `ios-ui-e2e-local` remains manual-only and should not be described as nightly-owned.
+- On Apple Silicon, `just pre-merge-pikachat` remains explicitly composed from staged Linux `pre-merge-pikachat-rust` plus the `pikaci` target `pre-merge-pikachat-apple-followup`, while the separate `check-apple-host-sanity` lane owns the narrow blocking Mac mini sanity contract.
+- The retained heavy Apple coverage now lives under `nightly-apple-host-bundle`; the local-fixture selector `ios-ui-e2e-local` remains manual-only and should not be described as nightly-owned.
 
 ## Policy Notes
 

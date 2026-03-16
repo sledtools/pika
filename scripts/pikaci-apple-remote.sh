@@ -10,7 +10,7 @@ Usage:
 Thin remote wrapper for the mini-owned Apple-host bundle. The wrapper sends an exact
 git bundle for one source ref to the Mac mini, imports it into a remote bare mirror,
 materializes or reuses a prepared detached worktree keyed by commit, and runs
-`just checks::apple-host-bundle` from that prepared checkout.
+one checked-in `just` recipe from that prepared checkout.
 
 Commands:
   prepare               Import one exact ref and prewarm the prepared Apple checkout.
@@ -25,6 +25,8 @@ Options:
   --remote-root DIR      Remote root on the mini. Absolute or relative to remote HOME.
                          Default: $PIKACI_APPLE_REMOTE_ROOT or .cache/pikaci-apple
   --artifact-dir DIR     Local artifact dir. Default: .pikaci/apple-remote/<run-id>
+  --just-recipe RECIPE   Recipe to run for `run`. Default: $PIKACI_APPLE_JUST_RECIPE
+                         or apple-host-bundle
   --keep-runs N          Keep at most N remote run dirs. Default: $PIKACI_APPLE_KEEP_RUNS or 3
   --keep-prepared N      Keep at most N prepared commit dirs. Default: $PIKACI_APPLE_KEEP_PREPARED or 2
   --lock-timeout-sec N   Wait up to N seconds for the remote host lock before failing.
@@ -65,6 +67,7 @@ ssh_user="${PIKACI_APPLE_SSH_USER:-}"
 ssh_binary="${PIKACI_APPLE_SSH_BINARY:-ssh}"
 remote_root="${PIKACI_APPLE_REMOTE_ROOT:-.cache/pikaci-apple}"
 artifact_dir=""
+just_recipe="${PIKACI_APPLE_JUST_RECIPE:-apple-host-bundle}"
 keep_runs="${PIKACI_APPLE_KEEP_RUNS:-3}"
 keep_prepared="${PIKACI_APPLE_KEEP_PREPARED:-2}"
 lock_timeout_sec="${PIKACI_APPLE_LOCK_TIMEOUT_SEC:-0}"
@@ -98,6 +101,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --artifact-dir)
       artifact_dir="${2:?missing value for --artifact-dir}"
+      shift 2
+      ;;
+    --just-recipe)
+      just_recipe="${2:?missing value for --just-recipe}"
       shift 2
       ;;
     --keep-runs)
@@ -290,6 +297,7 @@ REMOTE_PREPARED_DIR=${remote_prepared_dir}
 KEEP_RUNS=${keep_runs}
 KEEP_PREPARED=${keep_prepared}
 LOCK_TIMEOUT_SEC=${lock_timeout_sec}
+JUST_RECIPE=${just_recipe}
 EOF
 
 "$ssh_binary" "$ssh_target" "mkdir -p $(shell_quote "$remote_run_dir")"
@@ -300,7 +308,7 @@ run_remote_operation() {
   local remote_exit_local
   set +e
   "$ssh_binary" "$ssh_target" \
-    "bash -s -- $(printf '%q' "$resolved_remote_root") $(printf '%q' "$command") $(printf '%q' "$run_id") $(printf '%q' "$bundle_ref") $(printf '%q' "$resolved_commit") $(printf '%q' "$keep_runs") $(printf '%q' "$keep_prepared") $(printf '%q' "$lock_timeout_sec") $(printf '%q' "$prepared_schema_version") $(printf '%q' "$skip_source_import")" \
+    "bash -s -- $(printf '%q' "$resolved_remote_root") $(printf '%q' "$command") $(printf '%q' "$run_id") $(printf '%q' "$bundle_ref") $(printf '%q' "$resolved_commit") $(printf '%q' "$keep_runs") $(printf '%q' "$keep_prepared") $(printf '%q' "$lock_timeout_sec") $(printf '%q' "$prepared_schema_version") $(printf '%q' "$skip_source_import") $(printf '%q' "$just_recipe")" \
     2>&1 <<'REMOTE_RUN' | tee -a "$local_log"
 set -euo pipefail
 
@@ -314,6 +322,7 @@ keep_prepared="$7"
 lock_timeout_sec="$8"
 prepared_schema_version="$9"
 skip_source_import="${10}"
+just_recipe="${11}"
 
 run_dir="${resolved_remote_root}/runs/${run_id}"
 bundle_path="${run_dir}/source.bundle"
@@ -530,11 +539,11 @@ if [[ "$command" == "run" ]]; then
   fi
   export PIKA_XCODE_INSTALL_PROMPT=0
   export CARGO_TARGET_DIR="$shared_target_dir"
-  nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c just checks::apple-host-bundle
+  nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c just "$just_recipe"
   bundle_exit=$?
   set -e
   bundle_duration_sec="$(( $(date +%s) - bundle_started_at ))"
-  printf '%s\n' "just checks::apple-host-bundle" > "${artifacts_dir}/bundle-command.txt"
+  printf '%s\n' "just --unstable ${just_recipe}" > "${artifacts_dir}/bundle-command.txt"
   printf '%s\n' "$bundle_duration_sec" > "${artifacts_dir}/bundle_duration_sec.txt"
   printf '%s\n' "$bundle_exit" > "${artifacts_dir}/exit_code.txt"
 else

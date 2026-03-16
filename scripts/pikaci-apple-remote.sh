@@ -574,16 +574,18 @@ if [[ "$upload_skipped" -ne 1 ]]; then
 fi
 
 remote_exit=0
-if ! run_remote_operation "$upload_skipped"; then
+if run_remote_operation "$upload_skipped"; then
+  remote_exit=0
+else
   remote_exit=$?
   if [[ "$remote_exit" -eq 86 ]] && [[ "$upload_skipped" -eq 1 ]]; then
     prepared_probe="prepared-hit-fallback"
     upload_skipped=0
     upload_source_bundle
-    if ! run_remote_operation 0; then
-      remote_exit=$?
-    else
+    if run_remote_operation 0; then
       remote_exit=0
+    else
+      remote_exit=$?
     fi
   fi
 fi

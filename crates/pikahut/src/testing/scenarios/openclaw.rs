@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -140,6 +140,42 @@ fn write_openclaw_buildstamp(openclaw_dir: &Path, git_head: Option<&str>) -> Res
     fs::write(&stamp_path, format!("{}\n", serde_json::to_string(&stamp)?))
         .with_context(|| format!("write {}", stamp_path.display()))?;
     Ok(())
+}
+
+fn write_pnpm_shim(bin_dir: &Path) -> Result<PathBuf> {
+    fs::create_dir_all(bin_dir)
+        .with_context(|| format!("create OpenClaw tool shim dir {}", bin_dir.display()))?;
+    let shim_path = bin_dir.join("pnpm");
+    let script = "#!/bin/sh\nset -eu\nexec npx --yes pnpm@10 \"$@\"\n";
+    fs::write(&shim_path, script)
+        .with_context(|| format!("write OpenClaw pnpm shim {}", shim_path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut perms = fs::metadata(&shim_path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&shim_path, perms)?;
+    }
+    Ok(shim_path)
+}
+
+fn openclaw_runtime_env(context: &TestContext) -> Result<BTreeMap<String, String>> {
+    let mut env = BTreeMap::new();
+    if super::common::command_exists("pnpm") {
+        return Ok(env);
+    }
+
+    let shim_dir = context.state_dir().join("openclaw-tools/bin");
+    let _shim = write_pnpm_shim(&shim_dir)?;
+    let path = match std::env::var_os("PATH") {
+        Some(existing) if !existing.is_empty() => {
+            format!("{}:{}", shim_dir.display(), existing.to_string_lossy())
+        }
+        _ => shim_dir.to_string_lossy().to_string(),
+    };
+    env.insert("PATH".to_string(), path);
+    Ok(env)
 }
 
 fn ensure_openclaw_runtime_ready(
@@ -294,6 +330,7 @@ pub async fn run_openclaw_e2e(args: OpenclawE2eRequest) -> Result<ScenarioRunOut
 
     let runner = CommandRunner::new(&context);
     let mut command_outcomes = Vec::new();
+    let openclaw_runtime_env = openclaw_runtime_env(&context)?;
 
     let sidecar_cmd = if let Ok(binary) = std::env::var(PIKACHAT_BIN_ENV) {
         binary
@@ -398,6 +435,7 @@ pub async fn run_openclaw_e2e(args: OpenclawE2eRequest) -> Result<ScenarioRunOut
     let mut gateway = runner.spawn(
         &CommandSpec::node()
             .cwd(&openclaw_dir)
+            .envs(openclaw_runtime_env)
             .env(
                 "OPENCLAW_STATE_DIR",
                 openclaw_state_dir.to_string_lossy().to_string(),
@@ -493,7 +531,27 @@ pub async fn run_openclaw_e2e(args: OpenclawE2eRequest) -> Result<ScenarioRunOut
 
 #[cfg(test)]
 mod tests {
-    use super::openclaw_runtime_needs_prebuild;
+    use std::fs;
+    use std::process::Command;
+
+    use super::{openclaw_runtime_needs_prebuild, write_pnpm_shim};
+
+    fn has_node() -> bool {
+        Command::new("node")
+            .arg("--version")
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    fn node_bin() -> String {
+        let output = Command::new("sh")
+            .args(["-c", "command -v node"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
 
     #[test]
     fn runtime_needs_prebuild_when_dist_entry_is_missing() {
@@ -530,5 +588,89 @@ mod tests {
             dir.path(),
             Some("new-head")
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pnpm_shim_makes_openclaw_tsdown_build_fallback_work_without_real_pnpm() {
+        if !has_node() {
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo_dir = dir.path().join("openclaw");
+        let scripts_dir = repo_dir.join("scripts");
+        let fake_bin_dir = dir.path().join("fake-bin");
+        let shim_bin_dir = dir.path().join("shim-bin");
+        let npx_log = dir.path().join("npx.log");
+        let node_bin = node_bin();
+
+        fs::create_dir_all(&scripts_dir).unwrap();
+        fs::create_dir_all(&fake_bin_dir).unwrap();
+
+        fs::write(
+            scripts_dir.join("tsdown-build.mjs"),
+            r#"#!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+const result = spawnSync(
+  "pnpm",
+  ["exec", "tsdown", "--config-loader", "unrun", "--logLevel", "warn", ...process.argv.slice(2)],
+  { stdio: "inherit", shell: process.platform === "win32" },
+);
+if (typeof result.status === "number") {
+  process.exit(result.status);
+}
+process.exit(1);
+"#,
+        )
+        .unwrap();
+
+        fs::write(
+            fake_bin_dir.join("npx"),
+            format!(
+                "#!/bin/sh\nset -eu\nprintf '%s\n' \"$@\" > {}\n",
+                npx_log.display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut perms = fs::metadata(fake_bin_dir.join("npx"))
+                .unwrap()
+                .permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(fake_bin_dir.join("npx"), perms).unwrap();
+        }
+
+        let failed = Command::new(&node_bin)
+            .arg("scripts/tsdown-build.mjs")
+            .arg("--no-clean")
+            .current_dir(&repo_dir)
+            .env("PATH", &fake_bin_dir)
+            .output()
+            .unwrap();
+        assert!(!failed.status.success());
+
+        write_pnpm_shim(&shim_bin_dir).unwrap();
+        let success = Command::new(&node_bin)
+            .arg("scripts/tsdown-build.mjs")
+            .arg("--no-clean")
+            .current_dir(&repo_dir)
+            .env(
+                "PATH",
+                format!("{}:{}", shim_bin_dir.display(), fake_bin_dir.display()),
+            )
+            .output()
+            .unwrap();
+        assert!(success.status.success());
+
+        let recorded = fs::read_to_string(&npx_log).unwrap();
+        assert!(recorded.contains("--yes"));
+        assert!(recorded.contains("pnpm@10"));
+        assert!(recorded.contains("exec"));
+        assert!(recorded.contains("tsdown"));
+        assert!(recorded.contains("--no-clean"));
     }
 }

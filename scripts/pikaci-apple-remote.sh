@@ -290,9 +290,11 @@ ensure_prepared_checkout() {
 
   cd "$prepared_worktree_dir"
   git reset --hard "$resolved_commit" >/dev/null
-  git clean -fdx -e .pikaci -e ios/build -e target >/dev/null
+  git clean -fdx -e ios/build -e target >/dev/null
   rm -rf target
   ln -s "$shared_target_dir" target
+  # Keep reusable build outputs, but scrub run-local state before every operation.
+  rm -rf .pikaci ios/build/Logs/Test
 
   if [[ ! -f "$prepared_marker" ]]; then
     should_prewarm=1

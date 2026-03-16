@@ -257,7 +257,7 @@ jobs:
 
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          key: ${{ github.repository }}-${{ github.event_name == 'pull_request_target' && 'pr-head' || 'trusted' }}-nix-v1-${{ runner.os }}
           path: /nix
       - name: Fix /nix ownership
         run: |
@@ -268,7 +268,7 @@ jobs:
 
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-pikaci-cache-v1-${{ runner.os }}
+          key: ${{ github.repository }}-${{ github.event_name == 'pull_request_target' && 'pr-head' || 'trusted' }}-pikaci-cache-v1-${{ runner.os }}
           path: .pikaci/cache
       - name: Fix .pikaci ownership
         run: |
@@ -278,7 +278,7 @@ jobs:
 
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-gradle-v1-${{ runner.os }}
+          key: ${{ github.repository }}-${{ github.event_name == 'pull_request_target' && 'pr-head' || 'trusted' }}-gradle-v1-${{ runner.os }}
           path: ~/.gradle
 
       - run: ./scripts/pikaci-ci-run.sh pre-merge-pika-followup
@@ -305,7 +305,7 @@ jobs:
 
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          key: ${{ github.repository }}-${{ github.event_name == 'pull_request_target' && 'pr-head' || 'trusted' }}-nix-v1-${{ runner.os }}
           path: /nix
       - name: Fix /nix ownership
         run: |
@@ -425,7 +425,7 @@ jobs:
 
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          key: ${{ github.repository }}-${{ github.event_name == 'pull_request_target' && 'pr-head' || 'trusted' }}-nix-v1-${{ runner.os }}
           path: /nix
       - name: Fix /nix ownership
         run: |
@@ -545,7 +545,7 @@ jobs:
 
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          key: ${{ github.repository }}-${{ github.event_name == 'pull_request_target' && 'pr-head' || 'trusted' }}-nix-v1-${{ runner.os }}
           path: /nix
       - name: Fix /nix ownership
         run: |
@@ -665,7 +665,7 @@ jobs:
 
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          key: ${{ github.repository }}-${{ github.event_name == 'pull_request_target' && 'pr-head' || 'trusted' }}-nix-v1-${{ runner.os }}
           path: /nix
       - name: Fix /nix ownership
         run: |
@@ -785,7 +785,7 @@ jobs:
 
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          key: ${{ github.repository }}-${{ github.event_name == 'pull_request_target' && 'pr-head' || 'trusted' }}-nix-v1-${{ runner.os }}
           path: /nix
       - name: Fix /nix ownership
         run: |
@@ -990,7 +990,7 @@ jobs:
 
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          key: ${{ github.repository }}-${{ github.event_name == 'pull_request_target' && 'pr-head' || 'trusted' }}-nix-v1-${{ runner.os }}
           path: /nix
       - name: Fix /nix ownership
         run: |
@@ -1041,7 +1041,7 @@ jobs:
 
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          key: ${{ github.repository }}-${{ github.event_name == 'pull_request_target' && 'pr-head' || 'trusted' }}-nix-v1-${{ runner.os }}
           path: /nix
       - name: Fix /nix ownership
         run: |
@@ -1162,7 +1162,7 @@ jobs:
 
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          key: ${{ github.repository }}-trusted-nix-v1-${{ runner.os }}
           path: /nix
       - name: Fix /nix ownership
         run: |
@@ -1173,11 +1173,11 @@ jobs:
 
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
+          key: ${{ github.repository }}-trusted-cargo-home-v1-${{ runner.os }}
           path: ~/.cargo
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
+          key: ${{ github.repository }}-trusted-cargo-target-v1-${{ runner.os }}
           path: target
 
       - run: nix develop .#default -c just rmp-nightly-linux
@@ -1190,7 +1190,7 @@ jobs:
 
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          key: ${{ github.repository }}-trusted-nix-v1-${{ runner.os }}
           path: /nix
       - name: Fix /nix ownership
         run: |
@@ -1201,11 +1201,11 @@ jobs:
 
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
+          key: ${{ github.repository }}-trusted-cargo-home-v1-${{ runner.os }}
           path: ~/.cargo
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
+          key: ${{ github.repository }}-trusted-cargo-target-v1-${{ runner.os }}
           path: target
 
       - run: nix develop .#default -c just nightly-pika-e2e
@@ -1223,7 +1223,7 @@ jobs:
 
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          key: ${{ github.repository }}-trusted-nix-v1-${{ runner.os }}
           path: /nix
       - name: Fix /nix ownership
         run: |
@@ -1234,11 +1234,11 @@ jobs:
 
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
+          key: ${{ github.repository }}-trusted-cargo-home-v1-${{ runner.os }}
           path: ~/.cargo
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
+          key: ${{ github.repository }}-trusted-cargo-target-v1-${{ runner.os }}
           path: target
 
       - run: OPENCLAW_DIR=openclaw nix develop .#default -c just nightly-pikachat
@@ -1251,7 +1251,7 @@ jobs:
 
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-nix-v1-${{ runner.os }}
+          key: ${{ github.repository }}-trusted-nix-v1-${{ runner.os }}
           path: /nix
       - name: Fix /nix ownership
         run: |
@@ -1262,16 +1262,16 @@ jobs:
 
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-cargo-home-v1-${{ runner.os }}
+          key: ${{ github.repository }}-trusted-cargo-home-v1-${{ runner.os }}
           path: ~/.cargo
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-cargo-target-v1-${{ runner.os }}
+          key: ${{ github.repository }}-trusted-cargo-target-v1-${{ runner.os }}
           path: target
 
       - uses: useblacksmith/stickydisk@v1
         with:
-          key: ${{ github.repository }}-gradle-v1-${{ runner.os }}
+          key: ${{ github.repository }}-trusted-gradle-v1-${{ runner.os }}
           path: ~/.gradle
 
       - run: |

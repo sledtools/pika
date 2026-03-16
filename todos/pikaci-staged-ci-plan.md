@@ -1427,9 +1427,17 @@ We have at least one important Linux Rust lane where:
             - `pull_request_target` pre-merge jobs now write `pr-head` `stickydisk` caches for `/nix`, `.pikaci/cache`, and `~/.gradle`,
             - nightly/trusted jobs now consume separate `trusted` cache keys instead of the old repo-wide shared keys,
             - so an approved PR can no longer leave cache state behind for a later auto-run trusted/nightly job to consume without another approval boundary,
-          - required remote jobs no longer have fork-only skip branches in either the job `if:` logic or the final `pre-merge` summary gate,
-          - `check-pikachat-openclaw-e2e` no longer falls back to a runner-local host path when remote secrets are unavailable; it now stays a single remote-`pika-build` check contract like fixture,
-          - and the workflow now checks out the PR head explicitly with `persist-credentials: false`, so the approval-based path still evaluates the submitted code rather than silently testing the base branch,
+      - required remote jobs no longer have fork-only skip branches in either the job `if:` logic or the final `pre-merge` summary gate,
+      - `check-pikachat-openclaw-e2e` no longer falls back to a runner-local host path when remote secrets are unavailable; it now stays a single remote-`pika-build` check contract like fixture,
+      - and the workflow now checks out the PR head explicitly with `persist-credentials: false`, so the approval-based path still evaluates the submitted code rather than silently testing the base branch,
+      - Linux `pikaci` is now the authoritative Linux CI path in `.github/workflows/pre-merge.yml`:
+        - the old migration-era `shadow-pikaci-*` jobs were promoted to required/authoritative `check-* (pikaci)` jobs for `pre-merge-pika-rust`, `pre-merge-pikachat-rust`, `pre-merge-agent-contracts`, `pre-merge-rmp`, and `pre-merge-notifications`,
+        - those jobs now collect their run metadata/debug bundle and then fail the workflow when the underlying `pikaci` lane fails instead of always exiting 0 as advisory signal,
+        - the separate summary job and the final `pre-merge` aggregator now report those lanes as required Linux CI rather than as shadow/advisory comparisons,
+        - and the migration-era advisory/shadow phase for real Linux `pikaci` lanes is over,
+      - the only explicitly deferred Linux debt before the final Android pass is still `pre-merge-pika-followup`:
+        - it remains host-local on the GitHub runner because the Android offline Gradle plugin/dependency closure is still unstaged,
+        - but that runtime exception no longer changes the fact that Linux `pikaci` is the authoritative Linux CI surface overall,
       - path to full Linux runtime unification from here:
         - either stage a reproducible offline Android Gradle dependency closure for `:app:compileDebugAndroidTestKotlin`,
         - or narrow the required followup lane contract so it no longer depends on that unstaged online Android build step.

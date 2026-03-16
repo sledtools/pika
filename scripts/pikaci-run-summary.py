@@ -15,7 +15,7 @@ from pathlib import Path
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Summarize the latest pikaci shadow run and optionally stage a small "
+            "Summarize the latest pikaci run and optionally stage a small "
             "artifact bundle for GitHub."
         )
     )
@@ -52,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--artifact-dir",
-        help="Directory to stage a compact shadow-run artifact bundle into.",
+        help="Directory to stage a compact run artifact bundle into.",
     )
     return parser.parse_args()
 
@@ -82,6 +82,8 @@ class JobSummary:
 
 def load_run_record(run_json: Path) -> dict:
     return json.loads(run_json.read_text())
+
+
 def find_latest_run(
     state_root: Path,
     target_id: str,
@@ -133,7 +135,7 @@ def main() -> int:
         )
     if run_json is None or not run_json.exists():
         markdown = (
-            "### Advisory staged Linux Rust shadow lane\n\n"
+            "### Pikaci Linux lane\n\n"
             "- run id: `none`\n"
             "- target: `{}`\n"
             "- result: `unavailable`\n"
@@ -179,7 +181,7 @@ def main() -> int:
         )
 
     markdown_lines = [
-        "### Advisory staged Linux Rust shadow lane",
+        "### Pikaci Linux lane",
         "",
         f"- run id: `{run_id}`",
         f"- target: `{run.get('target_id', args.target_id)}`",
@@ -214,7 +216,7 @@ def main() -> int:
             handle.write(
                 f"run_duration_seconds={'' if run_duration is None else run_duration}\n"
             )
-            handle.write(f"artifact_name=pikaci-shadow-{run_id}\n")
+            handle.write(f"artifact_name=pikaci-run-{run_id}\n")
 
     if args.artifact_dir:
         artifact_dir = Path(args.artifact_dir)

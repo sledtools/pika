@@ -968,7 +968,7 @@ jobs:
   check-fixture:
     name: check-fixture (pikaci)
     needs: [detect-changes]
-    if: needs.detect-changes.outputs.fixture == 'true'
+    if: needs.detect-changes.outputs.fixture == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: blacksmith-16vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
@@ -1035,6 +1035,7 @@ jobs:
           echo "  rmp=${{ needs.detect-changes.outputs.rmp }}"
           echo "  notifications=${{ needs.detect-changes.outputs.notifications }}"
           echo "  fixture=${{ needs.detect-changes.outputs.fixture }}"
+          echo "  fixture_remote_enabled=${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}"
 
           check_required_job() {
             local label="$1"
@@ -1071,7 +1072,11 @@ jobs:
           echo "Required pre-merge lanes:"
           check_required_job "check-pika-followup" "${{ needs.detect-changes.outputs.pika }}" "${{ needs.check-pika.result }}"
           check_required_job "check-pikachat-openclaw-e2e" "${{ needs.detect-changes.outputs.pikachat_openclaw_e2e }}" "${{ needs.check-pikachat-openclaw-e2e.result }}"
-          check_required_job "check-fixture" "${{ needs.detect-changes.outputs.fixture }}" "${{ needs.check-fixture.result }}"
+          if [[ "${{ needs.detect-changes.outputs.fixture }}" == "true" && "${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}" == "true" ]]; then
+            echo "check-fixture: skipped (fork PR; remote secrets unavailable)"
+          else
+            check_required_job "check-fixture" "${{ needs.detect-changes.outputs.fixture }}" "${{ needs.check-fixture.result }}"
+          fi
 
           echo "Advisory integration lanes:"
           report_advisory_pikaci_lane "check-pika-rust" "${{ needs.detect-changes.outputs.pika }}" "${{ needs.shadow-pikaci-pre-merge-pika-rust.result }}" "${{ needs.shadow-pikaci-pre-merge-pika-rust.outputs.result }}"

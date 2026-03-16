@@ -1253,6 +1253,25 @@ fn pre_merge_fixture_filter_tracks_checked_in_lane_surface() -> Result<()> {
 }
 
 #[test]
+fn pre_merge_fixture_remote_lane_skips_fork_pull_requests() -> Result<()> {
+    let root = workspace_root();
+    let workflow = fs::read_to_string(root.join(".github/workflows/pre-merge.yml"))?;
+
+    assert!(
+        workflow.contains(
+            "if: needs.detect-changes.outputs.fixture == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)"
+        ),
+        "check-fixture must skip fork pull_request runs because repository secrets are unavailable there"
+    );
+    assert!(
+        workflow.contains("check-fixture: skipped (fork PR; remote secrets unavailable)"),
+        "check-pika summary must treat fork pull_request fixture skips as expected rather than failed required lanes"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn pre_merge_pikachat_apple_split_stays_explicit() -> Result<()> {
     let root = workspace_root();
     let checks = fs::read_to_string(root.join("just/checks.just"))?;

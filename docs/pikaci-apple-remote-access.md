@@ -50,10 +50,11 @@ ssh mini@minis-mac-mini.taild659a1.ts.net
 The checked-in thin-trigger entrypoint is:
 
 ```bash
+./scripts/pikaci-apple-remote.sh prepare --ref <git-ref>
 ./scripts/pikaci-apple-remote.sh run --ref <git-ref>
 ```
 
-It uses a git-backed source contract on the mini: the caller sends an exact git bundle for the requested ref, the mini imports it into a bare mirror under `~/.cache/pikaci-apple`, materializes a detached per-run worktree, runs `just checks::apple-host-bundle`, then returns a debug artifact bundle to the caller. The wrapper takes a host-local run lock before touching the shared mirror/target state, and old remote run dirs are pruned automatically.
+It uses a git-backed source contract on the mini: the caller sends an exact git bundle for the requested ref, the mini imports it into a bare mirror under `~/.cache/pikaci-apple`, materializes a stable prepared worktree under `prepared/<commit>`, and reuses that checkout across repeated runs of the same commit. `prepare` realizes the Apple dev shell and prewarms the generated iOS artifacts there; `run` reuses the prepared checkout, executes `just checks::apple-host-bundle`, then returns a debug artifact bundle to the caller. The wrapper takes a host-local run lock before touching the shared mirror/target state, prunes old remote run dirs automatically, and keeps only a bounded number of prepared commit dirs.
 
 ### Caveats
 

@@ -246,6 +246,8 @@ jobs:
     needs: [detect-changes]
     if: needs.detect-changes.outputs.pika == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
+    environment:
+      name: ${{ contains(fromJSON('["justinmoon","futurepaul","AnthonyRonning","benthecarman","clarkmoody"]'), github.actor) == false && 'ci-approval' || 'ci-auto' }}
     steps:
       - uses: actions/checkout@v4
         with:

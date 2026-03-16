@@ -1421,8 +1421,8 @@ We have at least one important Linux Rust lane where:
         - `check-pika` remains on the host-local follow-up path until the Android staging blocker is actually cleared,
         - pre-merge trust policy now keys off approval, not PR origin:
           - the workflow runs required Linux pre-merge under `pull_request_target` so fork PRs can receive the same remote Linux coverage after approval,
-          - the allowlisted GitHub users remain explicit in `.github/workflows/pre-merge.yml` (`justinmoon`, `futurepaul`, `AnthonyRonning`, `benthecarman`, `clarkmoody`) and auto-run the secret-backed remote Linux jobs,
-          - every other actor goes through the `ci-approval` environment before any SSH-key-backed remote Linux job runs,
+          - the allowlisted GitHub users remain explicit in `.github/workflows/pre-merge.yml` (`justinmoon`, `futurepaul`, `AnthonyRonning`, `benthecarman`, `clarkmoody`) and auto-run the pre-merge Linux jobs that check out and execute PR-head code,
+          - every other actor goes through the `ci-approval` environment before any PR-head Linux job runs, including host-local `check-pika`,
           - required remote jobs no longer have fork-only skip branches in either the job `if:` logic or the final `pre-merge` summary gate,
           - `check-pikachat-openclaw-e2e` no longer falls back to a runner-local host path when remote secrets are unavailable; it now stays a single remote-`pika-build` check contract like fixture,
           - and the workflow now checks out the PR head explicitly with `persist-credentials: false`, so the approval-based path still evaluates the submitted code rather than silently testing the base branch,

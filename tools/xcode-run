@@ -4,7 +4,51 @@ set -euo pipefail
 # Run a command with a working Xcode toolchain env even inside Nix/direnv shells:
 # - resolves the pinned Xcode Developer dir
 # - unsets common Nix compiler env vars that break xcodebuild
+# - strips obvious secrets and bulky Nix derivation vars that Xcode would echo
+#   into build logs via scheme pre-actions
 
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEV_DIR="$("$TOOLS_DIR/xcode-dev-dir")"
-exec env -u LD -u CC -u CXX -u AR -u RANLIB -u SDKROOT -u MACOSX_DEPLOYMENT_TARGET DEVELOPER_DIR="$DEV_DIR" "$@"
+
+env_cmd=(
+  env
+  -u LD
+  -u CC
+  -u CXX
+  -u AR
+  -u RANLIB
+  -u SDKROOT
+  -u MACOSX_DEPLOYMENT_TARGET
+  -u buildInputs
+  -u propagatedBuildInputs
+  -u nativeBuildInputs
+  -u propagatedNativeBuildInputs
+  -u depsBuildBuild
+  -u depsBuildBuildPropagated
+  -u depsBuildTarget
+  -u depsBuildTargetPropagated
+  -u depsHostHost
+  -u depsHostHostPropagated
+  -u depsTargetTarget
+  -u depsTargetTargetPropagated
+  -u buildPhase
+  -u shellHook
+  -u out
+  -u outputs
+  -u phases
+  -u stdenv
+  DEVELOPER_DIR="$DEV_DIR"
+)
+
+while IFS='=' read -r name _; do
+  case "$name" in
+    *_API_KEY|*_TOKEN|*_SECRET|*_PASSWORD)
+      env_cmd+=(-u "$name")
+      ;;
+    AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|GH_TOKEN|GITHUB_TOKEN)
+      env_cmd+=(-u "$name")
+      ;;
+  esac
+done < <(env)
+
+exec "${env_cmd[@]}" "$@"

@@ -83,7 +83,7 @@ pre-merge-pikachat-openclaw-e2e:
     elif [[ -d openclaw ]]; then
         export OPENCLAW_DIR="$PWD/openclaw"
     fi
-    if [[ -n "${IN_NIX_SHELL:-}" ]]; then
+    if [[ "${PIKA_DEV_SHELL:-}" == "apple-host" ]] && command -v cargo >/dev/null 2>&1; then
         cargo run -q -p pikaci --bin pikaci -- run pre-merge-pikachat-openclaw-e2e
     else
         nix run .#pikaci -- run pre-merge-pikachat-openclaw-e2e
@@ -112,7 +112,7 @@ pre-merge-pikachat:
     #!/usr/bin/env bash
     set -euo pipefail
     if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-        if [[ -n "${IN_NIX_SHELL:-}" ]]; then
+        if [[ "${PIKA_DEV_SHELL:-}" == "apple-host" ]] && command -v cargo >/dev/null 2>&1; then
             cargo run -q -p pikaci --bin pikaci -- run pre-merge-pikachat-rust
             cargo run -q -p pikaci --bin pikaci -- run pre-merge-pikachat-apple-followup
         else
@@ -243,7 +243,13 @@ desktop-e2e-local:
 
 # Run desktop tests (manager + UI wiring).
 desktop-ui-test:
-    cargo test -p pika-desktop
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      ./tools/cargo-with-xcode test -p pika-desktop
+    else
+      cargo test -p pika-desktop
+    fi
 
 # iOS E2E: local Nostr relay + local Rust bot.
 ios-ui-e2e-local:

@@ -9,12 +9,16 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEV_DIR="$("$ROOT/tools/xcode-dev-dir")"
 TOOLCHAIN_BIN="$DEV_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin"
 CLANG_BIN="$TOOLCHAIN_BIN/clang"
+SDKROOT="$(
+  DEVELOPER_DIR="$DEV_DIR" /usr/bin/xcrun --sdk macosx --show-sdk-path
+)"
 
 exec env \
   -u SDKROOT \
   -u MACOSX_DEPLOYMENT_TARGET \
   -u IPHONEOS_DEPLOYMENT_TARGET \
   DEVELOPER_DIR="$DEV_DIR" \
+  SDKROOT="$SDKROOT" \
   CC="$CLANG_BIN" \
   CXX="$TOOLCHAIN_BIN/clang++" \
   AR="$TOOLCHAIN_BIN/ar" \

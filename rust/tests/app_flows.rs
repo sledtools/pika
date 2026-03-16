@@ -3,15 +3,15 @@
 //! These tests intentionally stay below `pikahut`: they own app-state and lifecycle semantics
 //! within one app instance rather than fixture/orchestration boundaries.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use nostr_sdk::prelude::{Keys, NostrSigner};
 use nostr_sdk::ToBech32;
 use pika_core::{
     AppAction, AppUpdate, AuthMode, AuthState, BunkerConnectError, BunkerConnectErrorKind,
-    BunkerConnectOutput, BunkerSignerConnector, CallStatus, ExternalSignerErrorKind,
-    ExternalSignerHandshakeResult, FfiApp, Screen,
+    BunkerConnectOutput, CallStatus, ExternalSignerErrorKind, ExternalSignerHandshakeResult,
+    FfiApp, Screen,
 };
 use tempfile::tempdir;
 
@@ -20,6 +20,7 @@ mod nostr_connect_support;
 mod support;
 use nostr_connect_support::{
     nostrconnect_client_pubkey, query_param, MockBunkerSignerConnector, MockExternalSignerBridge,
+    SequenceBunkerSignerConnector,
 };
 use support::{wait_until_with_poll, Collector};
 
@@ -67,67 +68,6 @@ fn write_config_ext(
         v["key_package_relay_urls"] = serde_json::json!([LOOPBACK_RELAY_URL]);
     }
     std::fs::write(path, serde_json::to_vec(&v).unwrap()).unwrap();
-}
-
-#[derive(Clone)]
-struct SequenceBunkerSignerConnector {
-    results: Arc<Mutex<Vec<Result<BunkerConnectOutput, BunkerConnectError>>>>,
-    seen_uris: Arc<Mutex<Vec<String>>>,
-}
-
-impl SequenceBunkerSignerConnector {
-    fn new(results: Vec<Result<BunkerConnectOutput, BunkerConnectError>>) -> Self {
-        Self {
-            results: Arc::new(Mutex::new(results)),
-            seen_uris: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-
-    fn seen_uris(&self) -> Vec<String> {
-        self.seen_uris.lock().unwrap().clone()
-    }
-}
-
-impl BunkerSignerConnector for SequenceBunkerSignerConnector {
-    fn connect(
-        &self,
-        _runtime: &tokio::runtime::Runtime,
-        bunker_uri: &str,
-        _client_keys: Keys,
-    ) -> Result<BunkerConnectOutput, BunkerConnectError> {
-        self.seen_uris.lock().unwrap().push(bunker_uri.to_string());
-        let mut results = self.results.lock().unwrap();
-        if results.is_empty() {
-            return Err(BunkerConnectError {
-                kind: BunkerConnectErrorKind::Other,
-                message: "sequence connector exhausted".to_string(),
-            });
-        }
-        results.remove(0)
-    }
-
-    fn prepare(
-        &self,
-        _runtime: &tokio::runtime::Runtime,
-        _bunker_uri: &str,
-        _client_keys: Keys,
-    ) -> Result<nostr_connect::prelude::NostrConnect, BunkerConnectError> {
-        Err(BunkerConnectError {
-            kind: BunkerConnectErrorKind::Other,
-            message: "mock: prepare not supported".to_string(),
-        })
-    }
-
-    fn finish(
-        &self,
-        _runtime: &tokio::runtime::Runtime,
-        _signer: nostr_connect::prelude::NostrConnect,
-    ) -> Result<BunkerConnectOutput, BunkerConnectError> {
-        Err(BunkerConnectError {
-            kind: BunkerConnectErrorKind::Other,
-            message: "mock: finish not supported".to_string(),
-        })
-    }
 }
 
 #[test]
@@ -801,7 +741,7 @@ fn create_chat_with_invalid_peer_npub_shows_toast_and_does_not_navigate() {
 }
 
 #[test]
-fn begin_external_signer_login_is_owned_by_rust_and_logs_in() {
+fn begin_external_signer_login_passes_current_user_hint_to_bridge() {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_string_lossy().to_string();
     write_config_with_external_signer(&data_dir, true, Some(true));
@@ -820,38 +760,30 @@ fn begin_external_signer_login_is_owned_by_rust_and_logs_in() {
     app.dispatch(AppAction::BeginExternalSignerLogin {
         current_user_hint: Some("hint-user".into()),
     });
-    wait_until("external signer logged in", Duration::from_secs(10), || {
-        let s = app.state();
-        matches!(s.auth, AuthState::LoggedIn { .. }) && s.router.default_screen == Screen::ChatList
-    });
 
-    let s = app.state();
-    assert!(!s.busy.logging_in);
-    assert_eq!(s.router.default_screen, Screen::ChatList);
-    match s.auth {
-        AuthState::LoggedIn {
-            mode:
-                AuthMode::ExternalSigner {
-                    pubkey,
-                    signer_package,
-                    current_user,
-                },
-            ..
-        } => {
-            assert_eq!(
-                pubkey,
-                "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
-            );
-            assert_eq!(signer_package, "com.greenart7c3.nostrsigner");
-            assert_eq!(current_user, "amber-user-1");
-        }
-        other => panic!("expected external signer auth mode, got {other:?}"),
-    }
+    // Keep the fuller readable lifecycle contract in `pikahut`; this test stays as the
+    // default-exercised Rust smoke for the direct success path plus current-user-hint plumbing.
+    wait_until(
+        "bridge receives current-user hint and login completes",
+        Duration::from_secs(10),
+        || {
+            bridge.last_hint().as_deref() == Some("hint-user")
+                && matches!(app.state().auth, AuthState::LoggedIn { .. })
+                && !app.state().busy.logging_in
+        },
+    );
     assert_eq!(bridge.last_hint().as_deref(), Some("hint-user"));
+    assert!(matches!(
+        app.state().auth,
+        AuthState::LoggedIn {
+            mode: AuthMode::ExternalSigner { .. },
+            ..
+        }
+    ));
 }
 
 #[test]
-fn begin_external_signer_login_failure_shows_rust_toast_and_clears_busy() {
+fn begin_external_signer_login_timeout_maps_error_into_toast() {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_string_lossy().to_string();
     write_config_with_external_signer(&data_dir, true, Some(true));
@@ -867,16 +799,17 @@ fn begin_external_signer_login_failure_shows_rust_toast_and_clears_busy() {
     });
     app.set_external_signer_bridge(Box::new(bridge));
 
+    // Keep the fuller readable failure contract in `pikahut`; this stays as the default-exercised
+    // Rust owner for timeout error mapping and busy-state clearing.
     app.dispatch(AppAction::BeginExternalSignerLogin {
         current_user_hint: None,
     });
 
-    wait_until("toast shown", Duration::from_secs(10), || {
-        app.state().toast.is_some()
+    wait_until("timeout toast shown", Duration::from_secs(10), || {
+        app.state().toast.is_some() && !app.state().busy.logging_in
     });
     let s = app.state();
     assert!(matches!(s.auth, AuthState::LoggedOut));
-    assert!(!s.busy.logging_in);
     assert!(s
         .toast
         .unwrap_or_default()
@@ -924,7 +857,7 @@ fn restore_session_external_signer_keeps_current_user_in_auth_state() {
 }
 
 #[test]
-fn begin_bunker_login_is_owned_by_rust_and_emits_descriptor_update() {
+fn begin_bunker_login_emits_restorable_descriptor_update() {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_string_lossy().to_string();
     write_config_with_external_signer(&data_dir, true, Some(true));
@@ -945,30 +878,8 @@ fn begin_bunker_login_is_owned_by_rust_and_emits_descriptor_update() {
                 .into(),
     });
 
-    wait_until("bunker logged in", Duration::from_secs(10), || {
-        let s = app.state();
-        matches!(s.auth, AuthState::LoggedIn { .. }) && s.router.default_screen == Screen::ChatList
-    });
-
-    let s = app.state();
-    assert!(!s.busy.logging_in);
-    assert_eq!(s.router.default_screen, Screen::ChatList);
-    match s.auth {
-        AuthState::LoggedIn {
-            pubkey,
-            mode: AuthMode::BunkerSigner { bunker_uri },
-            ..
-        } => {
-            assert_eq!(pubkey, expected_user_pubkey);
-            assert_eq!(bunker_uri, canonical_bunker_uri);
-        }
-        other => panic!("expected bunker signer auth mode, got {other:?}"),
-    }
-    assert_eq!(
-        connector.last_bunker_uri().as_deref(),
-        Some("bunker://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?relay=wss://relay.input")
-    );
-
+    // Keep the fuller readable bunker UX contract in `pikahut`; this test stays as the
+    // default-exercised Rust smoke for direct bunker login plus descriptor/canonicalization plumbing.
     wait_until("bunker descriptor update", Duration::from_secs(10), || {
         collector
             .0
@@ -986,12 +897,22 @@ fn begin_bunker_login_is_owned_by_rust_and_emits_descriptor_update() {
         _ => None,
     });
     let (descriptor_uri, descriptor_client_nsec) = descriptor.expect("descriptor update");
+    match app.state().auth {
+        AuthState::LoggedIn { pubkey, .. } => assert_eq!(pubkey, expected_user_pubkey),
+        other => panic!("expected logged in bunker auth state, got {other:?}"),
+    }
+    assert_eq!(
+        connector.last_bunker_uri().as_deref(),
+        Some(
+            "bunker://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?relay=wss://relay.input"
+        )
+    );
     assert_eq!(descriptor_uri, canonical_bunker_uri);
     assert!(!descriptor_client_nsec.trim().is_empty());
 }
 
 #[test]
-fn begin_bunker_login_failure_shows_toast_and_clears_busy() {
+fn begin_bunker_login_invalid_uri_maps_error_into_toast() {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_string_lossy().to_string();
     write_config_with_external_signer(&data_dir, true, Some(true));
@@ -1003,16 +924,19 @@ fn begin_bunker_login_failure_shows_toast_and_clears_busy() {
     );
     app.set_bunker_signer_connector_for_tests(Arc::new(connector));
 
+    // Keep the fuller readable invalid-URI contract in `pikahut`; this stays as the
+    // default-exercised Rust owner for invalid-URI error mapping and busy-state clearing.
     app.dispatch(AppAction::BeginBunkerLogin {
         bunker_uri: "not-a-uri".into(),
     });
 
-    wait_until("toast shown", Duration::from_secs(10), || {
-        app.state().toast.is_some()
-    });
+    wait_until(
+        "invalid bunker uri toast shown",
+        Duration::from_secs(10),
+        || app.state().toast.is_some() && !app.state().busy.logging_in,
+    );
     let s = app.state();
     assert!(matches!(s.auth, AuthState::LoggedOut));
-    assert!(!s.busy.logging_in);
     assert!(s
         .toast
         .unwrap_or_default()
@@ -1077,7 +1001,7 @@ fn begin_nostr_connect_login_waits_for_callback_before_bunker_connect() {
 }
 
 #[test]
-fn begin_nostr_connect_login_retries_bunker_without_secret_on_new_secret_reject() {
+fn new_secret_rejection_drops_secret_on_retry_uri() {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_string_lossy().to_string();
     write_config_with_external_signer(&data_dir, true, Some(true));
@@ -1120,10 +1044,9 @@ fn begin_nostr_connect_login_retries_bunker_without_secret_on_new_secret_reject(
     });
     app.inject_nostr_connect_connect_response_for_tests(remote_signer_pubkey.clone());
 
-    wait_until("nostrconnect logged in", Duration::from_secs(10), || {
-        matches!(app.state().auth, AuthState::LoggedIn { .. })
+    wait_until("retry issued", Duration::from_secs(10), || {
+        connector.seen_uris().len() == 2 && !app.state().busy.logging_in
     });
-    assert!(!app.state().busy.logging_in);
 
     let seen = connector.seen_uris();
     assert_eq!(seen.len(), 2, "expected first call + retry");
@@ -1138,7 +1061,7 @@ fn begin_nostr_connect_login_retries_bunker_without_secret_on_new_secret_reject(
 }
 
 #[test]
-fn begin_nostr_connect_login_does_not_retry_without_new_secret_marker() {
+fn non_secret_rejection_stops_retry_sequence() {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_string_lossy().to_string();
     write_config_with_external_signer(&data_dir, true, Some(true));
@@ -1181,16 +1104,10 @@ fn begin_nostr_connect_login_does_not_retry_without_new_secret_marker() {
     });
     app.inject_nostr_connect_connect_response_for_tests(remote_signer_pubkey);
 
-    wait_until("login failed with toast", Duration::from_secs(10), || {
-        app.state().toast.is_some() && !app.state().busy.logging_in
+    wait_until("login failed", Duration::from_secs(10), || {
+        !app.state().busy.logging_in
     });
     assert!(matches!(app.state().auth, AuthState::LoggedOut));
-    assert!(app
-        .state()
-        .toast
-        .unwrap_or_default()
-        .to_lowercase()
-        .contains("rejected"));
     assert_eq!(
         connector.seen_uris().len(),
         1,
@@ -1326,7 +1243,7 @@ fn reset_nostr_connect_pairing_rotates_persisted_client_pair() {
 }
 
 #[test]
-fn pending_nostr_connect_login_survives_app_restart() {
+fn pending_nostr_connect_restart_restores_pending_state() {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_string_lossy().to_string();
     write_config_with_external_signer(&data_dir, true, Some(true));
@@ -1360,23 +1277,12 @@ fn pending_nostr_connect_login_survives_app_restart() {
     wait_until(
         "restart restored pending busy state",
         Duration::from_secs(10),
-        || app_after_restart.state().busy.logging_in,
+        || {
+            app_after_restart.state().busy.logging_in
+                && matches!(app_after_restart.state().auth, AuthState::LoggedOut)
+                && connector.last_bunker_uri().is_none()
+        },
     );
-    app_after_restart.dispatch(AppAction::NostrConnectCallback {
-        url: "pika://nostrconnect-return".into(),
-    });
-
-    app_after_restart.inject_nostr_connect_connect_response_for_tests(
-        "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into(),
-    );
-
-    wait_until(
-        "nostrconnect logged in after restart",
-        Duration::from_secs(10),
-        || matches!(app_after_restart.state().auth, AuthState::LoggedIn { .. }),
-    );
-    assert!(!app_after_restart.state().busy.logging_in);
-    assert!(connector.last_bunker_uri().is_some());
 }
 
 #[test]
@@ -1543,7 +1449,7 @@ fn foregrounded_continues_pending_nostr_connect_login() {
 }
 
 #[test]
-fn restore_session_bunker_uses_stored_client_key_and_logs_in() {
+fn restore_session_bunker_passes_stored_client_key_to_connector() {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_string_lossy().to_string();
     write_config_with_external_signer(&data_dir, true, Some(true));
@@ -1565,21 +1471,16 @@ fn restore_session_bunker_uses_stored_client_key_and_logs_in() {
         client_nsec,
     });
 
-    wait_until("bunker restored", Duration::from_secs(10), || {
-        matches!(app.state().auth, AuthState::LoggedIn { .. })
-    });
-    wait_until("busy cleared", Duration::from_secs(10), || {
-        !app.state().busy.logging_in
-    });
-
-    let s = app.state();
-    match s.auth {
-        AuthState::LoggedIn {
-            mode: AuthMode::BunkerSigner { bunker_uri },
-            ..
-        } => assert_eq!(bunker_uri, canonical_bunker_uri),
-        other => panic!("expected bunker signer auth mode, got {other:?}"),
-    }
+    // Keep the readable restored-sign-in contract in the `pikahut` selector; this test stays as
+    // the narrower Rust owner that stored bunker restore reuses the persisted client key.
+    wait_until(
+        "connector sees stored client key",
+        Duration::from_secs(10),
+        || {
+            connector.last_client_pubkey().as_deref() == Some(expected_client_pubkey.as_str())
+                && !app.state().busy.logging_in
+        },
+    );
     assert_eq!(
         connector.last_client_pubkey().as_deref(),
         Some(expected_client_pubkey.as_str())

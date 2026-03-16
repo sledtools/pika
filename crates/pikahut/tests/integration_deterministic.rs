@@ -458,15 +458,119 @@ fn post_rebase_logout_session_convergence_boundary() -> Result<()> {
 
 #[test]
 #[ignore = "deterministic external signer selector"]
+fn external_signer_login_success_boundary() -> Result<()> {
+    // Keep current-user hint and restored current-user plumbing in `rust/tests/app_flows.rs`;
+    // this checked-in deterministic selector captures the readable direct signer login contract.
+    let mut context = TestContext::builder("external-signer-login-success")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_external_signer_login_success(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
+#[ignore = "deterministic external signer selector"]
+fn external_signer_login_timeout_failure_boundary() -> Result<()> {
+    // Keep lower-level timeout-to-toast mapping and current-user plumbing in
+    // `rust/tests/app_flows.rs`; this checked-in deterministic selector captures the fuller
+    // readable direct signer failure contract.
+    let mut context = TestContext::builder("external-signer-login-timeout")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_external_signer_login_timeout_failure(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
+#[ignore = "deterministic external signer selector"]
+fn bunker_login_success_boundary() -> Result<()> {
+    // Keep descriptor/client-key plumbing in `rust/tests/app_flows.rs`; this checked-in
+    // deterministic selector captures the readable direct bunker login contract.
+    let mut context = TestContext::builder("bunker-login-success")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_bunker_login_success(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
+#[ignore = "deterministic external signer selector"]
+fn bunker_login_invalid_uri_failure_boundary() -> Result<()> {
+    // Keep lower-level bunker URI plumbing in `rust/tests/app_flows.rs`; this checked-in
+    // deterministic selector captures the readable invalid-URI failure contract.
+    let mut context = TestContext::builder("bunker-login-invalid-uri")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_bunker_login_invalid_uri_failure(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
+#[ignore = "deterministic external signer selector"]
 fn nostr_connect_login_success_boundary() -> Result<()> {
     // Keep the narrower callback-gating and retry semantics in `rust/tests/app_flows.rs`; this
-    // selector owns the readable user-facing contract that Rust launches the Nostr Connect
-    // handshake, waits for the return callback, and then lands signed in through the bunker
-    // signer path. Native tests still own callback URL injection/parsing glue.
+    // checked-in deterministic selector captures the readable signer success contract. Native
+    // tests still own callback URL injection/parsing glue.
     let mut context = TestContext::builder("nostr-connect-login-success")
         .artifact_policy(ArtifactPolicy::PreserveOnFailure)
         .build()?;
     support::run_nostr_connect_login_success(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
+#[ignore = "deterministic external signer selector"]
+fn nostr_connect_new_secret_retry_boundary() -> Result<()> {
+    // Keep the lower-level retry branch mechanics in `rust/tests/app_flows.rs`; this checked-in
+    // deterministic selector captures only the readable recovery contract.
+    let mut context = TestContext::builder("nostr-connect-new-secret-retry")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_nostr_connect_new_secret_retry(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
+#[ignore = "deterministic external signer selector"]
+fn nostr_connect_non_secret_rejection_stops_without_retry_boundary() -> Result<()> {
+    // Keep the exact retry-sequence branch logic in `rust/tests/app_flows.rs`; this checked-in
+    // deterministic selector captures the readable failure contract.
+    let mut context = TestContext::builder("nostr-connect-non-secret-rejection")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_nostr_connect_non_secret_rejection_stops_without_retry(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
+#[ignore = "deterministic external signer selector"]
+fn pending_nostr_connect_login_survives_restart_boundary() -> Result<()> {
+    // Keep the narrower pending-state persistence semantics in `rust/tests/app_flows.rs`; this
+    // checked-in deterministic selector captures the readable restart contract.
+    let mut context = TestContext::builder("nostr-connect-pending-restart")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_pending_nostr_connect_login_survives_restart(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
+#[ignore = "deterministic external signer selector"]
+fn restore_session_bunker_signs_in_boundary() -> Result<()> {
+    // Keep the exact stored-client-key plumbing in `rust/tests/app_flows.rs`; this checked-in
+    // deterministic selector captures the readable bunker-restore sign-in contract.
+    let mut context = TestContext::builder("restore-session-bunker")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_restore_session_bunker_signs_in(&context)?;
     context.mark_success();
     Ok(())
 }

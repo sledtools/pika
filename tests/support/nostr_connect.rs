@@ -235,3 +235,64 @@ impl BunkerSignerConnector for MockBunkerSignerConnector {
         self.result.lock().unwrap().clone()
     }
 }
+
+#[derive(Clone)]
+pub struct SequenceBunkerSignerConnector {
+    results: Arc<Mutex<Vec<Result<BunkerConnectOutput, BunkerConnectError>>>>,
+    seen_uris: Arc<Mutex<Vec<String>>>,
+}
+
+impl SequenceBunkerSignerConnector {
+    pub fn new(results: Vec<Result<BunkerConnectOutput, BunkerConnectError>>) -> Self {
+        Self {
+            results: Arc::new(Mutex::new(results)),
+            seen_uris: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn seen_uris(&self) -> Vec<String> {
+        self.seen_uris.lock().unwrap().clone()
+    }
+}
+
+impl BunkerSignerConnector for SequenceBunkerSignerConnector {
+    fn connect(
+        &self,
+        _runtime: &tokio::runtime::Runtime,
+        bunker_uri: &str,
+        _client_keys: Keys,
+    ) -> Result<BunkerConnectOutput, BunkerConnectError> {
+        self.seen_uris.lock().unwrap().push(bunker_uri.to_string());
+        let mut results = self.results.lock().unwrap();
+        if results.is_empty() {
+            return Err(BunkerConnectError {
+                kind: BunkerConnectErrorKind::Other,
+                message: "sequence connector exhausted".to_string(),
+            });
+        }
+        results.remove(0)
+    }
+
+    fn prepare(
+        &self,
+        _runtime: &tokio::runtime::Runtime,
+        _bunker_uri: &str,
+        _client_keys: Keys,
+    ) -> Result<NostrConnect, BunkerConnectError> {
+        Err(BunkerConnectError {
+            kind: BunkerConnectErrorKind::Other,
+            message: "mock: prepare not supported".to_string(),
+        })
+    }
+
+    fn finish(
+        &self,
+        _runtime: &tokio::runtime::Runtime,
+        _signer: NostrConnect,
+    ) -> Result<BunkerConnectOutput, BunkerConnectError> {
+        Err(BunkerConnectError {
+            kind: BunkerConnectErrorKind::Other,
+            message: "mock: finish not supported".to_string(),
+        })
+    }
+}

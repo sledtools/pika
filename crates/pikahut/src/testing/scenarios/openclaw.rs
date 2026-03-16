@@ -152,28 +152,32 @@ fn ensure_openclaw_runtime_ready(
         return Ok(());
     }
 
-    let build_cmd = runner.run(
-        &CommandSpec::node()
-            .cwd(openclaw_dir)
-            .env("OPENCLAW_BUILD_VERBOSE", "1")
-            .arg("scripts/tsdown-build.mjs")
-            .arg("--no-clean")
-            .capture_name("openclaw-tsdown-build"),
-    )?;
+    let (build_capture_name, build_cmd) = if super::common::command_exists("pnpm") {
+        (
+            "openclaw-pnpm-build",
+            runner.run(
+                &CommandSpec::new("pnpm")
+                    .cwd(openclaw_dir)
+                    .env("OPENCLAW_BUILD_VERBOSE", "1")
+                    .args(["build"])
+                    .capture_name("openclaw-pnpm-build"),
+            )?,
+        )
+    } else {
+        (
+            "openclaw-npx-pnpm-build",
+            runner.run(
+                &CommandSpec::new("npx")
+                    .cwd(openclaw_dir)
+                    .env("OPENCLAW_BUILD_VERBOSE", "1")
+                    .args(["--yes", "pnpm@10", "build"])
+                    .capture_name("openclaw-npx-pnpm-build"),
+            )?,
+        )
+    };
     command_outcomes.push(CommandOutcomeRecord::from_output(
-        "openclaw-tsdown-build",
+        build_capture_name,
         &build_cmd,
-    ));
-
-    let runtime_postbuild_cmd = runner.run(
-        &CommandSpec::node()
-            .cwd(openclaw_dir)
-            .arg("scripts/runtime-postbuild.mjs")
-            .capture_name("openclaw-runtime-postbuild"),
-    )?;
-    command_outcomes.push(CommandOutcomeRecord::from_output(
-        "openclaw-runtime-postbuild",
-        &runtime_postbuild_cmd,
     ));
 
     write_openclaw_buildstamp(openclaw_dir, git_head.as_deref())?;

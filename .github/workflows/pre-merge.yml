@@ -272,25 +272,14 @@ jobs:
           fi
       - uses: nixbuild/nix-quick-install-action@v30
 
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-${{ github.event_name == 'pull_request_target' && 'pr-head' || 'trusted' }}-pikaci-cache-v1-${{ runner.os }}
-          path: .pikaci/cache
-      - name: Fix .pikaci ownership
-        run: |
-          if [ -d .pikaci ] && [ "$(stat -c %u .pikaci)" != "$(id -u)" ]; then
-            sudo chown "$(id -u):$(id -g)" .pikaci
-          fi
-
-      - uses: useblacksmith/stickydisk@v1
-        with:
-          key: ${{ github.repository }}-${{ github.event_name == 'pull_request_target' && 'pr-head' || 'trusted' }}-gradle-v1-${{ runner.os }}
-          path: ~/.gradle
-
-      - name: Run host-local pika followup lane
+      - name: Run staged Linux pika followup lane
         id: lane
+        env:
+          PIKA_BUILD_SSH_KEY: ${{ secrets.PIKA_BUILD_SSH_KEY }}
+          PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST: ${{ vars.PIKA_BUILD_SSH_HOST }}
         run: |
           set +e
+          exit_code=0
           previous_run_id="$(
             find .pikaci/runs -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null \
               | LC_ALL=C sort -r \
@@ -304,8 +293,25 @@ jobs:
             )"
           fi
 
-          ./scripts/pikaci-ci-run.sh pre-merge-pika-followup
-          exit_code=$?
+          if [ -z "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}" ]; then
+            echo "error: set repository variable PIKA_BUILD_SSH_HOST for check-pika" >&2
+            exit_code=2
+          elif [ -z "${PIKA_BUILD_SSH_KEY:-}" ]; then
+            echo "error: set repository secret PIKA_BUILD_SSH_KEY for check-pika" >&2
+            exit_code=2
+          else
+            mkdir -p "$HOME/.ssh"
+            chmod 700 "$HOME/.ssh"
+            host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST#*@}"
+            ./scripts/ci-add-known-host.sh "$host"
+
+            eval "$(ssh-agent -s)"
+            trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
+            ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
+
+            ./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-followup
+            exit_code=$?
+          fi
 
           if [ "$exit_code" -eq 0 ]; then
             result=success
@@ -346,9 +352,10 @@ jobs:
         if: always()
         run: |
           {
-            echo "- command: \`./scripts/pikaci-ci-run.sh pre-merge-pika-followup\`"
+            echo "- command: \`./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-followup\`"
             echo "- result: \`${{ steps.lane.outputs.result }}\`"
             echo "- exit code: \`${{ steps.lane.outputs.exit_code }}\`"
+            echo "- host: \`${{ vars.PIKA_BUILD_SSH_HOST || 'unset' }}\`"
             echo "- artifact: \`${{ steps.metadata.outputs.artifact_name || 'none' }}\`"
             echo ""
             cat "$RUNNER_TEMP/pikaci-run-summary.md"
@@ -1090,8 +1097,8 @@ jobs:
             echo "### Linux CI Policy"
             echo
             echo "- Linux <code>pikaci</code> lanes are now authoritative for required Linux CI."
-            echo "- <code>pre-merge-pika-followup</code> remains the one deferred host-local exception until the Android offline Gradle blocker is cleared."
-            echo "- Trusted GitHub actors run remote Linux jobs automatically; everyone else goes through the <code>ci-approval</code> environment."
+            echo "- Required Linux lanes now run through the staged remote <code>microvm.nix</code> path on <code>pika-build</code>."
+            echo "- Trusted GitHub actors run PR-head Linux jobs automatically; everyone else goes through the <code>ci-approval</code> environment."
           } >> "$GITHUB_STEP_SUMMARY"
 
   check-pikachat-openclaw-e2e:

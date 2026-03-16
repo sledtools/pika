@@ -159,6 +159,7 @@ pub enum StagedLinuxRustLane {
     PikaFollowupDesktopCheck,
     PikaFollowupActionlint,
     PikaFollowupDocContracts,
+    PikaFollowupRustDepsHygiene,
     PikaCoreLibAppFlows,
     PikaCoreMessagingE2e,
     AgentContractsControlPlaneUnit,
@@ -190,7 +191,8 @@ impl StagedLinuxRustLane {
             | Self::PikaFollowupPikachatBuild
             | Self::PikaFollowupDesktopCheck
             | Self::PikaFollowupActionlint
-            | Self::PikaFollowupDocContracts => StagedLinuxRustTarget::PreMergePikaFollowup,
+            | Self::PikaFollowupDocContracts
+            | Self::PikaFollowupRustDepsHygiene => StagedLinuxRustTarget::PreMergePikaFollowup,
             Self::PikaCoreLibAppFlows | Self::PikaCoreMessagingE2e => {
                 StagedLinuxRustTarget::PreMergePikaRust
             }
@@ -256,6 +258,9 @@ impl StagedLinuxRustLane {
             }
             Self::PikaFollowupDocContracts => {
                 "/staged/linux-rust/workspace-build/bin/run-pika-doc-contracts"
+            }
+            Self::PikaFollowupRustDepsHygiene => {
+                "/staged/linux-rust/workspace-build/bin/run-pika-rust-deps-hygiene"
             }
             Self::PikaCoreLibAppFlows => {
                 "/staged/linux-rust/workspace-build/bin/run-pika-core-lib-app-flows-tests"
@@ -570,19 +575,26 @@ mod tests {
 
     #[test]
     fn pika_followup_lane_uses_followup_workspace_outputs() {
-        let lane = StagedLinuxRustLane::PikaFollowupActionlint;
-
+        for lane in [
+            StagedLinuxRustLane::PikaFollowupActionlint,
+            StagedLinuxRustLane::PikaFollowupRustDepsHygiene,
+        ] {
+            assert_eq!(
+                lane.workspace_deps_output_name(),
+                "ci.x86_64-linux.pikaFollowupWorkspaceDeps"
+            );
+            assert_eq!(
+                lane.workspace_build_output_name(),
+                "ci.x86_64-linux.pikaFollowupWorkspaceBuild"
+            );
+        }
         assert_eq!(
-            lane.workspace_deps_output_name(),
-            "ci.x86_64-linux.pikaFollowupWorkspaceDeps"
-        );
-        assert_eq!(
-            lane.workspace_build_output_name(),
-            "ci.x86_64-linux.pikaFollowupWorkspaceBuild"
-        );
-        assert_eq!(
-            lane.execute_wrapper_command(),
+            StagedLinuxRustLane::PikaFollowupActionlint.execute_wrapper_command(),
             "/staged/linux-rust/workspace-build/bin/run-pika-actionlint"
+        );
+        assert_eq!(
+            StagedLinuxRustLane::PikaFollowupRustDepsHygiene.execute_wrapper_command(),
+            "/staged/linux-rust/workspace-build/bin/run-pika-rust-deps-hygiene"
         );
     }
 
@@ -688,6 +700,10 @@ mod tests {
         assert_eq!(followup_config.shadow_recipe, "");
         assert_eq!(
             StagedLinuxRustLane::PikaFollowupDocContracts.target(),
+            StagedLinuxRustTarget::PreMergePikaFollowup
+        );
+        assert_eq!(
+            StagedLinuxRustLane::PikaFollowupRustDepsHygiene.target(),
             StagedLinuxRustTarget::PreMergePikaFollowup
         );
 

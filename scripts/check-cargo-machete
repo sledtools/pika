@@ -5,7 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
 
 if cargo machete --version >/dev/null 2>&1; then
-  exec cargo machete
+  exec cargo machete --skip-target-dir
 fi
 
-exec nix develop --command cargo machete
+exec nix develop --command cargo machete --skip-target-dir

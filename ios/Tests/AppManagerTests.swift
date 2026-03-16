@@ -243,6 +243,8 @@ final class ChatDeepLinkTests: XCTestCase {
     }
 
     func testOnOpenURL_dispatchesCreateChat() async {
+        // Native glue owner only: this stays in Swift because it verifies URL parsing and
+        // AppManager -> Rust dispatch, not the Rust-owned deep-link chat state itself.
         let core = MockCore(state: makeTestState(rev: 1))
         let store = MockAuthStore()
         let manager = await MainActor.run { AppManager(core: core, authStore: store) }

@@ -502,6 +502,21 @@ fn post_rebase_logout_session_convergence_boundary() -> Result<()> {
 }
 
 #[test]
+#[ignore = "deterministic startup/router selector"]
+fn chat_deep_link_opens_note_to_self_boundary() -> Result<()> {
+    // Keep lower-level create-account router semantics and invalid peer-key routing in
+    // `rust/tests/app_flows.rs`; this checked-in deterministic selector captures the readable
+    // signed-in deep-link contract that a raw `pika://chat/<npub>` payload lands in the intended
+    // chat state.
+    let mut context = TestContext::builder("chat-deep-link-note-to-self")
+        .artifact_policy(ArtifactPolicy::PreserveOnFailure)
+        .build()?;
+    support::run_chat_deep_link_opens_note_to_self(&context)?;
+    context.mark_success();
+    Ok(())
+}
+
+#[test]
 #[ignore = "deterministic external signer selector"]
 fn external_signer_login_success_boundary() -> Result<()> {
     // Keep current-user hint and restored current-user plumbing in `rust/tests/app_flows.rs`;

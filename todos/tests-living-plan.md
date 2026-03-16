@@ -231,6 +231,12 @@ Working assumptions:
    - `crates/pikahut/tests/integration_deterministic.rs::agent_launch_provisioning_failure_boundary` now keeps the matching failure contract at the same ownership layer: a backend provisioning failure leaves `agent_provisioning` visible in the error phase instead of vanishing into a toast or silent no-op
    - `crates/pikahut/tests/support.rs` needed only a small enabling seam for this: a backend-fixture config writer that points `FfiApp` at the local agent API with the allowlist probe enabled, plus a narrow selector-only DB rewrite that maps the mocked provisioned agent identity onto a real relay-backed peer so the success path can open a real chat without hosted microVM infra
    - the remaining lower/unowned edges in this family are the true guest-backed post-launch behavior after the chat opens: actual managed-agent key-package publication, first agent-authored reply semantics, and any hosted/runtime-specific launch failures beyond the mocked local spawner/control-plane contract
+27. Slice 28 started the same ownership cleanup on startup/router/deep-link behavior:
+  - `crates/pikahut/tests/integration_deterministic.rs::chat_deep_link_opens_note_to_self_boundary` now gives this family one readable deterministic selector-owned contract: from the signed-in shell, a raw `pika://chat/<npub>` payload normalizes through Rust and lands in the intended note-to-self chat state
+  - `crates/pikahut/tests/support.rs` now drives that selector directly through `FfiApp`: create account, confirm the signed-in chat-list route, feed the raw deep-link payload through `normalize_peer_key`, open the chat, and verify the resulting composer/chat preview path works
+  - `rust/tests/app_flows.rs` now reads more honestly underneath that contract: `create_account_sets_logged_in_auth_and_chat_list_route` keeps the lower-level single-app auth/router state owner, while `create_chat_rejects_invalid_peer_key_without_navigation` keeps the invalid peer-key mapping/no-navigation semantics
+  - native overlap is now called out more honestly for this path: iOS/Android deep-link tests own URL/intent parsing and platform text-entry/scanner glue, not the canonical Rust-owned normalized deep-link chat-state contract
+  - the startup/router/deep-link family is materially cleaner now; the remaining caveat is intentional rather than blurry: cold-start OS delivery and callback plumbing still belong to native glue, not `pikahut`
 ## Progress Update
 
 Completed on 2026-03-10:
@@ -320,7 +326,7 @@ Verified in the repo today:
    - Owns single-app `FfiApp` state/lifecycle behavior: account creation, router changes, immediate logout/reset semantics, persistence/restore state, paging, reactions, and the lower-level external-signer/bunker/Nostr Connect state-machine semantics underneath the selector-owned signer contracts.
    - This is the right ownership layer when the product question is “what does one app instance do after this action/update?” rather than “can two apps talk over local fixtures?”
    - The main overlap with native UI is shell-level: iOS/Android can still validate that login/chat/logout/navigation render correctly, but they should not be the primary owners of these Rust semantics.
-   - The auth/session and signer areas are now intentionally split: `pikahut` owns the readable logout/reset, restore/relaunch, and signer lifecycle contracts, while this file keeps the narrower runtime-reset, restored-state, callback-gating, retry-sequence, pending-state, stored-key, descriptor, current-user, and small default-exercised signer smoke semantics underneath them.
+   - The auth/session and signer areas are now intentionally split: `pikahut` owns the readable logout/reset, restore/relaunch, signer lifecycle, and raw chat deep-link contracts, while this file keeps the narrower runtime-reset, restored-state, account/router, invalid-peer-key, callback-gating, retry-sequence, pending-state, stored-key, descriptor, current-user, and small default-exercised signer smoke semantics underneath them.
 
 2. `rust/tests/e2e_messaging.rs`
    - Owns focused relay-backed multi-app `FfiApp` messaging/call-signaling semantics: relay-backed DM delivery into peer chat state, invalid call invite rejection, optimistic send behavior, and peer-visible call-end signaling.
@@ -334,13 +340,13 @@ Verified in the repo today:
 
 4. `crates/pikahut/tests/integration_deterministic.rs`
    - Owns checked-in deterministic selector contracts; some are lane-selected blockers today and some are still `#[ignore]` until a lane selects them.
-   - For this audit area it now owns the main readable user-facing contracts: `dm_creation_and_first_message_delivery_boundary`, `late_joiner_group_profile_visibility_after_explicit_refresh_boundary`, `dm_local_profile_override_visibility_boundary`, the direct logout-reset lifecycle boundary `post_rebase_logout_session_convergence_boundary`, `session_restore_after_restart_boundary`, and the signer-family boundaries `external_signer_login_success_boundary`, `external_signer_login_timeout_failure_boundary`, `bunker_login_success_boundary`, `bunker_login_invalid_uri_failure_boundary`, `nostr_connect_login_success_boundary`, `nostr_connect_new_secret_retry_boundary`, `nostr_connect_non_secret_rejection_stops_without_retry_boundary`, `pending_nostr_connect_login_survives_restart_boundary`, and `restore_session_bunker_signs_in_boundary`, plus the narrower post-rebase invalid-event regression boundary.
+   - For this audit area it now owns the main readable user-facing contracts: `dm_creation_and_first_message_delivery_boundary`, `late_joiner_group_profile_visibility_after_explicit_refresh_boundary`, `dm_local_profile_override_visibility_boundary`, `chat_deep_link_opens_note_to_self_boundary`, the direct logout-reset lifecycle boundary `post_rebase_logout_session_convergence_boundary`, `session_restore_after_restart_boundary`, and the signer-family boundaries `external_signer_login_success_boundary`, `external_signer_login_timeout_failure_boundary`, `bunker_login_success_boundary`, `bunker_login_invalid_uri_failure_boundary`, `nostr_connect_login_success_boundary`, `nostr_connect_new_secret_retry_boundary`, `nostr_connect_non_secret_rejection_stops_without_retry_boundary`, `pending_nostr_connect_login_survives_restart_boundary`, and `restore_session_bunker_signs_in_boundary`, plus the narrower post-rebase invalid-event regression boundary.
    - That split is acceptable when the selector is clearly pinning a narrower Rust semantic owner, but it would be questionable if `pikahut` tried to become a second full owner of every messaging/profile assertion.
 
 5. `ios/UITests/PikaUITests.swift`
    - Owns platform-hosted capability smoke: login/chat navigation, session persistence across relaunch, layout/focus behavior, long-press actions, deep links, and native interop launch.
    - The local note-to-self/login/logout and relaunch paths overlap `app_flows.rs` semantically, but they still validate a real iOS-hosted UI shell plus auth-store persistence capability.
-   - It is questionable as an owner of core message/profile semantics and should stay a platform smoke layer, not the canonical behavior contract.
+   - It is questionable as an owner of core message/profile/router semantics and should stay a platform smoke layer, not the canonical behavior contract.
 
 6. `android/app/src/androidTest/.../PikaE2eUiTest.kt`
    - Owns fixture-backed Android-hosted rendering/capability smoke for bot-driven chat/hypernote UI.
@@ -400,6 +406,7 @@ Verified in the repo today:
 9. Native test volume does not currently look like the best cleanup target.
    - iOS unit tests are mostly session restore, reconciler/deep-link handling, keychain policy, and layout math.
    - Android instrumentation is mostly offline UI smoke, deep-link handling, and the retained local-fixture selector class.
+   - For startup/router/deep-link behavior specifically, the native residue is now intentionally glue-shaped: AppManager URL/intent parsing plus platform text-entry/scanner delivery, not the core normalized chat-opening contract.
    - We should keep watching for native logic drift, but the highest-value remaining cleanup is now policy/alignment work rather than another Rust-side ownership seam.
 
 10. We should keep a short explicit list of recurring flakes even when another branch temporarily disables them.

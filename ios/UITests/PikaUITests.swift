@@ -1009,11 +1009,9 @@ final class PikaUITests: XCTestCase {
         )
     }
 
-    /// Prove that a pika://chat/<npub> deep-link URL — the same content encoded
-    /// in the CLI QR code — is correctly normalised by the UniFFI bridge and
-    /// creates a working chat. This exercises the in-app scanner path: the QR
-    /// scanner hands the raw string to normalizePeerKey, which strips the
-    /// pika://chat/ prefix, and the result feeds into CreateChat.
+    /// Platform-hosted shell smoke only: this covers iOS text-entry/scanner-style
+    /// deep-link handling and chat routing, not the canonical Rust-owned deep-link
+    /// normalization/chat-state contract.
     func testChatDeepLink_opensChat() throws {
         let app = XCUIApplication()
         app.launchEnvironment["PIKA_UI_TEST_RESET"] = "1"

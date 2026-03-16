@@ -82,6 +82,8 @@ class NostrConnectIntentTest {
     }
 
     // ── Chat deep link intent tests ──
+    // Android glue owner only: these cover Intent/action/host parsing, not the Rust-owned
+    // normalized deep-link -> chat-state contract.
 
     // A valid 64-char hex pubkey (always passes isValidPeerKey).
     private val validHexPubkey = "a".repeat(64)

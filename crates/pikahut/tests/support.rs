@@ -11,7 +11,7 @@ use nostr_sdk::prelude::{Keys, NostrSigner};
 use pika_core::{
     AgentProvisioningPhase, AppAction, AuthMode, AuthState, BunkerConnectError,
     BunkerConnectErrorKind, BunkerConnectOutput, CallStatus, ExternalSignerErrorKind,
-    ExternalSignerHandshakeResult, FfiApp, Screen,
+    ExternalSignerHandshakeResult, FfiApp, Screen, normalize_peer_key,
 };
 use pikahut::config::ProfileName;
 use pikahut::testing::{FixtureHandle, FixtureSpec, TestContext, start_fixture};
@@ -967,6 +967,91 @@ pub fn run_logout_reset_across_restart(context: &TestContext) -> Result<()> {
                 && state.router.default_screen == pika_core::Screen::Login
                 && state.chat_list.is_empty()
                 && state.current_chat.is_none()
+        },
+    )?;
+
+    Ok(())
+}
+
+// Checked-in deterministic startup/router contract: once the app is signed in, a raw
+// `pika://chat/<npub>` payload should normalize through Rust and land the user in the intended
+// chat state. Native tests keep URL/intent parsing and scanner/text-input glue above this layer.
+pub fn run_chat_deep_link_opens_note_to_self(context: &TestContext) -> Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let data_dir = context.state_dir().join("chat-deep-link");
+    write_config_offline(&data_dir)?;
+
+    let app = FfiApp::new(path_arg(&data_dir), String::new(), String::new());
+    app.dispatch(AppAction::CreateAccount);
+    wait_until("signed in on chat list", Duration::from_secs(10), || {
+        let state = app.state();
+        matches!(state.auth, AuthState::LoggedIn { .. })
+            && state.router.default_screen == pika_core::Screen::ChatList
+    })?;
+
+    let my_npub = match app.state().auth {
+        AuthState::LoggedIn { npub, .. } => npub,
+        _ => bail!("account failed to enter logged-in state"),
+    };
+
+    let raw_deep_link = format!("pika://chat/{my_npub}");
+    let normalized_peer = normalize_peer_key(&raw_deep_link);
+    if normalized_peer != my_npub {
+        bail!("deep-link normalization drifted: expected {my_npub}, got {normalized_peer}");
+    }
+
+    app.dispatch(AppAction::CreateChat {
+        peer_npub: normalized_peer,
+    });
+    wait_until(
+        "deep-link opens note-to-self chat",
+        Duration::from_secs(10),
+        || {
+            let state = app.state();
+            !state.chat_list.is_empty()
+                && state
+                    .current_chat
+                    .as_ref()
+                    .map(|chat| chat.chat_id == state.chat_list[0].chat_id)
+                    .unwrap_or(false)
+        },
+    )?;
+
+    let chat_id = app
+        .state()
+        .current_chat
+        .as_ref()
+        .map(|chat| chat.chat_id.clone())
+        .ok_or_else(|| anyhow!("deep-link did not leave current_chat populated"))?;
+    let message = "hello-from-deep-link";
+    app.dispatch(AppAction::SendMessage {
+        chat_id: chat_id.clone(),
+        content: message.to_owned(),
+        kind: None,
+        reply_to_message_id: None,
+    });
+    wait_until(
+        "deep-link chat shows sent message",
+        Duration::from_secs(10),
+        || {
+            app.state()
+                .current_chat
+                .as_ref()
+                .map(|chat| chat.messages.iter().any(|msg| msg.content == message))
+                .unwrap_or(false)
+        },
+    )?;
+    wait_until(
+        "deep-link chat preview updates",
+        Duration::from_secs(10),
+        || {
+            app.state()
+                .chat_list
+                .iter()
+                .find(|chat| chat.chat_id == chat_id)
+                .and_then(|chat| chat.last_message.as_deref())
+                == Some(message)
         },
     )?;
 

@@ -210,6 +210,8 @@ class PikaUiTest {
 
     @Test
     @OptIn(ExperimentalTestApi::class)
+    // Platform-hosted shell smoke only: this covers Android text-input/scanner-style deep-link
+    // entry and Compose routing, not the canonical Rust-owned deep-link normalization/chat state.
     fun chatDeepLink_createsChat() {
         hardResetForeground()
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext

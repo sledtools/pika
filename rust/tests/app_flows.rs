@@ -71,7 +71,7 @@ fn write_config_ext(
 }
 
 #[test]
-fn create_account_navigates_to_chat_list() {
+fn create_account_sets_logged_in_auth_and_chat_list_route() {
     let dir = tempdir().unwrap();
     write_config(&dir.path().to_string_lossy(), true);
     let app = FfiApp::new(
@@ -85,6 +85,8 @@ fn create_account_navigates_to_chat_list() {
     assert_eq!(app.state().router.default_screen, Screen::Login);
     assert!(matches!(app.state().auth, AuthState::LoggedOut));
 
+    // Keep the fuller signed-in shell + raw deep-link chat-opening contract in `pikahut`; this
+    // test stays as the narrower single-app auth/router owner underneath it.
     app.dispatch(AppAction::CreateAccount);
     wait_until("logged in", Duration::from_secs(10), || {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
@@ -708,7 +710,7 @@ fn restore_session_with_invalid_nsec_shows_toast_and_stays_logged_out() {
 }
 
 #[test]
-fn create_chat_with_invalid_peer_npub_shows_toast_and_does_not_navigate() {
+fn create_chat_rejects_invalid_peer_key_without_navigation() {
     let dir = tempdir().unwrap();
     write_config(&dir.path().to_string_lossy(), true);
     let app = FfiApp::new(
@@ -722,6 +724,8 @@ fn create_chat_with_invalid_peer_npub_shows_toast_and_does_not_navigate() {
         matches!(app.state().auth, AuthState::LoggedIn { .. })
     });
 
+    // Keep invalid peer-key mapping and no-navigation semantics here; `pikahut` owns the readable
+    // raw deep-link success contract above this layer.
     app.dispatch(AppAction::CreateChat {
         peer_npub: "nope".into(),
     });

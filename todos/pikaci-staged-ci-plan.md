@@ -1391,10 +1391,10 @@ We have at least one important Linux Rust lane where:
         - keep choosing remaining Linux targets that can be reshaped into staged inputs plus remote microVM wrappers,
         - reject guest-network and host-assumption leaks as migration blockers to stage away,
         - and only stop when required Linux lanes no longer execute real workload as `HostLocal` on the GitHub runner.
-    - the next runtime-unification slice attempted both remaining required Linux `HostLocal` lanes and only one remains on the GitHub runner:
+    - the next runtime-unification slice attempted both remaining required Linux `HostLocal` lanes:
       - `pre-merge-pikachat-openclaw-e2e` now runs under the staged remote `microvm.nix` path on `pika-build`,
-      - `pre-merge-pika-followup` was attempted on the same staged remote path but is still blocked before execute,
-      - required Linux runner-side execution remaining after this slice: only `pre-merge-pika-followup`,
+      - `pre-merge-pika-followup` now also runs under the same staged remote `microvm.nix` path on `pika-build`,
+      - required Linux runner-side execution remaining after this slice: none,
     - the OpenClaw lane needed staged package-shape fixes, not a new executor:
       - the first remote rerun (`20260316T005731Z-20e66d25`) proved that copying the full packaged OpenClaw tree into `/tmp` to satisfy plugin ownership checks overflowed guest disk,
       - the next rerun (`20260316T010451Z-5f9f0ce7`) proved the lighter overlay still lacked the packaged self-reference that the plugin expects, failing with `Cannot find module 'openclaw/plugin-sdk'`,
@@ -1409,35 +1409,44 @@ We have at least one important Linux Rust lane where:
         - `workspaceDeps` succeeded remotely on `pika-build`,
         - `workspaceBuild` succeeded remotely on `pika-build`,
         - `pikachat-openclaw-gateway-e2e` passed under the remote `microvm.nix` guest in about `30.06s`,
-    - the remaining blocker is now concentrated in `pre-merge-pika-followup`:
-      - the best remote attempt on current tip (`20260316T004233Z-67423e10`) got through staged `workspaceDeps` and then failed in staged `workspaceBuild` on `pika-build`,
-      - the exact failure was Android Gradle plugin resolution in the sandboxed staged build:
+    - the last Linux runtime-model blocker in `pre-merge-pika-followup` turned out to be the Android staged-build closure, and it is now cleared:
+      - the first sharp failure in staged `workspaceBuild` on `pika-build` was offline Android Gradle plugin resolution:
         - `Plugin [id: 'com.android.application', version: '8.5.2', apply: false] was not found`
-      - that is a real staged-input blocker, not a preference for `HostLocal`:
-        - the repo already provides Android SDK/JDK inputs through Nix,
-        - but it does not yet provide a vendored or Nix-managed offline Gradle plugin / Maven dependency closure for the Android build,
-        - and the current Android settings still resolve plugins and dependencies from `google()`, `mavenCentral()`, `gradlePluginPortal()`, and `jitpack`,
-      - required workflow policy stays aligned with that reality:
-        - `check-pika` remains on the host-local follow-up path until the Android staging blocker is actually cleared,
-        - pre-merge trust policy now keys off approval, not PR origin:
+      - fixing that required a real staged Android dependency closure rather than more runner-local exceptions:
+        - add a dedicated `gradle.fetchDeps` package for the followup lane,
+        - stage the followup workspace with `android/`, `.github/workflows/pre-merge.yml`, and `scripts/` so the Android and doc-contract inputs match the real lane,
+        - include both Android SDK 34 and 35 build-tools/platforms in the CI SDK because the app compile still touches the 34-series toolchain,
+        - move `cargo machete` into staged `workspaceBuild` and export a staged wrapper so the followup lane stays fully remote,
+      - the next Android failures were guest-build correctness issues, not reasons to keep the lane host-local:
+        - Gradle rejected the staged environment when both `ANDROID_SDK_HOME` and `ANDROID_USER_HOME` were set to different paths,
+        - AGP then tried to execute the Maven-downloaded Linux `aapt2` binary from the staged dependency cache and failed under Nix with `error=2, No such file or directory`,
+      - the landable Android fix was:
+        - standardize staged Android builds on `HOME` plus `ANDROID_USER_HOME` and stop exporting `ANDROID_SDK_HOME`,
+        - detect `aapt2` from the Nix-provided Android SDK build-tools (`35.0.0` first, then `34.0.0`),
+        - and pass `android.aapt2FromMavenOverride` so AGP uses the SDK `aapt2` instead of the foreign Maven binary,
+      - the decisive validations now pass on current tip:
+        - `nix build --no-link -L .#ci.x86_64-linux.pikaFollowupWorkspaceBuild`
+        - `./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-followup`
+        - run `20260316T200058Z-ce7ecf92`
+        - `workspaceDeps` succeeded remotely on `pika-build`,
+        - `workspaceBuild` succeeded remotely on `pika-build`,
+        - `pika-android-test-compile`, `pikachat-build`, `pika-desktop-check`, `pika-actionlint`, `pika-doc-contracts`, and `pika-rust-deps-hygiene` all passed under the remote `microvm.nix` guest,
+      - required workflow policy now matches the finished Linux runtime model:
+        - `check-pika` no longer remains on a host-local follow-up path; it now runs `./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-followup`,
+        - pre-merge trust policy still keys off approval, not PR origin:
           - the workflow runs required Linux pre-merge under `pull_request_target` so fork PRs can receive the same remote Linux coverage after approval,
           - the allowlisted GitHub users remain explicit in `.github/workflows/pre-merge.yml` (`justinmoon`, `futurepaul`, `AnthonyRonning`, `benthecarman`, `clarkmoody`) and auto-run the pre-merge Linux jobs that check out and execute PR-head code,
-          - every other actor goes through the `ci-approval` environment before any PR-head Linux job runs, including host-local `check-pika`,
-          - pre-merge PR-head jobs no longer share persistent cache namespaces with trusted/scheduled jobs:
-            - `pull_request_target` pre-merge jobs now write `pr-head` `stickydisk` caches for `/nix`, `.pikaci/cache`, and `~/.gradle`,
-            - nightly/trusted jobs now consume separate `trusted` cache keys instead of the old repo-wide shared keys,
-            - so an approved PR can no longer leave cache state behind for a later auto-run trusted/nightly job to consume without another approval boundary,
+          - every other actor goes through the `ci-approval` environment before any PR-head Linux job runs,
+          - pre-merge PR-head jobs keep separate `pr-head` cache namespaces from trusted/scheduled jobs for `/nix`, `.pikaci/cache`, and `~/.gradle`,
       - required remote jobs no longer have fork-only skip branches in either the job `if:` logic or the final `pre-merge` summary gate,
-      - `check-pikachat-openclaw-e2e` no longer falls back to a runner-local host path when remote secrets are unavailable; it now stays a single remote-`pika-build` check contract like fixture,
-      - and the workflow now checks out the PR head explicitly with `persist-credentials: false`, so the approval-based path still evaluates the submitted code rather than silently testing the base branch,
+      - `check-pikachat-openclaw-e2e` no longer falls back to a runner-local host path when remote secrets are unavailable; it stays a single remote-`pika-build` check contract like fixture,
+      - and the workflow checks out the PR head explicitly with `persist-credentials: false`, so the approval-based path still evaluates the submitted code rather than silently testing the base branch,
       - Linux `pikaci` is now the authoritative Linux CI path in `.github/workflows/pre-merge.yml`:
         - the old migration-era `shadow-pikaci-*` jobs were promoted to required/authoritative `check-* (pikaci)` jobs for `pre-merge-pika-rust`, `pre-merge-pikachat-rust`, `pre-merge-agent-contracts`, `pre-merge-rmp`, and `pre-merge-notifications`,
-        - those jobs now collect their run metadata/debug bundle and then fail the workflow when the underlying `pikaci` lane fails instead of always exiting 0 as advisory signal,
-        - the separate summary job and the final `pre-merge` aggregator now report those lanes as required Linux CI rather than as shadow/advisory comparisons,
+        - those jobs collect run metadata/debug bundles and fail the workflow when the underlying `pikaci` lane fails instead of acting as advisory signal,
+        - the grouped Linux summary and the final `pre-merge` aggregator now report the full required Linux `pikaci` surface rather than a mixed legacy/shadow view,
         - and the migration-era advisory/shadow phase for real Linux `pikaci` lanes is over,
-      - the only explicitly deferred Linux debt before the final Android pass is still `pre-merge-pika-followup`:
-        - it remains host-local on the GitHub runner because the Android offline Gradle plugin/dependency closure is still unstaged,
-        - but that runtime exception no longer changes the fact that Linux `pikaci` is the authoritative Linux CI surface overall,
-      - path to full Linux runtime unification from here:
-        - either stage a reproducible offline Android Gradle dependency closure for `:app:compileDebugAndroidTestKotlin`,
-        - or narrow the required followup lane contract so it no longer depends on that unstaged online Android build step.
+      - Linux runtime unification is now complete for required CI:
+        - no required Linux workload still runs on the GitHub runner,
+        - the one Linux runtime model is staged remote `microvm.nix` on `pika-build`,
+        - and Linux can now soak in that operational shape instead of carrying a final host-local exception.

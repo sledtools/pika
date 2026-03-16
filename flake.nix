@@ -66,8 +66,10 @@
             with sdkPkgs;
             [
               cmdline-tools-latest
+              build-tools-34-0-0
               build-tools-35-0-0
               platform-tools
+              platforms-android-34
               platforms-android-35
               emulator
               system-images-android-35-google-apis-arm64-v8a
@@ -126,7 +128,7 @@
           ./nix
           ./.github/actionlint.yaml
           ./.github/workflows/pre-merge.yml
-          ./scripts/agent-tools
+          ./scripts
         ];
       };
       ciPikaCoreRustSrc = ciLinuxPkgs.lib.fileset.toSource {
@@ -537,6 +539,37 @@
             ];
           }
         );
+        pikaFollowupWorkspaceSrcHost = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./VERSION
+            ./Cargo.toml
+            ./Cargo.lock
+            ./config
+            ./crates
+            ./rust
+            ./cli
+            ./uniffi-bindgen
+            ./android
+            ./docs
+            ./just
+            ./justfile
+            ./nix
+            ./.github/actionlint.yaml
+            ./.github/workflows/pre-merge.yml
+            ./scripts
+          ];
+        };
+        pikaFollowupGradleDepsHost =
+          if hasAndroidSdk then
+            import ./nix/ci/pika-followup-gradle-deps.nix {
+              inherit pkgs;
+              src = pikaFollowupWorkspaceSrcHost;
+              androidSdk = androidSdk;
+              androidJdk = pkgs.jdk17_headless;
+            }
+          else
+            null;
         pikachatOpenclawExtensionPkg = mkPikachatOpenclawExtensionPkg pkgs (mkPikachatOpenclawExtensionSrc pkgs.lib);
         mkPikaDevShell = { includeAndroid ? hasAndroidSdk, shellName ? "default" }:
           let
@@ -805,6 +838,7 @@ EOF
             androidJdk = pkgs.jdk17_headless;
             androidGradle = pkgs.gradle;
             androidCargoNdk = pkgs.cargo-ndk;
+            pikaFollowupAndroidDepsUpdateScript = pikaFollowupGradleDepsHost.mitmCache.updateScript;
           }
           // pkgs.lib.optionalAttrs hasMoqRelay {
             moqRelay = moq.packages.${system}.moq-relay;
@@ -913,6 +947,7 @@ EOF
           pikachatWorkspaceBuild = pikachatLane.workspaceBuild;
           pikaFollowupWorkspaceDeps = pikaFollowupLane.workspaceDeps;
           pikaFollowupWorkspaceBuild = pikaFollowupLane.workspaceBuild;
+          pikaFollowupAndroidDepsUpdateScript = pikaFollowupLane.androidGradleDepsUpdateScript;
           notificationsWorkspaceDeps = notificationsLane.workspaceDeps;
           notificationsWorkspaceBuild = notificationsLane.workspaceBuild;
           fixtureWorkspaceDeps = fixtureLane.workspaceDeps;

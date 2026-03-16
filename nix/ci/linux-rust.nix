@@ -44,6 +44,9 @@ let
     nativeBuildInputs = [
       pkgs.coreutils
       pkgs.pkg-config
+    ] ++ pkgs.lib.optionals (lane == "pika-followup") [
+      pkgs.cargo-machete
+      followupGradle
     ];
 
     buildInputs = [
@@ -71,6 +74,22 @@ let
       "-I${pkgs.stdenv.cc.libc.dev}/include"
     ];
   };
+
+  followupGradle = if androidJdk != null then pkgs.gradle.override { java = androidJdk; } else pkgs.gradle;
+
+  pikaFollowupGradleDepsPackage =
+    if lane == "pika-followup" && androidSdk != null && androidJdk != null then
+      import ./pika-followup-gradle-deps.nix {
+        inherit pkgs src androidSdk androidJdk;
+      }
+    else
+      null;
+
+  pikaFollowupGradleMitmCache =
+    if pikaFollowupGradleDepsPackage != null then
+      pikaFollowupGradleDepsPackage.mitmCache
+    else
+      null;
 
   workspaceDummySrc =
     if lane == "pika-core" then
@@ -419,6 +438,7 @@ let
           export PIKACI_FOLLOWUP_PIKA_DESKTOP_CHECK_OK="$TMPDIR/pika-followup-pika-desktop-check.ok"
           export PIKACI_FOLLOWUP_ACTIONLINT_OK="$TMPDIR/pika-followup-actionlint.ok"
           export PIKACI_FOLLOWUP_DOC_CONTRACTS_OK="$TMPDIR/pika-followup-doc-contracts.ok"
+          export PIKACI_FOLLOWUP_RUST_DEPS_HYGIENE_OK="$TMPDIR/pika-followup-rust-deps-hygiene.ok"
           cargoJobs="''${CARGO_BUILD_JOBS:-''${NIX_BUILD_CORES:-}}"
           case "$cargoJobs" in
             ""|0)
@@ -467,6 +487,16 @@ let
             fi
             printf '%s\n' "ok: docs and justfile contracts validated during staged workspace build" \
               >"$PIKACI_FOLLOWUP_DOC_CONTRACTS_OK"
+            echo "[pikaci] validating pika follow-up cargo machete" >&2
+            if ${pkgs.bash}/bin/bash ./scripts/check-cargo-machete; then
+              :
+            else
+              status=$?
+              echo "[pikaci] pika follow-up cargo machete failed with status $status" >&2
+              exit "$status"
+            fi
+            printf '%s\n' "ok: cargo machete validated during staged workspace build" \
+              >"$PIKACI_FOLLOWUP_RUST_DEPS_HYGIENE_OK"
           fi
 
           if [ "''${PIKACI_FOLLOWUP_STAGE_OUTPUTS:-0}" = "1" ]; then
@@ -482,12 +512,32 @@ let
               cd android
               export ANDROID_HOME='${if androidSdk != null then "${androidSdk}/share/android-sdk" else ""}'
               export ANDROID_SDK_ROOT="$ANDROID_HOME"
+              export HOME="$TMPDIR/pikaci-followup-home"
+              export ANDROID_USER_HOME="$HOME/.android"
               export JAVA_HOME='${if androidJdk != null then "${androidJdk}" else ""}'
               export PATH="$JAVA_HOME/bin:$PATH"
               export GRADLE_USER_HOME="$TMPDIR/pikaci-gradle-home"
-              mkdir -p "$GRADLE_USER_HOME"
+              export GRADLE_OPTS="''${GRADLE_OPTS:+$GRADLE_OPTS }-Duser.home=$HOME"
+              export JAVA_TOOL_OPTIONS="''${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }-Duser.home=$HOME"
+              mkdir -p "$HOME" "$ANDROID_USER_HOME" "$GRADLE_USER_HOME"
               printf 'sdk.dir=%s\n' "$ANDROID_HOME" > local.properties
-              ${pkgs.gradle}/bin/gradle --no-daemon :app:compileDebugAndroidTestKotlin >/dev/null
+              unset PIKACI_ANDROID_AAPT2_OVERRIDE
+              for candidate in \
+                "$ANDROID_HOME/build-tools/35.0.0/aapt2" \
+                "$ANDROID_HOME/build-tools/34.0.0/aapt2"
+              do
+                if [ -x "$candidate" ]; then
+                  PIKACI_ANDROID_AAPT2_OVERRIDE="$candidate"
+                  break
+                fi
+              done
+              if [ -z "''${PIKACI_ANDROID_AAPT2_OVERRIDE:-}" ]; then
+                echo "[pikaci] missing SDK aapt2 for staged pika follow-up Android compile" >&2
+                exit 1
+              fi
+              gradle --stacktrace \
+                -Pandroid.aapt2FromMavenOverride="$PIKACI_ANDROID_AAPT2_OVERRIDE" \
+                :app:compileDebugAndroidTestKotlin >/dev/null
             )
             printf '%s\n' "ok: pika Android instrumentation test compile validated during staged workspace build" \
               >"$PIKACI_FOLLOWUP_PIKA_ANDROID_TEST_COMPILE_OK"
@@ -503,6 +553,8 @@ let
               "$out/share/pikaci/pika-followup-actionlint.ok"
             cp "$PIKACI_FOLLOWUP_DOC_CONTRACTS_OK" \
               "$out/share/pikaci/pika-followup-doc-contracts.ok"
+            cp "$PIKACI_FOLLOWUP_RUST_DEPS_HYGIENE_OK" \
+              "$out/share/pikaci/pika-followup-rust-deps-hygiene.ok"
 
             write_wrapper() {
               local path="$1"
@@ -531,6 +583,10 @@ let
               "#!${pkgs.bash}/bin/bash" \
               "set -euo pipefail" \
               "cat \"\$(cd \"\$(dirname \"\$0\")/..\" && pwd)/share/pikaci/pika-followup-doc-contracts.ok\""
+            write_wrapper "$out/bin/run-pika-rust-deps-hygiene" \
+              "#!${pkgs.bash}/bin/bash" \
+              "set -euo pipefail" \
+              "cat \"\$(cd \"\$(dirname \"\$0\")/..\" && pwd)/share/pikaci/pika-followup-rust-deps-hygiene.ok\""
           fi
         ''
       else if lane == "rmp" then
@@ -1159,6 +1215,10 @@ let
             echo "missing staged pika follow-up doc-contract marker in output" >&2
             exit 1
           fi
+          if [ ! -s "$out/share/pikaci/pika-followup-rust-deps-hygiene.ok" ]; then
+            echo "missing staged pika follow-up rust deps hygiene marker in output" >&2
+            exit 1
+          fi
         ''
       else if lane == "rmp" then
         ''
@@ -1679,5 +1739,13 @@ rec {
     PIKACI_FOLLOWUP_STAGE_OUTPUTS = if lane == "pika-followup" then "1" else "0";
     doInstallCargoArtifacts = false;
     inherit installPhaseCommand;
+  } // pkgs.lib.optionalAttrs (lane == "pika-followup") {
+    mitmCache = pikaFollowupGradleMitmCache;
   });
+
+  androidGradleDepsUpdateScript =
+    if pikaFollowupGradleDepsPackage != null then
+      pikaFollowupGradleDepsPackage.mitmCache.updateScript
+    else
+      null;
 }

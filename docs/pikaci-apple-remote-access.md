@@ -74,7 +74,7 @@ The Apple CI config/secret model now follows the repo's existing `age` pattern:
 The checked-in public config currently carries:
 
 ```bash
-PIKACI_APPLE_SSH_HOST=minis-mac-mini.taild659a1.ts.net
+PIKACI_APPLE_SSH_HOST=pika-mini.tail029da2.ts.net
 PIKACI_APPLE_SSH_USER=mini
 PIKACI_APPLE_REMOTE_ROOT=.cache/pikaci-apple
 PIKACI_APPLE_KEEP_RUNS=3

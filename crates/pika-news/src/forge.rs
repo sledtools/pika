@@ -220,23 +220,34 @@ pub fn run_ci_command_for_head(
         bail!("ci command is empty");
     }
     let worktree = temp_worktree(repo, head_sha)?;
-    let mut cmd = Command::new(&command[0]);
-    cmd.args(&command[1..]).current_dir(worktree.path());
-    let output = cmd
-        .output()
-        .with_context(|| format!("run ci command in {}", worktree.path().display()))?;
-    remove_temp_worktree(repo, worktree)?;
-    let mut log = String::from_utf8_lossy(&output.stdout).into_owned();
-    if !output.stderr.is_empty() {
-        if !log.is_empty() && !log.ends_with('\n') {
-            log.push('\n');
+    let ci_result = (|| {
+        let mut cmd = Command::new(&command[0]);
+        cmd.args(&command[1..]).current_dir(worktree.path());
+        let output = cmd
+            .output()
+            .with_context(|| format!("run ci command in {}", worktree.path().display()))?;
+        let mut log = String::from_utf8_lossy(&output.stdout).into_owned();
+        if !output.stderr.is_empty() {
+            if !log.is_empty() && !log.ends_with('\n') {
+                log.push('\n');
+            }
+            log.push_str(&String::from_utf8_lossy(&output.stderr));
         }
-        log.push_str(&String::from_utf8_lossy(&output.stderr));
+        Ok(CiExecutionResult {
+            success: output.status.success(),
+            log,
+        })
+    })();
+    let cleanup_result = remove_temp_worktree(repo, worktree);
+    match (ci_result, cleanup_result) {
+        (Ok(result), Ok(())) => Ok(result),
+        (Ok(_), Err(cleanup_err)) => Err(cleanup_err),
+        (Err(err), Ok(())) => Err(err),
+        (Err(err), Err(cleanup_err)) => Err(err.context(format!(
+            "cleanup after failed ci run also failed: {}",
+            cleanup_err
+        ))),
     }
-    Ok(CiExecutionResult {
-        success: output.status.success(),
-        log,
-    })
 }
 
 fn describe_branch(
@@ -493,7 +504,7 @@ mod tests {
 
     use super::{
         close_branch, create_merge_commit, current_branch_head, install_hooks, merge_branch,
-        publish_merge_refs, write_merge_tree,
+        publish_merge_refs, run_ci_command_for_head, write_merge_tree,
     };
     use crate::config::ForgeRepoConfig;
 
@@ -723,5 +734,24 @@ mod tests {
             .expect("resolve master after failed publish")
             .expect("master after failed publish");
         assert_eq!(master_after, default_head);
+    }
+
+    #[test]
+    fn failed_ci_spawn_cleans_up_temp_worktree() {
+        let (_root, forge_repo, _seed) = setup_repo();
+        let before = worktree_count(&forge_repo);
+        let head_sha = current_branch_head(&forge_repo, "master")
+            .expect("resolve master head")
+            .expect("master head");
+
+        let err = run_ci_command_for_head(
+            &forge_repo,
+            &head_sha,
+            &["/definitely/missing/pika-ci-command".to_string()],
+        )
+        .expect_err("ci command spawn should fail");
+
+        assert!(err.to_string().contains("run ci command"));
+        assert_eq!(worktree_count(&forge_repo), before);
     }
 }

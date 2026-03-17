@@ -164,7 +164,6 @@ apple-host-bundle:
     just cli-smoke
     just openclaw-pikachat-deterministic
     just shared-runtime-regression
-    just desktop-ui-test
     just ios-ui-test
     just nightly-primal-ios-interop
     echo "apple-host-bundle complete"

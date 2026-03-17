@@ -38,7 +38,7 @@ This document defines the selector-first contract and current policy ownership f
 | `nightly-pika-e2e` | `integration_deterministic::call_over_local_moq_relay_boundary`, `integration_deterministic::call_with_pikachat_daemon_boundary`, `integration_deterministic::cli_smoke_media_local` |
 | `nightly-pikachat` | `integration_openclaw::openclaw_gateway_e2e` |
 | `nightly-pika-ui-android` | Android bot/media fixture selector via `integration_deterministic::ui_e2e_local_android` |
-| `nightly-apple-host-bundle` | `just apple-host-bundle` on the Mac mini via `./scripts/pikaci-apple-remote.sh run --just-recipe apple-host-bundle`. This owns the retained heavy Apple coverage: `just ios-ui-test`, `just nightly-primal-ios-interop`, `just shared-runtime-regression`, `just openclaw-pikachat-deterministic`, and the narrower `apple-host-sanity` subset. |
+| `nightly-apple-host-bundle` | `just apple-host-bundle` on the Mac mini via `./scripts/pikaci-apple-remote.sh run --just-recipe apple-host-bundle`. This owns the retained heavy Apple coverage: `just ios-ui-test`, `just nightly-primal-ios-interop`, `just shared-runtime-regression`, `just openclaw-pikachat-deterministic`, and the narrower `apple-host-sanity` subset without rerunning `desktop-ui-test` separately. |
 
 ## Direct Selector Recipes (Not Owners By Themselves)
 

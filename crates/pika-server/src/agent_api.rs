@@ -57,8 +57,13 @@ const INCUS_PERSISTENT_VOLUME_DEVICE_NAME: &str = "pikastate";
 const INCUS_PERSISTENT_VOLUME_PATH: &str = "/mnt/pika-state";
 const INCUS_CLOUD_INIT_USER_DATA_KEY: &str = "cloud-init.user-data";
 const INCUS_BOOTSTRAP_LAUNCHER_PATH: &str = "/usr/local/bin/pika-managed-agent-launcher.sh";
+const INCUS_STATE_VOLUME_SETUP_PATH: &str =
+    "/usr/local/bin/pika-managed-agent-state-volume-setup.sh";
 const INCUS_SYSTEMD_SERVICE_PATH: &str = "/etc/systemd/system/pika-managed-agent.service";
 const INCUS_SYSTEMD_SERVICE_NAME: &str = "pika-managed-agent.service";
+const INCUS_PERSISTENT_AGENT_STATE_ROOT: &str = "/mnt/pika-state/pika-agent";
+const INCUS_PERSISTENT_DAEMON_STATE_DIR: &str = "/mnt/pika-state/pika-agent/state";
+const INCUS_PERSISTENT_OPENCLAW_STATE_DIR: &str = "/mnt/pika-state/pika-agent/openclaw";
 const INCUS_OPERATION_WAIT_TIMEOUT_SECS: i64 = 60;
 const INCUS_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const EVENT_PROVISION_REQUESTED: &str = "provision_requested";
@@ -1183,6 +1188,10 @@ impl IncusManagedVmProvider {
             ),
         );
         files.insert(
+            INCUS_STATE_VOLUME_SETUP_PATH.to_string(),
+            ("0755", incus_state_volume_setup_script()),
+        );
+        files.insert(
             INCUS_SYSTEMD_SERVICE_PATH.to_string(),
             ("0644", incus_systemd_service_unit()),
         );
@@ -1201,6 +1210,9 @@ impl IncusManagedVmProvider {
             cloud_init.push('\n');
         }
         cloud_init.push_str("runcmd:\n");
+        cloud_init.push_str("  - [bash, ");
+        cloud_init.push_str(INCUS_STATE_VOLUME_SETUP_PATH);
+        cloud_init.push_str("]\n");
         cloud_init.push_str("  - [systemctl, daemon-reload]\n");
         cloud_init.push_str("  - [systemctl, enable, --now, ");
         cloud_init.push_str(INCUS_SYSTEMD_SERVICE_NAME);
@@ -1536,9 +1548,51 @@ fn incus_bootstrap_launcher_script(env: &BTreeMap<String, String>, command: &str
     script
 }
 
+fn incus_state_volume_setup_script() -> String {
+    format!(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+
+volume_root="{volume_root}"
+daemon_state_target="{daemon_state_target}"
+openclaw_state_target="{openclaw_state_target}"
+agent_root="/root/pika-agent"
+
+link_state_dir() {{
+  local source_path="$1"
+  local target_path="$2"
+
+  mkdir -p "$target_path"
+  if [[ -L "$source_path" ]]; then
+    if [[ "$(readlink "$source_path")" == "$target_path" ]]; then
+      return
+    fi
+    rm -f "$source_path"
+  elif [[ -d "$source_path" ]]; then
+    cp -a "$source_path"/. "$target_path"/
+    rm -rf "$source_path"
+  elif [[ -e "$source_path" ]]; then
+    rm -rf "$source_path"
+  fi
+
+  ln -s "$target_path" "$source_path"
+}}
+
+mkdir -p "$volume_root" "$daemon_state_target" "$openclaw_state_target" "$agent_root"
+link_state_dir "$agent_root/state" "$daemon_state_target"
+link_state_dir "$agent_root/openclaw" "$openclaw_state_target"
+"#,
+        volume_root = INCUS_PERSISTENT_AGENT_STATE_ROOT,
+        daemon_state_target = INCUS_PERSISTENT_DAEMON_STATE_DIR,
+        openclaw_state_target = INCUS_PERSISTENT_OPENCLAW_STATE_DIR,
+    )
+}
+
 fn incus_systemd_service_unit() -> String {
     format!(
-        "[Unit]\nDescription=Pika Managed Agent Bootstrap\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=/bin/bash {launcher}\nRestart=always\nRestartSec=2\n\n[Install]\nWantedBy=multi-user.target\n",
+        "[Unit]\nDescription=Pika Managed Agent Bootstrap\nAfter=network-online.target\nWants=network-online.target\nRequiresMountsFor={state_volume}\n\n[Service]\nType=simple\nExecStartPre=/bin/bash {state_setup}\nExecStart=/bin/bash {launcher}\nRestart=always\nRestartSec=2\n\n[Install]\nWantedBy=multi-user.target\n",
+        state_volume = INCUS_PERSISTENT_VOLUME_PATH,
+        state_setup = INCUS_STATE_VOLUME_SETUP_PATH,
         launcher = INCUS_BOOTSTRAP_LAUNCHER_PATH,
     )
 }
@@ -4087,12 +4141,24 @@ mod tests {
         assert!(launcher.contains("export PIKA_RELAY_URLS="));
         assert!(launcher.contains("export PIKA_BOT_PUBKEY="));
         assert!(launcher.contains("exec bash /workspace/pika-agent/start-agent.sh"));
+        let state_setup = cloud_init_write_file_content(user_data, INCUS_STATE_VOLUME_SETUP_PATH)
+            .expect("state-volume setup script in cloud-init");
+        assert!(state_setup.contains(INCUS_PERSISTENT_DAEMON_STATE_DIR));
+        assert!(state_setup.contains(INCUS_PERSISTENT_OPENCLAW_STATE_DIR));
+        assert!(state_setup.contains("link_state_dir \"$agent_root/state\""));
+        assert!(state_setup.contains("link_state_dir \"$agent_root/openclaw\""));
         let startup_plan = cloud_init_write_file_content(
             user_data,
             &format!("/{}", pika_agent_control_plane::GUEST_STARTUP_PLAN_PATH),
         )
         .expect("startup plan in cloud-init");
         assert!(startup_plan.contains("\"agent_kind\": \"openclaw\""));
+        let service_unit = cloud_init_write_file_content(user_data, INCUS_SYSTEMD_SERVICE_PATH)
+            .expect("service unit in cloud-init");
+        assert!(service_unit.contains("RequiresMountsFor=/mnt/pika-state"));
+        assert!(service_unit.contains(&format!(
+            "ExecStartPre=/bin/bash {INCUS_STATE_VOLUME_SETUP_PATH}"
+        )));
         assert!(user_data.contains(INCUS_SYSTEMD_SERVICE_NAME));
         assert_eq!(instance_body["config"]["user.pika.agent_kind"], "openclaw");
 

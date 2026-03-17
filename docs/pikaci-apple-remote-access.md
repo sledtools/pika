@@ -76,7 +76,7 @@ The checked-in public config currently carries:
 ```bash
 PIKACI_APPLE_SSH_HOST=pika-mini.tail029da2.ts.net
 PIKACI_APPLE_SSH_USER=mini
-PIKACI_APPLE_REMOTE_ROOT=.cache/pikaci-apple
+PIKACI_APPLE_REMOTE_ROOT=/Volumes/pikaci-data/pikaci-apple
 PIKACI_APPLE_KEEP_RUNS=3
 ```
 
@@ -95,7 +95,7 @@ PIKACI_APPLE_SSH_KEY_FILE="$HOME/.ssh/<apple-mini-private-key>" \
 
 The GitHub-side dependency after this change is just the generic repo secret `AGE_SECRET_KEY`.
 
-It uses a git-backed source contract on the mini: the caller sends an exact git bundle for the requested ref, the mini imports it into a bare mirror under `~/.cache/pikaci-apple`, materializes a stable prepared worktree under `prepared/<commit>`, and reuses that checkout across repeated runs of the same commit. When the wrapper sees a schema-valid prepared checkout for the exact commit, it skips source upload/import entirely and goes straight to the prepared worktree. `prepare` realizes the Apple dev shell and prewarms the generated iOS artifacts there; `run` reuses the prepared checkout, executes the requested checked-in `just` recipe (default `apple-host-bundle`), then returns a debug artifact bundle to the caller. The wrapper takes a host-local run lock before touching the shared mirror/target state, schema-checks the prepared marker before reuse, scrubs run-local `.pikaci` state and stale XCTest logs before each operation, prunes old remote run dirs automatically, and keeps only a bounded number of prepared commit dirs.
+It uses a git-backed source contract on the mini: the caller sends an exact git bundle for the requested ref, the mini imports it into a bare mirror under `/Volumes/pikaci-data/pikaci-apple`, materializes a stable prepared worktree under `prepared/<commit>`, and reuses that checkout across repeated runs of the same commit. When the wrapper sees a schema-valid prepared checkout for the exact commit, it skips source upload/import entirely and goes straight to the prepared worktree. `prepare` now builds a stronger Apple-shaped staged state there: it prewarms the Apple dev shell, compiles the Rust/Desktop test binaries, and for the nightly bundle it runs `xcodebuild build-for-testing` via `./tools/ios-ui-test prepare`. `run` then reuses that prepared checkout, executes the requested checked-in `just` recipe (default `apple-host-bundle`), and lets `./tools/ios-ui-test run` switch to `xcodebuild test-without-building` when the prepared iOS outputs exist. The wrapper returns phase timing artifacts to the caller, takes a host-local run lock before touching the shared mirror/target state, schema-checks the prepared marker before reuse, scrubs run-local `.pikaci` state and stale XCTest logs before each operation, prunes old remote run dirs automatically, and keeps only a bounded number of prepared commit dirs.
 
 ### Caveats
 

@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+IOS_DIR="$ROOT/ios"
+PROJECT_PATH="$IOS_DIR/Pika.xcodeproj"
+SCHEME="Pika"
+DERIVED_DATA_PATH="${PIKA_IOS_DERIVED_DATA_PATH:-ios/build}"
+APP_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}"
+URL_SCHEME="${PIKA_IOS_URL_SCHEME:-pika}"
+
+usage() {
+  cat <<'EOF'
+usage: ./tools/ios-ui-test <prepare|run>
+
+prepare   Build the iOS UITest bundle for testing without executing tests
+run       Execute the iOS UITest bundle (uses test-without-building when prepared outputs exist)
+EOF
+}
+
+command="${1:-}"
+case "$command" in
+  prepare|run)
+    ;;
+  -h|--help|"")
+    usage
+    exit 0
+    ;;
+  *)
+    echo "error: unknown command: $command" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+
+find_xctestrun_file() {
+  find "$ROOT/$DERIVED_DATA_PATH/Build/Products" -name '*.xctestrun' -print | head -n 1
+}
+
+resolve_sim_udid() {
+  ./tools/ios-sim-ensure | sed -n 's/^ok: ios simulator ready (udid=\(.*\))$/\1/p'
+}
+
+ensure_base_artifacts() {
+  if [ -d "$PROJECT_PATH" ] \
+    && [ -d "$IOS_DIR/Frameworks/PikaCore.xcframework" ] \
+    && [ -d "$IOS_DIR/Frameworks/PikaNSE.xcframework" ] \
+    && [ -d "$IOS_DIR/Frameworks/PikaShare.xcframework" ]; then
+    return
+  fi
+  just ios-xcframework ios-xcodeproj
+}
+
+run_xcodebuild() {
+  local action="$1"
+  local udid="$2"
+  shift 2
+
+  ./tools/xcode-run xcodebuild \
+    -project "$PROJECT_PATH" \
+    -scheme "$SCHEME" \
+    -derivedDataPath "$DERIVED_DATA_PATH" \
+    -destination "id=$udid" \
+    "$action" \
+    -skipMacroValidation \
+    ARCHS=arm64 \
+    ONLY_ACTIVE_ARCH=YES \
+    CODE_SIGNING_ALLOWED=NO \
+    PIKA_APP_BUNDLE_ID="$APP_BUNDLE_ID" \
+    PIKA_IOS_URL_SCHEME="$URL_SCHEME" \
+    "$@"
+}
+
+skip_args=(
+  -skip-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong
+  -skip-testing:PikaUITests/PikaUITests/testE2E_hypernoteDetailsAndCodeBlock
+  -skip-testing:PikaUITests/PikaUITests/testE2E_multiImageGrid
+)
+
+udid="$(resolve_sim_udid)"
+if [ -z "$udid" ]; then
+  echo "error: could not determine simulator udid" >&2
+  exit 1
+fi
+
+mkdir -p "$ROOT/$DERIVED_DATA_PATH"
+printf '%s\n' "$udid" > "$ROOT/$DERIVED_DATA_PATH/last-ios-ui-test-udid.txt"
+
+case "$command" in
+  prepare)
+    ensure_base_artifacts
+    run_xcodebuild build-for-testing "$udid" "${skip_args[@]}"
+    ;;
+  run)
+    xctestrun_file="$(find_xctestrun_file)"
+    if [ -n "${PIKACI_IOS_UI_TEST_USE_PREPARED:-}" ] && [ -n "$xctestrun_file" ]; then
+      ./tools/xcode-run xcodebuild \
+        test-without-building \
+        -xctestrun "$xctestrun_file" \
+        -destination "id=$udid" \
+        -skipMacroValidation \
+        ARCHS=arm64 \
+        ONLY_ACTIVE_ARCH=YES \
+        CODE_SIGNING_ALLOWED=NO \
+        PIKA_APP_BUNDLE_ID="$APP_BUNDLE_ID" \
+        PIKA_IOS_URL_SCHEME="$URL_SCHEME" \
+        "${skip_args[@]}"
+    else
+      ensure_base_artifacts
+      run_xcodebuild test "$udid" "${skip_args[@]}"
+    fi
+    ;;
+esac

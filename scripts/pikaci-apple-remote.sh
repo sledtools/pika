@@ -73,6 +73,20 @@ keep_prepared="${PIKACI_APPLE_KEEP_PREPARED:-2}"
 lock_timeout_sec="${PIKACI_APPLE_LOCK_TIMEOUT_SEC:-0}"
 github_output=""
 
+prepare_profile_for_recipe() {
+  case "$1" in
+    apple-host-bundle)
+      printf '%s\n' "bundle"
+      ;;
+    apple-host-sanity)
+      printf '%s\n' "sanity"
+      ;;
+    *)
+      printf '%s\n' "generic"
+      ;;
+  esac
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ref)
@@ -165,13 +179,14 @@ artifact_dir="${artifact_dir:-$repo_root/.pikaci/apple-remote/$run_id}"
 mkdir -p "$artifact_dir"
 
 tmp_dir="$(mktemp -d)"
-prepared_schema_version=2
+prepared_schema_version=3
 bundle_ref="refs/pikaci-apple/${command}/${run_id}"
 bundle_path="$tmp_dir/source.bundle"
 ssh_target="${ssh_user}@${ssh_host}"
 bundle_created=0
 prepared_probe="unknown"
 upload_skipped=0
+desired_prepare_profile="$(prepare_profile_for_recipe "$just_recipe")"
 
 cleanup() {
   set +e
@@ -298,6 +313,7 @@ KEEP_RUNS=${keep_runs}
 KEEP_PREPARED=${keep_prepared}
 LOCK_TIMEOUT_SEC=${lock_timeout_sec}
 JUST_RECIPE=${just_recipe}
+PREPARE_PROFILE=${desired_prepare_profile}
 EOF
 
 "$ssh_binary" "$ssh_target" "mkdir -p $(shell_quote "$remote_run_dir")"
@@ -308,7 +324,7 @@ run_remote_operation() {
   local remote_exit_local
   set +e
   "$ssh_binary" "$ssh_target" \
-    "bash -s -- $(printf '%q' "$resolved_remote_root") $(printf '%q' "$command") $(printf '%q' "$run_id") $(printf '%q' "$bundle_ref") $(printf '%q' "$resolved_commit") $(printf '%q' "$keep_runs") $(printf '%q' "$keep_prepared") $(printf '%q' "$lock_timeout_sec") $(printf '%q' "$prepared_schema_version") $(printf '%q' "$skip_source_import") $(printf '%q' "$just_recipe")" \
+    "bash -s -- $(printf '%q' "$resolved_remote_root") $(printf '%q' "$command") $(printf '%q' "$run_id") $(printf '%q' "$bundle_ref") $(printf '%q' "$resolved_commit") $(printf '%q' "$keep_runs") $(printf '%q' "$keep_prepared") $(printf '%q' "$lock_timeout_sec") $(printf '%q' "$prepared_schema_version") $(printf '%q' "$skip_source_import") $(printf '%q' "$just_recipe") $(printf '%q' "$desired_prepare_profile")" \
     2>&1 <<'REMOTE_RUN' | tee -a "$local_log"
 set -euo pipefail
 
@@ -323,6 +339,7 @@ lock_timeout_sec="$8"
 prepared_schema_version="$9"
 skip_source_import="${10}"
 just_recipe="${11}"
+desired_prepare_profile="${12}"
 
 run_dir="${resolved_remote_root}/runs/${run_id}"
 bundle_path="${run_dir}/source.bundle"
@@ -334,12 +351,28 @@ prepared_dir="${prepared_root}/${resolved_commit}"
 prepared_worktree_dir="${prepared_dir}/worktree"
 prepared_ref="refs/pikaci-apple/prepared/${resolved_commit}"
 prepared_marker="${prepared_dir}/prepared.env"
+prepare_phase_file="${prepared_dir}/prepare-phases.tsv"
 artifacts_dir="${run_dir}/artifacts"
 logs_dir="${run_dir}/logs"
 remote_artifact_path="${run_dir}/artifact.tgz"
 prepare_status="unknown"
 prepare_duration_sec=0
 bundle_duration_sec=0
+
+prepare_profile_rank() {
+  case "$1" in
+    generic) printf '%s\n' 0 ;;
+    sanity) printf '%s\n' 1 ;;
+    bundle) printf '%s\n' 2 ;;
+    *) printf '%s\n' -1 ;;
+  esac
+}
+
+prepare_profile_satisfies() {
+  local available="$1"
+  local desired="$2"
+  [[ "$(prepare_profile_rank "$available")" -ge "$(prepare_profile_rank "$desired")" ]]
+}
 
 mkdir -p "$artifacts_dir" "$logs_dir"
 exec > >(tee -a "${logs_dir}/remote.log") 2>&1
@@ -372,6 +405,7 @@ ensure_prepared_checkout() {
   local marker_schema_version=""
   local marker_resolved_commit=""
   local marker_worktree_dir=""
+  local marker_prepare_profile=""
   prepare_started_at="$(date +%s)"
 
   mkdir -p "$prepared_root" "$shared_target_dir"
@@ -416,6 +450,7 @@ ensure_prepared_checkout() {
         SCHEMA_VERSION) marker_schema_version="$value" ;;
         RESOLVED_COMMIT) marker_resolved_commit="$value" ;;
         PREPARED_WORKTREE_DIR) marker_worktree_dir="$value" ;;
+        PREPARED_PROFILE) marker_prepare_profile="$value" ;;
       esac
     done < "$prepared_marker"
   fi
@@ -427,7 +462,8 @@ ensure_prepared_checkout() {
     fi
   elif [[ "$marker_schema_version" != "$prepared_schema_version" ]] \
     || [[ "$marker_resolved_commit" != "$resolved_commit" ]] \
-    || [[ "$marker_worktree_dir" != "$prepared_worktree_dir" ]]; then
+    || [[ "$marker_worktree_dir" != "$prepared_worktree_dir" ]] \
+    || ! prepare_profile_satisfies "${marker_prepare_profile:-generic}" "$desired_prepare_profile"; then
     should_prewarm=1
     if [[ "$prepare_status" == "prepared-reused" ]]; then
       prepare_status="prepared-invalidated"
@@ -441,12 +477,8 @@ ensure_prepared_checkout() {
     fi
     export PIKA_XCODE_INSTALL_PROMPT=0
     export CARGO_TARGET_DIR="$shared_target_dir"
-    nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c bash -lc '
-      set -euo pipefail
-      cargo metadata --format-version=1 --no-deps >/dev/null
-      just ios-xcframework
-      just ios-xcodeproj
-    '
+    nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c \
+      ./scripts/apple-host-prepare.sh "$desired_prepare_profile" "$prepare_phase_file"
   fi
 
   mkdir -p "$prepared_dir"
@@ -455,6 +487,7 @@ SCHEMA_VERSION=$prepared_schema_version
 RESOLVED_COMMIT=$resolved_commit
 PREPARE_STATUS=$prepare_status
 PREPARED_WORKTREE_DIR=$prepared_worktree_dir
+PREPARED_PROFILE=$desired_prepare_profile
 PREPARED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
   touch "$prepared_dir"
@@ -525,8 +558,12 @@ ensure_prepared_checkout
 printf '%s\n' "$prepare_status" > "${artifacts_dir}/prepare_status.txt"
 printf '%s\n' "$prepare_duration_sec" > "${artifacts_dir}/prepare_duration_sec.txt"
 printf '%s\n' "$prepared_worktree_dir" > "${artifacts_dir}/prepared_worktree_dir.txt"
+printf '%s\n' "$desired_prepare_profile" > "${artifacts_dir}/prepare_profile.txt"
 printf '%s\n' "$resolved_commit" > "${artifacts_dir}/revision.txt"
 printf '%s\n' "$command" > "${artifacts_dir}/command.txt"
+if [[ -f "$prepare_phase_file" ]]; then
+  cp "$prepare_phase_file" "${artifacts_dir}/prepare_phases.tsv"
+fi
 
 if [[ "$command" == "run" ]]; then
   cd "$prepared_worktree_dir"
@@ -539,6 +576,10 @@ if [[ "$command" == "run" ]]; then
   fi
   export PIKA_XCODE_INSTALL_PROMPT=0
   export CARGO_TARGET_DIR="$shared_target_dir"
+  export PIKACI_APPLE_PREPARED_PROFILE="$desired_prepare_profile"
+  if [[ "$desired_prepare_profile" == "bundle" ]]; then
+    export PIKACI_IOS_UI_TEST_USE_PREPARED=1
+  fi
   nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c just "$just_recipe"
   bundle_exit=$?
   set -e
@@ -631,6 +672,7 @@ fi
   echo "PREPARE_STATUS=${prepare_status_output}"
   echo "PREPARE_DURATION_SEC=${prepare_duration_output}"
   echo "BUNDLE_DURATION_SEC=${bundle_duration_output}"
+  echo "PREPARE_PROFILE=${desired_prepare_profile}"
 } >> "${artifact_dir}/metadata.env"
 
 if [[ -n "$github_output" ]]; then
@@ -648,6 +690,7 @@ if [[ -n "$github_output" ]]; then
     echo "prepare_status=${prepare_status_output}"
     echo "prepare_duration_sec=${prepare_duration_output}"
     echo "bundle_duration_sec=${bundle_duration_output}"
+    echo "prepare_profile=${desired_prepare_profile}"
   } >> "$github_output"
 fi
 

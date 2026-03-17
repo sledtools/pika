@@ -1302,7 +1302,7 @@ impl IncusManagedVmProvider {
             cloud_init.push('\n');
         }
         cloud_init.push_str("runcmd:\n");
-        cloud_init.push_str("  - [systemctl, restart, pika-managed-agent.service]\n");
+        cloud_init.push_str("  - [systemctl, --no-block, restart, pika-managed-agent.service]\n");
         Ok(cloud_init)
     }
 
@@ -4556,9 +4556,12 @@ GFs2pW5hEhS7cCO0qXaa5g==
         assert!(launcher.contains("export PIKA_BOT_PUBKEY="));
         assert!(launcher.contains("export PIKA_ENABLE_OPENCLAW_PRIVATE_PROXY=0"));
         assert!(launcher.contains("sock.connect((\"1.1.1.1\", 80))"));
+        assert!(launcher.contains("    print(sock.getsockname()[0])"));
+        assert!(launcher.contains("    pass"));
+        assert!(launcher.contains("    sock.close()"));
         assert!(launcher.contains("exec bash /workspace/pika-agent/start-agent.sh"));
         assert!(user_data.contains("runcmd:"));
-        assert!(user_data.contains("systemctl, restart, pika-managed-agent.service"));
+        assert!(user_data.contains("systemctl, --no-block, restart, pika-managed-agent.service"));
         let state_setup = cloud_init_write_file_content(user_data, INCUS_STATE_VOLUME_SETUP_PATH)
             .expect("state-volume setup script in cloud-init");
         assert!(state_setup.contains(INCUS_PERSISTENT_DAEMON_STATE_DIR));

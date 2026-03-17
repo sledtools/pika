@@ -60,11 +60,8 @@ const INCUS_PERSISTENT_VOLUME_CONTENT_TYPE: &str = "filesystem";
 const INCUS_PERSISTENT_VOLUME_DEVICE_NAME: &str = "pikastate";
 const INCUS_PERSISTENT_VOLUME_PATH: &str = "/mnt/pika-state";
 const INCUS_CLOUD_INIT_USER_DATA_KEY: &str = "cloud-init.user-data";
-const INCUS_BOOTSTRAP_LAUNCHER_PATH: &str = "/usr/local/bin/pika-managed-agent-launcher.sh";
-const INCUS_STATE_VOLUME_SETUP_PATH: &str =
-    "/usr/local/bin/pika-managed-agent-state-volume-setup.sh";
-const INCUS_SYSTEMD_SERVICE_PATH: &str = "/etc/systemd/system/pika-managed-agent.service";
-const INCUS_SYSTEMD_SERVICE_NAME: &str = "pika-managed-agent.service";
+const INCUS_BOOTSTRAP_LAUNCHER_PATH: &str = "/workspace/pika-agent/incus-launcher.sh";
+const INCUS_STATE_VOLUME_SETUP_PATH: &str = "/workspace/pika-agent/incus-state-volume-setup.sh";
 const INCUS_PERSISTENT_AGENT_STATE_ROOT: &str = "/mnt/pika-state/pika-agent";
 const INCUS_PERSISTENT_DAEMON_STATE_DIR: &str = "/mnt/pika-state/pika-agent/state";
 const INCUS_PERSISTENT_OPENCLAW_STATE_DIR: &str = "/mnt/pika-state/pika-agent/openclaw";
@@ -1290,10 +1287,6 @@ impl IncusManagedVmProvider {
             INCUS_STATE_VOLUME_SETUP_PATH.to_string(),
             ("0755", incus_state_volume_setup_script()),
         );
-        files.insert(
-            INCUS_SYSTEMD_SERVICE_PATH.to_string(),
-            ("0644", incus_systemd_service_unit()),
-        );
 
         let mut cloud_init = String::from("#cloud-config\nwrite_files:\n");
         for (path, (permissions, content)) in files {
@@ -1308,14 +1301,6 @@ impl IncusManagedVmProvider {
             cloud_init.push_str(&base64::engine::general_purpose::STANDARD.encode(content));
             cloud_init.push('\n');
         }
-        cloud_init.push_str("runcmd:\n");
-        cloud_init.push_str("  - [bash, ");
-        cloud_init.push_str(INCUS_STATE_VOLUME_SETUP_PATH);
-        cloud_init.push_str("]\n");
-        cloud_init.push_str("  - [systemctl, daemon-reload]\n");
-        cloud_init.push_str("  - [systemctl, enable, --now, ");
-        cloud_init.push_str(INCUS_SYSTEMD_SERVICE_NAME);
-        cloud_init.push_str("]\n");
         Ok(cloud_init)
     }
 
@@ -1791,15 +1776,6 @@ link_state_dir "$agent_root/openclaw" "$openclaw_state_target"
         volume_root = INCUS_PERSISTENT_AGENT_STATE_ROOT,
         daemon_state_target = INCUS_PERSISTENT_DAEMON_STATE_DIR,
         openclaw_state_target = INCUS_PERSISTENT_OPENCLAW_STATE_DIR,
-    )
-}
-
-fn incus_systemd_service_unit() -> String {
-    format!(
-        "[Unit]\nDescription=Pika Managed Agent Bootstrap\nAfter=network-online.target\nWants=network-online.target\nRequiresMountsFor={state_volume}\n\n[Service]\nType=simple\nExecStartPre=/bin/bash {state_setup}\nExecStart=/bin/bash {launcher}\nRestart=always\nRestartSec=2\n\n[Install]\nWantedBy=multi-user.target\n",
-        state_volume = INCUS_PERSISTENT_VOLUME_PATH,
-        state_setup = INCUS_STATE_VOLUME_SETUP_PATH,
-        launcher = INCUS_BOOTSTRAP_LAUNCHER_PATH,
     )
 }
 
@@ -4571,13 +4547,10 @@ GFs2pW5hEhS7cCO0qXaa5g==
         )
         .expect("startup plan in cloud-init");
         assert!(startup_plan.contains("\"agent_kind\": \"openclaw\""));
-        let service_unit = cloud_init_write_file_content(user_data, INCUS_SYSTEMD_SERVICE_PATH)
-            .expect("service unit in cloud-init");
-        assert!(service_unit.contains("RequiresMountsFor=/mnt/pika-state"));
-        assert!(service_unit.contains(&format!(
-            "ExecStartPre=/bin/bash {INCUS_STATE_VOLUME_SETUP_PATH}"
-        )));
-        assert!(user_data.contains(INCUS_SYSTEMD_SERVICE_NAME));
+        assert!(
+            !user_data.contains("pika-managed-agent.service"),
+            "service unit should be baked into the Incus guest image, not written by cloud-init"
+        );
         assert_eq!(instance_body["config"]["user.pika.agent_kind"], "openclaw");
 
         let wait_request = rx.recv().expect("captured operation wait request");

@@ -868,7 +868,7 @@ impl IncusManagedVmProvider {
                 "load configured incus project",
             )
             .await?;
-        let _: serde_json::Value = self
+        let profile: serde_json::Value = self
             .get_json(
                 &["1.0", "profiles", &self.resolved.profile],
                 true,
@@ -876,6 +876,12 @@ impl IncusManagedVmProvider {
                 "load configured incus profile",
             )
             .await?;
+        anyhow::ensure!(
+            incus_profile_has_nic_device(&profile),
+            "configured incus profile {} in project {} must include at least one nic device",
+            self.resolved.profile,
+            self.resolved.project
+        );
         let _: serde_json::Value = self
             .get_json(
                 &["1.0", "storage-pools", &self.resolved.storage_pool],
@@ -1634,6 +1640,17 @@ impl IncusManagedVmProvider {
 fn is_incus_not_found_error(err: &anyhow::Error) -> bool {
     let message = err.to_string().to_ascii_lowercase();
     message.contains("404") && message.contains("not found")
+}
+
+fn incus_profile_has_nic_device(profile: &serde_json::Value) -> bool {
+    profile
+        .get("devices")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|devices| {
+            devices
+                .values()
+                .any(|device| device.get("type").and_then(serde_json::Value::as_str) == Some("nic"))
+        })
 }
 
 fn agent_kind_from_resolved(kind: ResolvedMicrovmAgentKind) -> MicrovmAgentKind {
@@ -4598,7 +4615,10 @@ mod tests {
     fn agent_api_healthcheck_rejects_incus_when_customer_openclaw_flow_is_unimplemented() {
         let (base_url, rx) = spawn_response_sequence_server(vec![
             ("200 OK", r#"{"type":"sync","metadata":{}}"#),
-            ("200 OK", r#"{"type":"sync","metadata":{}}"#),
+            (
+                "200 OK",
+                r#"{"type":"sync","metadata":{"devices":{"eth0":{"type":"nic","network":"incusbr0"}}}}"#,
+            ),
             ("200 OK", r#"{"type":"sync","metadata":{}}"#),
             ("200 OK", r#"{"type":"sync","metadata":{}}"#),
         ]);
@@ -4642,6 +4662,45 @@ mod tests {
         assert_eq!(
             image_request.path,
             "/1.0/images/aliases/pika-agent%2Fdev?project=managed-agents"
+        );
+    }
+
+    #[test]
+    fn agent_api_healthcheck_rejects_incus_profile_without_nic() {
+        let (base_url, rx) = spawn_response_sequence_server(vec![
+            ("200 OK", r#"{"type":"sync","metadata":{}}"#),
+            ("200 OK", r#"{"type":"sync","metadata":{"devices":{}}}"#),
+        ]);
+        with_env_overrides(
+            &[
+                (VM_PROVIDER_ENV, Some("incus")),
+                (INCUS_ENDPOINT_ENV, Some(base_url.as_str())),
+                (INCUS_PROJECT_ENV, Some("managed-agents")),
+                (INCUS_PROFILE_ENV, Some("pika-agent")),
+                (INCUS_STORAGE_POOL_ENV, Some("managed-agents-zfs")),
+                (INCUS_IMAGE_ALIAS_ENV, Some("pika-agent/dev")),
+                (INCUS_INSECURE_TLS_ENV, Some("true")),
+            ],
+            || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build runtime");
+                let err = runtime
+                    .block_on(agent_api_healthcheck())
+                    .expect_err("incus healthcheck should reject profile without nic");
+                assert!(err
+                    .to_string()
+                    .contains("must include at least one nic device"));
+            },
+        );
+
+        let project_request = rx.recv().expect("project probe");
+        assert_eq!(project_request.path, "/1.0/projects/managed-agents");
+        let profile_request = rx.recv().expect("profile probe");
+        assert_eq!(
+            profile_request.path,
+            "/1.0/profiles/pika-agent?project=managed-agents"
         );
     }
 

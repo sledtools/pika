@@ -5,19 +5,21 @@ usage() {
   cat <<'EOF'
 Usage:
   scripts/incus-dev-image.sh build
-  scripts/incus-dev-image.sh import [--remote-host HOST] [--alias ALIAS] [--artifact PATH]
-  scripts/incus-dev-image.sh build-import [--remote-host HOST] [--alias ALIAS]
+  scripts/incus-dev-image.sh import [--remote-host HOST] [--project PROJECT] [--alias ALIAS] [--artifact PATH]
+  scripts/incus-dev-image.sh build-import [--remote-host HOST] [--project PROJECT] [--alias ALIAS]
 
 Builds and imports the managed-agent Incus dev image.
 
 Defaults:
   HOST  pika-build
+  PROJECT pika-managed-agents
   ALIAS pika-agent/dev
   PATH  ./result
 EOF
 }
 
 remote_host="pika-build"
+project_name="pika-managed-agents"
 alias_name="pika-agent/dev"
 artifact_path="result"
 
@@ -32,6 +34,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --remote-host)
       remote_host="$2"
+      shift 2
+      ;;
+    --project)
+      project_name="$2"
       shift 2
       ;;
     --alias)
@@ -73,8 +79,8 @@ import_image() {
   scp "$metadata_path" "$disk_path" "$remote_host:$remote_tmp/"
   ssh "$remote_host" "
     set -euo pipefail
-    incus image delete '$alias_name' >/dev/null 2>&1 || true
-    incus image import '$remote_tmp/$(basename "$metadata_path")' '$remote_tmp/$(basename "$disk_path")' --alias '$alias_name'
+    incus image delete --project '$project_name' '$alias_name' >/dev/null 2>&1 || true
+    incus image import --project '$project_name' '$remote_tmp/$(basename "$metadata_path")' '$remote_tmp/$(basename "$disk_path")' --alias '$alias_name'
     rm -rf '$remote_tmp'
   "
 }

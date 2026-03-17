@@ -22,10 +22,11 @@
 
     Expected manual one-time setup for the managed-agent dev lane:
       incus project create pika-managed-agents
-      incus profile create pika-agent-dev
+      incus --project pika-managed-agents profile create pika-agent-dev
+      incus --project pika-managed-agents profile device add pika-agent-dev eth0 nic network=incusbr0 name=eth0
       incus storage volume list default
 
     Image import helper:
-      ./scripts/incus-dev-image.sh import --remote-host pika-build
+      ./scripts/incus-dev-image.sh import --remote-host pika-build --project pika-managed-agents
   '';
 }

@@ -20,6 +20,9 @@ Request-scope smoke flow for the Incus dev lane:
   2. poll until the agent reports ready
   3. print the final agent JSON
 
+This requires a fresh test owner with no existing managed environment. If `agent new` reports
+`created=false`, the script fails instead of silently reusing an existing VM.
+
 This intentionally does not attempt cleanup because pika-server still has no public delete endpoint.
 Use the dashboard reset flow or Incus operator commands for teardown after validation.
 EOF
@@ -74,7 +77,13 @@ cmd=(
 if [[ "$incus_insecure_tls" -eq 1 ]]; then
   cmd+=(--incus-insecure-tls)
 fi
-"${cmd[@]}"
+new_json="$("${cmd[@]}")"
+created="$(printf '%s\n' "$new_json" | jq -er '.created')"
+if [[ "$created" != "true" ]]; then
+  echo "Incus smoke requires a fresh owner with no existing managed environment; got created=$created" >&2
+  printf '%s\n' "$new_json" >&2
+  exit 1
+fi
 
 for _ in $(seq 1 90); do
   state_json="$(cargo run -q -p pikachat -- agent me --api-base-url "$api_base_url" --nsec "$nsec")"

@@ -15,6 +15,7 @@ It is intentionally narrow:
 
 - `pika-build` is the first Incus host target
 - the guest image is Nix-built and imported into Incus manually
+- `pika-build` is the Incus substrate for this lane, not the agent API host
 - `pika-server` stays on `microvm` as the default provider
 - Incus is exercised through explicit request-scoped provisioning
 
@@ -81,21 +82,41 @@ Current one-time setup is still operator-managed:
 ```bash
 ssh pika-build
 incus project create pika-managed-agents
-incus profile create pika-agent-dev
+incus --project pika-managed-agents profile create pika-agent-dev
+incus --project pika-managed-agents profile device add pika-agent-dev eth0 nic network=incusbr0 name=eth0
 ```
+
+Notes:
+
+- import the managed-agent image into the same project that `pika-server` will target
+- the provider already injects the root disk and the persistent state disk, so this profile must at
+  minimum provide a NIC
+- if your Incus host does not use `incusbr0`, replace it with the correct network from `incus network list`
 
 ## Import The Image Into Incus
 
 Import the image artifact onto the remote Incus host:
 
 ```bash
-scripts/incus-dev-image.sh build-import --remote-host pika-build --alias pika-agent/dev
+scripts/incus-dev-image.sh build-import \
+  --remote-host pika-build \
+  --project pika-managed-agents \
+  --alias pika-agent/dev
 ```
 
 This copies `metadata.tar.xz` and `disk.qcow2` to the remote host and imports them as the chosen
-Incus image alias.
+Incus image alias in the target project.
 
 ## `pika-build` Smoke Flow
+
+`pika-build` hosts Incus for this lane, but it does not run `pika-server`.
+
+The smoke API base URL must point at a `pika-server` process that is configured to use
+`https://pika-build:8443` as its Incus endpoint. That can be:
+
+- a local branch build of `pika-server`
+- a dedicated canary deployment of `pika-server`
+- the real `pika-server` host with `microvm` still left as the default provider
 
 The Incus provider expects these settings for request-scoped provisioning:
 
@@ -110,7 +131,7 @@ Use the smoke helper:
 
 ```bash
 scripts/incus-managed-agent-smoke.sh \
-  --api-base-url https://pika-build \
+  --api-base-url https://pika-server \
   --nsec '<test nsec>' \
   --incus-endpoint https://pika-build:8443 \
   --incus-project pika-managed-agents \
@@ -121,7 +142,7 @@ scripts/incus-managed-agent-smoke.sh \
 
 Expected results:
 
-1. `pika-server` starts healthy with `microvm` still as the default provider.
+1. The chosen `pika-server` process starts healthy with `microvm` still as the default provider.
 2. The explicit Incus provision request succeeds.
 3. An Incus VM appears with a deterministic `pika-agent-*` instance name.
 4. A matching custom volume named `<vm_id>-state` appears.
@@ -159,6 +180,7 @@ This lets operators verify:
 - startup health can initialize the Incus client path honestly
 - Incus requests can create and observe real managed guests
 - existing microVM-backed rows still route to the microVM backend
+- the smoke helper is provisioning a fresh Incus environment, not just re-reading an existing owner state
 
 ## Deletion Validation
 

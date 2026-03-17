@@ -502,6 +502,7 @@ At the end of this phase, newly provisioned managed agents should no longer depe
 Current validation shape:
 
 - `pika-build` is the first real dev target for the Incus lane via a dedicated `pika-build-incus-dev` host config plus an operator-run image import step
+- the `pika-build` role in this phase is the Incus substrate; the agent API still comes from a `pika-server` process pointed at that Incus endpoint
 - `pika-server` should continue to deploy with `microvm` as the default provider and use explicit request-scoped Incus provisioning for internal canary validation
 - the concrete operator path for this phase lives in `docs/incus-dev-lane.md`
 - public validation currently reaches real create plus ready; delete is still validated through the provider seam and the existing dashboard reset path because there is not yet a public v1 delete endpoint

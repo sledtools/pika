@@ -304,8 +304,8 @@ Current transition status:
 - the first Incus dev lane is now real for create, status, delete, and an image-backed guest boot path
 - the Incus dev path currently requires explicit endpoint, project, profile, storage-pool, and image-alias config, and it models each managed environment as one disposable VM root plus one attached persistent custom volume mounted at `/mnt/pika-state`
 - the first managed-agent Incus guest image is Nix-built and imported as a VM image artifact rather than assembled from host-local runner directories
-- the current `pika-build-incus-dev` host shape still needs operator one-time setup for the Incus bridge, storage pool, project, and profile before request-scoped Incus provisioning can work
-- the host shape now needs to configure `core.https_address` explicitly; off-host canaries still need trusted TLS client-cert support before `pika-server -> pika-build:8443` mutations can succeed
+- the canonical `pika-build` host now runs both the existing microVM host stack and the Incus dev lane side by side; it still needs operator one-time setup for the Incus bridge, storage pool, project, and profile before request-scoped Incus provisioning can work
+- the provider now supports trusted TLS client-certificate auth for remote `pika-server -> pika-build:8443` mutations via server-side cert/key path config; canary `pika-server` deployments should use a certificate restricted to the Incus project they target
 - Incus readiness now comes from inside the guest via the Incus guest file API against `/workspace/pika-agent/service-ready.json`; `guest_ready=true` is only reported when that marker exists and validates
 - Incus recover, restore, backup status, and OpenClaw launch/proxy behavior remain intentionally unsupported in this phase
 - server startup should remain on the microVM default provider for now; request-scoped Incus provisioning is the current safe canary lane until the OpenClaw launch/proxy surface is migrated
@@ -504,7 +504,7 @@ At the end of this phase, newly provisioned managed agents should no longer depe
 
 Current validation shape:
 
-- `pika-build` is the first real dev target for the Incus lane via a dedicated `pika-build-incus-dev` host config plus an operator-run image import step
+- `pika-build` is the first real dev target for the Incus lane via the canonical builder host config plus an operator-run image import step
 - the `pika-build` role in this phase is the Incus substrate; the agent API still comes from a `pika-server` process pointed at that Incus endpoint
 - `pika-server` should continue to deploy with `microvm` as the default provider and use explicit request-scoped Incus provisioning for internal canary validation
 - the concrete operator path for this phase lives in `docs/incus-dev-lane.md`

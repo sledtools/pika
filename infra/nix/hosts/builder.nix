@@ -1,1 +1,6 @@
-(import ../modules/builder.nix { })
+{
+  imports = [
+    (import ../modules/builder.nix { })
+    ../modules/incus-dev-host.nix
+  ];
+}

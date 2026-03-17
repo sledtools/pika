@@ -61,17 +61,16 @@ The image is a NixOS VM image for the Incus dev lane. It includes:
 
 ## Deploy `pika-build` With Incus Enabled
 
-Deploy the dedicated Incus dev host shape:
+Deploy the canonical `pika-build` host shape:
 
 ```bash
-nix develop .#infra -c just -f infra/justfile build-deploy-incus-dev
+nix develop .#infra -c just -f infra/justfile build-deploy
 ```
 
-This uses `.#pika-build-incus-dev`, which keeps the normal builder base but swaps in the Incus dev
-host module instead of the current microVM host module.
+`pika-build` now runs both host roles side by side:
 
-The host shape now configures `incusd` to listen on `:8443`, but remote mutating API calls still
-require a trusted TLS client certificate.
+- the existing microVM host stack and `vm-spawner`
+- the Incus dev lane with `incusd` listening on `:8443`
 
 Expected host-side prerequisites:
 
@@ -99,8 +98,37 @@ Notes:
 - the provider already injects the root disk and the persistent state disk, so this profile must at
   minimum provide a NIC
 - if your Incus host does not use `incusbr0`, replace it with the correct network from `incus network list`
-- off-host `pika-server` canaries are still blocked until the provider supports trusted Incus
-  client-certificate auth for remote `:8443` calls
+- off-host `pika-server` canaries now require a trusted Incus TLS client certificate
+
+## Trust A `pika-server` Incus Client Certificate
+
+The Incus provider now authenticates to remote `https://pika-build:8443` using a trusted TLS
+client certificate.
+
+Generate a client keypair for `pika-server`:
+
+```bash
+openssl req -x509 -newkey rsa:4096 -nodes -days 365 \
+  -subj '/CN=pika-server-incus-client' \
+  -keyout pika-server-incus-client.key \
+  -out pika-server-incus-client.crt
+```
+
+Trust it on `pika-build`, restricted to the managed-agent project:
+
+```bash
+scp pika-server-incus-client.crt root@pika-build:/root/
+ssh root@pika-build \
+  incus config trust add-certificate /root/pika-server-incus-client.crt \
+    --projects pika-managed-agents \
+    --restricted
+```
+
+For the `pika-server` canary process, set:
+
+- `PIKA_AGENT_INCUS_CLIENT_CERT_PATH`
+- `PIKA_AGENT_INCUS_CLIENT_KEY_PATH`
+- either `PIKA_AGENT_INCUS_SERVER_CERT_PATH` or `PIKA_AGENT_INCUS_INSECURE_TLS=true`
 
 ## Import The Image Into Incus
 
@@ -182,11 +210,14 @@ Recommended server env for canarying:
 - `PIKA_AGENT_INCUS_PROFILE`
 - `PIKA_AGENT_INCUS_STORAGE_POOL`
 - `PIKA_AGENT_INCUS_IMAGE_ALIAS`
+- `PIKA_AGENT_INCUS_CLIENT_CERT_PATH`
+- `PIKA_AGENT_INCUS_CLIENT_KEY_PATH`
+- `PIKA_AGENT_INCUS_SERVER_CERT_PATH` for an explicit trusted server cert
 - `PIKA_AGENT_INCUS_INSECURE_TLS=true` only if the dev endpoint uses self-signed TLS
 
 This lets operators verify:
 
-- startup health can initialize the Incus client path honestly
+- startup health can authenticate and probe the Incus client path honestly when Incus canary env is present
 - Incus requests can create and observe real managed guests
 - existing microVM-backed rows still route to the microVM backend
 - the smoke helper is provisioning a fresh Incus environment, not just re-reading an existing owner state

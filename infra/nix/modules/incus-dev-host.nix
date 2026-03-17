@@ -32,10 +32,13 @@
     Private API:
       https://pika-build:8443
 
-    Current limitation:
-      Remote clients still need a trusted TLS client certificate.
-      The managed-agent provider does not support remote Incus client-cert auth yet,
-      so off-host canaries cannot mutate Incus over :8443 until that lands.
+    Off-host managed-agent canaries now require:
+      - a trusted TLS client certificate restricted to pika-managed-agents
+      - the matching client private key on pika-server
+      - either PIKA_AGENT_INCUS_SERVER_CERT_PATH or PIKA_AGENT_INCUS_INSECURE_TLS=true
+
+    Trust a restricted client certificate:
+      incus config trust add-certificate /path/to/pika-server-incus-client.crt --projects pika-managed-agents --restricted
 
     Expected manual one-time setup for the managed-agent dev lane:
       incus network create incusbr0 ipv4.address=auto ipv4.nat=true ipv6.address=none

@@ -48,25 +48,18 @@ in
 
   # vm-spawner control plane is only exposed on the WireGuard/Tailscale interface.
   networking.firewall.interfaces.tailscale0.allowedTCPPorts = [ 8080 ];
+  networking.firewall.filterForward = true;
 
-  networking.firewall.extraCommands = ''
-    # Log new outbound connections from microVMs and allow general egress for MVP.
-    iptables -A FORWARD -i ${microvmBridge} -o eth0 -m conntrack --ctstate NEW -j LOG --log-prefix "microvm-egress: " --log-level 6
-    iptables -A FORWARD -i ${microvmBridge} -o eth0 -j ACCEPT
-    iptables -A FORWARD -i eth0 -o ${microvmBridge} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-  '';
-
-  networking.firewall.extraStopCommands = ''
-    iptables -D FORWARD -i ${microvmBridge} -o eth0 -m conntrack --ctstate NEW -j LOG --log-prefix "microvm-egress: " --log-level 6 2>/dev/null || true
-    iptables -D FORWARD -i ${microvmBridge} -o eth0 -j ACCEPT 2>/dev/null || true
-    iptables -D FORWARD -i eth0 -o ${microvmBridge} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+  networking.firewall.extraForwardRules = ''
+    iifname "${microvmBridge}" oifname "eth0" ct state new log prefix "microvm-egress: " level info
+    iifname "${microvmBridge}" oifname "eth0" accept
+    iifname "eth0" oifname "${microvmBridge}" ct state { established, related } accept
   '';
 
   environment.systemPackages = with pkgs; [
     cloud-hypervisor
     e2fsprogs
     iproute2
-    iptables
     jq
   ];
 

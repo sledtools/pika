@@ -1060,17 +1060,6 @@ EOF
           ];
         };
 
-        pika-build-incus-dev = nixpkgs.lib.nixosSystem {
-          system = "x86_64-linux";
-          specialArgs = { inherit self sops-nix vmSpawnerPkg piAgentPkg openclawGatewayPkg pikaNewsPkg pikachatPkg pikaciServerPkg; };
-          modules = [
-            disko.nixosModules.disko
-            sops-nix.nixosModules.sops
-            microvm.nixosModules.host
-            (import ./infra/nix/hosts/builder-incus-dev.nix)
-          ];
-        };
-
         relay-us-east = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
           specialArgs = { inherit self pikaRelayPkg; };

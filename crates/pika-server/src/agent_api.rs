@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fs;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
@@ -50,6 +51,9 @@ const INCUS_PROFILE_ENV: &str = "PIKA_AGENT_INCUS_PROFILE";
 const INCUS_STORAGE_POOL_ENV: &str = "PIKA_AGENT_INCUS_STORAGE_POOL";
 const INCUS_IMAGE_ALIAS_ENV: &str = "PIKA_AGENT_INCUS_IMAGE_ALIAS";
 const INCUS_INSECURE_TLS_ENV: &str = "PIKA_AGENT_INCUS_INSECURE_TLS";
+const INCUS_CLIENT_CERT_PATH_ENV: &str = "PIKA_AGENT_INCUS_CLIENT_CERT_PATH";
+const INCUS_CLIENT_KEY_PATH_ENV: &str = "PIKA_AGENT_INCUS_CLIENT_KEY_PATH";
+const INCUS_SERVER_CERT_PATH_ENV: &str = "PIKA_AGENT_INCUS_SERVER_CERT_PATH";
 const INCUS_VM_KIND: &str = "virtual-machine";
 const INCUS_PERSISTENT_VOLUME_TYPE: &str = "custom";
 const INCUS_PERSISTENT_VOLUME_CONTENT_TYPE: &str = "filesystem";
@@ -207,6 +211,13 @@ struct ResolvedIncusParams {
     insecure_tls: bool,
     agent_kind: ResolvedMicrovmAgentKind,
     agent_backend: ResolvedMicrovmAgentBackend,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct ResolvedIncusTlsConfig {
+    client_cert_path: Option<String>,
+    client_key_path: Option<String>,
+    server_cert_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -699,6 +710,66 @@ fn default_incus_params_from_env() -> IncusProvisionParams {
     }
 }
 
+fn should_probe_incus_canary_health() -> bool {
+    incus_params_provided(&default_incus_params_from_env())
+}
+
+fn build_incus_http_client(resolved: &ResolvedIncusParams) -> anyhow::Result<reqwest::Client> {
+    let tls = resolved_incus_tls_config(resolved)?;
+    let mut builder = reqwest::Client::builder()
+        .timeout(INCUS_HTTP_TIMEOUT)
+        .danger_accept_invalid_certs(resolved.insecure_tls);
+
+    if let Some(server_cert_path) = tls.server_cert_path.as_deref() {
+        let server_cert_pem = fs::read(server_cert_path)
+            .with_context(|| format!("read incus server certificate from {server_cert_path}"))?;
+        let server_cert = reqwest::Certificate::from_pem(&server_cert_pem)
+            .with_context(|| format!("parse incus server certificate from {server_cert_path}"))?;
+        builder = builder.add_root_certificate(server_cert);
+    }
+
+    if let (Some(client_cert_path), Some(client_key_path)) = (
+        tls.client_cert_path.as_deref(),
+        tls.client_key_path.as_deref(),
+    ) {
+        let identity_cert_pem = fs::read(client_cert_path)
+            .with_context(|| format!("read incus client certificate from {client_cert_path}"))?;
+        let client_key_pem = fs::read(client_key_path)
+            .with_context(|| format!("read incus client key from {client_key_path}"))?;
+        let identity = reqwest::Identity::from_pkcs8_pem(&identity_cert_pem, &client_key_pem)
+            .with_context(|| {
+                format!(
+                    "parse incus client identity from {} and {}",
+                    client_cert_path, client_key_path
+                )
+            })?;
+        builder = builder.identity(identity);
+    }
+
+    builder.build().context("build incus client")
+}
+
+fn resolved_incus_tls_config(
+    resolved: &ResolvedIncusParams,
+) -> anyhow::Result<ResolvedIncusTlsConfig> {
+    let client_cert_path = non_empty_env_var(INCUS_CLIENT_CERT_PATH_ENV);
+    let client_key_path = non_empty_env_var(INCUS_CLIENT_KEY_PATH_ENV);
+    anyhow::ensure!(
+        client_cert_path.is_some() == client_key_path.is_some(),
+        "{INCUS_CLIENT_CERT_PATH_ENV} and {INCUS_CLIENT_KEY_PATH_ENV} must either both be set or both be unset"
+    );
+    anyhow::ensure!(
+        client_cert_path.is_some() || !resolved.endpoint.starts_with("https://"),
+        "incus https endpoint {} requires both {INCUS_CLIENT_CERT_PATH_ENV} and {INCUS_CLIENT_KEY_PATH_ENV}",
+        resolved.endpoint
+    );
+    Ok(ResolvedIncusTlsConfig {
+        client_cert_path,
+        client_key_path,
+        server_cert_path: non_empty_env_var(INCUS_SERVER_CERT_PATH_ENV),
+    })
+}
+
 fn microvm_params_provided(params: &MicrovmProvisionParams) -> bool {
     params
         .spawner_url
@@ -851,11 +922,7 @@ impl ManagedVmProvider {
 
 impl IncusManagedVmProvider {
     fn new(resolved: ResolvedIncusParams) -> anyhow::Result<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(INCUS_HTTP_TIMEOUT)
-            .danger_accept_invalid_certs(resolved.insecure_tls)
-            .build()
-            .context("build incus client")?;
+        let client = build_incus_http_client(&resolved)?;
         Ok(Self { client, resolved })
     }
 
@@ -3316,6 +3383,24 @@ pub async fn agent_api_healthcheck() -> anyhow::Result<()> {
     if let ManagedVmProvider::Incus(incus) = &provider {
         incus.healthcheck().await?;
     }
+    if should_probe_incus_canary_health() && !matches!(provider, ManagedVmProvider::Incus(_)) {
+        let requested = ManagedVmProvisionParams {
+            provider: Some(ProviderKind::Incus),
+            microvm: None,
+            incus: None,
+        };
+        let incus = managed_vm_provider(Some(&requested))
+            .context("initialize configured Incus canary provider")?;
+        match incus {
+            ManagedVmProvider::Incus(incus) => incus
+                .healthcheck()
+                .await
+                .context("validate configured Incus canary backend")?,
+            ManagedVmProvider::Microvm(_) => {
+                unreachable!("explicit incus provider must resolve to Incus")
+            }
+        }
+    }
     provider
         .ensure_customer_openclaw_flow_supported()
         .context("validate managed-agent customer OpenClaw flow")?;
@@ -3496,6 +3581,68 @@ mod tests {
         }
     }
 
+    const TEST_INCUS_CLIENT_CERT_PEM: &str = r#"-----BEGIN CERTIFICATE-----
+MIIDGTCCAgGgAwIBAgIUSLL0u6Or6OhJyD/VqMAFn2AfwxIwDQYJKoZIhvcNAQEL
+BQAwHDEaMBgGA1UEAwwRdGVzdC1pbmN1cy1jbGllbnQwHhcNMjYwMzE3MjE1ODA4
+WhcNMjYwMzE4MjE1ODA4WjAcMRowGAYDVQQDDBF0ZXN0LWluY3VzLWNsaWVudDCC
+ASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAIcmwlVgzsMaDL7OGIQkJ2Jh
+uPeooE/8TWzlXGygsZ6p7Hr0ldWR6FwhkWqMvxP3DLYtrDulNAlDQvdqXiUvLqNB
+O3jG3QTG+tra98xD2rC6kPX1Br9K4IY/dIlIDt0wRprzVdmTTn58XyoBj5jHiJ6w
+b1uAtVI3sJHEjJSSkZtcFbwe7YveWjLRIugnGLKKXPvRp+lxnSIAygBMroUHwOeP
+RwQ42ay4Uea96oWq/Sj9YGT3GUJkFj5rhHh+Tg7svnTv9sKWE2O3mLTSaCVJCujk
+z62PIVJqmc4DG/7Paju6uBCfc+TbSGaCTawTdk0QnglZXLHYfqBfP91XZosG6LkC
+AwEAAaNTMFEwHQYDVR0OBBYEFIHOohIqdDLl51aC+ORm/SlNmBupMB8GA1UdIwQY
+MBaAFIHOohIqdDLl51aC+ORm/SlNmBupMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZI
+hvcNAQELBQADggEBAHGLFSolSFhibpzXeH5ykncCnu9iUs1awhYKGDtWrclSeOKB
+Z23bvWdkHKJVJvrE3nN+VGlLTVNA14MnvK2rmXFBhCx9QBdXqfzbxD6NRNFTxzAS
+BqZ+h1+rHqc0hQN9an2tPXWuMQsE+Zh2gFDAtuOjYybTr+PRqKv2W4sMtMDH7N7k
+xjQ7sRljlkRmzU9pPwgtApJ83/x9+2SO7+tge2ia8oLs3+XvHAf8pEhX+OvQXXPp
++nkb/19iwR7/hNf1gJPKvIF2//tY26XYesM1ORmk0rxiz8bsL/LBmJ0wkv+yy41V
+atWQmMQ8cvpIyjH1YV5cDViWH2OobPHNgA1XOMk=
+-----END CERTIFICATE-----
+"#;
+
+    const TEST_INCUS_CLIENT_KEY_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
+MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCHJsJVYM7DGgy+
+zhiEJCdiYbj3qKBP/E1s5VxsoLGeqex69JXVkehcIZFqjL8T9wy2Law7pTQJQ0L3
+al4lLy6jQTt4xt0Exvra2vfMQ9qwupD19Qa/SuCGP3SJSA7dMEaa81XZk05+fF8q
+AY+Yx4iesG9bgLVSN7CRxIyUkpGbXBW8Hu2L3loy0SLoJxiyilz70afpcZ0iAMoA
+TK6FB8Dnj0cEONmsuFHmveqFqv0o/WBk9xlCZBY+a4R4fk4O7L507/bClhNjt5i0
+0mglSQro5M+tjyFSapnOAxv+z2o7urgQn3Pk20hmgk2sE3ZNEJ4JWVyx2H6gXz/d
+V2aLBui5AgMBAAECggEAOk2OKCbLC3+BYA6opNiz5M0jbjNgdSDyhbesV3A7L6c+
+TQyWVrvK8XPJt51gEMzSvwSU+GYcPKK3kORiGMhx5huN/FxNnHH6Zc9wdr4O6Y6S
+WoiJkJxMn51gOJjNUL4yt0WiE2powkgFBaoGuHHbjhmu8Fpl3kIH+dpAixdvmQVQ
+Hg5BTjsu3Hw2+DUgE8JxNrIc67fHWIgsUzOIulYq0LPLTnM4oFSeAA7s6tSQWnC2
+Kc5sevg3bA1IszoslIwdTYF5g9xTRKfWtuWwUPSYE4++/OssEoB0epqNozn6gf7W
+fXNmEHOhDB6eBwiXZCG4HLxC8r6B2kzsZ/nGfjf6wQKBgQC7AMKAoUzJRV2sRZTp
+ap0C/DdzyY54IvgaN7A/nnxxsU2uq1dee1DpGF4aHgoNdo1546P9PY4LUnifBglj
+Et369RIWFs8wTJ+uJM5wwIlT6UJCsehI6iosS80XgnsjrIvtDRGSTZNbOjb6m3g/
+HIrrt4SztWNj3cWDPqTAe9X0RwKBgQC5BGT6o5wrJ01UQkMmpxbi+Hkje7KVIRWu
+hYifKhFGdQBKhvcmHgPkooEEwy2oItphaWDQ4wlz63i4h7pQ/ZKWEMGQEgIT58M0
+USu+G0BI9kq7OroIYg2oOqZeVJBGmIPnlqk7PFq/P7YCBtbrcqYu7dM21L9ir1fB
+pXN+3qu6/wKBgEUCZcTEQarw7z2Yu/hbgK/OVcRj+DB7byV1sZP4r6HhNXKlBmv2
+hAhRFsD6nukS++ikSis1IQsqlxrQRnyKROLMt6zxI+qGDFNef9R6KPOPXAVy0+68
+g22vV3M6kqi6jzSeowJjoGKFHC7lWr2nkdik89LBuHjtKWtinbfuuykXAoGAA94d
+pkepShWmPi6sbLBtgA0lqyI413k7lMxh0MH2Xnyvpt8vZ3KVLkBfZhQWbj9cRVEI
+nxU/61ZuzZy4vlyupchv420c8gGUSRGxUmYLb/sGEOfnX6l9E5k2RR6LbY5eo4a4
+vu5CD2FrkptF/uIEq1J5adoErjFwKjIlOe+5s00CgYBPiSt15PUz83TcNXcn6BHL
+Fm+QL4t+94HlkGR3BXyrNJ0kdKxM0kgDodXXDhzWdcsape1TUcubzHC90FbXC5NY
+eaWH/THQo6Z7ayz1/fqyCldZbdtdEt+JM5lGrRqSSz8MM1+iAAu3w1RON6DDQ/ZL
+GFs2pW5hEhS7cCO0qXaa5g==
+-----END PRIVATE KEY-----
+"#;
+
+    fn write_temp_test_file(prefix: &str, contents: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        path.push(format!("{prefix}-{suffix}-{}.pem", std::process::id()));
+        std::fs::write(&path, contents).expect("write temp test file");
+        path
+    }
+
     fn cloud_init_write_file_content(user_data: &str, path: &str) -> Option<String> {
         let mut saw_path = false;
         for line in user_data.lines() {
@@ -3551,6 +3698,9 @@ mod tests {
         prior_incus_storage_pool: Option<String>,
         prior_incus_image_alias: Option<String>,
         prior_incus_insecure_tls: Option<String>,
+        prior_incus_client_cert_path: Option<String>,
+        prior_incus_client_key_path: Option<String>,
+        prior_incus_server_cert_path: Option<String>,
     }
 
     impl ServerMicrovmEnvGuard {
@@ -3564,6 +3714,9 @@ mod tests {
             let prior_incus_storage_pool = std::env::var(INCUS_STORAGE_POOL_ENV).ok();
             let prior_incus_image_alias = std::env::var(INCUS_IMAGE_ALIAS_ENV).ok();
             let prior_incus_insecure_tls = std::env::var(INCUS_INSECURE_TLS_ENV).ok();
+            let prior_incus_client_cert_path = std::env::var(INCUS_CLIENT_CERT_PATH_ENV).ok();
+            let prior_incus_client_key_path = std::env::var(INCUS_CLIENT_KEY_PATH_ENV).ok();
+            let prior_incus_server_cert_path = std::env::var(INCUS_SERVER_CERT_PATH_ENV).ok();
             unsafe {
                 std::env::set_var(MICROVM_SPAWNER_URL_ENV, spawner_url);
                 std::env::set_var(VM_PROVIDER_ENV, "microvm");
@@ -3573,6 +3726,9 @@ mod tests {
                 std::env::remove_var(INCUS_STORAGE_POOL_ENV);
                 std::env::remove_var(INCUS_IMAGE_ALIAS_ENV);
                 std::env::remove_var(INCUS_INSECURE_TLS_ENV);
+                std::env::remove_var(INCUS_CLIENT_CERT_PATH_ENV);
+                std::env::remove_var(INCUS_CLIENT_KEY_PATH_ENV);
+                std::env::remove_var(INCUS_SERVER_CERT_PATH_ENV);
             }
             match kind {
                 Some(kind) => unsafe {
@@ -3592,6 +3748,9 @@ mod tests {
                 prior_incus_storage_pool,
                 prior_incus_image_alias,
                 prior_incus_insecure_tls,
+                prior_incus_client_cert_path,
+                prior_incus_client_key_path,
+                prior_incus_server_cert_path,
             }
         }
     }
@@ -3668,6 +3827,30 @@ mod tests {
                 },
                 None => unsafe {
                     std::env::remove_var(INCUS_INSECURE_TLS_ENV);
+                },
+            }
+            match self.prior_incus_client_cert_path.as_deref() {
+                Some(prior) => unsafe {
+                    std::env::set_var(INCUS_CLIENT_CERT_PATH_ENV, prior);
+                },
+                None => unsafe {
+                    std::env::remove_var(INCUS_CLIENT_CERT_PATH_ENV);
+                },
+            }
+            match self.prior_incus_client_key_path.as_deref() {
+                Some(prior) => unsafe {
+                    std::env::set_var(INCUS_CLIENT_KEY_PATH_ENV, prior);
+                },
+                None => unsafe {
+                    std::env::remove_var(INCUS_CLIENT_KEY_PATH_ENV);
+                },
+            }
+            match self.prior_incus_server_cert_path.as_deref() {
+                Some(prior) => unsafe {
+                    std::env::set_var(INCUS_SERVER_CERT_PATH_ENV, prior);
+                },
+                None => unsafe {
+                    std::env::remove_var(INCUS_SERVER_CERT_PATH_ENV);
                 },
             }
         }
@@ -3927,6 +4110,102 @@ mod tests {
                 agent_backend: ResolvedMicrovmAgentBackend::Native,
             })
         );
+    }
+
+    #[test]
+    fn resolved_incus_tls_config_requires_cert_and_key_together() {
+        let resolved = ResolvedIncusParams {
+            endpoint: "http://127.0.0.1:8443".to_string(),
+            project: "managed-agents".to_string(),
+            profile: "pika-agent".to_string(),
+            storage_pool: "managed-agents-zfs".to_string(),
+            image_alias: "pika-agent/dev".to_string(),
+            insecure_tls: false,
+            agent_kind: ResolvedMicrovmAgentKind::Openclaw,
+            agent_backend: ResolvedMicrovmAgentBackend::Native,
+        };
+
+        with_env_overrides(
+            &[
+                (INCUS_CLIENT_CERT_PATH_ENV, Some("/tmp/incus-client.crt")),
+                (INCUS_CLIENT_KEY_PATH_ENV, None),
+                (INCUS_SERVER_CERT_PATH_ENV, None),
+            ],
+            || {
+                let err = resolved_incus_tls_config(&resolved)
+                    .expect_err("missing key should fail validation");
+                assert!(err.to_string().contains(INCUS_CLIENT_KEY_PATH_ENV));
+            },
+        );
+    }
+
+    #[test]
+    fn resolved_incus_tls_config_requires_client_identity_for_https() {
+        let resolved = ResolvedIncusParams {
+            endpoint: "https://incus.internal:8443".to_string(),
+            project: "managed-agents".to_string(),
+            profile: "pika-agent".to_string(),
+            storage_pool: "managed-agents-zfs".to_string(),
+            image_alias: "pika-agent/dev".to_string(),
+            insecure_tls: true,
+            agent_kind: ResolvedMicrovmAgentKind::Openclaw,
+            agent_backend: ResolvedMicrovmAgentBackend::Native,
+        };
+
+        with_env_overrides(
+            &[
+                (INCUS_CLIENT_CERT_PATH_ENV, None),
+                (INCUS_CLIENT_KEY_PATH_ENV, None),
+                (INCUS_SERVER_CERT_PATH_ENV, None),
+            ],
+            || {
+                let err = resolved_incus_tls_config(&resolved)
+                    .expect_err("https endpoint should require client identity");
+                assert!(err.to_string().contains(INCUS_CLIENT_CERT_PATH_ENV));
+            },
+        );
+    }
+
+    #[test]
+    fn build_incus_http_client_accepts_valid_client_identity_paths() {
+        let cert_path = write_temp_test_file("incus-client-cert", TEST_INCUS_CLIENT_CERT_PEM);
+        let key_path = write_temp_test_file("incus-client-key", TEST_INCUS_CLIENT_KEY_PEM);
+        let server_cert_path =
+            write_temp_test_file("incus-server-cert", TEST_INCUS_CLIENT_CERT_PEM);
+        let resolved = ResolvedIncusParams {
+            endpoint: "https://incus.internal:8443".to_string(),
+            project: "managed-agents".to_string(),
+            profile: "pika-agent".to_string(),
+            storage_pool: "managed-agents-zfs".to_string(),
+            image_alias: "pika-agent/dev".to_string(),
+            insecure_tls: true,
+            agent_kind: ResolvedMicrovmAgentKind::Openclaw,
+            agent_backend: ResolvedMicrovmAgentBackend::Native,
+        };
+
+        with_env_overrides(
+            &[
+                (
+                    INCUS_CLIENT_CERT_PATH_ENV,
+                    Some(cert_path.to_str().expect("cert path utf8")),
+                ),
+                (
+                    INCUS_CLIENT_KEY_PATH_ENV,
+                    Some(key_path.to_str().expect("key path utf8")),
+                ),
+                (
+                    INCUS_SERVER_CERT_PATH_ENV,
+                    Some(server_cert_path.to_str().expect("server cert path utf8")),
+                ),
+            ],
+            || {
+                build_incus_http_client(&resolved).expect("valid client identity should build");
+            },
+        );
+
+        std::fs::remove_file(cert_path).ok();
+        std::fs::remove_file(key_path).ok();
+        std::fs::remove_file(server_cert_path).ok();
     }
 
     #[test]
@@ -4713,6 +4992,61 @@ mod tests {
         assert_eq!(
             profile_request.path,
             "/1.0/profiles/pika-agent?project=managed-agents"
+        );
+    }
+
+    #[test]
+    fn agent_api_healthcheck_probes_configured_incus_canary_backend_when_microvm_is_default() {
+        let (base_url, rx) = spawn_response_sequence_server(vec![
+            ("200 OK", r#"{"type":"sync","metadata":{}}"#),
+            (
+                "200 OK",
+                r#"{"type":"sync","metadata":{"devices":{"eth0":{"type":"nic","network":"incusbr0"}}}}"#,
+            ),
+            ("200 OK", r#"{"type":"sync","metadata":{}}"#),
+            ("200 OK", r#"{"type":"sync","metadata":{}}"#),
+        ]);
+        with_env_overrides(
+            &[
+                (VM_PROVIDER_ENV, Some("microvm")),
+                (MICROVM_SPAWNER_URL_ENV, Some("http://127.0.0.1:8080")),
+                (INCUS_ENDPOINT_ENV, Some(base_url.as_str())),
+                (INCUS_PROJECT_ENV, Some("managed-agents")),
+                (INCUS_PROFILE_ENV, Some("pika-agent")),
+                (INCUS_STORAGE_POOL_ENV, Some("managed-agents-zfs")),
+                (INCUS_IMAGE_ALIAS_ENV, Some("pika-agent/dev")),
+                (INCUS_INSECURE_TLS_ENV, None),
+                (INCUS_CLIENT_CERT_PATH_ENV, None),
+                (INCUS_CLIENT_KEY_PATH_ENV, None),
+                (INCUS_SERVER_CERT_PATH_ENV, None),
+            ],
+            || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build runtime");
+                runtime
+                    .block_on(agent_api_healthcheck())
+                    .expect("microvm-default healthcheck should probe configured incus canary");
+            },
+        );
+
+        let project_request = rx.recv().expect("project probe");
+        assert_eq!(project_request.path, "/1.0/projects/managed-agents");
+        let profile_request = rx.recv().expect("profile probe");
+        assert_eq!(
+            profile_request.path,
+            "/1.0/profiles/pika-agent?project=managed-agents"
+        );
+        let pool_request = rx.recv().expect("storage pool probe");
+        assert_eq!(
+            pool_request.path,
+            "/1.0/storage-pools/managed-agents-zfs?project=managed-agents"
+        );
+        let image_request = rx.recv().expect("image alias probe");
+        assert_eq!(
+            image_request.path,
+            "/1.0/images/aliases/pika-agent%2Fdev?project=managed-agents"
         );
     }
 

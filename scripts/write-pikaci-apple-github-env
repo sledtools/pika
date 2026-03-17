@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PUBLIC_ENV_FILE="$ROOT/.github/pikaci-apple.env"
+SECRET_ENV_FILE="$ROOT/secrets/pikaci-apple.env.age"
+# shellcheck source=scripts/lib/release-secrets.sh
+source "$ROOT/scripts/lib/release-secrets.sh"
+
+release_secret_require_file "$PUBLIC_ENV_FILE" "Apple mini public CI env" "commit .github/pikaci-apple.env"
+release_secret_require_file "$SECRET_ENV_FILE" "encrypted Apple mini CI env" "create it via ./scripts/encrypt-pikaci-apple-secrets"
+
+tmp_secret_env="$(mktemp "${TMPDIR:-/tmp}/pikaci-apple-env.XXXXXX")"
+cleanup() {
+  rm -f "$tmp_secret_env"
+}
+trap cleanup EXIT INT TERM
+
+# shellcheck disable=SC1090
+source "$PUBLIC_ENV_FILE"
+release_secret_decrypt_to_file "$SECRET_ENV_FILE" "$tmp_secret_env"
+# shellcheck disable=SC1090
+source "$tmp_secret_env"
+
+require_value() {
+  local key="$1"
+  local value="$2"
+  if [ -z "$value" ]; then
+    echo "error: missing $key in Apple CI config" >&2
+    exit 1
+  fi
+  if [[ "$value" == REPLACE_* ]]; then
+    echo "error: $key still has placeholder value; update secrets/pikaci-apple.env.age via ./scripts/encrypt-pikaci-apple-secrets" >&2
+    exit 1
+  fi
+}
+
+require_value "PIKACI_APPLE_SSH_HOST" "${PIKACI_APPLE_SSH_HOST:-}"
+require_value "PIKACI_APPLE_SSH_USER" "${PIKACI_APPLE_SSH_USER:-}"
+require_value "PIKACI_APPLE_REMOTE_ROOT" "${PIKACI_APPLE_REMOTE_ROOT:-}"
+require_value "PIKACI_APPLE_KEEP_RUNS" "${PIKACI_APPLE_KEEP_RUNS:-}"
+require_value "PIKACI_APPLE_TAILSCALE_AUTHKEY" "${PIKACI_APPLE_TAILSCALE_AUTHKEY:-}"
+require_value "PIKACI_APPLE_SSH_KEY" "${PIKACI_APPLE_SSH_KEY:-}"
+
+emit_env() {
+  local key="$1"
+  local value="$2"
+  local delimiter="__${key}_EOF__"
+  printf '%s<<%s\n' "$key" "$delimiter"
+  printf '%s\n' "$value"
+  printf '%s\n' "$delimiter"
+}
+
+emit_env "PIKACI_APPLE_SSH_HOST" "$PIKACI_APPLE_SSH_HOST"
+emit_env "PIKACI_APPLE_SSH_USER" "$PIKACI_APPLE_SSH_USER"
+emit_env "PIKACI_APPLE_REMOTE_ROOT" "$PIKACI_APPLE_REMOTE_ROOT"
+emit_env "PIKACI_APPLE_KEEP_RUNS" "$PIKACI_APPLE_KEEP_RUNS"
+emit_env "PIKACI_APPLE_TAILSCALE_AUTHKEY" "$PIKACI_APPLE_TAILSCALE_AUTHKEY"
+emit_env "PIKACI_APPLE_SSH_KEY" "$PIKACI_APPLE_SSH_KEY"

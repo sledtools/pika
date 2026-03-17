@@ -64,6 +64,37 @@ gh workflow run apple-mini-validate.yml --repo sledtools/pika --ref master -f la
 
 Those trigger only the Apple mini validation workflow, not the broader `pre-merge.yml` matrix. `lane=sanity` runs `just apple-host-sanity` on the mini, and `lane=bundle` runs `just apple-host-bundle`.
 
+The Apple CI config/secret model now follows the repo's existing `age` pattern:
+
+- Non-secret Apple CI config is checked into [.github/pikaci-apple.env](/Users/justin/code/pika/worktrees/pikaci-mac/.github/pikaci-apple.env).
+- Apple CI secrets are checked into [secrets/pikaci-apple.env.age](/Users/justin/code/pika/worktrees/pikaci-mac/secrets/pikaci-apple.env.age).
+- GitHub workflows decrypt that file via the already-existing generic `AGE_SECRET_KEY` backend secret.
+- The workflows no longer depend on Apple-specific GitHub vars or Apple-specific GitHub secrets.
+
+The checked-in public config currently carries:
+
+```bash
+PIKACI_APPLE_SSH_HOST=minis-mac-mini.taild659a1.ts.net
+PIKACI_APPLE_SSH_USER=mini
+PIKACI_APPLE_REMOTE_ROOT=.cache/pikaci-apple
+PIKACI_APPLE_KEEP_RUNS=3
+```
+
+Update the encrypted Apple secrets in-repo with:
+
+```bash
+PIKACI_APPLE_TAILSCALE_AUTHKEY='tskey-auth-...' \
+PIKACI_APPLE_SSH_KEY_FILE="$HOME/.ssh/<apple-mini-private-key>" \
+./scripts/encrypt-pikaci-apple-secrets
+```
+
+`secrets/pikaci-apple.env.age` must contain:
+
+- `PIKACI_APPLE_TAILSCALE_AUTHKEY`
+- `PIKACI_APPLE_SSH_KEY`
+
+The GitHub-side dependency after this change is just the generic repo secret `AGE_SECRET_KEY`.
+
 It uses a git-backed source contract on the mini: the caller sends an exact git bundle for the requested ref, the mini imports it into a bare mirror under `~/.cache/pikaci-apple`, materializes a stable prepared worktree under `prepared/<commit>`, and reuses that checkout across repeated runs of the same commit. When the wrapper sees a schema-valid prepared checkout for the exact commit, it skips source upload/import entirely and goes straight to the prepared worktree. `prepare` realizes the Apple dev shell and prewarms the generated iOS artifacts there; `run` reuses the prepared checkout, executes the requested checked-in `just` recipe (default `apple-host-bundle`), then returns a debug artifact bundle to the caller. The wrapper takes a host-local run lock before touching the shared mirror/target state, schema-checks the prepared marker before reuse, scrubs run-local `.pikaci` state and stale XCTest logs before each operation, prunes old remote run dirs automatically, and keeps only a bounded number of prepared commit dirs.
 
 ### Caveats

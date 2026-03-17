@@ -992,7 +992,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
-      group: apple-host-sanity-${{ vars.PIKACI_APPLE_SSH_HOST || 'default' }}
+      group: apple-host-sanity
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
@@ -1001,32 +1001,33 @@ jobs:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      - name: Load Apple mini CI env
+        env:
+          AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
+        run: nix develop .#default -c ./scripts/write-pikaci-apple-github-env >> "$GITHUB_ENV"
+
       - name: Join Tailscale
         uses: tailscale/github-action@v4
         with:
-          authkey: ${{ secrets.PIKACI_APPLE_TAILSCALE_AUTHKEY }}
+          authkey: ${{ env.PIKACI_APPLE_TAILSCALE_AUTHKEY }}
           hostname: gha-pikaci-apple-sanity-${{ github.run_id }}
-          ping: ${{ vars.PIKACI_APPLE_SSH_HOST }}
+          ping: ${{ env.PIKACI_APPLE_SSH_HOST }}
 
       - name: Run Apple host sanity bundle
         id: remote
-        env:
-          PIKACI_APPLE_SSH_HOST: ${{ vars.PIKACI_APPLE_SSH_HOST }}
-          PIKACI_APPLE_SSH_USER: ${{ vars.PIKACI_APPLE_SSH_USER }}
-          PIKACI_APPLE_REMOTE_ROOT: ${{ vars.PIKACI_APPLE_REMOTE_ROOT }}
-          PIKACI_APPLE_KEEP_RUNS: ${{ vars.PIKACI_APPLE_KEEP_RUNS }}
-          PIKACI_APPLE_SSH_KEY: ${{ secrets.PIKACI_APPLE_SSH_KEY }}
         run: |
           if [ -z "${PIKACI_APPLE_SSH_HOST:-}" ]; then
-            echo "error: set repository variable PIKACI_APPLE_SSH_HOST for the Apple mini sanity lane" >&2
+            echo "error: missing PIKACI_APPLE_SSH_HOST after loading .github/pikaci-apple.env" >&2
             exit 2
           fi
           if [ -z "${PIKACI_APPLE_SSH_USER:-}" ]; then
-            echo "error: set repository variable PIKACI_APPLE_SSH_USER for the Apple mini sanity lane" >&2
+            echo "error: missing PIKACI_APPLE_SSH_USER after loading .github/pikaci-apple.env" >&2
             exit 2
           fi
           if [ -z "${PIKACI_APPLE_SSH_KEY:-}" ]; then
-            echo "error: set repository secret PIKACI_APPLE_SSH_KEY for the Apple mini sanity lane" >&2
+            echo "error: missing PIKACI_APPLE_SSH_KEY after decrypting secrets/pikaci-apple.env.age" >&2
             exit 2
           fi
 
@@ -1055,8 +1056,8 @@ jobs:
         run: |
           {
             echo "- command: \`./scripts/pikaci-apple-remote.sh run --ref ${{ steps.remote.outputs.checked_out_ref || 'unknown' }} --just-recipe apple-host-sanity\`"
-            echo "- ssh target: \`${{ vars.PIKACI_APPLE_SSH_USER || 'unset' }}@${{ vars.PIKACI_APPLE_SSH_HOST || 'unset' }}\`"
-            echo "- remote root: \`${{ vars.PIKACI_APPLE_REMOTE_ROOT || '.cache/pikaci-apple' }}\`"
+            echo "- ssh target: \`${{ env.PIKACI_APPLE_SSH_USER || 'unset' }}@${{ env.PIKACI_APPLE_SSH_HOST || 'unset' }}\`"
+            echo "- remote root: \`${{ env.PIKACI_APPLE_REMOTE_ROOT || '.cache/pikaci-apple' }}\`"
             echo "- run id: \`${{ steps.remote.outputs.run_id || 'none' }}\`"
             echo "- resolved commit: \`${{ steps.remote.outputs.resolved_commit || 'none' }}\`"
             echo "- remote run dir: \`${{ steps.remote.outputs.remote_run_dir || 'none' }}\`"
@@ -1625,37 +1626,38 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     concurrency:
-      group: apple-host-bundle-${{ vars.PIKACI_APPLE_SSH_HOST || 'default' }}
+      group: apple-host-bundle
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
+      - uses: nixbuild/nix-quick-install-action@v30
+
+      - name: Load Apple mini CI env
+        env:
+          AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
+        run: nix develop .#default -c ./scripts/write-pikaci-apple-github-env >> "$GITHUB_ENV"
+
       - name: Join Tailscale
         uses: tailscale/github-action@v4
         with:
-          authkey: ${{ secrets.PIKACI_APPLE_TAILSCALE_AUTHKEY }}
+          authkey: ${{ env.PIKACI_APPLE_TAILSCALE_AUTHKEY }}
           hostname: gha-pikaci-apple-${{ github.run_id }}
-          ping: ${{ vars.PIKACI_APPLE_SSH_HOST }}
+          ping: ${{ env.PIKACI_APPLE_SSH_HOST }}
 
       - name: Run mini-owned Apple bundle
         id: remote
-        env:
-          PIKACI_APPLE_SSH_HOST: ${{ vars.PIKACI_APPLE_SSH_HOST }}
-          PIKACI_APPLE_SSH_USER: ${{ vars.PIKACI_APPLE_SSH_USER }}
-          PIKACI_APPLE_REMOTE_ROOT: ${{ vars.PIKACI_APPLE_REMOTE_ROOT }}
-          PIKACI_APPLE_KEEP_RUNS: ${{ vars.PIKACI_APPLE_KEEP_RUNS }}
-          PIKACI_APPLE_SSH_KEY: ${{ secrets.PIKACI_APPLE_SSH_KEY }}
         run: |
           if [ -z "${PIKACI_APPLE_SSH_HOST:-}" ]; then
-            echo "error: set repository variable PIKACI_APPLE_SSH_HOST for the Apple mini bundle lane" >&2
+            echo "error: missing PIKACI_APPLE_SSH_HOST after loading .github/pikaci-apple.env" >&2
             exit 2
           fi
           if [ -z "${PIKACI_APPLE_SSH_USER:-}" ]; then
-            echo "error: set repository variable PIKACI_APPLE_SSH_USER for the Apple mini bundle lane" >&2
+            echo "error: missing PIKACI_APPLE_SSH_USER after loading .github/pikaci-apple.env" >&2
             exit 2
           fi
           if [ -z "${PIKACI_APPLE_SSH_KEY:-}" ]; then
-            echo "error: set repository secret PIKACI_APPLE_SSH_KEY for the Apple mini bundle lane" >&2
+            echo "error: missing PIKACI_APPLE_SSH_KEY after decrypting secrets/pikaci-apple.env.age" >&2
             exit 2
           fi
 
@@ -1684,8 +1686,8 @@ jobs:
         run: |
           {
             echo "- command: \`./scripts/pikaci-apple-remote.sh run --ref ${{ steps.remote.outputs.checked_out_ref || 'unknown' }} --just-recipe apple-host-bundle\`"
-            echo "- ssh target: \`${{ vars.PIKACI_APPLE_SSH_USER || 'unset' }}@${{ vars.PIKACI_APPLE_SSH_HOST || 'unset' }}\`"
-            echo "- remote root: \`${{ vars.PIKACI_APPLE_REMOTE_ROOT || '.cache/pikaci-apple' }}\`"
+            echo "- ssh target: \`${{ env.PIKACI_APPLE_SSH_USER || 'unset' }}@${{ env.PIKACI_APPLE_SSH_HOST || 'unset' }}\`"
+            echo "- remote root: \`${{ env.PIKACI_APPLE_REMOTE_ROOT || '.cache/pikaci-apple' }}\`"
             echo "- run id: \`${{ steps.remote.outputs.run_id || 'none' }}\`"
             echo "- resolved commit: \`${{ steps.remote.outputs.resolved_commit || 'none' }}\`"
             echo "- remote run dir: \`${{ steps.remote.outputs.remote_run_dir || 'none' }}\`"

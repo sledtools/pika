@@ -66,23 +66,16 @@ release_secret_missing_identity_error() {
 
 _release_secret_decrypt_to_stdout_with_secret_key() {
   local encrypted_file="$1"
-  local tmp_key=""
-
-  cleanup() {
-    if [ -n "$tmp_key" ]; then
-      rm -f "$tmp_key"
-    fi
-  }
 
   (
     set -euo pipefail
-    trap cleanup EXIT
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
 
     umask 077
     tmp_key="$(mktemp "${TMPDIR:-/tmp}/pika-age-key.XXXXXX")"
+    trap 'rm -f "${tmp_key:-}"' EXIT
     printf '%s\n' "$AGE_SECRET_KEY" >"$tmp_key"
     age -d -i "$tmp_key" "$encrypted_file"
   )
@@ -91,23 +84,16 @@ _release_secret_decrypt_to_stdout_with_secret_key() {
 _release_secret_decrypt_to_file_with_secret_key() {
   local encrypted_file="$1"
   local output_file="$2"
-  local tmp_key=""
-
-  cleanup() {
-    if [ -n "$tmp_key" ]; then
-      rm -f "$tmp_key"
-    fi
-  }
 
   (
     set -euo pipefail
-    trap cleanup EXIT
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
 
     umask 077
     tmp_key="$(mktemp "${TMPDIR:-/tmp}/pika-age-key.XXXXXX")"
+    trap 'rm -f "${tmp_key:-}"' EXIT
     printf '%s\n' "$AGE_SECRET_KEY" >"$tmp_key"
     age -d -i "$tmp_key" -o "$output_file" "$encrypted_file"
   )

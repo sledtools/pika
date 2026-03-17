@@ -1737,6 +1737,7 @@ fn incus_bootstrap_launcher_script(env: &BTreeMap<String, String>, command: &str
         script.push('\n');
     }
     script.push_str("export PIKA_ENABLE_OPENCLAW_PRIVATE_PROXY=0\n");
+    script.push_str("export PIKACHAT_SKIP_RELAY_READY_CHECK=1\n");
     script.push_str(
         "if [[ -z \"${PIKA_VM_IP:-}\" ]]; then\n\
 PIKA_VM_IP=\"$(python3 - <<'PY'\n\
@@ -4557,6 +4558,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
         assert!(launcher.contains("export PIKA_RELAY_URLS="));
         assert!(launcher.contains("export PIKA_BOT_PUBKEY="));
         assert!(launcher.contains("export PIKA_ENABLE_OPENCLAW_PRIVATE_PROXY=0"));
+        assert!(launcher.contains("export PIKACHAT_SKIP_RELAY_READY_CHECK=1"));
         assert!(launcher.contains("sock.connect((\"1.1.1.1\", 80))"));
         assert!(launcher.contains("    print(sock.getsockname()[0])"));
         assert!(launcher.contains("    pass"));

@@ -18,6 +18,8 @@ in
   ];
 
   networking.hostName = "pika-build";
+  # Keep public cache resolution working even when Tailscale DNS is active.
+  networking.nameservers = [ "1.1.1.1" "8.8.8.8" ];
 
   # ── Boot ───────────────────────────────────────────────────────────────
   boot.loader.grub = {

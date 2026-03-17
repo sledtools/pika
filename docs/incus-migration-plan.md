@@ -305,6 +305,7 @@ Current transition status:
 - the Incus dev path currently requires explicit endpoint, project, profile, storage-pool, and image-alias config, and it models each managed environment as one disposable VM root plus one attached persistent custom volume mounted at `/mnt/pika-state`
 - the first managed-agent Incus guest image is Nix-built and imported as a VM image artifact rather than assembled from host-local runner directories
 - the current `pika-build-incus-dev` host shape still needs operator one-time setup for the Incus bridge, storage pool, project, and profile before request-scoped Incus provisioning can work
+- the host shape now needs to configure `core.https_address` explicitly; off-host canaries still need trusted TLS client-cert support before `pika-server -> pika-build:8443` mutations can succeed
 - Incus readiness now comes from inside the guest via the Incus guest file API against `/workspace/pika-agent/service-ready.json`; `guest_ready=true` is only reported when that marker exists and validates
 - Incus recover, restore, backup status, and OpenClaw launch/proxy behavior remain intentionally unsupported in this phase
 - server startup should remain on the microVM default provider for now; request-scoped Incus provisioning is the current safe canary lane until the OpenClaw launch/proxy surface is migrated

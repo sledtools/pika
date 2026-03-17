@@ -14,11 +14,28 @@
     qemu-utils
   ];
 
+  systemd.services.incus-dev-api-listener = {
+    description = "Configure Incus dev HTTPS listener";
+    after = [ "incus.service" ];
+    requires = [ "incus.service" ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig.Type = "oneshot";
+    script = ''
+      ${pkgs.incus}/bin/incusd waitready --timeout=600
+      ${pkgs.incus}/bin/incus config set core.https_address :8443
+    '';
+  };
+
   environment.etc."incus-dev.README".text = ''
     Incus dev lane on pika-build
 
     Private API:
       https://pika-build:8443
+
+    Current limitation:
+      Remote clients still need a trusted TLS client certificate.
+      The managed-agent provider does not support remote Incus client-cert auth yet,
+      so off-host canaries cannot mutate Incus over :8443 until that lands.
 
     Expected manual one-time setup for the managed-agent dev lane:
       incus network create incusbr0 ipv4.address=auto ipv4.nat=true ipv6.address=none

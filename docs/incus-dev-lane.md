@@ -70,6 +70,9 @@ nix develop .#infra -c just -f infra/justfile build-deploy-incus-dev
 This uses `.#pika-build-incus-dev`, which keeps the normal builder base but swaps in the Incus dev
 host module instead of the current microVM host module.
 
+The host shape now configures `incusd` to listen on `:8443`, but remote mutating API calls still
+require a trusted TLS client certificate.
+
 Expected host-side prerequisites:
 
 - Incus API reachable on `https://pika-build:8443`
@@ -96,6 +99,8 @@ Notes:
 - the provider already injects the root disk and the persistent state disk, so this profile must at
   minimum provide a NIC
 - if your Incus host does not use `incusbr0`, replace it with the correct network from `incus network list`
+- off-host `pika-server` canaries are still blocked until the provider supports trusted Incus
+  client-certificate auth for remote `:8443` calls
 
 ## Import The Image Into Incus
 

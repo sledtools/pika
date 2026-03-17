@@ -1,0 +1,115 @@
+name: apple-mini-validate
+
+on:
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: "Which Apple mini lane to run"
+        type: choice
+        options:
+          - sanity
+          - bundle
+        default: sanity
+
+permissions:
+  contents: read
+
+jobs:
+  validate-apple-mini:
+    name: validate-apple-mini (${{ github.event.inputs.lane || 'sanity' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ (github.event.inputs.lane || 'sanity') == 'bundle' && 90 || 60 }}
+    concurrency:
+      group: apple-mini-validate-${{ github.event.inputs.lane || 'sanity' }}-${{ vars.PIKACI_APPLE_SSH_HOST || 'default' }}
+      cancel-in-progress: false
+    env:
+      PIKACI_APPLE_SSH_HOST: ${{ vars.PIKACI_APPLE_SSH_HOST }}
+      PIKACI_APPLE_SSH_USER: ${{ vars.PIKACI_APPLE_SSH_USER }}
+      PIKACI_APPLE_REMOTE_ROOT: ${{ vars.PIKACI_APPLE_REMOTE_ROOT }}
+      PIKACI_APPLE_KEEP_RUNS: ${{ vars.PIKACI_APPLE_KEEP_RUNS }}
+      PIKACI_APPLE_SSH_KEY: ${{ secrets.PIKACI_APPLE_SSH_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve Apple lane
+        id: lane
+        run: |
+          case "${{ github.event.inputs.lane || 'sanity' }}" in
+            sanity)
+              echo "just_recipe=apple-host-sanity" >> "$GITHUB_OUTPUT"
+              echo "artifact_name=apple-host-sanity-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+              ;;
+            bundle)
+              echo "just_recipe=apple-host-bundle" >> "$GITHUB_OUTPUT"
+              echo "artifact_name=apple-host-bundle-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "error: unsupported Apple validation lane '${{ github.event.inputs.lane || 'sanity' }}'" >&2
+              exit 2
+              ;;
+          esac
+
+      - name: Join Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.PIKACI_APPLE_TAILSCALE_AUTHKEY }}
+          hostname: gha-pikaci-apple-validate-${{ github.run_id }}
+          ping: ${{ vars.PIKACI_APPLE_SSH_HOST }}
+
+      - name: Run Apple mini validation lane
+        id: remote
+        run: |
+          if [ -z "${PIKACI_APPLE_SSH_HOST:-}" ]; then
+            echo "error: set repository variable PIKACI_APPLE_SSH_HOST for Apple mini validation" >&2
+            exit 2
+          fi
+          if [ -z "${PIKACI_APPLE_SSH_USER:-}" ]; then
+            echo "error: set repository variable PIKACI_APPLE_SSH_USER for Apple mini validation" >&2
+            exit 2
+          fi
+          if [ -z "${PIKACI_APPLE_SSH_KEY:-}" ]; then
+            echo "error: set repository secret PIKACI_APPLE_SSH_KEY for Apple mini validation" >&2
+            exit 2
+          fi
+
+          eval "$(ssh-agent -s)"
+          trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
+          ssh-add - <<<"$PIKACI_APPLE_SSH_KEY"
+
+          checked_out_ref="$(git rev-parse HEAD)"
+          echo "checked_out_ref=$checked_out_ref" >> "$GITHUB_OUTPUT"
+
+          ./scripts/pikaci-apple-remote.sh run \
+            --ref "$checked_out_ref" \
+            --just-recipe "${{ steps.lane.outputs.just_recipe }}" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload Apple mini debug bundle
+        if: always() && steps.remote.outputs.artifact_dir != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.lane.outputs.artifact_name }}
+          path: ${{ steps.remote.outputs.artifact_dir }}
+          if-no-files-found: error
+
+      - name: Summarize Apple mini validation lane
+        if: always()
+        run: |
+          {
+            echo "- command: \`./scripts/pikaci-apple-remote.sh run --ref ${{ steps.remote.outputs.checked_out_ref || 'unknown' }} --just-recipe ${{ steps.lane.outputs.just_recipe || 'unknown' }}\`"
+            echo "- lane: \`${{ github.event.inputs.lane || 'sanity' }}\`"
+            echo "- ssh target: \`${{ vars.PIKACI_APPLE_SSH_USER || 'unset' }}@${{ vars.PIKACI_APPLE_SSH_HOST || 'unset' }}\`"
+            echo "- remote root: \`${{ vars.PIKACI_APPLE_REMOTE_ROOT || '.cache/pikaci-apple' }}\`"
+            echo "- run id: \`${{ steps.remote.outputs.run_id || 'none' }}\`"
+            echo "- resolved commit: \`${{ steps.remote.outputs.resolved_commit || 'none' }}\`"
+            echo "- remote run dir: \`${{ steps.remote.outputs.remote_run_dir || 'none' }}\`"
+            echo "- remote prepared dir: \`${{ steps.remote.outputs.remote_prepared_dir || 'none' }}\`"
+            echo "- local artifact dir: \`${{ steps.remote.outputs.artifact_dir || 'none' }}\`"
+            echo "- prepared probe: \`${{ steps.remote.outputs.prepared_probe || 'unknown' }}\`"
+            echo "- upload skipped: \`${{ steps.remote.outputs.upload_skipped || 'unknown' }}\`"
+            echo "- prepare status: \`${{ steps.remote.outputs.prepare_status || 'unknown' }}\`"
+            echo "- prepare duration sec: \`${{ steps.remote.outputs.prepare_duration_sec || 'unknown' }}\`"
+            echo "- bundle duration sec: \`${{ steps.remote.outputs.bundle_duration_sec || 'unknown' }}\`"
+            echo "- remote exit: \`${{ steps.remote.outputs.remote_exit || 'unknown' }}\`"
+            echo "- artifact fetch exit: \`${{ steps.remote.outputs.artifact_fetch_exit || 'unknown' }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

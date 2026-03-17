@@ -105,6 +105,7 @@ Current policy note:
 | `nightly-pika-e2e` | call-path boundary selectors (`call_over_local_moq_relay_boundary`, `call_with_pikachat_daemon_boundary`, `cli_smoke_media_local`) |
 | `nightly-pika-ui-android` | Android bot/media fixture selector via `integration_deterministic::ui_e2e_local_android` |
 | `nightly-apple-host-bundle` | `just apple-host-bundle` on the Mac mini via the Apple remote wrapper; owns retained `ios-ui-test`, `nightly-primal-ios-interop`, and Apple-host regression reruns |
+| `apple-mini-validate` | manual-only GitHub dispatch workflow that runs only `just apple-host-sanity` or `just apple-host-bundle` on the Mac mini via the Apple remote wrapper |
 | `integration-manual` | two `integration_manual` runbook selectors |
 
 Apple Silicon contract note:

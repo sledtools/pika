@@ -40,6 +40,12 @@ This document defines the selector-first contract and current policy ownership f
 | `nightly-pika-ui-android` | Android bot/media fixture selector via `integration_deterministic::ui_e2e_local_android` |
 | `nightly-apple-host-bundle` | `just apple-host-bundle` on the Mac mini via `./scripts/pikaci-apple-remote.sh run --just-recipe apple-host-bundle`. This owns the retained heavy Apple coverage: `just ios-ui-test`, `just nightly-primal-ios-interop`, `just shared-runtime-regression`, `just openclaw-pikachat-deterministic`, and the narrower `apple-host-sanity` subset without rerunning `desktop-ui-test` separately. |
 
+## Apple Live Validation Workflow
+
+| Workflow | Canonical contract |
+| --- | --- |
+| `apple-mini-validate` | Manual-only Apple validation workflow. `gh workflow run apple-mini-validate.yml --repo sledtools/pika --ref <git-ref> -f lane=sanity` runs only `just apple-host-sanity` on the mini. `-f lane=bundle` runs only `just apple-host-bundle` on the mini. This is the narrow live-validation surface for Apple-only GitHub plumbing and does not invoke the broader `pre-merge.yml` matrix. |
+
 ## Direct Selector Recipes (Not Owners By Themselves)
 
 | Recipe | Canonical selectors | Current policy status |

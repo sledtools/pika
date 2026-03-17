@@ -55,6 +55,15 @@ The checked-in thin-trigger entrypoint is:
 ./scripts/pikaci-apple-remote.sh run --ref <git-ref> --just-recipe apple-host-sanity
 ```
 
+The narrow GitHub live-validation entrypoint is the dedicated `apple-mini-validate` workflow. Use one of:
+
+```bash
+gh workflow run apple-mini-validate.yml --repo sledtools/pika --ref master -f lane=sanity
+gh workflow run apple-mini-validate.yml --repo sledtools/pika --ref master -f lane=bundle
+```
+
+Those trigger only the Apple mini validation workflow, not the broader `pre-merge.yml` matrix. `lane=sanity` runs `just apple-host-sanity` on the mini, and `lane=bundle` runs `just apple-host-bundle`.
+
 It uses a git-backed source contract on the mini: the caller sends an exact git bundle for the requested ref, the mini imports it into a bare mirror under `~/.cache/pikaci-apple`, materializes a stable prepared worktree under `prepared/<commit>`, and reuses that checkout across repeated runs of the same commit. When the wrapper sees a schema-valid prepared checkout for the exact commit, it skips source upload/import entirely and goes straight to the prepared worktree. `prepare` realizes the Apple dev shell and prewarms the generated iOS artifacts there; `run` reuses the prepared checkout, executes the requested checked-in `just` recipe (default `apple-host-bundle`), then returns a debug artifact bundle to the caller. The wrapper takes a host-local run lock before touching the shared mirror/target state, schema-checks the prepared marker before reuse, scrubs run-local `.pikaci` state and stale XCTest logs before each operation, prunes old remote run dirs automatically, and keeps only a bounded number of prepared commit dirs.
 
 ### Caveats

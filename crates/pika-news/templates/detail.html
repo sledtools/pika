@@ -136,7 +136,7 @@
         {% else %}
         {% for run in ci_runs %}
         <article class="ci-run">
-          <p><strong>Run #{{ run.id }}</strong> · {{ run.status }} · <code>{{ run.entrypoint }}</code></p>
+          <p><strong>Run #{{ run.id }}</strong> · {{ run.status }} · {{ run.lane_count }} lane(s)</p>
           <p class="muted">head <code>{{ run.source_head_sha }}</code> · queued {{ run.created_at }}</p>
           {% match run.started_at %}
           {% when Some with (started_at) %}
@@ -146,13 +146,30 @@
           {% when Some with (finished_at) %}
           <p class="muted">finished {{ finished_at }}</p>
           {% when None %}{% endmatch %}
-          {% match run.log_text %}
-          {% when Some with (log_text) %}
+          {% if run.lanes.is_empty() %}
+          <p class="muted">No lanes were selected for this branch head.</p>
+          {% else %}
+          {% for lane in run.lanes %}
           <details>
-            <summary>Logs</summary>
+            <summary>Lane #{{ lane.id }} · {{ lane.title }} · {{ lane.status }} · <code>{{ lane.entrypoint }}</code></summary>
+            <p class="muted">lane id <code>{{ lane.lane_id }}</code> · retries {{ lane.retry_count }} · queued {{ lane.created_at }}</p>
+            {% match lane.started_at %}
+            {% when Some with (started_at) %}
+            <p class="muted">started {{ started_at }}</p>
+            {% when None %}{% endmatch %}
+            {% match lane.finished_at %}
+            {% when Some with (finished_at) %}
+            <p class="muted">finished {{ finished_at }}</p>
+            {% when None %}{% endmatch %}
+            {% match lane.log_text %}
+            {% when Some with (log_text) %}
             <pre><code>{{ log_text }}</code></pre>
+            {% when None %}
+            <p class="muted">No logs yet.</p>
+            {% endmatch %}
           </details>
-          {% when None %}{% endmatch %}
+          {% endfor %}
+          {% endif %}
         </article>
         {% endfor %}
         {% endif %}

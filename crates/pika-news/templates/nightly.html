@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page_title }}{% endblock %}
+
+{% block styles %}
+      .shell { max-width: 1040px; margin: 0 auto; padding: 2rem 1rem 3rem; }
+      .meta { color: var(--text-secondary); font-size: 0.92rem; }
+      .status { display: inline-block; border-radius: 999px; border: 1px solid var(--border-light); padding: 0.1rem 0.55rem; font-size: 0.8rem; }
+      .panel { background: var(--surface-solid); border: 1px solid var(--border); border-radius: 14px; padding: 1rem; margin-top: 1rem; }
+      .lane { border-top: 1px solid var(--border); padding-top: 0.85rem; margin-top: 0.85rem; }
+      .lane:first-child { border-top: none; padding-top: 0; margin-top: 0; }
+      .lane pre { overflow-x: auto; background: var(--badge-bg); border-radius: 8px; padding: 0.75rem; font-size: 0.82rem; }
+      .muted { color: var(--text-muted); }
+{% endblock %}
+
+{% block body %}
+    <main class="shell">
+      <p><a href="/news">Back to feed</a></p>
+      <h1>Nightly #{{ nightly_run_id }}</h1>
+      <p class="meta">{{ repo }} · scheduled {{ scheduled_for }} · created {{ created_at }}</p>
+      <p><span class="status">nightly: {{ status }}</span></p>
+      <p class="meta">source <code>{{ source_ref }}</code> @ <code>{{ source_head_sha }}</code></p>
+      {% match started_at %}
+      {% when Some with (started_at) %}
+      <p class="meta">started {{ started_at }}</p>
+      {% when None %}{% endmatch %}
+      {% match finished_at %}
+      {% when Some with (finished_at) %}
+      <p class="meta">finished {{ finished_at }}</p>
+      {% when None %}{% endmatch %}
+      {% match summary %}
+      {% when Some with (summary_text) %}
+      <section class="panel">
+        <h2>Summary</h2>
+        <p>{{ summary_text }}</p>
+      </section>
+      {% when None %}{% endmatch %}
+
+      <section class="panel">
+        <h2>Lanes</h2>
+        {% if lanes.is_empty() %}
+        <p class="muted">No nightly lanes recorded.</p>
+        {% else %}
+        {% for lane in lanes %}
+        <article class="lane">
+          <p><strong>{{ lane.title }}</strong> · {{ lane.status }} · <code>{{ lane.entrypoint }}</code></p>
+          <p class="muted">lane id <code>{{ lane.lane_id }}</code> · retries {{ lane.retry_count }} · queued {{ lane.created_at }}</p>
+          {% match lane.started_at %}
+          {% when Some with (started_at) %}
+          <p class="muted">started {{ started_at }}</p>
+          {% when None %}{% endmatch %}
+          {% match lane.finished_at %}
+          {% when Some with (finished_at) %}
+          <p class="muted">finished {{ finished_at }}</p>
+          {% when None %}{% endmatch %}
+          {% match lane.log_text %}
+          {% when Some with (log_text) %}
+          <details>
+            <summary>Logs</summary>
+            <pre><code>{{ log_text }}</code></pre>
+          </details>
+          {% when None %}
+          <p class="muted">No logs yet.</p>
+          {% endmatch %}
+        </article>
+        {% endfor %}
+        {% endif %}
+      </section>
+    </main>
+{% endblock %}

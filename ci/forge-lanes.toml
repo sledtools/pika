@@ -1,0 +1,324 @@
+version = 1
+nightly_schedule_utc = "08:00"
+
+[[branch.lanes]]
+id = "pika"
+title = "check-pika"
+entrypoint = "just checks::pre-merge-pika"
+command = ["nix", "develop", ".#default", "-c", "just", "checks::pre-merge-pika"]
+paths = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "flake.nix",
+  "flake.lock",
+  "nix/**",
+  "justfile",
+  ".github/**",
+  "rust/**",
+  "cli/**",
+  "crates/pika-desktop/**",
+  "crates/pika-media/**",
+  "crates/pika-marmot-runtime/**",
+  "crates/pika-nse/**",
+  "crates/pika-relay-profiles/**",
+  "crates/pika-tls/**",
+  "uniffi-bindgen/**",
+  "android/**",
+  "ios/**",
+  "docs/**",
+  "scripts/**",
+  "tools/**",
+]
+
+[[branch.lanes]]
+id = "notifications"
+title = "check-notifications"
+entrypoint = "just checks::pre-merge-notifications"
+command = ["nix", "develop", ".#default", "-c", "just", "checks::pre-merge-notifications"]
+paths = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "flake.nix",
+  "flake.lock",
+  "nix/**",
+  "justfile",
+  "just/checks.just",
+  "just/infra.just",
+  ".github/workflows/pre-merge.yml",
+  "scripts/pikaci-staged-linux-remote.sh",
+  "scripts/ci-add-known-host.sh",
+  "crates/pikaci/**",
+  "crates/pika-agent-control-plane/**",
+  "crates/pika-agent-microvm/**",
+  "crates/pika-desktop/**",
+  "crates/pikahut/**",
+  "crates/pika-server/**",
+  "crates/pika-marmot-runtime/**",
+  "crates/pika-relay-profiles/**",
+  "crates/pika-test-utils/**",
+  "crates/pika-tls/**",
+  "scripts/pikaci-ci-run.sh",
+  "scripts/pika-build-prewarm-workspace-deps.sh",
+  "scripts/pika-build-run-workspace-deps.sh",
+  "scripts/lib/pikaci-tools.sh",
+]
+
+[[branch.lanes]]
+id = "agent_contracts"
+title = "check-agent-contracts"
+entrypoint = "just checks::pre-merge-agent-contracts"
+command = ["nix", "develop", ".#default", "-c", "just", "checks::pre-merge-agent-contracts"]
+paths = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "cli/**",
+  "flake.nix",
+  "flake.lock",
+  "nix/**",
+  "justfile",
+  "just/checks.just",
+  "just/infra.just",
+  ".github/workflows/pre-merge.yml",
+  "scripts/pikaci-staged-linux-remote.sh",
+  "scripts/ci-add-known-host.sh",
+  "crates/pikaci/**",
+  "crates/pika-agent-control-plane/**",
+  "crates/pika-agent-protocol/**",
+  "crates/pika-agent-microvm/**",
+  "crates/pika-server/**",
+  "crates/hypernote-protocol/**",
+  "crates/pika-media/**",
+  "crates/pika-marmot-runtime/**",
+  "crates/pika-relay-profiles/**",
+  "crates/pika-test-utils/**",
+  "crates/pika-tls/**",
+  "crates/pika-desktop/**",
+  "crates/pikahut/Cargo.toml",
+  "crates/pikahut/src/**",
+  "crates/pikahut/tests/**",
+  "crates/pikachat-sidecar/**",
+  "rust/**",
+  "docs/agent-ci.md",
+  "scripts/pikaci-ci-run.sh",
+  "scripts/pika-build-prewarm-workspace-deps.sh",
+  "scripts/pika-build-run-workspace-deps.sh",
+  "scripts/lib/pikaci-tools.sh",
+]
+
+[[branch.lanes]]
+id = "rmp"
+title = "check-rmp"
+entrypoint = "just checks::pre-merge-rmp"
+command = ["nix", "develop", ".#default", "-c", "just", "checks::pre-merge-rmp"]
+paths = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "flake.nix",
+  "flake.lock",
+  "nix/**",
+  "justfile",
+  ".github/workflows/pre-merge.yml",
+  "crates/rmp-cli/**",
+  "scripts/pikaci-staged-linux-remote.sh",
+  "scripts/ci-add-known-host.sh",
+  "scripts/pika-build-prewarm-workspace-deps.sh",
+  "scripts/pika-build-run-workspace-deps.sh",
+  "scripts/lib/pikaci-tools.sh",
+]
+
+[[branch.lanes]]
+id = "pikachat"
+title = "check-pikachat"
+entrypoint = "just checks::pre-merge-pikachat"
+command = ["nix", "develop", ".#default", "-c", "just", "checks::pre-merge-pikachat"]
+paths = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "cmd/pika-relay/**",
+  "flake.nix",
+  "flake.lock",
+  "fixtures/**",
+  "nix/**",
+  "justfile",
+  "just/checks.just",
+  ".github/workflows/pre-merge.yml",
+  "cli/**",
+  "crates/pikaci/**",
+  "crates/pika-agent-control-plane/**",
+  "crates/pika-desktop/**",
+  "crates/pika-agent-protocol/**",
+  "crates/hypernote-protocol/**",
+  "crates/pikahut/**",
+  "crates/pikachat-sidecar/**",
+  "crates/pika-marmot-runtime/**",
+  "crates/pika-test-utils/**",
+  "crates/pika-relay-profiles/**",
+  "pikachat-openclaw/**",
+  "crates/pika-media/**",
+  "crates/pika-tls/**",
+  "rust/**",
+  "tests/**",
+  "scripts/pikaci-ci-run.sh",
+  "scripts/pikaci-staged-linux-remote.sh",
+  "scripts/ci-add-known-host.sh",
+  "scripts/pika-build-prewarm-workspace-deps.sh",
+  "scripts/pika-build-run-workspace-deps.sh",
+  "scripts/lib/pikaci-tools.sh",
+]
+
+[[branch.lanes]]
+id = "apple_host_sanity"
+title = "check-apple-host-sanity"
+entrypoint = "./scripts/pikaci-apple-remote.sh run --just-recipe apple-host-sanity"
+command = ["./scripts/pikaci-apple-remote.sh", "run", "--just-recipe", "apple-host-sanity"]
+paths = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "cmd/pika-relay/**",
+  "flake.nix",
+  "flake.lock",
+  "fixtures/**",
+  "nix/**",
+  "justfile",
+  "just/checks.just",
+  ".github/workflows/pre-merge.yml",
+  "cli/**",
+  "crates/pikaci/**",
+  "crates/pika-agent-control-plane/**",
+  "crates/pika-desktop/**",
+  "crates/pika-agent-protocol/**",
+  "crates/hypernote-protocol/**",
+  "crates/pikahut/**",
+  "crates/pikachat-sidecar/**",
+  "crates/pika-marmot-runtime/**",
+  "crates/pika-test-utils/**",
+  "crates/pika-relay-profiles/**",
+  "pikachat-openclaw/**",
+  "crates/pika-media/**",
+  "crates/pika-tls/**",
+  "rust/**",
+  "tests/**",
+  "scripts/pikaci-ci-run.sh",
+  "scripts/pikaci-staged-linux-remote.sh",
+  "scripts/ci-add-known-host.sh",
+  "scripts/pika-build-prewarm-workspace-deps.sh",
+  "scripts/pika-build-run-workspace-deps.sh",
+  "scripts/lib/pikaci-tools.sh",
+]
+
+[[branch.lanes]]
+id = "pikachat_openclaw_e2e"
+title = "check-pikachat-openclaw-e2e"
+entrypoint = "just checks::pre-merge-pikachat-openclaw-e2e"
+command = ["nix", "develop", ".#default", "-c", "just", "checks::pre-merge-pikachat-openclaw-e2e"]
+paths = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "cmd/pika-relay/**",
+  "flake.nix",
+  "flake.lock",
+  "fixtures/**",
+  "nix/**",
+  "justfile",
+  ".github/workflows/pre-merge.yml",
+  "cli/**",
+  "crates/pikaci/**",
+  "crates/pikahut/**",
+  "crates/pikachat-sidecar/**",
+  "crates/pika-marmot-runtime/**",
+  "crates/pika-relay-profiles/**",
+  "crates/pika-media/**",
+  "crates/pika-tls/**",
+  "tests/**",
+  "tools/**",
+  "pikachat-openclaw/openclaw/extensions/pikachat-openclaw/**",
+  "scripts/pikaci-ci-run.sh",
+  "scripts/pikaci-staged-linux-remote.sh",
+  "scripts/ci-add-known-host.sh",
+  "scripts/pika-build-prewarm-workspace-deps.sh",
+  "scripts/pika-build-run-workspace-deps.sh",
+  "scripts/lib/pikaci-tools.sh",
+]
+
+[[branch.lanes]]
+id = "fixture"
+title = "check-fixture"
+entrypoint = "just checks::pre-merge-fixture"
+command = ["nix", "develop", ".#default", "-c", "just", "checks::pre-merge-fixture"]
+paths = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "flake.nix",
+  "flake.lock",
+  "nix/**",
+  "justfile",
+  "just/agent.just",
+  "just/checks.just",
+  "just/infra.just",
+  ".github/workflows/pre-merge.yml",
+  "docs/testing/ci-selectors.md",
+  "docs/testing/integration-matrix.md",
+  "docs/testing/wrapper-deprecation-policy.md",
+  "cli/Cargo.toml",
+  "crates/pikaci/**",
+  "crates/hypernote-protocol/**",
+  "crates/pika-agent-control-plane/**",
+  "crates/pika-agent-microvm/Cargo.toml",
+  "crates/pika-desktop/**",
+  "crates/pikahut/**",
+  "scripts/pikaci-ci-run.sh",
+  "scripts/pikaci-staged-linux-remote.sh",
+  "scripts/ci-add-known-host.sh",
+  "scripts/pika-build-prewarm-workspace-deps.sh",
+  "scripts/pika-build-run-workspace-deps.sh",
+  "scripts/lib/pikaci-tools.sh",
+  "crates/pika-marmot-runtime/**",
+  "crates/pika-media/**",
+  "crates/pikachat-sidecar/Cargo.toml",
+  "crates/pika-relay-profiles/**",
+  "crates/pika-server/Cargo.toml",
+  "crates/pika-tls/**",
+  "pikachat-openclaw/scripts/run-openclaw-e2e.sh",
+  "pikachat-openclaw/scripts/run-scenario.sh",
+  "cmd/pika-relay/**",
+  "rust/**",
+  "rust/tests/e2e_calls.rs",
+  "scripts/agent-chat-demo.sh",
+  "scripts/agent-demo.sh",
+  "scripts/demo-agent-microvm.sh",
+  "tools/cli-smoke",
+  "tools/interop-rust-baseline",
+  "tools/primal-ios-interop-nightly",
+  "tools/ui-e2e-local",
+  "tools/ui-e2e-public",
+]
+
+[[nightly.lanes]]
+id = "nightly_linux"
+title = "nightly-linux"
+entrypoint = "just rmp_tools::rmp-nightly-linux"
+command = ["nix", "develop", ".#default", "-c", "just", "rmp_tools::rmp-nightly-linux"]
+
+[[nightly.lanes]]
+id = "nightly_pika"
+title = "nightly-pika"
+entrypoint = "just checks::nightly-pika-e2e"
+command = ["nix", "develop", ".#default", "-c", "just", "checks::nightly-pika-e2e"]
+
+[[nightly.lanes]]
+id = "nightly_pikachat"
+title = "nightly-pikachat"
+entrypoint = "just checks::nightly-pikachat"
+command = ["nix", "develop", ".#default", "-c", "just", "checks::nightly-pikachat"]
+
+[[nightly.lanes]]
+id = "nightly_pika_ui_android"
+title = "nightly-pika-ui-android"
+entrypoint = "./scripts/forge-nightly-pika-ui-android.sh"
+command = ["./scripts/forge-nightly-pika-ui-android.sh"]
+
+[[nightly.lanes]]
+id = "nightly_apple_host_bundle"
+title = "nightly-apple-host-bundle"
+entrypoint = "./scripts/pikaci-apple-remote.sh run --just-recipe apple-host-bundle"
+command = ["./scripts/pikaci-apple-remote.sh", "run", "--just-recipe", "apple-host-bundle"]

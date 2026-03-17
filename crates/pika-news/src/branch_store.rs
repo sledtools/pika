@@ -1,6 +1,7 @@
 use anyhow::Context;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
+use crate::ci_manifest::ForgeLane;
 use crate::storage::Store;
 
 #[derive(Debug, Clone)]
@@ -9,7 +10,6 @@ pub struct BranchUpsertInput {
     pub canonical_git_dir: String,
     pub default_branch: String,
     pub ci_entrypoint: String,
-    pub ci_command_json: String,
     pub branch_name: String,
     pub title: String,
     pub head_sha: String,
@@ -78,9 +78,23 @@ pub struct BranchDetailRecord {
 pub struct BranchCiRunRecord {
     pub id: i64,
     pub source_head_sha: String,
+    pub status: String,
+    pub lane_count: usize,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub lanes: Vec<BranchCiLaneRecord>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BranchCiLaneRecord {
+    pub id: i64,
+    pub lane_id: String,
+    pub title: String,
     pub entrypoint: String,
     pub status: String,
     pub log_text: Option<String>,
+    pub retry_count: i64,
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
@@ -88,11 +102,62 @@ pub struct BranchCiRunRecord {
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-pub struct PendingCiRun {
-    pub run_id: i64,
+pub struct PendingBranchCiLaneJob {
+    pub lane_run_id: i64,
+    pub suite_id: i64,
     pub branch_id: i64,
     pub source_head_sha: String,
+    pub lane_id: String,
+    pub title: String,
     pub entrypoint: String,
+    pub command: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NightlyFeedItem {
+    pub nightly_run_id: i64,
+    pub repo: String,
+    pub source_head_sha: String,
+    pub status: String,
+    pub summary: Option<String>,
+    pub scheduled_for: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct NightlyRunRecord {
+    pub nightly_run_id: i64,
+    pub repo: String,
+    pub source_ref: String,
+    pub source_head_sha: String,
+    pub status: String,
+    pub summary: Option<String>,
+    pub scheduled_for: String,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub lanes: Vec<NightlyLaneRecord>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NightlyLaneRecord {
+    pub lane_id: String,
+    pub title: String,
+    pub entrypoint: String,
+    pub status: String,
+    pub log_text: Option<String>,
+    pub retry_count: i64,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingNightlyLaneJob {
+    pub lane_run_id: i64,
+    pub nightly_run_id: i64,
+    pub source_head_sha: String,
+    pub lane_id: String,
     pub command: Vec<String>,
 }
 
@@ -110,6 +175,18 @@ pub struct BranchActionTarget {
 }
 
 impl Store {
+    pub fn ensure_forge_repo_metadata(
+        &self,
+        repo: &str,
+        canonical_git_dir: &str,
+        default_branch: &str,
+        ci_entrypoint: &str,
+    ) -> anyhow::Result<i64> {
+        self.with_connection(|conn| {
+            ensure_repo_metadata(conn, repo, canonical_git_dir, default_branch, ci_entrypoint)
+        })
+    }
+
     pub fn upsert_branch_record(
         &self,
         input: &BranchUpsertInput,
@@ -204,14 +281,11 @@ impl Store {
                 .as_deref()
                 .map(|previous| previous != input.head_sha)
                 .unwrap_or(true);
-            let queued_generation =
-                ensure_branch_artifact_for_head(&tx, branch_id, &input.head_sha, &input.merge_base_sha)?;
-            let queued_ci = ensure_ci_run_for_head(
+            let queued_generation = ensure_branch_artifact_for_head(
                 &tx,
                 branch_id,
                 &input.head_sha,
-                &input.ci_entrypoint,
-                &input.ci_command_json,
+                &input.merge_base_sha,
             )?;
 
             tx.commit().context("commit branch upsert transaction")?;
@@ -220,7 +294,7 @@ impl Store {
                 inserted,
                 head_changed,
                 queued_generation,
-                queued_ci,
+                queued_ci: false,
             })
         })
     }
@@ -409,7 +483,7 @@ impl Store {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, source_head_sha, entrypoint, status, log_text, created_at, started_at, finished_at
+                    "SELECT id, source_head_sha, status, created_at, started_at, finished_at
                      FROM branch_ci_runs
                      WHERE branch_id = ?1
                      ORDER BY id DESC
@@ -418,24 +492,252 @@ impl Store {
                 .context("prepare branch ci runs query")?;
             let rows = stmt
                 .query_map(params![branch_id, limit as i64], |row| {
-                    Ok(BranchCiRunRecord {
-                        id: row.get(0)?,
-                        source_head_sha: row.get(1)?,
-                        entrypoint: row.get(2)?,
-                        status: row.get(3)?,
-                        log_text: row.get(4)?,
-                        created_at: row.get(5)?,
-                        started_at: row.get(6)?,
-                        finished_at: row.get(7)?,
-                    })
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                    ))
                 })
                 .context("query branch ci runs")?;
 
             let mut runs = Vec::new();
             for row in rows {
-                runs.push(row.context("read branch ci run row")?);
+                let (run_id, source_head_sha, status, created_at, started_at, finished_at) =
+                    row.context("read branch ci run row")?;
+                let lanes = list_branch_ci_run_lanes(conn, run_id)?;
+                let lane_count = lanes.len();
+                runs.push(BranchCiRunRecord {
+                    id: run_id,
+                    source_head_sha,
+                    status,
+                    lane_count,
+                    created_at,
+                    started_at,
+                    finished_at,
+                    lanes,
+                });
             }
             Ok(runs)
+        })
+    }
+
+    pub fn queue_branch_ci_run_for_head(
+        &self,
+        branch_id: i64,
+        head_sha: &str,
+        lanes: &[ForgeLane],
+    ) -> anyhow::Result<bool> {
+        self.with_connection(|conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .context("start queue branch ci suite transaction")?;
+            let existing: Option<i64> = tx
+                .query_row(
+                    "SELECT id
+                     FROM branch_ci_runs
+                     WHERE branch_id = ?1 AND source_head_sha = ?2
+                     ORDER BY id DESC
+                     LIMIT 1",
+                    params![branch_id, head_sha],
+                    |row| row.get(0),
+                )
+                .optional()
+                .context("lookup existing branch ci suite for head")?;
+            if existing.is_some() {
+                tx.commit().context("commit existing branch ci suite lookup")?;
+                return Ok(false);
+            }
+
+            let suite_status = if lanes.is_empty() { "success" } else { "queued" };
+            let suite_log = if lanes.is_empty() {
+                Some("No lanes selected for this branch head.".to_string())
+            } else {
+                None
+            };
+            let selected_lane_ids = serde_json::to_string(
+                &lanes.iter().map(|lane| lane.id.clone()).collect::<Vec<_>>(),
+            )
+            .context("serialize selected branch lane ids")?;
+            tx.execute(
+                "INSERT INTO branch_ci_runs(
+                    branch_id,
+                    source_head_sha,
+                    entrypoint,
+                    command_json,
+                    status,
+                    log_text,
+                    finished_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, CASE WHEN ?5 = 'success' THEN CURRENT_TIMESTAMP ELSE NULL END)",
+                params![
+                    branch_id,
+                    head_sha,
+                    "ci/forge-lanes.toml",
+                    selected_lane_ids,
+                    suite_status,
+                    suite_log,
+                ],
+            )
+            .context("insert branch ci suite")?;
+            let suite_id = tx.last_insert_rowid();
+
+            for lane in lanes {
+                let command_json =
+                    serde_json::to_string(&lane.command).context("serialize branch lane command")?;
+                tx.execute(
+                    "INSERT INTO branch_ci_run_lanes(
+                        branch_ci_run_id,
+                        lane_id,
+                        title,
+                        entrypoint,
+                        command_json,
+                        status
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, 'queued')",
+                    params![suite_id, lane.id, lane.title, lane.entrypoint, command_json],
+                )
+                .with_context(|| format!("insert branch ci lane for suite {}", suite_id))?;
+            }
+
+            tx.commit().context("commit queue branch ci suite transaction")?;
+            Ok(true)
+        })
+    }
+
+    pub fn list_recent_nightly_runs(&self, limit: usize) -> anyhow::Result<Vec<NightlyFeedItem>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT nr.id, r.repo, nr.source_head_sha, nr.status, nr.summary, nr.scheduled_for, nr.created_at
+                     FROM nightly_runs nr
+                     JOIN repos r ON r.id = nr.repo_id
+                     ORDER BY nr.scheduled_for DESC, nr.id DESC
+                     LIMIT ?1",
+                )
+                .context("prepare nightly feed query")?;
+            let rows = stmt
+                .query_map(params![limit as i64], |row| {
+                    Ok(NightlyFeedItem {
+                        nightly_run_id: row.get(0)?,
+                        repo: row.get(1)?,
+                        source_head_sha: row.get(2)?,
+                        status: row.get(3)?,
+                        summary: row.get(4)?,
+                        scheduled_for: row.get(5)?,
+                        created_at: row.get(6)?,
+                    })
+                })
+                .context("query nightly feed items")?;
+            let mut items = Vec::new();
+            for row in rows {
+                items.push(row.context("read nightly feed row")?);
+            }
+            Ok(items)
+        })
+    }
+
+    pub fn get_nightly_run(&self, nightly_run_id: i64) -> anyhow::Result<Option<NightlyRunRecord>> {
+        self.with_connection(|conn| {
+            let row = conn
+                .query_row(
+                    "SELECT nr.id, r.repo, nr.source_ref, nr.source_head_sha, nr.status, nr.summary, nr.scheduled_for, nr.created_at, nr.started_at, nr.finished_at
+                     FROM nightly_runs nr
+                     JOIN repos r ON r.id = nr.repo_id
+                     WHERE nr.id = ?1",
+                    params![nightly_run_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, Option<String>>(5)?,
+                            row.get::<_, String>(6)?,
+                            row.get::<_, String>(7)?,
+                            row.get::<_, Option<String>>(8)?,
+                            row.get::<_, Option<String>>(9)?,
+                        ))
+                    },
+                )
+                .optional()
+                .context("query nightly run detail")?;
+            let Some((id, repo, source_ref, source_head_sha, status, summary, scheduled_for, created_at, started_at, finished_at)) = row else {
+                return Ok(None);
+            };
+            let lanes = list_nightly_run_lanes(conn, id)?;
+            Ok(Some(NightlyRunRecord {
+                nightly_run_id: id,
+                repo,
+                source_ref,
+                source_head_sha,
+                status,
+                summary,
+                scheduled_for,
+                created_at,
+                started_at,
+                finished_at,
+                lanes,
+            }))
+        })
+    }
+
+    pub fn queue_nightly_run(
+        &self,
+        repo_id: i64,
+        source_ref: &str,
+        source_head_sha: &str,
+        scheduled_for: &str,
+        lanes: &[ForgeLane],
+    ) -> anyhow::Result<bool> {
+        self.with_connection(|conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .context("start queue nightly transaction")?;
+            let existing: Option<i64> = tx
+                .query_row(
+                    "SELECT id FROM nightly_runs WHERE repo_id = ?1 AND scheduled_for = ?2",
+                    params![repo_id, scheduled_for],
+                    |row| row.get(0),
+                )
+                .optional()
+                .context("lookup existing nightly run")?;
+            if existing.is_some() {
+                tx.commit().context("commit existing nightly lookup")?;
+                return Ok(false);
+            }
+            let status = if lanes.is_empty() { "success" } else { "queued" };
+            let summary = if lanes.is_empty() {
+                Some("No nightly lanes configured.".to_string())
+            } else {
+                None
+            };
+            tx.execute(
+                "INSERT INTO nightly_runs(repo_id, source_ref, source_head_sha, status, summary, scheduled_for, finished_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, CASE WHEN ?4 = 'success' THEN CURRENT_TIMESTAMP ELSE NULL END)",
+                params![repo_id, source_ref, source_head_sha, status, summary, scheduled_for],
+            )
+            .context("insert nightly run")?;
+            let nightly_run_id = tx.last_insert_rowid();
+            for lane in lanes {
+                let command_json =
+                    serde_json::to_string(&lane.command).context("serialize nightly lane command")?;
+                tx.execute(
+                    "INSERT INTO nightly_run_lanes(
+                        nightly_run_id,
+                        lane_id,
+                        title,
+                        entrypoint,
+                        command_json,
+                        status
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, 'queued')",
+                    params![nightly_run_id, lane.id, lane.title, lane.entrypoint, command_json],
+                )
+                .with_context(|| format!("insert nightly lane for run {}", nightly_run_id))?;
+            }
+            tx.commit().context("commit queue nightly transaction")?;
+            Ok(true)
         })
     }
 
@@ -723,62 +1025,236 @@ impl Store {
         })
     }
 
-    pub fn claim_pending_ci_runs(&self, limit: usize) -> anyhow::Result<Vec<PendingCiRun>> {
+    pub fn recover_stale_ci_lanes(&self) -> anyhow::Result<usize> {
         self.with_connection(|conn| {
             let tx = conn
-                .unchecked_transaction()
-                .context("start ci claim transaction")?;
-            let mut runs = Vec::new();
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .context("start stale ci recovery transaction")?;
+            let branch_rows = tx
+                .execute(
+                    "UPDATE branch_ci_run_lanes
+                     SET status = 'queued',
+                         retry_count = retry_count + 1,
+                         started_at = NULL,
+                         finished_at = NULL
+                     WHERE status = 'running'",
+                    [],
+                )
+                .context("reset stale branch ci lanes")?;
+            let nightly_rows = tx
+                .execute(
+                    "UPDATE nightly_run_lanes
+                     SET status = 'queued',
+                         retry_count = retry_count + 1,
+                         started_at = NULL,
+                         finished_at = NULL
+                     WHERE status = 'running'",
+                    [],
+                )
+                .context("reset stale nightly lanes")?;
+            tx.execute(
+                "UPDATE branch_ci_runs
+                 SET status = 'queued', started_at = NULL, finished_at = NULL
+                 WHERE status = 'running'",
+                [],
+            )
+            .context("reset stale branch ci suites")?;
+            tx.execute(
+                "UPDATE nightly_runs
+                 SET status = 'queued', started_at = NULL, finished_at = NULL
+                 WHERE status = 'running'",
+                [],
+            )
+            .context("reset stale nightly runs")?;
+            tx.commit()
+                .context("commit stale ci recovery transaction")?;
+            Ok(branch_rows + nightly_rows)
+        })
+    }
+
+    pub fn claim_pending_branch_ci_lane_runs(
+        &self,
+        limit: usize,
+    ) -> anyhow::Result<Vec<PendingBranchCiLaneJob>> {
+        self.with_connection(|conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .context("start branch ci lane claim transaction")?;
+            let mut jobs = Vec::new();
             {
                 let mut stmt = tx
                     .prepare(
-                        "SELECT id, branch_id, source_head_sha, entrypoint, command_json
-                         FROM branch_ci_runs
-                         WHERE status = 'queued'
-                         ORDER BY id ASC
+                        "SELECT lane.id, lane.branch_ci_run_id, suite.branch_id, suite.source_head_sha, lane.lane_id, lane.title, lane.entrypoint, lane.command_json
+                         FROM branch_ci_run_lanes lane
+                         JOIN branch_ci_runs suite ON suite.id = lane.branch_ci_run_id
+                         WHERE lane.status = 'queued'
+                         ORDER BY lane.id ASC
                          LIMIT ?1",
                     )
-                    .context("prepare ci claim query")?;
+                    .context("prepare branch ci lane claim query")?;
+                let rows = stmt
+                    .query_map(params![limit as i64], |row| {
+                        let command_json: String = row.get(7)?;
+                        let command: Vec<String> =
+                            serde_json::from_str(&command_json).unwrap_or_default();
+                        Ok(PendingBranchCiLaneJob {
+                            lane_run_id: row.get(0)?,
+                            suite_id: row.get(1)?,
+                            branch_id: row.get(2)?,
+                            source_head_sha: row.get(3)?,
+                            lane_id: row.get(4)?,
+                            title: row.get(5)?,
+                            entrypoint: row.get(6)?,
+                            command,
+                        })
+                    })
+                    .context("query queued branch ci lanes")?;
+                for row in rows {
+                    let job = row.context("read queued branch ci lane row")?;
+                    tx.execute(
+                        "UPDATE branch_ci_run_lanes
+                         SET status = 'running', started_at = CURRENT_TIMESTAMP
+                         WHERE id = ?1 AND status = 'queued'",
+                        params![job.lane_run_id],
+                    )
+                    .with_context(|| format!("mark branch ci lane {} running", job.lane_run_id))?;
+                    tx.execute(
+                        "UPDATE branch_ci_runs
+                         SET status = 'running',
+                             started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
+                             finished_at = NULL
+                         WHERE id = ?1 AND status IN ('queued', 'running')",
+                        params![job.suite_id],
+                    )
+                    .with_context(|| format!("mark branch ci suite {} running", job.suite_id))?;
+                    jobs.push(job);
+                }
+            }
+            tx.commit()
+                .context("commit branch ci lane claim transaction")?;
+            Ok(jobs)
+        })
+    }
+
+    pub fn finish_branch_ci_lane_run(
+        &self,
+        lane_run_id: i64,
+        status: &str,
+        log_text: &str,
+    ) -> anyhow::Result<()> {
+        self.with_connection(|conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .context("start finish branch ci lane transaction")?;
+            let suite_id: i64 = tx
+                .query_row(
+                    "SELECT branch_ci_run_id FROM branch_ci_run_lanes WHERE id = ?1",
+                    params![lane_run_id],
+                    |row| row.get(0),
+                )
+                .with_context(|| format!("lookup branch ci suite for lane {}", lane_run_id))?;
+            tx.execute(
+                "UPDATE branch_ci_run_lanes
+                 SET status = ?1, log_text = ?2, finished_at = CURRENT_TIMESTAMP
+                 WHERE id = ?3",
+                params![status, log_text, lane_run_id],
+            )
+            .with_context(|| format!("finish branch ci lane {}", lane_run_id))?;
+            update_branch_ci_suite_status(&tx, suite_id)?;
+            tx.commit()
+                .context("commit finish branch ci lane transaction")?;
+            Ok(())
+        })
+    }
+
+    pub fn claim_pending_nightly_lane_runs(
+        &self,
+        limit: usize,
+    ) -> anyhow::Result<Vec<PendingNightlyLaneJob>> {
+        self.with_connection(|conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .context("start nightly lane claim transaction")?;
+            let mut jobs = Vec::new();
+            {
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT lane.id, lane.nightly_run_id, nightly.source_head_sha, lane.lane_id, lane.command_json
+                         FROM nightly_run_lanes lane
+                         JOIN nightly_runs nightly ON nightly.id = lane.nightly_run_id
+                         WHERE lane.status = 'queued'
+                         ORDER BY lane.id ASC
+                         LIMIT ?1",
+                    )
+                    .context("prepare nightly lane claim query")?;
                 let rows = stmt
                     .query_map(params![limit as i64], |row| {
                         let command_json: String = row.get(4)?;
                         let command: Vec<String> =
                             serde_json::from_str(&command_json).unwrap_or_default();
-                        Ok(PendingCiRun {
-                            run_id: row.get(0)?,
-                            branch_id: row.get(1)?,
+                        Ok(PendingNightlyLaneJob {
+                            lane_run_id: row.get(0)?,
+                            nightly_run_id: row.get(1)?,
                             source_head_sha: row.get(2)?,
-                            entrypoint: row.get(3)?,
+                            lane_id: row.get(3)?,
                             command,
                         })
                     })
-                    .context("query queued ci runs")?;
+                    .context("query queued nightly lanes")?;
                 for row in rows {
-                    let run = row.context("read queued ci run row")?;
+                    let job = row.context("read queued nightly lane row")?;
                     tx.execute(
-                        "UPDATE branch_ci_runs
+                        "UPDATE nightly_run_lanes
                          SET status = 'running', started_at = CURRENT_TIMESTAMP
                          WHERE id = ?1 AND status = 'queued'",
-                        params![run.run_id],
+                        params![job.lane_run_id],
                     )
-                    .with_context(|| format!("mark ci run {} running", run.run_id))?;
-                    runs.push(run);
+                    .with_context(|| format!("mark nightly lane {} running", job.lane_run_id))?;
+                    tx.execute(
+                        "UPDATE nightly_runs
+                         SET status = 'running',
+                             started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
+                             finished_at = NULL
+                         WHERE id = ?1 AND status IN ('queued', 'running')",
+                        params![job.nightly_run_id],
+                    )
+                    .with_context(|| format!("mark nightly run {} running", job.nightly_run_id))?;
+                    jobs.push(job);
                 }
             }
-            tx.commit().context("commit ci claim transaction")?;
-            Ok(runs)
+            tx.commit()
+                .context("commit nightly lane claim transaction")?;
+            Ok(jobs)
         })
     }
 
-    pub fn finish_ci_run(&self, run_id: i64, status: &str, log_text: &str) -> anyhow::Result<()> {
+    pub fn finish_nightly_lane_run(
+        &self,
+        lane_run_id: i64,
+        status: &str,
+        log_text: &str,
+    ) -> anyhow::Result<()> {
         self.with_connection(|conn| {
-            conn.execute(
-                "UPDATE branch_ci_runs
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .context("start finish nightly lane transaction")?;
+            let nightly_run_id: i64 = tx
+                .query_row(
+                    "SELECT nightly_run_id FROM nightly_run_lanes WHERE id = ?1",
+                    params![lane_run_id],
+                    |row| row.get(0),
+                )
+                .with_context(|| format!("lookup nightly run for lane {}", lane_run_id))?;
+            tx.execute(
+                "UPDATE nightly_run_lanes
                  SET status = ?1, log_text = ?2, finished_at = CURRENT_TIMESTAMP
                  WHERE id = ?3",
-                params![status, log_text, run_id],
+                params![status, log_text, lane_run_id],
             )
-            .with_context(|| format!("finish ci run {}", run_id))?;
+            .with_context(|| format!("finish nightly lane {}", lane_run_id))?;
+            update_nightly_run_status(&tx, nightly_run_id)?;
+            tx.commit()
+                .context("commit finish nightly lane transaction")?;
             Ok(())
         })
     }
@@ -879,35 +1355,157 @@ fn ensure_branch_artifact_for_head(
     Ok(true)
 }
 
-fn ensure_ci_run_for_head(
+fn list_branch_ci_run_lanes(
     conn: &Connection,
-    branch_id: i64,
-    head_sha: &str,
-    ci_entrypoint: &str,
-    ci_command_json: &str,
-) -> anyhow::Result<bool> {
-    let existing: Option<i64> = conn
-        .query_row(
-            "SELECT id
-             FROM branch_ci_runs
-             WHERE branch_id = ?1 AND source_head_sha = ?2
-             ORDER BY id DESC
-             LIMIT 1",
-            params![branch_id, head_sha],
-            |row| row.get(0),
+    suite_id: i64,
+) -> anyhow::Result<Vec<BranchCiLaneRecord>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, lane_id, title, entrypoint, status, log_text, retry_count, created_at, started_at, finished_at
+             FROM branch_ci_run_lanes
+             WHERE branch_ci_run_id = ?1
+             ORDER BY id ASC",
         )
-        .optional()
-        .context("lookup existing ci run for head")?;
-    if existing.is_some() {
-        return Ok(false);
+        .context("prepare branch ci lane list query")?;
+    let rows = stmt
+        .query_map(params![suite_id], |row| {
+            Ok(BranchCiLaneRecord {
+                id: row.get(0)?,
+                lane_id: row.get(1)?,
+                title: row.get(2)?,
+                entrypoint: row.get(3)?,
+                status: row.get(4)?,
+                log_text: row.get(5)?,
+                retry_count: row.get(6)?,
+                created_at: row.get(7)?,
+                started_at: row.get(8)?,
+                finished_at: row.get(9)?,
+            })
+        })
+        .context("query branch ci lane rows")?;
+    let mut lanes = Vec::new();
+    for row in rows {
+        lanes.push(row.context("read branch ci lane row")?);
     }
-    conn.execute(
-        "INSERT INTO branch_ci_runs(branch_id, source_head_sha, entrypoint, command_json, status)
-         VALUES (?1, ?2, ?3, ?4, 'queued')",
-        params![branch_id, head_sha, ci_entrypoint, ci_command_json],
-    )
-    .with_context(|| format!("insert ci run for branch {}", branch_id))?;
-    Ok(true)
+    Ok(lanes)
+}
+
+fn list_nightly_run_lanes(
+    conn: &Connection,
+    nightly_run_id: i64,
+) -> anyhow::Result<Vec<NightlyLaneRecord>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, lane_id, title, entrypoint, status, log_text, retry_count, created_at, started_at, finished_at
+             FROM nightly_run_lanes
+             WHERE nightly_run_id = ?1
+             ORDER BY id ASC",
+        )
+        .context("prepare nightly lane list query")?;
+    let rows = stmt
+        .query_map(params![nightly_run_id], |row| {
+            Ok(NightlyLaneRecord {
+                lane_id: row.get(1)?,
+                title: row.get(2)?,
+                entrypoint: row.get(3)?,
+                status: row.get(4)?,
+                log_text: row.get(5)?,
+                retry_count: row.get(6)?,
+                created_at: row.get(7)?,
+                started_at: row.get(8)?,
+                finished_at: row.get(9)?,
+            })
+        })
+        .context("query nightly lane rows")?;
+    let mut lanes = Vec::new();
+    for row in rows {
+        lanes.push(row.context("read nightly lane row")?);
+    }
+    Ok(lanes)
+}
+
+fn aggregate_lane_status(
+    conn: &Connection,
+    table: &str,
+    foreign_key: &str,
+    parent_id: i64,
+) -> anyhow::Result<String> {
+    let sql = format!(
+        "SELECT COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END), 0)
+         FROM {table}
+         WHERE {foreign_key} = ?1"
+    );
+    let (failed, running, queued, success, skipped): (i64, i64, i64, i64, i64) = conn
+        .query_row(&sql, params![parent_id], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })
+        .with_context(|| format!("aggregate status from {table} for parent {parent_id}"))?;
+    let total = failed + running + queued + success + skipped;
+    let status = if total == 0 || success + skipped == total {
+        "success"
+    } else if failed > 0 {
+        "failed"
+    } else if running > 0 {
+        "running"
+    } else if queued > 0 {
+        "queued"
+    } else {
+        "success"
+    };
+    Ok(status.to_string())
+}
+
+fn update_branch_ci_suite_status(conn: &Connection, suite_id: i64) -> anyhow::Result<()> {
+    let status = aggregate_lane_status(conn, "branch_ci_run_lanes", "branch_ci_run_id", suite_id)?;
+    let finished = if status == "success" || status == "failed" {
+        Some("CURRENT_TIMESTAMP")
+    } else {
+        None
+    };
+    let sql = if finished.is_some() {
+        "UPDATE branch_ci_runs
+         SET status = ?1, finished_at = CURRENT_TIMESTAMP
+         WHERE id = ?2"
+    } else {
+        "UPDATE branch_ci_runs
+         SET status = ?1, finished_at = NULL
+         WHERE id = ?2"
+    };
+    conn.execute(sql, params![status, suite_id])
+        .with_context(|| format!("update branch ci suite {}", suite_id))?;
+    Ok(())
+}
+
+fn update_nightly_run_status(conn: &Connection, nightly_run_id: i64) -> anyhow::Result<()> {
+    let status =
+        aggregate_lane_status(conn, "nightly_run_lanes", "nightly_run_id", nightly_run_id)?;
+    let finished = if status == "success" || status == "failed" {
+        Some("CURRENT_TIMESTAMP")
+    } else {
+        None
+    };
+    let sql = if finished.is_some() {
+        "UPDATE nightly_runs
+         SET status = ?1, finished_at = CURRENT_TIMESTAMP
+         WHERE id = ?2"
+    } else {
+        "UPDATE nightly_runs
+         SET status = ?1, finished_at = NULL
+         WHERE id = ?2"
+    };
+    conn.execute(sql, params![status, nightly_run_id])
+        .with_context(|| format!("update nightly run {}", nightly_run_id))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -915,6 +1513,7 @@ mod tests {
     use rusqlite::params;
 
     use super::BranchUpsertInput;
+    use crate::ci_manifest::ForgeLane;
     use crate::storage::Store;
 
     fn open_store() -> Store {
@@ -929,8 +1528,6 @@ mod tests {
             canonical_git_dir: "/tmp/pika.git".to_string(),
             default_branch: "master".to_string(),
             ci_entrypoint: "just pre-merge".to_string(),
-            ci_command_json: serde_json::to_string(&vec!["just", "pre-merge"])
-                .expect("serialize ci command"),
             branch_name: branch_name.to_string(),
             title: format!("{} title", branch_name),
             head_sha: head_sha.to_string(),
@@ -956,6 +1553,16 @@ mod tests {
                 .map_err(Into::into)
             })
             .expect("lookup latest branch artifact")
+    }
+
+    fn sample_lane(id: &str) -> ForgeLane {
+        ForgeLane {
+            id: id.to_string(),
+            title: format!("{id} title"),
+            entrypoint: format!("just checks::{id}"),
+            command: vec!["just".to_string(), format!("checks::{id}")],
+            paths: vec![],
+        }
     }
 
     #[test]
@@ -989,18 +1596,23 @@ mod tests {
         let first = store
             .upsert_branch_record(&upsert_input("feature/ci", "head111"))
             .expect("insert branch");
-        assert!(first.queued_ci);
+        assert!(store
+            .queue_branch_ci_run_for_head(first.branch_id, "head111", &[sample_lane("pika")])
+            .expect("queue first branch ci suite"));
         let second = store
             .upsert_branch_record(&upsert_input("feature/ci", "head222"))
             .expect("update branch with new head");
         assert!(second.head_changed);
-        assert!(second.queued_ci);
+        assert!(store
+            .queue_branch_ci_run_for_head(second.branch_id, "head222", &[sample_lane("pika")])
+            .expect("queue second branch ci suite"));
         let runs = store
             .list_branch_ci_runs(second.branch_id, 10)
             .expect("list ci runs");
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].source_head_sha, "head222");
         assert_eq!(runs[1].source_head_sha, "head111");
+        assert_eq!(runs[0].lanes.len(), 1);
     }
 
     #[test]
@@ -1020,8 +1632,14 @@ mod tests {
             )
             .expect("mark branch artifact ready");
         store
-            .finish_ci_run(1, "success", "ci ok")
-            .expect("persist ci result");
+            .queue_branch_ci_run_for_head(branch.branch_id, "head333", &[sample_lane("pika")])
+            .expect("queue ci suite");
+        let runs = store
+            .list_branch_ci_runs(branch.branch_id, 4)
+            .expect("list ci suites");
+        store
+            .finish_branch_ci_lane_run(runs[0].lanes[0].id, "success", "ci ok")
+            .expect("persist ci lane result");
         store
             .mark_branch_merged(branch.branch_id, "npub1trusted", "merge999")
             .expect("mark merged");

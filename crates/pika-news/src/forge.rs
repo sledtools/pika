@@ -133,6 +133,40 @@ pub fn branch_diff(
     )
 }
 
+pub fn changed_paths(
+    repo: &ForgeRepoConfig,
+    merge_base_sha: &str,
+    head_sha: &str,
+) -> anyhow::Result<Vec<String>> {
+    let output = if merge_base_sha.trim().is_empty() {
+        git_bare(repo, ["ls-tree", "-r", "--name-only", head_sha])?
+    } else {
+        git_bare(
+            repo,
+            [
+                "diff",
+                "--name-only",
+                &format!("{merge_base_sha}..{head_sha}"),
+            ],
+        )?
+    };
+    Ok(output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+pub fn read_file_at_ref(
+    repo: &ForgeRepoConfig,
+    git_ref: &str,
+    relative_path: &str,
+) -> anyhow::Result<String> {
+    git_bare(repo, ["show", &format!("{git_ref}:{relative_path}")])
+        .with_context(|| format!("read `{relative_path}` from `{git_ref}` in canonical bare repo"))
+}
+
 pub fn merge_branch(
     repo: &ForgeRepoConfig,
     branch_name: &str,

@@ -10,7 +10,6 @@ repos = ["sledtools/pika"]
 repo = "sledtools/pika"
 canonical_git_dir = "/var/lib/pika-news/pika.git"
 default_branch = "master"
-ci_command = ["just", "pre-merge"]
 hook_url = "http://127.0.0.1:8788/news/webhook"
 
 poll_interval_secs = 60
@@ -26,6 +25,7 @@ bootstrap_admin_npubs = ["npub1..."]
 
 - `repos`: legacy repo slug list; keep `["sledtools/pika"]`.
 - `forge_repo`: canonical forge metadata for the single hosted `pika` bare repo.
+- `ci/forge-lanes.toml`: checked-in source of truth for canonical pre-merge lane selection and nightly lane definitions. The forge reads it from `master`, not from branch heads.
 - `poll_interval_secs`: interval used by hosted mode repair scans of the canonical bare repo.
 - `model`: Anthropic model name for tutorial generation.
 - `api_key_env`: environment variable containing the API key.
@@ -37,6 +37,12 @@ bootstrap_admin_npubs = ["npub1..."]
 - `bootstrap_admin_npubs`: Nostr pubkeys that can always sign in and manage the runtime chat allowlist from `/news/admin`.
 
 `allowed_npubs` remains as a legacy chat-access list for existing deployments, but it no longer grants admin rights. Set `bootstrap_admin_npubs` explicitly for anyone who should manage the in-app admin page.
+
+## Canonical CI
+
+- Branch-push pre-merge CI is now orchestrated by the forge from `ci/forge-lanes.toml`.
+- Nightly scheduling is now orchestrated by the forge service from the same manifest.
+- GitHub Actions release and TestFlight workflows remain in place, but GitHub is no longer the canonical control plane for day-to-day pre-merge or nightly CI.
 
 ## Local mode
 

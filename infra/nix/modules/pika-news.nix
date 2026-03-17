@@ -13,7 +13,6 @@ let
       repo = "sledtools/pika";
       canonical_git_dir = "${serviceStateDir}/pika.git";
       default_branch = "master";
-      ci_command = [ "just" "pre-merge" ];
       hook_url = "http://127.0.0.1:${toString servicePort}/news/webhook";
     };
     poll_interval_secs = 300;
@@ -74,12 +73,23 @@ in
   users.groups."${serviceGroup}" = {};
 
   systemd.services.pika-news = {
-    description = "pika-news PR tutorial feed";
+    description = "pika forge service";
     wantedBy = [ "multi-user.target" ];
     after = [ "network-online.target" "sops-install-secrets.service" ];
     wants = [ "network-online.target" ];
 
-    path = [ pkgs.claude-code pkgs.curl pkgs.git pkgs.just pkgs.openssl ];
+    path = [
+      pkgs.bash
+      pkgs.claude-code
+      pkgs.curl
+      pkgs.git
+      pkgs.just
+      pkgs.nix
+      pkgs.openssh
+      pkgs.openssl
+      pkgs.python3
+      pkgs.rsync
+    ];
 
     restartTriggers = [
       config.sops.templates."pika-news-env".path

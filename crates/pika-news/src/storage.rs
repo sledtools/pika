@@ -1875,6 +1875,11 @@ fn migrations() -> Vec<Migration> {
             name: "0010_allowlist_forge_write",
             sql: include_str!("../migrations/0010_allowlist_forge_write.sql"),
         },
+        Migration {
+            version: 11,
+            name: "0011_ci_lanes_and_nightlies",
+            sql: include_str!("../migrations/0011_ci_lanes_and_nightlies.sql"),
+        },
     ]
 }
 

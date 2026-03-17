@@ -16,7 +16,10 @@ use sha2::Sha256;
 use tokio::sync::Notify;
 
 use crate::auth::{normalize_npub, AuthState};
-use crate::branch_store::{BranchCiRunRecord, BranchDetailRecord, BranchFeedItem};
+use crate::branch_store::{
+    BranchCiLaneRecord, BranchCiRunRecord, BranchDetailRecord, BranchFeedItem, NightlyFeedItem,
+    NightlyLaneRecord, NightlyRunRecord,
+};
 use crate::ci;
 use crate::config::Config;
 use crate::forge;
@@ -42,6 +45,7 @@ struct AppState {
 struct FeedTemplate {
     open_items: Vec<FeedItemView>,
     history_items: Vec<FeedItemView>,
+    nightly_items: Vec<NightlyFeedItemView>,
 }
 
 #[derive(Template)]
@@ -67,6 +71,23 @@ struct DetailTemplate {
 }
 
 #[derive(Template)]
+#[template(path = "nightly.html")]
+struct NightlyTemplate {
+    page_title: String,
+    repo: String,
+    nightly_run_id: i64,
+    status: String,
+    summary: Option<String>,
+    source_ref: String,
+    source_head_sha: String,
+    scheduled_for: String,
+    created_at: String,
+    started_at: Option<String>,
+    finished_at: Option<String>,
+    lanes: Vec<NightlyLaneView>,
+}
+
+#[derive(Template)]
 #[template(path = "inbox.html")]
 struct InboxTemplate {}
 
@@ -84,6 +105,17 @@ struct FeedItemView {
     updated_at: String,
     tutorial_status: String,
     ci_status: String,
+}
+
+#[derive(Clone)]
+struct NightlyFeedItemView {
+    nightly_run_id: i64,
+    repo: String,
+    source_head_sha: String,
+    status: String,
+    summary: Option<String>,
+    scheduled_for: String,
+    created_at: String,
 }
 
 #[derive(Clone)]
@@ -105,9 +137,36 @@ struct MediaLinkView {
 struct CiRunView {
     id: i64,
     source_head_sha: String,
+    status: String,
+    lane_count: usize,
+    created_at: String,
+    started_at: Option<String>,
+    finished_at: Option<String>,
+    lanes: Vec<CiLaneView>,
+}
+
+#[derive(Clone)]
+struct CiLaneView {
+    id: i64,
+    lane_id: String,
+    title: String,
     entrypoint: String,
     status: String,
     log_text: Option<String>,
+    retry_count: i64,
+    created_at: String,
+    started_at: Option<String>,
+    finished_at: Option<String>,
+}
+
+#[derive(Clone)]
+struct NightlyLaneView {
+    lane_id: String,
+    title: String,
+    entrypoint: String,
+    status: String,
+    log_text: Option<String>,
+    retry_count: i64,
     created_at: String,
     started_at: Option<String>,
     finished_at: Option<String>,
@@ -156,10 +215,10 @@ pub async fn serve(
             )
         })?;
         eprintln!(
-            "forge: canonical_repo={} default_branch={} ci={}",
+            "forge: canonical_repo={} default_branch={} lane_manifest={}",
             forge_repo.canonical_git_dir,
             forge_repo.default_branch,
-            forge_repo.ci_command.join(" ")
+            ci::FORGE_LANE_MANIFEST_PATH
         );
     }
     let state = Arc::new(AppState {
@@ -220,10 +279,18 @@ pub async fn serve(
                         }
                     }
                     match ci_result {
-                        Ok(ci) if ci.claimed > 0 => {
+                        Ok(ci)
+                            if ci.claimed > 0
+                                || ci.nightlies_scheduled > 0
+                                || ci.retries_recovered > 0 =>
+                        {
                             eprintln!(
-                                "ci: claimed={} succeeded={} failed={}",
-                                ci.claimed, ci.succeeded, ci.failed
+                                "ci: claimed={} succeeded={} failed={} nightlies_scheduled={} retries_recovered={}",
+                                ci.claimed,
+                                ci.succeeded,
+                                ci.failed,
+                                ci.nightlies_scheduled,
+                                ci.retries_recovered
                             );
                         }
                         Ok(_) => {}
@@ -250,6 +317,7 @@ pub async fn serve(
         .route("/", get(feed_handler))
         .route("/news", get(feed_handler))
         .route("/news/branch/:pr_id", get(detail_handler))
+        .route("/news/nightly/:nightly_run_id", get(nightly_handler))
         .route("/news/pr/:pr_id", get(detail_handler))
         .route("/news/branch/:pr_id/merge", post(merge_handler))
         .route("/news/branch/:pr_id/close", post(close_handler))
@@ -293,24 +361,45 @@ pub async fn serve(
 }
 
 async fn feed_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let store = state.store.clone();
-    let items = match tokio::task::spawn_blocking(move || store.list_branch_feed_items()).await {
-        Ok(Ok(items)) => items,
-        Ok(Err(err)) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to query feed items: {}", err),
-            )
-                .into_response();
-        }
-        Err(err) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("feed worker task failed: {}", err),
-            )
-                .into_response();
-        }
-    };
+    let branch_store = state.store.clone();
+    let nightly_store = state.store.clone();
+    let items =
+        match tokio::task::spawn_blocking(move || branch_store.list_branch_feed_items()).await {
+            Ok(Ok(items)) => items,
+            Ok(Err(err)) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to query feed items: {}", err),
+                )
+                    .into_response();
+            }
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("feed worker task failed: {}", err),
+                )
+                    .into_response();
+            }
+        };
+    let nightly_items =
+        match tokio::task::spawn_blocking(move || nightly_store.list_recent_nightly_runs(12)).await
+        {
+            Ok(Ok(items)) => items,
+            Ok(Err(err)) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to query nightly runs: {}", err),
+                )
+                    .into_response();
+            }
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("nightly worker task failed: {}", err),
+                )
+                    .into_response();
+            }
+        };
 
     let mut open_items = Vec::new();
     let mut history_items = Vec::new();
@@ -327,6 +416,10 @@ async fn feed_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let template = FeedTemplate {
         open_items,
         history_items,
+        nightly_items: nightly_items
+            .into_iter()
+            .map(map_nightly_feed_item)
+            .collect(),
     };
 
     match template.render() {
@@ -334,6 +427,47 @@ async fn feed_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("failed to render feed template: {}", err),
+        )
+            .into_response(),
+    }
+}
+
+async fn nightly_handler(
+    State(state): State<Arc<AppState>>,
+    Path(nightly_run_id): Path<i64>,
+) -> impl IntoResponse {
+    let store = state.store.clone();
+    let nightly =
+        match tokio::task::spawn_blocking(move || store.get_nightly_run(nightly_run_id)).await {
+            Ok(Ok(Some(run))) => run,
+            Ok(Ok(None)) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    format!("nightly run {} not found", nightly_run_id),
+                )
+                    .into_response();
+            }
+            Ok(Err(err)) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to query nightly run: {}", err),
+                )
+                    .into_response();
+            }
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("nightly detail worker task failed: {}", err),
+                )
+                    .into_response();
+            }
+        };
+    let template = render_nightly_template(nightly);
+    match template.render() {
+        Ok(rendered) => Html(rendered).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to render nightly template: {}", err),
         )
             .into_response(),
     }
@@ -439,6 +573,18 @@ fn map_feed_item(item: BranchFeedItem) -> FeedItemView {
     }
 }
 
+fn map_nightly_feed_item(item: NightlyFeedItem) -> NightlyFeedItemView {
+    NightlyFeedItemView {
+        nightly_run_id: item.nightly_run_id,
+        repo: item.repo,
+        source_head_sha: item.source_head_sha,
+        status: item.status,
+        summary: item.summary,
+        scheduled_for: item.scheduled_for,
+        created_at: item.created_at,
+    }
+}
+
 fn render_detail_template(
     record: BranchDetailRecord,
     ci_runs: Vec<BranchCiRunRecord>,
@@ -508,16 +654,62 @@ fn render_detail_template(
             .map(|run| CiRunView {
                 id: run.id,
                 source_head_sha: run.source_head_sha,
-                entrypoint: run.entrypoint,
                 status: run.status,
-                log_text: run.log_text,
+                lane_count: run.lane_count,
                 created_at: run.created_at,
                 started_at: run.started_at,
                 finished_at: run.finished_at,
+                lanes: run.lanes.into_iter().map(map_ci_lane_view).collect(),
             })
             .collect(),
         review_mode,
     })
+}
+
+fn render_nightly_template(run: NightlyRunRecord) -> NightlyTemplate {
+    NightlyTemplate {
+        page_title: format!("{} nightly #{}", run.repo, run.nightly_run_id),
+        repo: run.repo,
+        nightly_run_id: run.nightly_run_id,
+        status: run.status,
+        summary: run.summary,
+        source_ref: run.source_ref,
+        source_head_sha: run.source_head_sha,
+        scheduled_for: run.scheduled_for,
+        created_at: run.created_at,
+        started_at: run.started_at,
+        finished_at: run.finished_at,
+        lanes: run.lanes.into_iter().map(map_nightly_lane_view).collect(),
+    }
+}
+
+fn map_ci_lane_view(lane: BranchCiLaneRecord) -> CiLaneView {
+    CiLaneView {
+        id: lane.id,
+        lane_id: lane.lane_id,
+        title: lane.title,
+        entrypoint: lane.entrypoint,
+        status: lane.status,
+        log_text: lane.log_text,
+        retry_count: lane.retry_count,
+        created_at: lane.created_at,
+        started_at: lane.started_at,
+        finished_at: lane.finished_at,
+    }
+}
+
+fn map_nightly_lane_view(lane: NightlyLaneRecord) -> NightlyLaneView {
+    NightlyLaneView {
+        lane_id: lane.lane_id,
+        title: lane.title,
+        entrypoint: lane.entrypoint,
+        status: lane.status,
+        log_text: lane.log_text,
+        retry_count: lane.retry_count,
+        created_at: lane.created_at,
+        started_at: lane.started_at,
+        finished_at: lane.finished_at,
+    }
 }
 
 async fn merge_handler(
@@ -1861,12 +2053,28 @@ mod tests {
             "#!/usr/bin/env bash\nset -euo pipefail\necho branch-ci-ok\n",
         )
         .expect("write ci script");
+        fs::create_dir_all(seed.join("ci")).expect("create ci dir");
+        fs::write(
+            seed.join("ci/forge-lanes.toml"),
+            r#"
+version = 1
+nightly_schedule_utc = "23:59"
+
+[[branch.lanes]]
+id = "render_history"
+title = "render history"
+entrypoint = "./ci.sh"
+command = ["./ci.sh"]
+paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
+"#,
+        )
+        .expect("write forge lane manifest");
         let mut perms = fs::metadata(seed.join("ci.sh"))
             .expect("ci metadata")
             .permissions();
         perms.set_mode(0o755);
         fs::set_permissions(seed.join("ci.sh"), perms).expect("chmod ci script");
-        git(&seed, &["add", "README.md", "ci.sh"]);
+        git(&seed, &["add", "README.md", "ci.sh", "ci/forge-lanes.toml"]);
         git(&seed, &["commit", "-m", "initial"]);
         git(&seed, &["branch", "-M", "master"]);
         git(

@@ -1,6 +1,7 @@
 mod auth;
 mod branch_store;
 mod ci;
+mod ci_manifest;
 mod cli;
 mod config;
 mod forge;
@@ -33,6 +34,11 @@ fn main() -> anyhow::Result<()> {
                 Ok(0) => {}
                 Ok(n) => eprintln!("recovered {} stale generating artifact(s)", n),
                 Err(err) => eprintln!("warning: failed to recover stale generating: {}", err),
+            }
+            match store.recover_stale_ci_lanes() {
+                Ok(0) => {}
+                Ok(n) => eprintln!("recovered {} stale ci lane(s)", n),
+                Err(err) => eprintln!("warning: failed to recover stale ci lanes: {}", err),
             }
 
             println!(

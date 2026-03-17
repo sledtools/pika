@@ -57,5 +57,28 @@
         {% endfor %}
       </div>
       {% endif %}
+
+      <h2>Nightly Runs</h2>
+      {% if nightly_items.is_empty() %}
+      <p class="empty">No nightly runs yet.</p>
+      {% else %}
+      <div class="grid">
+        {% for item in nightly_items %}
+        <article class="card">
+          <div class="meta">{{ item.repo }} · nightly #{{ item.nightly_run_id }} · scheduled {{ item.scheduled_for }}</div>
+          <h3><a href="/news/nightly/{{ item.nightly_run_id }}">{{ item.status }}</a></h3>
+          {% match item.summary %}
+          {% when Some with (summary) %}
+          <p>{{ summary }}</p>
+          {% when None %}
+          <p>head <code>{{ item.source_head_sha }}</code> · queued {{ item.created_at }}</p>
+          {% endmatch %}
+          <p>
+            <span class="status">nightly: {{ item.status }}</span>
+          </p>
+        </article>
+        {% endfor %}
+      </div>
+      {% endif %}
     </main>
 {% endblock %}

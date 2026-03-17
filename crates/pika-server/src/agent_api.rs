@@ -1301,6 +1301,8 @@ impl IncusManagedVmProvider {
             cloud_init.push_str(&base64::engine::general_purpose::STANDARD.encode(content));
             cloud_init.push('\n');
         }
+        cloud_init.push_str("runcmd:\n");
+        cloud_init.push_str("  - [systemctl, restart, pika-managed-agent.service]\n");
         Ok(cloud_init)
     }
 
@@ -4555,6 +4557,8 @@ GFs2pW5hEhS7cCO0qXaa5g==
         assert!(launcher.contains("export PIKA_ENABLE_OPENCLAW_PRIVATE_PROXY=0"));
         assert!(launcher.contains("sock.connect((\"1.1.1.1\", 80))"));
         assert!(launcher.contains("exec bash /workspace/pika-agent/start-agent.sh"));
+        assert!(user_data.contains("runcmd:"));
+        assert!(user_data.contains("systemctl, restart, pika-managed-agent.service"));
         let state_setup = cloud_init_write_file_content(user_data, INCUS_STATE_VOLUME_SETUP_PATH)
             .expect("state-volume setup script in cloud-init");
         assert!(state_setup.contains(INCUS_PERSISTENT_DAEMON_STATE_DIR));
@@ -4568,7 +4572,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
         .expect("startup plan in cloud-init");
         assert!(startup_plan.contains("\"agent_kind\": \"openclaw\""));
         assert!(
-            !user_data.contains("pika-managed-agent.service"),
+            !user_data.contains("/etc/systemd/system/pika-managed-agent.service"),
             "service unit should be baked into the Incus guest image, not written by cloud-init"
         );
         assert_eq!(instance_body["config"]["user.pika.agent_kind"], "openclaw");

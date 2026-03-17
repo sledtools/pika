@@ -30,10 +30,11 @@ jobs:
       - uses: nixbuild/nix-quick-install-action@v30
 
       - name: Load Apple mini CI env
+        id: apple_env
         env:
           AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
           PIKA_SHELL_QUIET: "1"
-        run: nix develop .#default -c ./scripts/write-pikaci-apple-github-env >> "$GITHUB_ENV"
+        run: nix develop .#default -c ./scripts/write-pikaci-apple-github-env
 
       - name: Resolve Apple lane
         id: lane
@@ -56,9 +57,9 @@ jobs:
       - name: Join Tailscale
         uses: tailscale/github-action@v4
         with:
-          authkey: ${{ env.PIKACI_APPLE_TAILSCALE_AUTHKEY }}
+          authkey: ${{ steps.apple_env.outputs.tailscale_authkey }}
           hostname: gha-pikaci-apple-validate-${{ github.run_id }}
-          ping: ${{ env.PIKACI_APPLE_SSH_HOST }}
+          ping: ${{ steps.apple_env.outputs.ssh_host }}
 
       - name: Run Apple mini validation lane
         id: remote

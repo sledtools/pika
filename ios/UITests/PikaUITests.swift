@@ -90,6 +90,16 @@ final class PikaUITests: XCTestCase {
         return messages
     }
 
+    private func e2eTimeoutSeconds(_ key: String, default fallback: TimeInterval) -> TimeInterval {
+        let env = ProcessInfo.processInfo.environment
+        guard let raw = env[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let value = Double(raw),
+              value > 0 else {
+            return fallback
+        }
+        return value
+    }
+
     private func waitForLoginScreen(_ app: XCUIApplication, timeout: TimeInterval = 15) {
         let createAccount = app.buttons.matching(identifier: "login_create_account").firstMatch
         let loginSubmit = app.buttons.matching(identifier: "login_submit").firstMatch
@@ -836,7 +846,8 @@ final class PikaUITests: XCTestCase {
         XCTAssertTrue(send.waitForExistence(timeout: 10))
         send.tap()
 
-        let replyDeadline = Date().addingTimeInterval(90)
+        let replyTimeout = e2eTimeoutSeconds("PIKA_UI_E2E_OPENCLAW_REPLY_TIMEOUT_SEC", default: 180)
+        let replyDeadline = Date().addingTimeInterval(replyTimeout)
         while Date() < replyDeadline {
             if app.staticTexts[expected].exists {
                 return
@@ -850,7 +861,7 @@ final class PikaUITests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.5)
         }
 
-        XCTFail("Timed out waiting for OpenClaw reply: \(expected)")
+        XCTFail("Timed out waiting for OpenClaw reply within \(Int(replyTimeout))s: \(expected)")
     }
 
     func testE2E_hypernoteDetailsAndCodeBlock() throws {

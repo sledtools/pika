@@ -112,7 +112,7 @@ release_secret_decrypt_to_stdout() {
 
   if [ -f "$identity_file" ]; then
     age -d -i "$identity_file" "$encrypted_file"
-    return 0
+    return $?
   fi
 
   release_secret_missing_identity_error
@@ -133,7 +133,7 @@ release_secret_decrypt_to_file() {
 
   if [ -f "$identity_file" ]; then
     age -d -i "$identity_file" -o "$output_file" "$encrypted_file"
-    return 0
+    return $?
   fi
 
   release_secret_missing_identity_error

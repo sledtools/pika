@@ -117,7 +117,7 @@ Apple Silicon contract note:
 | --- | --- | --- |
 | `just apple-host-sanity` | pre-merge CI-owned | Narrow blocking Mac mini sanity bundle: `pre-merge-pikachat-apple-followup` plus `desktop-ui-test`. |
 | `just apple-host-bundle` | nightly CI-owned | Heavy Mac mini nightly bundle: `apple-host-sanity` plus retained iOS XCTest / Primal interop / Apple-host regression coverage. |
-| `just ios-ui-test` | compatibility-only -> `nightly-apple-host-bundle` | Full `Pika` XCTest suite on simulator. This remains real nightly coverage, but ownership now sits with the mini-owned nightly Apple bundle instead of a dedicated hosted macOS job. |
+| `just ios-ui-test` | compatibility-only -> `nightly-apple-host-bundle` | Retained `Pika` XCTest suite on simulator. This remains real nightly coverage, but ownership now sits with the mini-owned nightly Apple bundle instead of a dedicated hosted macOS job. The default retained run excludes the flaky OpenClaw live-network UI E2E case; opt back in with `PIKA_IOS_UI_TEST_INCLUDE_OPENCLAW_E2E=1` or target it directly via `PIKA_IOS_UI_TEST_ONLY_TESTING=...`. |
 | `just android-ui-test` | advisory/convenience | Native Android instrumentation suite for manual/dev use. Current pre-merge only compiles Android test code; it does not execute this suite. |
 | `just pre-merge` | advisory/convenience | Aggregate wrapper over the blocking repo lanes; not itself the canonical enforcement map. |
 | `just nightly` | advisory/convenience | Aggregate wrapper over the current nightly recipes; not a full mirror of the GitHub nightly workflow. |

@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: ./scripts/with-pikaci-apple-ci-env <command> [args...]
+
+Loads Apple mini CI public config and decrypted secrets into the current process
+environment, masks secret values under GitHub Actions, then execs the requested
+command. This keeps Apple secrets step-local instead of writing them to
+GITHUB_ENV or GITHUB_OUTPUT.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "$#" -eq 0 ]]; then
+  usage
+  exit $([[ "$#" -eq 0 ]] && echo 2 || echo 0)
+fi
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PUBLIC_ENV_FILE="$ROOT/.github/pikaci-apple.env"
+SECRET_ENV_FILE="$ROOT/secrets/pikaci-apple.env.age"
+# shellcheck source=scripts/lib/release-secrets.sh
+source "$ROOT/scripts/lib/release-secrets.sh"
+
+release_secret_require_file "$PUBLIC_ENV_FILE" "Apple mini public CI env" "commit .github/pikaci-apple.env"
+release_secret_require_file "$SECRET_ENV_FILE" "encrypted Apple mini CI env" "create it via ./scripts/encrypt-pikaci-apple-secrets"
+
+tmp_secret_env="$(mktemp "${TMPDIR:-/tmp}/pikaci-apple-env.XXXXXX")"
+cleanup() {
+  rm -f "$tmp_secret_env"
+}
+trap cleanup EXIT INT TERM
+
+# shellcheck disable=SC1090
+source "$PUBLIC_ENV_FILE"
+release_secret_decrypt_to_file "$SECRET_ENV_FILE" "$tmp_secret_env"
+# shellcheck disable=SC1090
+source "$tmp_secret_env"
+
+require_value() {
+  local key="$1"
+  local value="$2"
+  if [[ -z "$value" ]]; then
+    echo "error: missing $key in Apple CI config" >&2
+    exit 1
+  fi
+  if [[ "$value" == REPLACE_* ]]; then
+    echo "error: $key still has placeholder value; update secrets/pikaci-apple.env.age via ./scripts/encrypt-pikaci-apple-secrets" >&2
+    exit 1
+  fi
+}
+
+mask_value() {
+  local value="$1"
+  if [[ -z "$value" || -z "${GITHUB_ACTIONS:-}" ]]; then
+    return
+  fi
+  printf '::add-mask::%s\n' "$value"
+}
+
+mask_multiline_value() {
+  local value="$1"
+  if [[ -z "$value" || -z "${GITHUB_ACTIONS:-}" ]]; then
+    return
+  fi
+  mask_value "$value"
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && mask_value "$line"
+  done <<<"$value"
+}
+
+require_value "PIKACI_APPLE_SSH_HOST" "${PIKACI_APPLE_SSH_HOST:-}"
+require_value "PIKACI_APPLE_SSH_USER" "${PIKACI_APPLE_SSH_USER:-}"
+require_value "PIKACI_APPLE_REMOTE_ROOT" "${PIKACI_APPLE_REMOTE_ROOT:-}"
+require_value "PIKACI_APPLE_KEEP_RUNS" "${PIKACI_APPLE_KEEP_RUNS:-}"
+require_value "PIKACI_APPLE_TAILSCALE_AUTHKEY" "${PIKACI_APPLE_TAILSCALE_AUTHKEY:-}"
+require_value "PIKACI_APPLE_SSH_KEY" "${PIKACI_APPLE_SSH_KEY:-}"
+
+mask_value "${PIKACI_APPLE_TAILSCALE_AUTHKEY:-}"
+mask_multiline_value "${PIKACI_APPLE_SSH_KEY:-}"
+
+export PIKACI_APPLE_SSH_HOST
+export PIKACI_APPLE_SSH_USER
+export PIKACI_APPLE_REMOTE_ROOT
+export PIKACI_APPLE_KEEP_RUNS
+export PIKACI_APPLE_LOCK_TIMEOUT_SEC="${PIKACI_APPLE_LOCK_TIMEOUT_SEC:-0}"
+export PIKACI_APPLE_TAILSCALE_AUTHKEY
+export PIKACI_APPLE_SSH_KEY
+
+exec "$@"

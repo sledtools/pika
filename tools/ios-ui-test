@@ -8,6 +8,12 @@ SCHEME="Pika"
 DERIVED_DATA_PATH="${PIKA_IOS_DERIVED_DATA_PATH:-ios/build}"
 APP_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}"
 URL_SCHEME="${PIKA_IOS_URL_SCHEME:-pika}"
+PREPARE_TIMEOUT_SEC="${PIKA_IOS_UI_TEST_PREPARE_TIMEOUT_SEC:-1800}"
+RUN_TIMEOUT_SEC="${PIKA_IOS_UI_TEST_RUN_TIMEOUT_SEC:-1800}"
+RESET_SIMULATOR_ON_RUN="${PIKA_IOS_UI_TEST_RESET_SIMULATOR:-1}"
+ONLY_TESTING="${PIKA_IOS_UI_TEST_ONLY_TESTING:-}"
+SKIP_TESTING="${PIKA_IOS_UI_TEST_SKIP_TESTING:-}"
+INCLUDE_OPENCLAW_E2E="${PIKA_IOS_UI_TEST_INCLUDE_OPENCLAW_E2E:-0}"
 
 usage() {
   cat <<'EOF'
@@ -38,7 +44,47 @@ find_xctestrun_file() {
 }
 
 resolve_sim_udid() {
-  ./tools/ios-sim-ensure | sed -n 's/^ok: ios simulator ready (udid=\(.*\))$/\1/p'
+  local ensure_args=()
+  if [[ "${1:-}" == "--reset" ]]; then
+    ensure_args+=(--reset)
+  fi
+  ./tools/ios-sim-ensure "${ensure_args[@]}" | sed -n 's/^ok: ios simulator ready (udid=\(.*\))$/\1/p'
+}
+
+run_with_timeout() {
+  local timeout_sec="$1"
+  shift
+
+  python3 - "$timeout_sec" "$@" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+timeout = int(sys.argv[1])
+cmd = sys.argv[2:]
+
+proc = subprocess.Popen(cmd, preexec_fn=os.setsid)
+try:
+    raise SystemExit(proc.wait(timeout=timeout))
+except subprocess.TimeoutExpired:
+    sys.stderr.write(
+        f"error: command timed out after {timeout}s: {' '.join(cmd)}\n"
+    )
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+    raise SystemExit(124)
+PY
 }
 
 ensure_base_artifacts() {
@@ -53,10 +99,11 @@ ensure_base_artifacts() {
 
 run_xcodebuild() {
   local action="$1"
-  local udid="$2"
-  shift 2
+  local timeout_sec="$2"
+  local udid="$3"
+  shift 3
 
-  ./tools/xcode-run xcodebuild \
+  run_with_timeout "$timeout_sec" ./tools/xcode-run xcodebuild \
     -project "$PROJECT_PATH" \
     -scheme "$SCHEME" \
     -derivedDataPath "$DERIVED_DATA_PATH" \
@@ -76,8 +123,23 @@ skip_args=(
   -skip-testing:PikaUITests/PikaUITests/testE2E_hypernoteDetailsAndCodeBlock
   -skip-testing:PikaUITests/PikaUITests/testE2E_multiImageGrid
 )
+if [[ "$INCLUDE_OPENCLAW_E2E" != "1" ]]; then
+  skip_args+=(-skip-testing:PikaUITests/PikaUITests/testE2E_openclawAgent_createAndReply)
+fi
 
-udid="$(resolve_sim_udid)"
+if [[ -n "$ONLY_TESTING" ]]; then
+  skip_args+=("-only-testing:$ONLY_TESTING")
+fi
+if [[ -n "$SKIP_TESTING" ]]; then
+  skip_args+=("-skip-testing:$SKIP_TESTING")
+fi
+
+ensure_arg=""
+if [[ "$command" == "run" && "$RESET_SIMULATOR_ON_RUN" == "1" ]]; then
+  ensure_arg="--reset"
+fi
+
+udid="$(resolve_sim_udid "$ensure_arg")"
 if [ -z "$udid" ]; then
   echo "error: could not determine simulator udid" >&2
   exit 1
@@ -89,12 +151,12 @@ printf '%s\n' "$udid" > "$ROOT/$DERIVED_DATA_PATH/last-ios-ui-test-udid.txt"
 case "$command" in
   prepare)
     ensure_base_artifacts
-    run_xcodebuild build-for-testing "$udid" "${skip_args[@]}"
+    run_xcodebuild build-for-testing "$PREPARE_TIMEOUT_SEC" "$udid" "${skip_args[@]}"
     ;;
   run)
     xctestrun_file="$(find_xctestrun_file)"
     if [ -n "${PIKACI_IOS_UI_TEST_USE_PREPARED:-}" ] && [ -n "$xctestrun_file" ]; then
-      ./tools/xcode-run xcodebuild \
+      run_with_timeout "$RUN_TIMEOUT_SEC" ./tools/xcode-run xcodebuild \
         test-without-building \
         -xctestrun "$xctestrun_file" \
         -destination "id=$udid" \
@@ -107,7 +169,7 @@ case "$command" in
         "${skip_args[@]}"
     else
       ensure_base_artifacts
-      run_xcodebuild test "$udid" "${skip_args[@]}"
+      run_xcodebuild test "$RUN_TIMEOUT_SEC" "$udid" "${skip_args[@]}"
     fi
     ;;
 esac

@@ -22,7 +22,7 @@ jobs:
     environment:
       name: ${{ contains(fromJSON('["justinmoon","futurepaul","AnthonyRonning","benthecarman","clarkmoody"]'), github.actor) == false && 'ci-approval' || 'ci-auto' }}
     concurrency:
-      group: apple-mini-validate-${{ github.event.inputs.lane || 'sanity' }}
+      group: ${{ github.repository }}-apple-mini-host
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
@@ -30,13 +30,6 @@ jobs:
           fetch-depth: 0
 
       - uses: nixbuild/nix-quick-install-action@v30
-
-      - name: Load Apple mini CI env
-        id: apple_env
-        env:
-          AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
-          PIKA_SHELL_QUIET: "1"
-        run: nix develop .#default -c ./scripts/write-pikaci-apple-github-env
 
       - name: Resolve Apple lane
         id: lane
@@ -57,39 +50,24 @@ jobs:
           esac
 
       - name: Join Tailscale
-        uses: tailscale/github-action@v4
-        with:
-          authkey: ${{ steps.apple_env.outputs.tailscale_authkey }}
-          hostname: gha-pikaci-apple-validate-${{ github.run_id }}
-          ping: ${{ steps.apple_env.outputs.ssh_host }}
+        env:
+          AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
+          PIKA_SHELL_QUIET: "1"
+        run: |
+          nix develop .#default -c ./scripts/with-pikaci-apple-ci-env \
+            ./scripts/pikaci-apple-github-step tailscale-up \
+              --hostname "gha-pikaci-apple-validate-${{ github.run_id }}"
 
       - name: Run Apple mini validation lane
         id: remote
+        env:
+          AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
+          PIKA_SHELL_QUIET: "1"
         run: |
-          if [ -z "${PIKACI_APPLE_SSH_HOST:-}" ]; then
-            echo "error: missing PIKACI_APPLE_SSH_HOST after loading .github/pikaci-apple.env" >&2
-            exit 2
-          fi
-          if [ -z "${PIKACI_APPLE_SSH_USER:-}" ]; then
-            echo "error: missing PIKACI_APPLE_SSH_USER after loading .github/pikaci-apple.env" >&2
-            exit 2
-          fi
-          if [ -z "${PIKACI_APPLE_SSH_KEY:-}" ]; then
-            echo "error: missing PIKACI_APPLE_SSH_KEY after decrypting secrets/pikaci-apple.env.age" >&2
-            exit 2
-          fi
-
-          eval "$(ssh-agent -s)"
-          trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
-          ssh-add - <<<"$PIKACI_APPLE_SSH_KEY"
-
-          checked_out_ref="$(git rev-parse HEAD)"
-          echo "checked_out_ref=$checked_out_ref" >> "$GITHUB_OUTPUT"
-
-          ./scripts/pikaci-apple-remote.sh run \
-            --ref "$checked_out_ref" \
-            --just-recipe "${{ steps.lane.outputs.just_recipe }}" \
-            --github-output "$GITHUB_OUTPUT"
+          nix develop .#default -c ./scripts/with-pikaci-apple-ci-env \
+            ./scripts/pikaci-apple-github-step remote-run \
+              --just-recipe "${{ steps.lane.outputs.just_recipe }}" \
+              --github-output "$GITHUB_OUTPUT"
 
       - name: Upload Apple mini debug bundle
         if: always() && steps.remote.outputs.artifact_dir != ''
@@ -102,11 +80,13 @@ jobs:
       - name: Summarize Apple mini validation lane
         if: always()
         run: |
+          # shellcheck disable=SC1091
+          source .github/pikaci-apple.env
           {
             echo "- command: \`./scripts/pikaci-apple-remote.sh run --ref ${{ steps.remote.outputs.checked_out_ref || 'unknown' }} --just-recipe ${{ steps.lane.outputs.just_recipe || 'unknown' }}\`"
             echo "- lane: \`${{ github.event.inputs.lane || 'sanity' }}\`"
-            echo "- ssh target: \`${{ env.PIKACI_APPLE_SSH_USER || 'unset' }}@${{ env.PIKACI_APPLE_SSH_HOST || 'unset' }}\`"
-            echo "- remote root: \`${{ env.PIKACI_APPLE_REMOTE_ROOT || '.cache/pikaci-apple' }}\`"
+            echo "- ssh target: \`${PIKACI_APPLE_SSH_USER}@${PIKACI_APPLE_SSH_HOST}\`"
+            echo "- remote root: \`${PIKACI_APPLE_REMOTE_ROOT}\`"
             echo "- run id: \`${{ steps.remote.outputs.run_id || 'none' }}\`"
             echo "- resolved commit: \`${{ steps.remote.outputs.resolved_commit || 'none' }}\`"
             echo "- remote run dir: \`${{ steps.remote.outputs.remote_run_dir || 'none' }}\`"

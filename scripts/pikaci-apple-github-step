@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage:
+  ./scripts/pikaci-apple-github-step tailscale-up --hostname HOSTNAME [--ping-host HOST]
+  ./scripts/pikaci-apple-github-step remote-run --just-recipe RECIPE [--ref REF] [--github-output PATH]
+
+GitHub-hosted runner helper for Apple mini CI:
+  - joins the project tailnet using the step-local Apple auth key
+  - runs one Apple remote wrapper lane using the step-local Apple SSH key
+EOF
+}
+
+subcommand="${1:-}"
+if [[ -z "$subcommand" || "$subcommand" == "-h" || "$subcommand" == "--help" ]]; then
+  usage
+  exit 0
+fi
+shift
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+require_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "error: missing command: $1" >&2
+    exit 1
+  fi
+}
+
+tailscale_install_if_missing() {
+  if command -v tailscale >/dev/null 2>&1 && command -v tailscaled >/dev/null 2>&1; then
+    return
+  fi
+  curl -fsSL https://tailscale.com/install.sh | sh
+}
+
+tailscale_wait_ready() {
+  local socket="${1:-}"
+  local cmd=(sudo tailscale)
+  if [[ -n "$socket" ]]; then
+    cmd+=(--socket "$socket")
+  fi
+  for _ in $(seq 1 30); do
+    if "${cmd[@]}" status >/dev/null 2>&1; then
+      return
+    fi
+    sleep 1
+  done
+  echo "error: tailscale daemon did not become ready" >&2
+  exit 1
+}
+
+tailscale_up() {
+  local hostname=""
+  local ping_host="${PIKACI_APPLE_SSH_HOST:-}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --hostname)
+        hostname="${2:?missing value for --hostname}"
+        shift 2
+        ;;
+      --ping-host)
+        ping_host="${2:?missing value for --ping-host}"
+        shift 2
+        ;;
+      *)
+        echo "error: unknown tailscale-up argument: $1" >&2
+        usage >&2
+        exit 2
+        ;;
+    esac
+  done
+
+  if [[ -z "$hostname" ]]; then
+    echo "error: tailscale-up requires --hostname" >&2
+    exit 2
+  fi
+  if [[ -z "$ping_host" ]]; then
+    echo "error: tailscale-up requires --ping-host or PIKACI_APPLE_SSH_HOST" >&2
+    exit 2
+  fi
+
+  require_cmd curl
+  require_cmd sudo
+  tailscale_install_if_missing
+
+  local socket="/var/run/tailscale/tailscaled.sock"
+  if command -v systemctl >/dev/null 2>&1 && sudo systemctl list-unit-files tailscaled.service >/dev/null 2>&1; then
+    sudo systemctl enable --now tailscaled
+  else
+    sudo mkdir -p /var/run/tailscale /var/lib/tailscale
+    if ! pgrep -x tailscaled >/dev/null 2>&1; then
+      sudo nohup tailscaled --state=/var/lib/tailscale/tailscaled.state --socket="$socket" >/tmp/tailscaled.log 2>&1 &
+    fi
+  fi
+
+  tailscale_wait_ready "$socket"
+  sudo tailscale --socket "$socket" up \
+    --authkey="$PIKACI_APPLE_TAILSCALE_AUTHKEY" \
+    --hostname="$hostname" \
+    --reset
+  sudo tailscale --socket "$socket" ping --timeout=30s "$ping_host"
+}
+
+remote_run() {
+  local just_recipe=""
+  local ref="HEAD"
+  local github_output=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --just-recipe)
+        just_recipe="${2:?missing value for --just-recipe}"
+        shift 2
+        ;;
+      --ref)
+        ref="${2:?missing value for --ref}"
+        shift 2
+        ;;
+      --github-output)
+        github_output="${2:?missing value for --github-output}"
+        shift 2
+        ;;
+      *)
+        echo "error: unknown remote-run argument: $1" >&2
+        usage >&2
+        exit 2
+        ;;
+    esac
+  done
+  if [[ -z "$just_recipe" ]]; then
+    echo "error: remote-run requires --just-recipe" >&2
+    exit 2
+  fi
+
+  local tmp_key
+  tmp_key="$(mktemp "${TMPDIR:-/tmp}/pikaci-apple-ssh.XXXXXX")"
+  cleanup_key() {
+    rm -f "$tmp_key"
+  }
+  trap cleanup_key EXIT INT TERM
+  chmod 600 "$tmp_key"
+  printf '%s\n' "$PIKACI_APPLE_SSH_KEY" >"$tmp_key"
+
+  eval "$(ssh-agent -s)" >/dev/null
+  trap 'ssh-agent -k >/dev/null 2>&1 || true; cleanup_key' EXIT INT TERM
+  ssh-add "$tmp_key" >/dev/null
+
+  local checked_out_ref
+  checked_out_ref="$(git -C "$ROOT" rev-parse "${ref}^{commit}")"
+  if [[ -n "$github_output" ]]; then
+    printf 'checked_out_ref=%s\n' "$checked_out_ref" >> "$github_output"
+  fi
+
+  "$ROOT/scripts/pikaci-apple-remote.sh" run \
+    --ref "$checked_out_ref" \
+    --just-recipe "$just_recipe" \
+    ${github_output:+--github-output "$github_output"}
+}
+
+case "$subcommand" in
+  tailscale-up)
+    tailscale_up "$@"
+    ;;
+  remote-run)
+    remote_run "$@"
+    ;;
+  *)
+    echo "error: unknown subcommand: $subcommand" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

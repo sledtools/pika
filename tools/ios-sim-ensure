@@ -10,6 +10,29 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEV_DIR="$("$ROOT/tools/xcode-dev-dir")"
 export DEVELOPER_DIR="$DEV_DIR"
 
+reset_device=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --reset)
+      reset_device=1
+      shift
+      ;;
+    -h|--help)
+      cat <<'EOF'
+usage: ./tools/ios-sim-ensure [--reset]
+
+Ensures the checked-in iOS simulator exists and is booted.
+--reset    Shut down and erase the simulator before booting it again.
+EOF
+      exit 0
+      ;;
+    *)
+      echo "error: unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
 SIMCTL="$DEV_DIR/usr/bin/simctl"
 XCODEBUILD="$DEV_DIR/usr/bin/xcodebuild"
 
@@ -120,6 +143,11 @@ for device in devices.get(runtime_id, []):
 if [ -z "${udid:-}" ]; then
   udid="$("$SIMCTL" create "$device_name" "$device_type_id" "$runtime_id" | tr -d '[:space:]')"
   echo "created simulator: $device_name ($udid)"
+fi
+
+if [ "$reset_device" -eq 1 ]; then
+  "$SIMCTL" shutdown "$udid" >/dev/null 2>&1 || true
+  "$SIMCTL" erase "$udid" >/dev/null 2>&1 || true
 fi
 
 "$SIMCTL" boot "$udid" >/dev/null 2>&1 || true

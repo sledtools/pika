@@ -79,6 +79,7 @@ The canonical host config now also carries the Incus bridge firewall allowances 
 
 - guest DHCP and DNS on `incusbr0`
 - guest egress through the host uplink
+- without broadly trusting `incusbr0` for host ingress
 
 Expected host-side prerequisites:
 
@@ -132,7 +133,7 @@ ssh root@pika-build \
     --restricted
 ```
 
-For the `pika-server` canary process, set:
+For an ad hoc local `pika-server` canary process, set:
 
 - `PIKA_AGENT_INCUS_CLIENT_CERT_PATH`
 - `PIKA_AGENT_INCUS_CLIENT_KEY_PATH`
@@ -224,6 +225,21 @@ Recommended server env for canarying:
 - `PIKA_AGENT_INCUS_CLIENT_KEY_PATH`
 - `PIKA_AGENT_INCUS_SERVER_CERT_PATH` for an explicit trusted server cert
 - `PIKA_AGENT_INCUS_INSECURE_TLS=true` only if the dev endpoint uses self-signed TLS
+
+The normal repo-managed `pika-server` Nix module now supports the same canary env through host
+config plus sops-managed file secrets:
+
+- `incusEndpoint`
+- `incusProject`
+- `incusProfile`
+- `incusStoragePool`
+- `incusImageAlias`
+- `incusInsecureTls`
+- `incusClientCertSecret`
+- `incusClientKeySecret`
+- `incusServerCertSecret`
+
+Use that path for a real deployed canary instead of only running a local process.
 
 This lets operators verify:
 

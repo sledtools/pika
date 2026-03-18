@@ -1,4 +1,16 @@
-{ hostname, domain, microvmSpawnerUrl ? null }:
+{ hostname
+, domain
+, microvmSpawnerUrl ? null
+, incusEndpoint ? null
+, incusProject ? null
+, incusProfile ? null
+, incusStoragePool ? null
+, incusImageAlias ? null
+, incusInsecureTls ? false
+, incusClientCertSecret ? null
+, incusClientKeySecret ? null
+, incusServerCertSecret ? null
+}:
 
 { config, lib, pkgs, modulesPath, pikaServerPkg, sops-nix, ... }:
 
@@ -9,8 +21,20 @@ let
   serviceUser = dbName;
   serviceGroup = dbName;
   serviceStateDir = "/var/lib/pika-server";
+  incusStateDir = "${serviceStateDir}/incus";
   adminIdentities = import ../lib/admin-identities.nix;
   adminSessionSecretPath = "${serviceStateDir}/admin-session-secret";
+  incusCanaryEnabled =
+    incusEndpoint != null
+    || incusProject != null
+    || incusProfile != null
+    || incusStoragePool != null
+    || incusImageAlias != null
+    || incusClientCertSecret != null
+    || incusClientKeySecret != null
+    || incusServerCertSecret != null
+    || incusInsecureTls;
+  incusTlsEnabled = incusEndpoint != null && lib.hasPrefix "https://" incusEndpoint;
   startPikaServer = pkgs.writeShellScript "start-pika-server" ''
     set -euo pipefail
     if [ -z "''${PIKA_ADMIN_SESSION_SECRET:-}" ]; then
@@ -33,6 +57,33 @@ in
   networking.hostName = hostname;
 
   services.openssh.openFirewall = lib.mkForce true;
+
+  assertions = [
+    {
+      assertion =
+        (!incusCanaryEnabled)
+        || lib.all (value: value != null) [
+          incusEndpoint
+          incusProject
+          incusProfile
+          incusStoragePool
+          incusImageAlias
+        ];
+      message = "Incus canary config on pika-server requires endpoint, project, profile, storage pool, and image alias together.";
+    }
+    {
+      assertion = (incusClientCertSecret == null) == (incusClientKeySecret == null);
+      message = "Incus mTLS on pika-server requires both incusClientCertSecret and incusClientKeySecret together.";
+    }
+    {
+      assertion = (!incusTlsEnabled) || (incusClientCertSecret != null && incusClientKeySecret != null);
+      message = "HTTPS Incus canaries on pika-server require both incusClientCertSecret and incusClientKeySecret.";
+    }
+    {
+      assertion = (!incusTlsEnabled) || incusInsecureTls || (incusServerCertSecret != null);
+      message = "HTTPS Incus canaries on pika-server require either incusServerCertSecret or incusInsecureTls = true.";
+    }
+  ];
 
   services.postgresql = {
     enable = true;
@@ -76,35 +127,66 @@ in
     useSystemdActivation = true;
   };
 
-  sops.secrets."apns_key" = {
-    format = "yaml";
-    owner = serviceUser;
-    group = serviceGroup;
-    mode = "0400";
-    path = "${serviceStateDir}/apns-key.p8";
-  };
+  sops.secrets = lib.mkMerge [
+    {
+      "apns_key" = {
+        format = "yaml";
+        owner = serviceUser;
+        group = serviceGroup;
+        mode = "0400";
+        path = "${serviceStateDir}/apns-key.p8";
+      };
 
-  sops.secrets."apns_key_id" = {
-    format = "yaml";
-    owner = serviceUser;
-    group = serviceGroup;
-    mode = "0400";
-  };
+      "apns_key_id" = {
+        format = "yaml";
+        owner = serviceUser;
+        group = serviceGroup;
+        mode = "0400";
+      };
 
-  sops.secrets."apns_team_id" = {
-    format = "yaml";
-    owner = serviceUser;
-    group = serviceGroup;
-    mode = "0400";
-  };
+      "apns_team_id" = {
+        format = "yaml";
+        owner = serviceUser;
+        group = serviceGroup;
+        mode = "0400";
+      };
 
-  sops.secrets."fcm_credentials" = {
-    format = "yaml";
-    owner = serviceUser;
-    group = serviceGroup;
-    mode = "0400";
-    path = "${serviceStateDir}/fcm-credentials.json";
-  };
+      "fcm_credentials" = {
+        format = "yaml";
+        owner = serviceUser;
+        group = serviceGroup;
+        mode = "0400";
+        path = "${serviceStateDir}/fcm-credentials.json";
+      };
+    }
+    (lib.optionalAttrs (incusClientCertSecret != null) {
+      "${incusClientCertSecret}" = {
+        format = "yaml";
+        owner = serviceUser;
+        group = serviceGroup;
+        mode = "0400";
+        path = "${incusStateDir}/client.crt";
+      };
+    })
+    (lib.optionalAttrs (incusClientKeySecret != null) {
+      "${incusClientKeySecret}" = {
+        format = "yaml";
+        owner = serviceUser;
+        group = serviceGroup;
+        mode = "0400";
+        path = "${incusStateDir}/client.key";
+      };
+    })
+    (lib.optionalAttrs (incusServerCertSecret != null) {
+      "${incusServerCertSecret}" = {
+        format = "yaml";
+        owner = serviceUser;
+        group = serviceGroup;
+        mode = "0400";
+        path = "${incusStateDir}/server.crt";
+      };
+    })
+  ];
 
   sops.templates."pika-server-env" = {
     owner = serviceUser;
@@ -123,6 +205,20 @@ in
       # vm-spawner is reached over a private network; inject the host-specific URL
       # from the machine import instead of hardcoding it in the shared module.
       PIKA_AGENT_MICROVM_SPAWNER_URL=${microvmSpawnerUrl}
+      ''}
+      ${lib.optionalString incusCanaryEnabled ''
+      # Optional Incus canary backend for the normal pika-server deployment.
+      # Keep microvm as the default and use request-scoped provisioning to
+      # exercise Incus.
+      PIKA_AGENT_INCUS_ENDPOINT=${incusEndpoint}
+      PIKA_AGENT_INCUS_PROJECT=${incusProject}
+      PIKA_AGENT_INCUS_PROFILE=${incusProfile}
+      PIKA_AGENT_INCUS_STORAGE_POOL=${incusStoragePool}
+      PIKA_AGENT_INCUS_IMAGE_ALIAS=${incusImageAlias}
+      ${lib.optionalString incusInsecureTls "PIKA_AGENT_INCUS_INSECURE_TLS=true"}
+      ${lib.optionalString (incusClientCertSecret != null) "PIKA_AGENT_INCUS_CLIENT_CERT_PATH=${config.sops.secrets.${incusClientCertSecret}.path}"}
+      ${lib.optionalString (incusClientKeySecret != null) "PIKA_AGENT_INCUS_CLIENT_KEY_PATH=${config.sops.secrets.${incusClientKeySecret}.path}"}
+      ${lib.optionalString (incusServerCertSecret != null) "PIKA_AGENT_INCUS_SERVER_CERT_PATH=${config.sops.secrets.${incusServerCertSecret}.path}"}
       ''}
       # The customer managed-environment dashboard is OpenClaw-only for now.
       PIKA_AGENT_MICROVM_KIND=openclaw
@@ -174,6 +270,7 @@ in
 
   systemd.tmpfiles.rules = [
     "d ${serviceStateDir} 0750 ${serviceUser} ${serviceGroup} -"
+    "d ${incusStateDir} 0700 ${serviceUser} ${serviceGroup} -"
     "d /etc/age 0700 root root -"
   ];
 

@@ -6,10 +6,11 @@
   boot.kernelModules = [ "vhost_vsock" ];
 
   networking.nftables.enable = true;
-  # Incus installs its own bridge-local DHCP/DNS rules, but the host firewall
-  # still needs to trust the bridge so those packets aren't dropped later in the
-  # unified pika-build ruleset.
-  networking.firewall.trustedInterfaces = [ "incusbr0" ];
+  # Guests only need bridge-local DHCP/DNS on the host. Keep all other host
+  # ingress from Incus guests subject to the normal firewall policy instead of
+  # trusting the entire bridge.
+  networking.firewall.interfaces.incusbr0.allowedTCPPorts = [ 53 ];
+  networking.firewall.interfaces.incusbr0.allowedUDPPorts = [ 53 67 68 ];
   networking.firewall.filterForward = true;
   networking.firewall.extraForwardRules = ''
     iifname "incusbr0" oifname "eth0" ct state new log prefix "incus-egress: " level info

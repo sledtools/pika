@@ -1593,6 +1593,25 @@ impl IncusManagedVmProvider {
 
     async fn delete_vm(&self, vm_id: &str, request_id: Option<&str>) -> anyhow::Result<()> {
         let volume_name = self.persistent_volume_name(vm_id);
+        let state = self
+            .get_json::<IncusInstanceState>(
+                &["1.0", "instances", vm_id, "state"],
+                true,
+                request_id,
+                "load incus instance state for delete",
+            )
+            .await;
+        if let Ok(state) = state {
+            if !matches!(state.status.trim(), "Stopped" | "Frozen") {
+                self.stop_instance(vm_id, request_id)
+                    .await
+                    .with_context(|| format!("stop incus VM {vm_id} before delete"))?;
+            }
+        } else if !state.as_ref().err().is_some_and(is_incus_not_found_error) {
+            return Err(state
+                .expect_err("incus delete state probe should fail")
+                .context(format!("load incus instance state for delete {vm_id}")));
+        }
         let instance_delete = self.delete_instance(vm_id, request_id).await;
         let volume_delete = self
             .delete_persistent_volume(&volume_name, request_id)
@@ -6025,6 +6044,15 @@ GFs2pW5hEhS7cCO0qXaa5g==
         let vm_id = "pika-agent-testdelete";
         let (base_url, rx) = spawn_response_sequence_server(vec![
             (
+                "200 OK",
+                r#"{"type":"sync","metadata":{"status":"Running"}}"#,
+            ),
+            (
+                "202 Accepted",
+                r#"{"type":"async","operation":"/1.0/operations/op-stop","metadata":{"err":""}}"#,
+            ),
+            ("200 OK", r#"{"type":"sync","metadata":{"err":""}}"#),
+            (
                 "202 Accepted",
                 r#"{"type":"async","operation":"/1.0/operations/op-delete","metadata":{"err":""}}"#,
             ),
@@ -6045,6 +6073,24 @@ GFs2pW5hEhS7cCO0qXaa5g==
             .delete_vm(vm_id, Some("req-incus-delete"))
             .await
             .expect("incus delete should succeed");
+
+        let state_request = rx.recv().expect("captured delete state request");
+        assert_eq!(state_request.method, "GET");
+        assert_eq!(
+            state_request.path,
+            format!("/1.0/instances/{vm_id}/state?project=managed-agents")
+        );
+
+        let stop_request = rx.recv().expect("captured stop request");
+        assert_eq!(stop_request.method, "PUT");
+        assert_eq!(
+            stop_request.path,
+            format!("/1.0/instances/{vm_id}/state?project=managed-agents")
+        );
+        assert!(stop_request.body.contains(r#""action":"stop""#));
+
+        let stop_wait = rx.recv().expect("captured stop wait request");
+        assert_eq!(stop_wait.path, "/1.0/operations/op-stop/wait?timeout=60");
 
         let instance_delete = rx.recv().expect("captured instance delete request");
         assert_eq!(instance_delete.method, "DELETE");

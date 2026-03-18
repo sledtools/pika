@@ -555,6 +555,20 @@ impl State {
                                 });
                             }
                         }
+                        views::conversation::Event::HypernoteAction {
+                            message_id,
+                            action_name,
+                            form,
+                        } => {
+                            if let Some(chat) = &state.current_chat {
+                                manager.dispatch(AppAction::HypernoteAction {
+                                    chat_id: chat.chat_id.clone(),
+                                    message_id,
+                                    action_name,
+                                    form,
+                                });
+                            }
+                        }
                         views::conversation::Event::JumpToMessage(message_id) => {
                             if let Some(chat) = &state.current_chat {
                                 if let Some(task) =

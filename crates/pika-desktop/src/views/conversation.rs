@@ -55,6 +55,11 @@ pub enum Message {
         message_id: String,
         original_hash_hex: String,
     },
+    HypernoteAction {
+        message_id: String,
+        action_name: String,
+        form: HashMap<String, String>,
+    },
     // These originate from the conversation header but bubble up as events
     ShowGroupInfo,
     StartCall,
@@ -83,6 +88,11 @@ pub enum Event {
     DownloadMedia {
         message_id: String,
         original_hash_hex: String,
+    },
+    HypernoteAction {
+        message_id: String,
+        action_name: String,
+        form: HashMap<String, String>,
     },
     /// Scroll to a specific message (returns a Task for the parent)
     JumpToMessage(String),
@@ -217,6 +227,18 @@ impl State {
                 Some(Event::DownloadMedia {
                     message_id,
                     original_hash_hex,
+                }),
+                None,
+            ),
+            Message::HypernoteAction {
+                message_id,
+                action_name,
+                form,
+            } => (
+                Some(Event::HypernoteAction {
+                    message_id,
+                    action_name,
+                    form,
                 }),
                 None,
             ),
@@ -703,6 +725,39 @@ fn read_and_send_first_file(paths: &[PathBuf]) -> Option<Event> {
         mime_type: String::new(),
         filename,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Event, Message, State};
+    use std::collections::HashMap;
+
+    #[test]
+    fn hypernote_action_bubbles_up_as_event() {
+        let mut state = State::new();
+        let mut form = HashMap::new();
+        form.insert("choice".to_string(), "looks-good".to_string());
+
+        let (event, task) = state.update(Message::HypernoteAction {
+            message_id: "msg-1".to_string(),
+            action_name: "vote".to_string(),
+            form: form.clone(),
+        });
+
+        assert!(task.is_none());
+        match event {
+            Some(Event::HypernoteAction {
+                message_id,
+                action_name,
+                form: emitted_form,
+            }) => {
+                assert_eq!(message_id, "msg-1");
+                assert_eq!(action_name, "vote");
+                assert_eq!(emitted_form, form);
+            }
+            _ => panic!("expected hypernote action event"),
+        }
+    }
 }
 
 fn chat_title(chat: &ChatViewState) -> String {

@@ -1,7 +1,8 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 
 use iced::advanced::text::Span;
-use iced::widget::{column, container, rich_text, row, rule, span, text, Space};
+use iced::widget::{button, column, container, rich_text, row, rule, span, text, Space};
 use iced::{border, font, Alignment, Background, Border, Color, Element, Font, Length, Theme};
 use pika_core::{HypernoteData, HypernoteDocument, HypernoteNode, HypernoteNodeType};
 
@@ -46,7 +47,10 @@ impl InlineStyle {
     }
 }
 
-pub fn render_hypernote<'a>(hypernote: &'a HypernoteData) -> Element<'a, Message, Theme> {
+pub fn render_hypernote<'a>(
+    message_id: &'a str,
+    hypernote: &'a HypernoteData,
+) -> Element<'a, Message, Theme> {
     let document = &hypernote.document;
     if document.root_node_ids.is_empty() {
         return text("Unsupported hypernote")
@@ -57,7 +61,7 @@ pub fn render_hypernote<'a>(hypernote: &'a HypernoteData) -> Element<'a, Message
 
     let mut content = column!().spacing(8);
     for &node_id in &document.root_node_ids {
-        content = content.push(render_node(document, hypernote, node_id));
+        content = content.push(render_node(document, hypernote, message_id, node_id));
     }
 
     if !hypernote.responders.is_empty() {
@@ -74,6 +78,7 @@ pub fn render_hypernote<'a>(hypernote: &'a HypernoteData) -> Element<'a, Message
 fn render_node<'a>(
     document: &'a HypernoteDocument,
     hypernote: &'a HypernoteData,
+    message_id: &'a str,
     node_id: u32,
 ) -> Element<'a, Message, Theme> {
     let Some(node) = document.nodes.get(node_id as usize) else {
@@ -82,7 +87,7 @@ fn render_node<'a>(
 
     match node.node_type {
         HypernoteNodeType::Heading => render_heading(document, node),
-        HypernoteNodeType::Paragraph => render_paragraph(document, hypernote, node),
+        HypernoteNodeType::Paragraph => render_paragraph(document, hypernote, message_id, node),
         HypernoteNodeType::Strong
         | HypernoteNodeType::Emphasis
         | HypernoteNodeType::CodeInline
@@ -98,18 +103,20 @@ fn render_node<'a>(
         HypernoteNodeType::CodeBlock => render_code_block(node),
         HypernoteNodeType::Image => render_image(document, node),
         HypernoteNodeType::ListUnordered | HypernoteNodeType::ListOrdered => {
-            render_list(document, hypernote, node)
+            render_list(document, hypernote, message_id, node)
         }
-        HypernoteNodeType::ListItem => render_list_item(document, hypernote, node, None),
-        HypernoteNodeType::Blockquote => render_blockquote(document, hypernote, node),
+        HypernoteNodeType::ListItem => {
+            render_list_item(document, hypernote, message_id, node, None)
+        }
+        HypernoteNodeType::Blockquote => render_blockquote(document, hypernote, message_id, node),
         HypernoteNodeType::Hr => container(rule::horizontal(1).style(theme::subtle_rule_style))
             .padding([4, 0])
             .into(),
         HypernoteNodeType::HardBreak => Space::new().height(4).width(0).into(),
         HypernoteNodeType::MdxJsxElement | HypernoteNodeType::MdxJsxSelfClosing => {
-            render_jsx(document, hypernote, node)
+            render_jsx(document, hypernote, message_id, node)
         }
-        HypernoteNodeType::Unsupported => render_unsupported(document, hypernote, node),
+        HypernoteNodeType::Unsupported => render_unsupported(document, hypernote, message_id, node),
     }
 }
 
@@ -140,6 +147,7 @@ fn render_heading<'a>(
 fn render_paragraph<'a>(
     document: &'a HypernoteDocument,
     hypernote: &'a HypernoteData,
+    message_id: &'a str,
     node: &'a HypernoteNode,
 ) -> Element<'a, Message, Theme> {
     if has_only_inline_children(document, &node.child_ids) {
@@ -153,7 +161,7 @@ fn render_paragraph<'a>(
         .unwrap_or_else(empty_element);
     }
 
-    render_children_column(document, hypernote, &node.child_ids, 4.0)
+    render_children_column(document, hypernote, message_id, &node.child_ids, 4.0)
 }
 
 fn render_code_block<'a>(node: &'a HypernoteNode) -> Element<'a, Message, Theme> {
@@ -208,6 +216,7 @@ fn render_image<'a>(
 fn render_list<'a>(
     document: &'a HypernoteDocument,
     hypernote: &'a HypernoteData,
+    message_id: &'a str,
     node: &'a HypernoteNode,
 ) -> Element<'a, Message, Theme> {
     let ordered = matches!(node.node_type, HypernoteNodeType::ListOrdered);
@@ -221,7 +230,7 @@ fn render_list<'a>(
         };
         let child = document.nodes.get(child_id as usize);
         items = items.push(match child {
-            Some(child) => render_list_item(document, hypernote, child, Some(bullet)),
+            Some(child) => render_list_item(document, hypernote, message_id, child, Some(bullet)),
             None => empty_element(),
         });
     }
@@ -232,6 +241,7 @@ fn render_list<'a>(
 fn render_list_item<'a>(
     document: &'a HypernoteDocument,
     hypernote: &'a HypernoteData,
+    message_id: &'a str,
     node: &'a HypernoteNode,
     bullet_override: Option<String>,
 ) -> Element<'a, Message, Theme> {
@@ -253,7 +263,7 @@ fn render_list_item<'a>(
         )
         .unwrap_or_else(empty_element)
     } else {
-        render_children_column(document, hypernote, &node.child_ids, 2.0)
+        render_children_column(document, hypernote, message_id, &node.child_ids, 2.0)
     };
 
     row![marker, content].spacing(8).into()
@@ -262,6 +272,7 @@ fn render_list_item<'a>(
 fn render_blockquote<'a>(
     document: &'a HypernoteDocument,
     hypernote: &'a HypernoteData,
+    message_id: &'a str,
     node: &'a HypernoteNode,
 ) -> Element<'a, Message, Theme> {
     row![
@@ -272,7 +283,7 @@ fn render_blockquote<'a>(
                 ..Default::default()
             }
         ),
-        render_children_column(document, hypernote, &node.child_ids, 4.0),
+        render_children_column(document, hypernote, message_id, &node.child_ids, 4.0),
     ]
     .spacing(10)
     .into()
@@ -281,12 +292,14 @@ fn render_blockquote<'a>(
 fn render_jsx<'a>(
     document: &'a HypernoteDocument,
     hypernote: &'a HypernoteData,
+    message_id: &'a str,
     node: &'a HypernoteNode,
 ) -> Element<'a, Message, Theme> {
     match node.name.as_deref().unwrap_or_default() {
         "Card" => container(render_children_column(
             document,
             hypernote,
+            message_id,
             &node.child_ids,
             8.0,
         ))
@@ -299,13 +312,13 @@ fn render_jsx<'a>(
         .into(),
         "VStack" => {
             let gap = attribute_i32(node, &["spacing", "gap"]).unwrap_or(8) as f32;
-            render_children_column(document, hypernote, &node.child_ids, gap)
+            render_children_column(document, hypernote, message_id, &node.child_ids, gap)
         }
         "HStack" => {
             let gap = attribute_i32(node, &["spacing", "gap"]).unwrap_or(8) as f32;
             let mut children = row!().spacing(gap);
             for &child_id in &node.child_ids {
-                children = children.push(render_node(document, hypernote, child_id));
+                children = children.push(render_node(document, hypernote, message_id, child_id));
             }
             children.into()
         }
@@ -337,9 +350,9 @@ fn render_jsx<'a>(
         )
         .unwrap_or_else(empty_element),
         "TextInput" => render_text_input(node, hypernote),
-        "SubmitButton" => render_submit_button(document, hypernote, node),
+        "SubmitButton" => render_submit_button(document, hypernote, message_id, node),
         "ChecklistItem" => render_checklist_item(document, hypernote, node),
-        "Details" => render_details(document, hypernote, node),
+        "Details" => render_details(document, hypernote, message_id, node),
         "Summary" => render_inline_rich_text(
             document,
             &node.child_ids,
@@ -354,6 +367,7 @@ fn render_jsx<'a>(
         _ => container(render_children_column(
             document,
             hypernote,
+            message_id,
             &node.child_ids,
             4.0,
         ))
@@ -404,6 +418,7 @@ fn render_text_input<'a>(
 fn render_submit_button<'a>(
     document: &'a HypernoteDocument,
     hypernote: &'a HypernoteData,
+    message_id: &'a str,
     node: &'a HypernoteNode,
 ) -> Element<'a, Message, Theme> {
     let action = attribute_value(node, "action").unwrap_or("submit");
@@ -444,10 +459,19 @@ fn render_submit_button<'a>(
         );
     }
 
-    container(row_content)
-        .padding([9, 12])
+    let message = Message::HypernoteAction {
+        message_id: message_id.to_string(),
+        action_name: action.to_string(),
+        form: default_form_map(hypernote),
+    };
+
+    button(container(row_content).padding([9, 12]).width(Length::Fill))
+        .padding(0)
         .width(Length::Fill)
-        .style(move |_theme: &Theme| submit_button_style(variant, is_selected, is_unselected))
+        .on_press(message)
+        .style(move |_theme: &Theme, status| {
+            submit_button_style(variant, is_selected, is_unselected, status)
+        })
         .into()
 }
 
@@ -487,6 +511,7 @@ fn render_checklist_item<'a>(
 fn render_details<'a>(
     document: &'a HypernoteDocument,
     hypernote: &'a HypernoteData,
+    message_id: &'a str,
     node: &'a HypernoteNode,
 ) -> Element<'a, Message, Theme> {
     let mut summary_text = "Details".to_string();
@@ -522,7 +547,7 @@ fn render_details<'a>(
         .spacing(8),
         row![
             Space::new().width(Length::Fixed(20.0)),
-            render_children_column(document, hypernote, &body_ids, 8.0),
+            render_children_column(document, hypernote, message_id, &body_ids, 8.0),
         ]
         .spacing(0),
     ]
@@ -533,10 +558,11 @@ fn render_details<'a>(
 fn render_unsupported<'a>(
     document: &'a HypernoteDocument,
     hypernote: &'a HypernoteData,
+    message_id: &'a str,
     node: &'a HypernoteNode,
 ) -> Element<'a, Message, Theme> {
     if !node.child_ids.is_empty() {
-        return render_children_column(document, hypernote, &node.child_ids, 4.0);
+        return render_children_column(document, hypernote, message_id, &node.child_ids, 4.0);
     }
 
     if let Some(value) = node.value.as_deref() {
@@ -549,12 +575,13 @@ fn render_unsupported<'a>(
 fn render_children_column<'a>(
     document: &'a HypernoteDocument,
     hypernote: &'a HypernoteData,
+    message_id: &'a str,
     child_ids: &[u32],
     spacing: f32,
 ) -> Element<'a, Message, Theme> {
     let mut children = column!().spacing(spacing);
     for &child_id in child_ids {
-        children = children.push(render_node(document, hypernote, child_id));
+        children = children.push(render_node(document, hypernote, message_id, child_id));
     }
     children.into()
 }
@@ -779,7 +806,12 @@ fn button_foreground(variant: &str, is_selected: bool) -> Color {
     }
 }
 
-fn submit_button_style(variant: &str, is_selected: bool, is_unselected: bool) -> container::Style {
+fn submit_button_style(
+    variant: &str,
+    is_selected: bool,
+    is_unselected: bool,
+    status: button::Status,
+) -> button::Style {
     let background = if is_selected || variant == "primary" {
         if variant == "danger" {
             theme::danger()
@@ -790,8 +822,16 @@ fn submit_button_style(variant: &str, is_selected: bool, is_unselected: bool) ->
         theme::hover_bg()
     };
 
-    container::Style {
-        text_color: Some(button_foreground(variant, is_selected)),
+    let background = match status {
+        button::Status::Hovered if is_selected || variant == "primary" || variant == "danger" => {
+            background.scale_alpha(0.92)
+        }
+        button::Status::Hovered => background.scale_alpha(0.82),
+        _ => background,
+    };
+
+    button::Style {
+        text_color: button_foreground(variant, is_selected),
         background: Some(Background::Color(
             background.scale_alpha(if is_unselected { 0.55 } else { 1.0 }),
         )),
@@ -806,6 +846,14 @@ fn submit_button_style(variant: &str, is_selected: bool, is_unselected: bool) ->
         },
         ..Default::default()
     }
+}
+
+fn default_form_map(hypernote: &HypernoteData) -> HashMap<String, String> {
+    hypernote
+        .default_form_state
+        .iter()
+        .map(|field| (field.name.clone(), field.value.clone()))
+        .collect()
 }
 
 fn checklist_indicator<'a>(is_checked: bool, size: f32) -> Element<'a, Message, Theme> {

@@ -1132,7 +1132,7 @@ impl IncusManagedVmProvider {
         let network: IncusNetworkDetails = self
             .get_json(
                 &["1.0", "networks", network_name],
-                false,
+                true,
                 request_id,
                 "load incus managed network for OpenClaw access",
             )
@@ -5163,7 +5163,10 @@ GFs2pW5hEhS7cCO0qXaa5g==
 
         let network_request = rx.recv().expect("captured network request");
         assert_eq!(network_request.method, "GET");
-        assert_eq!(network_request.path, "/1.0/networks/incusbr0");
+        assert_eq!(
+            network_request.path,
+            "/1.0/networks/incusbr0?project=managed-agents"
+        );
 
         let instance_request = rx.recv().expect("captured instance create request");
         assert_eq!(instance_request.method, "POST");
@@ -5976,7 +5979,10 @@ GFs2pW5hEhS7cCO0qXaa5g==
             "/1.0/profiles/pika-agent?project=managed-agents"
         );
         let network_request = rx.recv().expect("network probe");
-        assert_eq!(network_request.path, "/1.0/networks/incusbr0");
+        assert_eq!(
+            network_request.path,
+            "/1.0/networks/incusbr0?project=managed-agents"
+        );
     }
 
     #[test]
@@ -6086,7 +6092,10 @@ GFs2pW5hEhS7cCO0qXaa5g==
             "/1.0/profiles/pika-agent?project=managed-agents"
         );
         let network_request = rx.recv().expect("network probe");
-        assert_eq!(network_request.path, "/1.0/networks/incusbr0");
+        assert_eq!(
+            network_request.path,
+            "/1.0/networks/incusbr0?project=managed-agents"
+        );
     }
 
     #[test]

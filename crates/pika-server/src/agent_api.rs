@@ -11,7 +11,6 @@ use base64::Engine;
 use diesel::result::{DatabaseErrorKind, Error as DieselError};
 use diesel::Connection;
 use diesel::PgConnection;
-use ipnet::Ipv4Net;
 use nostr_sdk::prelude::{Keys, PublicKey};
 use nostr_sdk::ToBech32;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -234,16 +233,6 @@ struct ResolvedIncusTlsConfig {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-struct IncusOpenClawHostAccess {
-    nic_device_name: String,
-    nic_name: String,
-    network_name: String,
-    guest_ipv4: Ipv4Addr,
-    proxy_host: Ipv4Addr,
-    proxy_port: u16,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
 enum ResolvedManagedVmProviderConfig {
     Microvm(ResolvedMicrovmParams),
     Incus(ResolvedIncusParams),
@@ -283,6 +272,8 @@ struct IncusOperationMetadata {
 #[derive(Debug, Deserialize)]
 struct IncusInstanceState {
     status: String,
+    #[serde(default)]
+    network: BTreeMap<String, IncusInstanceNetwork>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -293,21 +284,27 @@ struct IncusStorageVolumeSnapshot {
 }
 
 #[derive(Debug, Default, Deserialize)]
-struct IncusProfileDetails {
+struct IncusInstanceNetwork {
     #[serde(default)]
-    devices: BTreeMap<String, BTreeMap<String, String>>,
+    addresses: Vec<IncusInstanceNetworkAddress>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-struct IncusNetworkDetails {
+struct IncusInstanceNetworkAddress {
     #[serde(default)]
-    config: BTreeMap<String, String>,
+    address: String,
+    #[serde(default)]
+    family: String,
+    #[serde(default)]
+    scope: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct IncusInstanceDetails {
     #[serde(default)]
     config: BTreeMap<String, String>,
+    #[serde(default)]
+    devices: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1027,7 +1024,9 @@ impl IncusManagedVmProvider {
             )
             .await?;
         if matches!(self.resolved.agent_kind, ResolvedMicrovmAgentKind::Openclaw) {
-            self.openclaw_host_access_plan("pika-agent-healthcheck", None)
+            self.ensure_customer_openclaw_flow_supported()
+                .context("validate incus OpenClaw dashboard support")?;
+            self.resolve_proxy_host_ipv4()
                 .await
                 .context("validate incus OpenClaw dashboard access plan")?;
         }
@@ -1068,28 +1067,10 @@ impl IncusManagedVmProvider {
         vm_id: &str,
         request_id: Option<&str>,
     ) -> anyhow::Result<OpenClawProxyTarget> {
-        let details = self
-            .get_instance_details(vm_id, request_id)
-            .await
-            .with_context(|| format!("load incus instance details for VM {vm_id}"))?;
-        let proxy_host = details
-            .config
-            .get(INCUS_OPENCLAW_PROXY_HOST_CONFIG_KEY)
-            .map(String::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .with_context(|| {
-                format!("incus VM {vm_id} is missing {INCUS_OPENCLAW_PROXY_HOST_CONFIG_KEY}")
-            })?;
-        let proxy_port = details
-            .config
-            .get(INCUS_OPENCLAW_PROXY_PORT_CONFIG_KEY)
-            .map(String::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .with_context(|| {
-                format!("incus VM {vm_id} is missing {INCUS_OPENCLAW_PROXY_PORT_CONFIG_KEY}")
-            })?
-            .parse::<u16>()
-            .with_context(|| format!("parse incus OpenClaw proxy port for VM {vm_id}"))?;
+        let (proxy_host, proxy_port) =
+            self.ensure_openclaw_proxy_device(vm_id, request_id)
+                .await
+                .with_context(|| format!("prepare incus OpenClaw proxy target for VM {vm_id}"))?;
         Ok(OpenClawProxyTarget {
             base_url: format!("http://{proxy_host}:{proxy_port}"),
         })
@@ -1124,29 +1105,6 @@ impl IncusManagedVmProvider {
         .map_err(|err| self.rewrite_not_found(err, format!("incus vm not found: {vm_id}")))
     }
 
-    async fn network_ipv4_subnet(
-        &self,
-        network_name: &str,
-        request_id: Option<&str>,
-    ) -> anyhow::Result<Ipv4Net> {
-        let network: IncusNetworkDetails = self
-            .get_json(
-                &["1.0", "networks", network_name],
-                true,
-                request_id,
-                "load incus managed network for OpenClaw access",
-            )
-            .await?;
-        let cidr = network
-            .config
-            .get("ipv4.address")
-            .map(String::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .with_context(|| format!("incus network {network_name} is missing ipv4.address"))?;
-        cidr.parse::<Ipv4Net>()
-            .with_context(|| format!("parse incus network ipv4.address for {network_name}"))
-    }
-
     async fn resolve_proxy_host_ipv4(&self) -> anyhow::Result<Ipv4Addr> {
         let endpoint = Url::parse(&self.resolved.endpoint)
             .with_context(|| format!("parse incus endpoint URL {}", self.resolved.endpoint))?;
@@ -1179,78 +1137,114 @@ impl IncusManagedVmProvider {
         INCUS_OPENCLAW_PROXY_PORT_START + offset
     }
 
-    fn deterministic_guest_ipv4(&self, network: Ipv4Net, vm_id: &str) -> anyhow::Result<Ipv4Addr> {
-        let host_bits = 32 - network.prefix_len();
-        anyhow::ensure!(
-            host_bits >= 8,
-            "incus managed network {} is too small for deterministic guest addressing",
-            network
-        );
-        let host_space = 1u32 << host_bits;
-        anyhow::ensure!(
-            host_space > 32,
-            "incus managed network {} does not have enough host addresses for deterministic guest addressing",
-            network
-        );
-        let digest = Sha256::digest(vm_id.as_bytes());
-        let hash = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]);
-        let usable_span = host_space - 20;
-        let host_offset = 10 + (hash % usable_span);
-        let network_addr = u32::from(network.network());
-        Ok(Ipv4Addr::from(network_addr + host_offset))
-    }
-
-    async fn openclaw_host_access_plan(
+    async fn ensure_openclaw_proxy_device(
         &self,
         vm_id: &str,
         request_id: Option<&str>,
-    ) -> anyhow::Result<Option<IncusOpenClawHostAccess>> {
-        if !matches!(self.resolved.agent_kind, ResolvedMicrovmAgentKind::Openclaw) {
-            return Ok(None);
+    ) -> anyhow::Result<(Ipv4Addr, u16)> {
+        let mut details = self
+            .get_instance_details(vm_id, request_id)
+            .await
+            .with_context(|| format!("load incus instance details for VM {vm_id}"))?;
+        let proxy_host = details
+            .config
+            .get(INCUS_OPENCLAW_PROXY_HOST_CONFIG_KEY)
+            .and_then(|value| value.parse::<Ipv4Addr>().ok())
+            .unwrap_or(self.resolve_proxy_host_ipv4().await?);
+        let proxy_port = details
+            .config
+            .get(INCUS_OPENCLAW_PROXY_PORT_CONFIG_KEY)
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or_else(|| self.deterministic_openclaw_proxy_port(vm_id));
+        let guest_ipv4 = self
+            .guest_ipv4_from_instance_state(vm_id, request_id)
+            .await
+            .with_context(|| format!("discover incus guest IPv4 for VM {vm_id}"))?;
+        let expected_device = BTreeMap::from([
+            ("type".to_string(), "proxy".to_string()),
+            ("bind".to_string(), "host".to_string()),
+            (
+                "listen".to_string(),
+                format!("tcp:{proxy_host}:{proxy_port}"),
+            ),
+            (
+                "connect".to_string(),
+                format!(
+                    "tcp:{guest_ipv4}:{}",
+                    pika_agent_microvm::DEFAULT_OPENCLAW_GATEWAY_PORT
+                ),
+            ),
+            ("nat".to_string(), "true".to_string()),
+        ]);
+        let expected_host = proxy_host.to_string();
+        let expected_port = proxy_port.to_string();
+        let proxy_device_matches = details
+            .devices
+            .get(INCUS_OPENCLAW_PROXY_DEVICE_NAME)
+            .is_some_and(|device| device == &expected_device);
+        let proxy_metadata_matches = details
+            .config
+            .get(INCUS_OPENCLAW_PROXY_HOST_CONFIG_KEY)
+            .is_some_and(|value| value == &expected_host)
+            && details
+                .config
+                .get(INCUS_OPENCLAW_PROXY_PORT_CONFIG_KEY)
+                .is_some_and(|value| value == &expected_port);
+        if proxy_device_matches && proxy_metadata_matches {
+            return Ok((proxy_host, proxy_port));
         }
-        let profile: IncusProfileDetails = self
+
+        details.devices.insert(
+            INCUS_OPENCLAW_PROXY_DEVICE_NAME.to_string(),
+            expected_device,
+        );
+        details.config.insert(
+            INCUS_OPENCLAW_PROXY_HOST_CONFIG_KEY.to_string(),
+            expected_host,
+        );
+        details.config.insert(
+            INCUS_OPENCLAW_PROXY_PORT_CONFIG_KEY.to_string(),
+            expected_port,
+        );
+        let body = serde_json::json!({
+            "config": details.config,
+            "devices": details.devices,
+        });
+        self.patch_expect_operation(
+            &["1.0", "instances", vm_id],
+            true,
+            &body,
+            request_id,
+            "update incus OpenClaw proxy device",
+        )
+        .await?;
+        Ok((proxy_host, proxy_port))
+    }
+
+    async fn guest_ipv4_from_instance_state(
+        &self,
+        vm_id: &str,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<Ipv4Addr> {
+        let state: IncusInstanceState = self
             .get_json(
-                &["1.0", "profiles", &self.resolved.profile],
+                &["1.0", "instances", vm_id, "state"],
                 true,
                 request_id,
-                "load configured incus profile for managed OpenClaw access",
+                "load incus instance state for OpenClaw proxy",
             )
-            .await?;
-        let (nic_device_name, nic_name, network_name) = profile
-            .devices
-            .into_iter()
-            .find_map(|(device_name, config)| {
-                (config.get("type").map(String::as_str) == Some("nic")).then(|| {
-                    let nic_name = config
-                        .get("name")
-                        .cloned()
-                        .unwrap_or_else(|| "eth0".to_string());
-                    let network_name = config.get("network").cloned();
-                    (device_name, nic_name, network_name)
-                })
+            .await
+            .map_err(|err| self.rewrite_not_found(err, format!("incus vm not found: {vm_id}")))?;
+        state
+            .network
+            .values()
+            .flat_map(|interface| interface.addresses.iter())
+            .find_map(|address| {
+                (address.family == "inet" && address.scope == "global")
+                    .then(|| address.address.parse::<Ipv4Addr>().ok())
+                    .flatten()
             })
-            .and_then(|(device_name, nic_name, network_name)| {
-                network_name.map(|network_name| (device_name, nic_name, network_name))
-            })
-            .with_context(|| {
-                format!(
-                    "configured incus profile {} in project {} must include a nic device on a managed network",
-                    self.resolved.profile, self.resolved.project
-                )
-            })?;
-        let guest_ipv4 = self.deterministic_guest_ipv4(
-            self.network_ipv4_subnet(&network_name, request_id).await?,
-            vm_id,
-        )?;
-        let proxy_host = self.resolve_proxy_host_ipv4().await?;
-        Ok(Some(IncusOpenClawHostAccess {
-            nic_device_name,
-            nic_name,
-            network_name,
-            guest_ipv4,
-            proxy_host,
-            proxy_port: self.deterministic_openclaw_proxy_port(vm_id),
-        }))
+            .with_context(|| format!("incus VM {vm_id} did not report a global IPv4 address"))
     }
 
     async fn create_managed_vm(
@@ -1530,7 +1524,6 @@ impl IncusManagedVmProvider {
         request_id: Option<&str>,
     ) -> anyhow::Result<()> {
         let mut devices = BTreeMap::new();
-        let openclaw_host_access = self.openclaw_host_access_plan(vm_id, request_id).await?;
         devices.insert(
             "root".to_string(),
             serde_json::json!({
@@ -1548,27 +1541,6 @@ impl IncusManagedVmProvider {
                 "path": INCUS_PERSISTENT_VOLUME_PATH,
             }),
         );
-        if let Some(openclaw_host_access) = &openclaw_host_access {
-            devices.insert(
-                openclaw_host_access.nic_device_name.clone(),
-                serde_json::json!({
-                    "type": "nic",
-                    "network": openclaw_host_access.network_name,
-                    "name": openclaw_host_access.nic_name,
-                    "ipv4.address": openclaw_host_access.guest_ipv4.to_string(),
-                }),
-            );
-            devices.insert(
-                INCUS_OPENCLAW_PROXY_DEVICE_NAME.to_string(),
-                serde_json::json!({
-                    "type": "proxy",
-                    "bind": "host",
-                    "listen": format!("tcp:{}:{}", openclaw_host_access.proxy_host, openclaw_host_access.proxy_port),
-                    "connect": format!("tcp:{}:{}", openclaw_host_access.guest_ipv4, pika_agent_microvm::DEFAULT_OPENCLAW_GATEWAY_PORT),
-                    "nat": "true",
-                }),
-            );
-        }
 
         let cloud_init_user_data = self
             .cloud_init_user_data(input)
@@ -1601,14 +1573,16 @@ impl IncusManagedVmProvider {
                 ),
             ),
         ]);
-        if let Some(openclaw_host_access) = &openclaw_host_access {
+        if matches!(self.resolved.agent_kind, ResolvedMicrovmAgentKind::Openclaw) {
+            let proxy_host = self.resolve_proxy_host_ipv4().await?;
+            let proxy_port = self.deterministic_openclaw_proxy_port(vm_id);
             instance_config.insert(
                 INCUS_OPENCLAW_PROXY_HOST_CONFIG_KEY.to_string(),
-                serde_json::Value::String(openclaw_host_access.proxy_host.to_string()),
+                serde_json::Value::String(proxy_host.to_string()),
             );
             instance_config.insert(
                 INCUS_OPENCLAW_PROXY_PORT_CONFIG_KEY.to_string(),
-                serde_json::Value::String(openclaw_host_access.proxy_port.to_string()),
+                serde_json::Value::String(proxy_port.to_string()),
             );
         }
         let body = serde_json::json!({
@@ -2020,6 +1994,29 @@ impl IncusManagedVmProvider {
         let response = self
             .request(
                 reqwest::Method::PUT,
+                path_segments,
+                include_project,
+                request_id,
+            )?
+            .json(body)
+            .send()
+            .await
+            .with_context(|| context.to_string())?;
+        self.finish_operation_response(response, request_id, context)
+            .await
+    }
+
+    async fn patch_expect_operation(
+        &self,
+        path_segments: &[&str],
+        include_project: bool,
+        body: &serde_json::Value,
+        request_id: Option<&str>,
+        context: &str,
+    ) -> anyhow::Result<()> {
+        let response = self
+            .request(
+                reqwest::Method::PATCH,
                 path_segments,
                 include_project,
                 request_id,
@@ -5088,14 +5085,6 @@ GFs2pW5hEhS7cCO0qXaa5g==
         let (base_url, rx) = spawn_response_sequence_server(vec![
             ("200 OK", r#"{"type":"sync","metadata":{}}"#),
             (
-                "200 OK",
-                r#"{"type":"sync","metadata":{"devices":{"eth0":{"type":"nic","network":"incusbr0","name":"eth0"}}}}"#,
-            ),
-            (
-                "200 OK",
-                r#"{"type":"sync","metadata":{"config":{"ipv4.address":"10.193.52.1/24"}}}"#,
-            ),
-            (
                 "202 Accepted",
                 r#"{"type":"async","operation":"/1.0/operations/op-create","metadata":{"err":""}}"#,
             ),
@@ -5154,20 +5143,6 @@ GFs2pW5hEhS7cCO0qXaa5g==
             .and_then(serde_json::Value::as_str)
             .expect("volume name");
 
-        let profile_request = rx.recv().expect("captured profile request");
-        assert_eq!(profile_request.method, "GET");
-        assert_eq!(
-            profile_request.path,
-            "/1.0/profiles/pika-agent?project=managed-agents"
-        );
-
-        let network_request = rx.recv().expect("captured network request");
-        assert_eq!(network_request.method, "GET");
-        assert_eq!(
-            network_request.path,
-            "/1.0/networks/incusbr0?project=managed-agents"
-        );
-
         let instance_request = rx.recv().expect("captured instance create request");
         assert_eq!(instance_request.method, "POST");
         assert_eq!(
@@ -5203,31 +5178,20 @@ GFs2pW5hEhS7cCO0qXaa5g==
             instance_body["devices"][INCUS_PERSISTENT_VOLUME_DEVICE_NAME]["source"],
             volume_name
         );
-        assert_eq!(instance_body["devices"]["eth0"]["network"], "incusbr0");
-        assert_eq!(instance_body["devices"]["eth0"]["name"], "eth0");
-        assert!(instance_body["devices"]["eth0"]["ipv4.address"]
-            .as_str()
-            .expect("static guest ipv4")
-            .starts_with("10.193.52."));
+        assert!(instance_body["devices"]
+            .get(INCUS_OPENCLAW_PROXY_DEVICE_NAME)
+            .is_none());
+        assert!(instance_body["devices"].get("eth0").is_none());
         assert_eq!(
-            instance_body["devices"][INCUS_OPENCLAW_PROXY_DEVICE_NAME]["type"],
-            "proxy"
-        );
-        assert_eq!(
-            instance_body["devices"][INCUS_OPENCLAW_PROXY_DEVICE_NAME]["nat"],
-            "true"
+            instance_body["config"][INCUS_OPENCLAW_PROXY_HOST_CONFIG_KEY],
+            "127.0.0.1"
         );
         assert!(
-            instance_body["devices"][INCUS_OPENCLAW_PROXY_DEVICE_NAME]["listen"]
+            instance_body["config"][INCUS_OPENCLAW_PROXY_PORT_CONFIG_KEY]
                 .as_str()
-                .expect("proxy listen")
-                .starts_with("tcp:127.0.0.1:")
-        );
-        assert!(
-            instance_body["devices"][INCUS_OPENCLAW_PROXY_DEVICE_NAME]["connect"]
-                .as_str()
-                .expect("proxy connect")
-                .ends_with(":18789")
+                .expect("proxy port")
+                .parse::<u16>()
+                .is_ok()
         );
         let user_data = instance_body["config"][INCUS_CLOUD_INIT_USER_DATA_KEY]
             .as_str()
@@ -5398,12 +5362,23 @@ GFs2pW5hEhS7cCO0qXaa5g==
     }
 
     #[tokio::test]
-    async fn managed_vm_provider_loads_incus_openclaw_proxy_target_from_instance_config() {
+    async fn managed_vm_provider_loads_incus_openclaw_proxy_target_from_instance_state() {
         let vm_id = "pika-agent-openclaw-target";
-        let (base_url, rx) = spawn_response_sequence_server(vec![(
-            "200 OK",
-            r#"{"type":"sync","metadata":{"config":{"user.pika.openclaw_proxy_host":"100.81.250.67","user.pika.openclaw_proxy_port":"24123"}}}"#,
-        )]);
+        let (base_url, rx) = spawn_response_sequence_server(vec![
+            (
+                "200 OK",
+                r#"{"type":"sync","metadata":{"config":{"user.pika.openclaw_proxy_host":"100.81.250.67","user.pika.openclaw_proxy_port":"24123"},"devices":{"pikastate":{"type":"disk","path":"/mnt/pika-state"}}}}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"type":"sync","metadata":{"status":"Running","network":{"enp5s0":{"addresses":[{"address":"10.193.52.24","family":"inet","scope":"global"}]}}}}"#,
+            ),
+            (
+                "202 Accepted",
+                r#"{"type":"async","operation":"/1.0/operations/op-proxy","metadata":{"err":""}}"#,
+            ),
+            ("200 OK", r#"{"type":"sync","metadata":{"err":""}}"#),
+        ]);
         let requested = ManagedVmProvisionParams {
             provider: Some(ProviderKind::Incus),
             microvm: Some(MicrovmProvisionParams {
@@ -5432,6 +5407,35 @@ GFs2pW5hEhS7cCO0qXaa5g==
         assert_eq!(
             request.path,
             format!("/1.0/instances/{vm_id}?project=managed-agents")
+        );
+        let state_request = rx.recv().expect("captured instance state request");
+        assert_eq!(state_request.method, "GET");
+        assert_eq!(
+            state_request.path,
+            format!("/1.0/instances/{vm_id}/state?project=managed-agents")
+        );
+        let patch_request = rx.recv().expect("captured proxy patch request");
+        assert_eq!(patch_request.method, "PATCH");
+        assert_eq!(
+            patch_request.path,
+            format!("/1.0/instances/{vm_id}?project=managed-agents")
+        );
+        let patch_body: serde_json::Value =
+            serde_json::from_str(&patch_request.body).expect("parse proxy patch body");
+        assert_eq!(
+            patch_body["devices"][INCUS_OPENCLAW_PROXY_DEVICE_NAME]["type"],
+            "proxy"
+        );
+        assert_eq!(
+            patch_body["devices"][INCUS_OPENCLAW_PROXY_DEVICE_NAME]["connect"],
+            format!(
+                "tcp:10.193.52.24:{}",
+                pika_agent_microvm::DEFAULT_OPENCLAW_GATEWAY_PORT
+            )
+        );
+        assert_eq!(
+            patch_body["devices"][INCUS_OPENCLAW_PROXY_DEVICE_NAME]["listen"],
+            "tcp:100.81.250.67:24123"
         );
     }
 
@@ -5925,14 +5929,6 @@ GFs2pW5hEhS7cCO0qXaa5g==
             ),
             ("200 OK", r#"{"type":"sync","metadata":{}}"#),
             ("200 OK", r#"{"type":"sync","metadata":{}}"#),
-            (
-                "200 OK",
-                r#"{"type":"sync","metadata":{"devices":{"eth0":{"type":"nic","network":"incusbr0","name":"eth0"}}}}"#,
-            ),
-            (
-                "200 OK",
-                r#"{"type":"sync","metadata":{"config":{"ipv4.address":"10.193.52.1/24"}}}"#,
-            ),
         ]);
         with_env_overrides(
             &[
@@ -5972,16 +5968,6 @@ GFs2pW5hEhS7cCO0qXaa5g==
         assert_eq!(
             image_request.path,
             "/1.0/images/aliases/pika-agent%2Fdev?project=managed-agents"
-        );
-        let proxy_profile_request = rx.recv().expect("openclaw profile probe");
-        assert_eq!(
-            proxy_profile_request.path,
-            "/1.0/profiles/pika-agent?project=managed-agents"
-        );
-        let network_request = rx.recv().expect("network probe");
-        assert_eq!(
-            network_request.path,
-            "/1.0/networks/incusbr0?project=managed-agents"
         );
     }
 
@@ -6034,14 +6020,6 @@ GFs2pW5hEhS7cCO0qXaa5g==
             ),
             ("200 OK", r#"{"type":"sync","metadata":{}}"#),
             ("200 OK", r#"{"type":"sync","metadata":{}}"#),
-            (
-                "200 OK",
-                r#"{"type":"sync","metadata":{"devices":{"eth0":{"type":"nic","network":"incusbr0","name":"eth0"}}}}"#,
-            ),
-            (
-                "200 OK",
-                r#"{"type":"sync","metadata":{"config":{"ipv4.address":"10.193.52.1/24"}}}"#,
-            ),
         ]);
         with_env_overrides(
             &[
@@ -6085,16 +6063,6 @@ GFs2pW5hEhS7cCO0qXaa5g==
         assert_eq!(
             image_request.path,
             "/1.0/images/aliases/pika-agent%2Fdev?project=managed-agents"
-        );
-        let proxy_profile_request = rx.recv().expect("openclaw profile probe");
-        assert_eq!(
-            proxy_profile_request.path,
-            "/1.0/profiles/pika-agent?project=managed-agents"
-        );
-        let network_request = rx.recv().expect("network probe");
-        assert_eq!(
-            network_request.path,
-            "/1.0/networks/incusbr0?project=managed-agents"
         );
     }
 

@@ -10,6 +10,12 @@
   # still needs to trust the bridge so those packets aren't dropped later in the
   # unified pika-build ruleset.
   networking.firewall.trustedInterfaces = [ "incusbr0" ];
+  networking.firewall.filterForward = true;
+  networking.firewall.extraForwardRules = ''
+    iifname "incusbr0" oifname "eth0" ct state new log prefix "incus-egress: " level info
+    iifname "incusbr0" oifname "eth0" accept
+    iifname "eth0" oifname "incusbr0" ct state { established, related } accept
+  '';
 
   networking.firewall.interfaces.tailscale0.allowedTCPPorts = [ 8443 ];
 

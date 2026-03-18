@@ -51,6 +51,7 @@ pub fn message_bubble<'a>(
     hovered: bool,
     position: BubblePosition,
     sender_picture_url: Option<&'a str>,
+    optimistic_hypernote_action: Option<&'a str>,
     avatar_cache: &mut AvatarCache,
 ) -> Element<'a, Message, Theme> {
     let timestamp = theme::relative_time(msg.timestamp);
@@ -125,7 +126,12 @@ pub fn message_bubble<'a>(
             bubble_content = bubble_content.push(media_attachment_view(attachment, &msg_id, true));
         }
         if let Some(hypernote) = msg.hypernote.as_ref() {
-            bubble_content = bubble_content.push(hypernote::render_hypernote(&msg.id, hypernote));
+            bubble_content = bubble_content.push(hypernote::render_hypernote(
+                &msg.id,
+                hypernote,
+                optimistic_hypernote_action,
+                avatar_cache,
+            ));
         } else {
             bubble_content =
                 push_message_content(bubble_content, &msg.segments, &msg.display_content, true);
@@ -198,7 +204,12 @@ pub fn message_bubble<'a>(
             bubble_content = bubble_content.push(media_attachment_view(attachment, &msg_id, false));
         }
         if let Some(hypernote) = msg.hypernote.as_ref() {
-            bubble_content = bubble_content.push(hypernote::render_hypernote(&msg.id, hypernote));
+            bubble_content = bubble_content.push(hypernote::render_hypernote(
+                &msg.id,
+                hypernote,
+                optimistic_hypernote_action,
+                avatar_cache,
+            ));
         } else {
             bubble_content =
                 push_message_content(bubble_content, &msg.segments, &msg.display_content, false);

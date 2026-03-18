@@ -25,6 +25,7 @@ pub struct State {
     pub hovered_message_id: Option<String>,
     /// True while a file is being dragged over the conversation area.
     pub file_hover: bool,
+    submitted_hypernote_actions: HashMap<String, String>,
 }
 
 // ── Messages ────────────────────────────────────────────────────────────────
@@ -120,6 +121,7 @@ impl State {
             emoji_picker_message_id: None,
             hovered_message_id: None,
             file_hover: false,
+            submitted_hypernote_actions: HashMap::new(),
         }
     }
 
@@ -234,14 +236,18 @@ impl State {
                 message_id,
                 action_name,
                 form,
-            } => (
-                Some(Event::HypernoteAction {
-                    message_id,
-                    action_name,
-                    form,
-                }),
-                None,
-            ),
+            } => {
+                self.submitted_hypernote_actions
+                    .insert(message_id.clone(), action_name.clone());
+                (
+                    Some(Event::HypernoteAction {
+                        message_id,
+                        action_name,
+                        form,
+                    }),
+                    None,
+                )
+            }
             Message::ShowGroupInfo => (Some(Event::ShowGroupInfo), None),
             Message::StartCall => (Some(Event::StartCall), None),
             Message::StartVideoCall => (Some(Event::StartVideoCall), None),
@@ -258,6 +264,27 @@ impl State {
                 .unwrap_or(false);
             if !still_present {
                 self.reply_to_message_id = None;
+            }
+        }
+
+        let Some(chat) = chat else {
+            self.submitted_hypernote_actions.clear();
+            return;
+        };
+
+        let live_message_ids: std::collections::HashSet<&str> =
+            chat.messages.iter().map(|msg| msg.id.as_str()).collect();
+        self.submitted_hypernote_actions
+            .retain(|message_id, _| live_message_ids.contains(message_id.as_str()));
+
+        for msg in &chat.messages {
+            if msg
+                .hypernote
+                .as_ref()
+                .and_then(|hypernote| hypernote.my_response.as_deref())
+                .is_some()
+            {
+                self.submitted_hypernote_actions.remove(&msg.id);
             }
         }
     }
@@ -437,6 +464,10 @@ impl State {
                     .and_then(|id| messages_by_id.get(id).copied());
                 let picker_open = self.emoji_picker_message_id.as_deref() == Some(msg.id.as_str());
                 let hovered = self.hovered_message_id.as_deref() == Some(msg.id.as_str());
+                let optimistic_hypernote_action = self
+                    .submitted_hypernote_actions
+                    .get(msg.id.as_str())
+                    .map(String::as_str);
                 let sender_pic = member_pics
                     .get(msg.sender_pubkey.as_str())
                     .copied()
@@ -449,6 +480,7 @@ impl State {
                     hovered,
                     position,
                     sender_pic,
+                    optimistic_hypernote_action,
                     avatar_cache,
                 ));
             }
@@ -745,6 +777,13 @@ mod tests {
         });
 
         assert!(task.is_none());
+        assert_eq!(
+            state
+                .submitted_hypernote_actions
+                .get("msg-1")
+                .map(String::as_str),
+            Some("vote")
+        );
         match event {
             Some(Event::HypernoteAction {
                 message_id,

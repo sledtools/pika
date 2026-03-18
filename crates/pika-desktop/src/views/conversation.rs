@@ -759,6 +759,18 @@ fn read_and_send_first_file(paths: &[PathBuf]) -> Option<Event> {
     })
 }
 
+fn chat_title(chat: &ChatViewState) -> String {
+    if let Some(name) = &chat.group_name {
+        if !name.trim().is_empty() {
+            return name.clone();
+        }
+    }
+    chat.members
+        .first()
+        .and_then(|m| m.name.clone())
+        .unwrap_or_else(|| "Conversation".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Event, Message, State};
@@ -797,16 +809,4 @@ mod tests {
             _ => panic!("expected hypernote action event"),
         }
     }
-}
-
-fn chat_title(chat: &ChatViewState) -> String {
-    if let Some(name) = &chat.group_name {
-        if !name.trim().is_empty() {
-            return name.clone();
-        }
-    }
-    chat.members
-        .first()
-        .and_then(|m| m.name.clone())
-        .unwrap_or_else(|| "Conversation".to_string())
 }

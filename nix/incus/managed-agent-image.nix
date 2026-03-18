@@ -10,7 +10,9 @@ in
   ];
 
   networking.hostName = "pika-agent-incus-dev";
-  networking.useDHCP = lib.mkDefault true;
+  networking.useDHCP = lib.mkForce false;
+  networking.useNetworkd = true;
+  services.resolved.enable = true;
   systemd.network.enable = true;
   systemd.network.wait-online.enable = true;
   systemd.network.networks."10-incus-uplink" = {
@@ -20,6 +22,7 @@ in
     ];
     networkConfig = {
       DHCP = "ipv4";
+      LinkLocalAddressing = "no";
       IPv6AcceptRA = false;
     };
     dhcpV4Config = {

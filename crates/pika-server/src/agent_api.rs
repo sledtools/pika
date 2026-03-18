@@ -1413,7 +1413,7 @@ impl IncusManagedVmProvider {
             "force": true,
             "timeout": INCUS_OPERATION_WAIT_TIMEOUT_SECS,
         });
-        self.post_expect_operation(
+        self.put_expect_operation(
             &["1.0", "instances", vm_id, "state"],
             true,
             &body,
@@ -1674,6 +1674,29 @@ impl IncusManagedVmProvider {
         let response = self
             .request(
                 reqwest::Method::POST,
+                path_segments,
+                include_project,
+                request_id,
+            )?
+            .json(body)
+            .send()
+            .await
+            .with_context(|| context.to_string())?;
+        self.finish_operation_response(response, request_id, context)
+            .await
+    }
+
+    async fn put_expect_operation(
+        &self,
+        path_segments: &[&str],
+        include_project: bool,
+        body: &serde_json::Value,
+        request_id: Option<&str>,
+        context: &str,
+    ) -> anyhow::Result<()> {
+        let response = self
+            .request(
+                reqwest::Method::PUT,
                 path_segments,
                 include_project,
                 request_id,
@@ -5083,7 +5106,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
             format!("/1.0/instances/{vm_id}/state?project=managed-agents")
         );
         let recover_request = rx.recv().expect("captured recover request");
-        assert_eq!(recover_request.method, "POST");
+        assert_eq!(recover_request.method, "PUT");
         assert_eq!(
             recover_request.path,
             format!("/1.0/instances/{vm_id}/state?project=managed-agents")
@@ -5169,7 +5192,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
             )
         );
         let stop_request = rx.recv().expect("captured stop request");
-        assert_eq!(stop_request.method, "POST");
+        assert_eq!(stop_request.method, "PUT");
         assert!(stop_request.body.contains(r#""action":"stop""#));
         let stop_wait_request = rx.recv().expect("captured stop wait request");
         assert_eq!(
@@ -5188,7 +5211,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
             .body
             .contains(r#""restore":"daily-20260318""#));
         let start_request = rx.recv().expect("captured start request");
-        assert_eq!(start_request.method, "POST");
+        assert_eq!(start_request.method, "PUT");
         assert!(start_request.body.contains(r#""action":"start""#));
         let start_wait_request = rx.recv().expect("captured start wait request");
         assert_eq!(

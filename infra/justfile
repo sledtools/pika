@@ -515,6 +515,25 @@ build-deploy:
 
     echo "==> pika-build deployed!"
 
+# Deploy config update to pika-build with the Incus dev lane enabled.
+build-deploy-incus-dev:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    IP=$({{HCLOUD}} server ip pika-build)
+    BUILDER="{{PIKA_BUILD}}"
+
+    echo "==> Deploying pika-build Incus dev lane ($IP)..."
+
+    cd "{{FLAKE_ROOT}}"
+    {{REQUIRE_CLEAN_DEPLOY_TREE}}
+    export NIX_SSHOPTS="-i {{PIKA_BUILD_SSH_KEY}} -o StrictHostKeyChecking=accept-new"
+    nix run nixpkgs#nixos-rebuild -- switch --fast \
+        --flake ".#pika-build-incus-dev" \
+        --build-host "$BUILDER" \
+        --target-host "root@$IP"
+
+    echo "==> pika-build Incus dev lane deployed!"
+
 # Deploy microVM host stack on pika-build (alias for build-deploy)
 build-deploy-microvms:
     just build-deploy

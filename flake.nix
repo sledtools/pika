@@ -351,6 +351,57 @@
 
       openclawGatewayPkg = nix-openclaw.packages."x86_64-linux"."openclaw-gateway";
 
+      pikaAgentIncusDevImageSystem = nixpkgs.lib.nixosSystem {
+        system = "x86_64-linux";
+        specialArgs = {
+          inherit openclawGatewayPkg pikachatPkg;
+        };
+        modules = [
+          ./nix/incus/managed-agent-image.nix
+        ];
+      };
+
+      pikaAgentIncusDevImageDisk = import "${serverPkgs.path}/nixos/lib/make-disk-image.nix" {
+        inherit (pikaAgentIncusDevImageSystem) config pkgs;
+        lib = serverPkgs.lib;
+        format = "qcow2";
+        diskSize = 8192;
+        partitionTableType = "efi";
+        installBootLoader = true;
+        copyChannel = false;
+        name = "pika-agent-incus-dev";
+      };
+
+      pikaAgentIncusDevImagePkg = serverPkgs.runCommand "pika-agent-incus-dev-image" {
+        nativeBuildInputs = [ serverPkgs.findutils serverPkgs.gnutar serverPkgs.xz ];
+      } ''
+        mkdir -p "$out"
+        cat >"$TMPDIR/metadata.yaml" <<'EOF'
+        architecture: x86_64
+        creation_date: 1
+        properties:
+          description: Pika managed-agent Incus dev image
+          os: NixOS
+          release: unstable
+          variant: managed-agent-incus-dev
+        EOF
+        tar --sort=name --mtime='@1' --owner=0 --group=0 --numeric-owner \
+          -C "$TMPDIR" -cJf "$out/metadata.tar.xz" metadata.yaml
+        qcow2_path="$(find ${pikaAgentIncusDevImageDisk} -maxdepth 1 -type f -name '*.qcow2' | head -n 1)"
+        if [ -z "$qcow2_path" ]; then
+          echo "missing qcow2 image output from ${pikaAgentIncusDevImageDisk}" >&2
+          exit 1
+        fi
+        ln -s "$qcow2_path" "$out/disk.qcow2"
+        cat >"$out/README.txt" <<'EOF'
+        Build:
+          nix build .#pika-agent-incus-dev-image
+
+        Import on a remote Incus dev host:
+          ./scripts/incus-dev-image.sh build-import --remote-host pika-build --alias pika-agent/dev
+        EOF
+      '';
+
       pikaRelayPkg = serverPkgs.buildGoModule {
         pname = "pika-relay";
         version = "0.1.0";
@@ -979,6 +1030,7 @@ EOF
         openclaw-gateway = openclawGatewayPkg;
         pikachat = pikachatPkg;
         pikaci = pikaciServerPkg;
+        pika-agent-incus-dev-image = pikaAgentIncusDevImagePkg;
       };
 
       nixosConfigurations = {
@@ -1005,6 +1057,17 @@ EOF
             sops-nix.nixosModules.sops
             microvm.nixosModules.host
             (import ./infra/nix/hosts/builder.nix)
+          ];
+        };
+
+        pika-build-incus-dev = nixpkgs.lib.nixosSystem {
+          system = "x86_64-linux";
+          specialArgs = { inherit self sops-nix vmSpawnerPkg piAgentPkg openclawGatewayPkg pikaNewsPkg pikachatPkg pikaciServerPkg; };
+          modules = [
+            disko.nixosModules.disko
+            sops-nix.nixosModules.sops
+            microvm.nixosModules.host
+            (import ./infra/nix/hosts/builder-incus-dev.nix)
           ];
         };
 

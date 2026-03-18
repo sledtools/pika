@@ -1,1 +1,1 @@
-import ../modules/builder.nix
+(import ../modules/builder.nix { })

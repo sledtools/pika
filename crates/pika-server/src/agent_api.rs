@@ -32,7 +32,7 @@ use crate::{RequestContext, State};
 use pika_agent_control_plane::{
     AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams, ManagedVmProvisionParams,
     MicrovmAgentKind, MicrovmProvisionParams, ProviderKind, SpawnerOpenClawLaunchAuth,
-    SpawnerVmBackupStatus, SpawnerVmResponse, VmBackupFreshness,
+    SpawnerVmBackupStatus, SpawnerVmResponse, VmBackupFreshness, GUEST_READY_MARKER_PATH,
 };
 use pika_agent_microvm::{
     build_create_vm_request, resolve_params, validate_resolved_params, ManagedVmCreateInput,
@@ -249,6 +249,15 @@ struct IncusOperationMetadata {
 #[derive(Debug, Deserialize)]
 struct IncusInstanceState {
     status: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct IncusGuestReadyMarker {
+    ready: bool,
+    #[serde(default)]
+    agent_kind: Option<String>,
+    #[serde(default)]
+    probe: Option<String>,
 }
 
 fn provider_kind_db_value(provider: ProviderKind) -> &'static str {
@@ -859,7 +868,7 @@ impl IncusManagedVmProvider {
                 "load configured incus project",
             )
             .await?;
-        let _: serde_json::Value = self
+        let profile: serde_json::Value = self
             .get_json(
                 &["1.0", "profiles", &self.resolved.profile],
                 true,
@@ -867,6 +876,12 @@ impl IncusManagedVmProvider {
                 "load configured incus profile",
             )
             .await?;
+        anyhow::ensure!(
+            incus_profile_has_nic_device(&profile),
+            "configured incus profile {} in project {} must include at least one nic device",
+            self.resolved.profile,
+            self.resolved.project
+        );
         let _: serde_json::Value = self
             .get_json(
                 &["1.0", "storage-pools", &self.resolved.storage_pool],
@@ -969,15 +984,17 @@ impl IncusManagedVmProvider {
             "Stopping" | "Stopped" | "Frozen" | "Freezing" | "Thawed" => "starting",
             _ => "starting",
         };
-
-        // The first Incus chunk only proves lifecycle wiring. Guest readiness is intentionally
-        // conservative until the Incus guest image publishes a trustworthy ready signal.
+        let guest_ready = if status == "running" {
+            self.guest_ready_signal_satisfied(vm_id, request_id).await
+        } else {
+            false
+        };
         Ok(SpawnerVmResponse {
             id: vm_id.to_string(),
             status: status.to_string(),
             agent_kind: Some(agent_kind_from_resolved(self.resolved.agent_kind)),
-            startup_probe_satisfied: false,
-            guest_ready: false,
+            startup_probe_satisfied: guest_ready,
+            guest_ready,
         })
     }
 
@@ -1232,6 +1249,69 @@ impl IncusManagedVmProvider {
         Ok(cloud_init)
     }
 
+    async fn guest_ready_signal_satisfied(&self, vm_id: &str, request_id: Option<&str>) -> bool {
+        let ready_path = format!("/{}", GUEST_READY_MARKER_PATH);
+        let marker_bytes = match self
+            .get_instance_file(
+                vm_id,
+                &ready_path,
+                request_id,
+                "load incus guest ready marker",
+            )
+            .await
+        {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => return false,
+            Err(err) => {
+                tracing::warn!(
+                    vm_id = %vm_id,
+                    error = %err,
+                    "failed to load incus guest ready marker; reporting guest as not ready"
+                );
+                return false;
+            }
+        };
+        let marker = match serde_json::from_slice::<IncusGuestReadyMarker>(&marker_bytes) {
+            Ok(marker) => marker,
+            Err(err) => {
+                tracing::warn!(
+                    vm_id = %vm_id,
+                    error = %err,
+                    "incus guest ready marker was malformed; reporting guest as not ready"
+                );
+                return false;
+            }
+        };
+        if !marker.ready {
+            return false;
+        }
+        let expected_agent_kind = match self.resolved.agent_kind {
+            ResolvedMicrovmAgentKind::Pi => "pi",
+            ResolvedMicrovmAgentKind::Openclaw => "openclaw",
+        };
+        if marker.agent_kind.as_deref() != Some(expected_agent_kind) {
+            tracing::warn!(
+                vm_id = %vm_id,
+                expected_agent_kind,
+                observed_agent_kind = marker.agent_kind.as_deref().unwrap_or("<missing>"),
+                "incus guest ready marker reported a mismatched agent kind; reporting guest as not ready"
+            );
+            return false;
+        }
+        if marker
+            .probe
+            .as_deref()
+            .is_none_or(|probe| probe.trim().is_empty())
+        {
+            tracing::warn!(
+                vm_id = %vm_id,
+                "incus guest ready marker omitted probe detail; reporting guest as not ready"
+            );
+            return false;
+        }
+        true
+    }
+
     fn request(
         &self,
         method: reqwest::Method,
@@ -1283,6 +1363,38 @@ impl IncusManagedVmProvider {
             .await
             .with_context(|| context.to_string())?;
         self.parse_json_response(response, context).await
+    }
+
+    async fn get_instance_file(
+        &self,
+        vm_id: &str,
+        path: &str,
+        request_id: Option<&str>,
+        context: &str,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        let response = self
+            .request(
+                reqwest::Method::GET,
+                &["1.0", "instances", vm_id, "file"],
+                true,
+                request_id,
+            )?
+            .header(axum::http::header::ACCEPT, "*/*")
+            .query(&[("path", path)])
+            .send()
+            .await
+            .with_context(|| context.to_string())?;
+        match response.status() {
+            reqwest::StatusCode::OK => Ok(Some(
+                response
+                    .bytes()
+                    .await
+                    .with_context(|| format!("{context}: read Incus guest file body"))?
+                    .to_vec(),
+            )),
+            reqwest::StatusCode::NOT_FOUND => Ok(None),
+            _ => Ok(None),
+        }
     }
 
     async fn post_expect_sync_or_operation(
@@ -1530,6 +1642,17 @@ fn is_incus_not_found_error(err: &anyhow::Error) -> bool {
     message.contains("404") && message.contains("not found")
 }
 
+fn incus_profile_has_nic_device(profile: &serde_json::Value) -> bool {
+    profile
+        .get("devices")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|devices| {
+            devices
+                .values()
+                .any(|device| device.get("type").and_then(serde_json::Value::as_str) == Some("nic"))
+        })
+}
+
 fn agent_kind_from_resolved(kind: ResolvedMicrovmAgentKind) -> MicrovmAgentKind {
     match kind {
         ResolvedMicrovmAgentKind::Pi => MicrovmAgentKind::Pi,
@@ -1554,6 +1677,7 @@ fn incus_bootstrap_launcher_script(env: &BTreeMap<String, String>, command: &str
         script.push_str(&shell_single_quote(value));
         script.push('\n');
     }
+    script.push_str("export PIKA_VM_IP=\"${PIKA_VM_IP:-127.0.0.1}\"\n");
     script.push_str("exec ");
     script.push_str(command);
     script.push('\n');
@@ -4063,6 +4187,7 @@ mod tests {
                 "200 OK",
                 r#"{"type":"sync","metadata":{"status":"Running"}}"#,
             ),
+            ("404 Not Found", ""),
         ]);
         let requested = ManagedVmProvisionParams {
             provider: Some(ProviderKind::Incus),
@@ -4186,6 +4311,104 @@ mod tests {
             status_request.path,
             format!("/1.0/instances/{instance_name}/state?project=managed-agents")
         );
+        let ready_request = rx.recv().expect("captured ready-marker request");
+        assert_eq!(ready_request.method, "GET");
+        assert_eq!(
+            ready_request.path,
+            format!(
+                "/1.0/instances/{instance_name}/file?project=managed-agents&path=%2Fworkspace%2Fpika-agent%2Fservice-ready.json"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_vm_provider_status_marks_guest_ready_from_in_guest_signal() {
+        let vm_id = "pika-agent-ready";
+        let ready_marker = serde_json::json!({
+            "ready": true,
+            "agent_kind": "openclaw",
+            "probe": "openclaw_gateway_health",
+        });
+        let (base_url, rx) = spawn_response_sequence_server(vec![
+            (
+                "200 OK",
+                r#"{"type":"sync","metadata":{"status":"Running"}}"#,
+            ),
+            ("200 OK", &ready_marker.to_string()),
+        ]);
+        let requested = ManagedVmProvisionParams {
+            provider: Some(ProviderKind::Incus),
+            microvm: Some(MicrovmProvisionParams {
+                spawner_url: None,
+                kind: Some(MicrovmAgentKind::Openclaw),
+                backend: Some(pika_agent_control_plane::MicrovmAgentBackend::Native),
+            }),
+            incus: Some(IncusProvisionParams {
+                endpoint: Some(base_url.clone()),
+                project: Some("managed-agents".to_string()),
+                profile: Some("pika-agent".to_string()),
+                storage_pool: Some("managed-agents-zfs".to_string()),
+                image_alias: Some("pika-agent/dev".to_string()),
+                insecure_tls: None,
+            }),
+        };
+        let provider = managed_vm_provider(Some(&requested)).expect("resolve incus provider");
+        let status = provider
+            .get_vm_status(vm_id, Some("req-incus-ready"))
+            .await
+            .expect("load incus status");
+        assert_eq!(status.status, "running");
+        assert!(status.startup_probe_satisfied);
+        assert!(status.guest_ready);
+
+        let state_request = rx.recv().expect("captured state request");
+        assert_eq!(
+            state_request.path,
+            format!("/1.0/instances/{vm_id}/state?project=managed-agents")
+        );
+        let ready_request = rx.recv().expect("captured ready-marker request");
+        assert_eq!(
+            ready_request.path,
+            format!(
+                "/1.0/instances/{vm_id}/file?project=managed-agents&path=%2Fworkspace%2Fpika-agent%2Fservice-ready.json"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_vm_provider_status_keeps_guest_unready_when_ready_signal_is_malformed() {
+        let vm_id = "pika-agent-malformed";
+        let (base_url, _rx) = spawn_response_sequence_server(vec![
+            (
+                "200 OK",
+                r#"{"type":"sync","metadata":{"status":"Running"}}"#,
+            ),
+            ("200 OK", "not-json"),
+        ]);
+        let requested = ManagedVmProvisionParams {
+            provider: Some(ProviderKind::Incus),
+            microvm: Some(MicrovmProvisionParams {
+                spawner_url: None,
+                kind: Some(MicrovmAgentKind::Openclaw),
+                backend: Some(pika_agent_control_plane::MicrovmAgentBackend::Native),
+            }),
+            incus: Some(IncusProvisionParams {
+                endpoint: Some(base_url.clone()),
+                project: Some("managed-agents".to_string()),
+                profile: Some("pika-agent".to_string()),
+                storage_pool: Some("managed-agents-zfs".to_string()),
+                image_alias: Some("pika-agent/dev".to_string()),
+                insecure_tls: None,
+            }),
+        };
+        let provider = managed_vm_provider(Some(&requested)).expect("resolve incus provider");
+        let status = provider
+            .get_vm_status(vm_id, Some("req-incus-malformed"))
+            .await
+            .expect("load incus status");
+        assert_eq!(status.status, "running");
+        assert!(!status.startup_probe_satisfied);
+        assert!(!status.guest_ready);
     }
 
     #[tokio::test]
@@ -4321,10 +4544,13 @@ mod tests {
 
     #[test]
     fn incus_row_provider_config_routes_status_requests_through_stored_endpoint() {
-        let (base_url, rx) = spawn_one_shot_server(
-            "200 OK",
-            r#"{"type":"sync","metadata":{"status":"Running"}}"#,
-        );
+        let (base_url, rx) = spawn_response_sequence_server(vec![
+            (
+                "200 OK",
+                r#"{"type":"sync","metadata":{"status":"Running"}}"#,
+            ),
+            ("404 Not Found", ""),
+        ]);
         let provider_config = serialize_managed_vm_provider_config(
             &ResolvedManagedVmProviderConfig::Incus(ResolvedIncusParams {
                 endpoint: base_url.clone(),
@@ -4378,13 +4604,21 @@ mod tests {
             request.path,
             "/1.0/instances/vm-incus-row/state?project=managed-agents"
         );
+        let ready_request = rx.recv().expect("captured row ready-marker request");
+        assert_eq!(
+            ready_request.path,
+            "/1.0/instances/vm-incus-row/file?project=managed-agents&path=%2Fworkspace%2Fpika-agent%2Fservice-ready.json"
+        );
     }
 
     #[test]
     fn agent_api_healthcheck_rejects_incus_when_customer_openclaw_flow_is_unimplemented() {
         let (base_url, rx) = spawn_response_sequence_server(vec![
             ("200 OK", r#"{"type":"sync","metadata":{}}"#),
-            ("200 OK", r#"{"type":"sync","metadata":{}}"#),
+            (
+                "200 OK",
+                r#"{"type":"sync","metadata":{"devices":{"eth0":{"type":"nic","network":"incusbr0"}}}}"#,
+            ),
             ("200 OK", r#"{"type":"sync","metadata":{}}"#),
             ("200 OK", r#"{"type":"sync","metadata":{}}"#),
         ]);
@@ -4428,6 +4662,45 @@ mod tests {
         assert_eq!(
             image_request.path,
             "/1.0/images/aliases/pika-agent%2Fdev?project=managed-agents"
+        );
+    }
+
+    #[test]
+    fn agent_api_healthcheck_rejects_incus_profile_without_nic() {
+        let (base_url, rx) = spawn_response_sequence_server(vec![
+            ("200 OK", r#"{"type":"sync","metadata":{}}"#),
+            ("200 OK", r#"{"type":"sync","metadata":{"devices":{}}}"#),
+        ]);
+        with_env_overrides(
+            &[
+                (VM_PROVIDER_ENV, Some("incus")),
+                (INCUS_ENDPOINT_ENV, Some(base_url.as_str())),
+                (INCUS_PROJECT_ENV, Some("managed-agents")),
+                (INCUS_PROFILE_ENV, Some("pika-agent")),
+                (INCUS_STORAGE_POOL_ENV, Some("managed-agents-zfs")),
+                (INCUS_IMAGE_ALIAS_ENV, Some("pika-agent/dev")),
+                (INCUS_INSECURE_TLS_ENV, Some("true")),
+            ],
+            || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build runtime");
+                let err = runtime
+                    .block_on(agent_api_healthcheck())
+                    .expect_err("incus healthcheck should reject profile without nic");
+                assert!(err
+                    .to_string()
+                    .contains("must include at least one nic device"));
+            },
+        );
+
+        let project_request = rx.recv().expect("project probe");
+        assert_eq!(project_request.path, "/1.0/projects/managed-agents");
+        let profile_request = rx.recv().expect("profile probe");
+        assert_eq!(
+            profile_request.path,
+            "/1.0/profiles/pika-agent?project=managed-agents"
         );
     }
 

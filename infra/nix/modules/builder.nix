@@ -1,3 +1,5 @@
+{ enableMicrovmHost ? true }:
+
 { config, lib, pkgs, modulesPath, sops-nix, pikaNewsPkg, pikaciServerPkg, ... }:
 
 let
@@ -10,8 +12,9 @@ in
   imports = [
     (modulesPath + "/installer/scan/not-detected.nix")
     ../modules/base.nix
-    ../modules/microvm-host.nix
     ../modules/pika-news.nix
+  ] ++ lib.optionals enableMicrovmHost [
+    ../modules/microvm-host.nix
   ];
 
   networking.hostName = "pika-build";

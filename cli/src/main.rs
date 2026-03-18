@@ -15,8 +15,8 @@ use hypernote_protocol as hn;
 use mdk_core::prelude::*;
 use nostr_sdk::prelude::*;
 use pika_agent_control_plane::{
-    AgentProvisionRequest, AgentStartupPhase, MicrovmAgentBackend, MicrovmAgentKind,
-    MicrovmProvisionParams,
+    AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams, MicrovmAgentBackend,
+    MicrovmAgentKind, MicrovmProvisionParams, ProviderKind,
 };
 use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
@@ -466,6 +466,10 @@ struct AgentHttpArgs {
 
 #[derive(Clone, Debug, Args, Default)]
 struct AgentMicrovmArgs {
+    /// Select the managed-VM provider. When omitted, pika-server keeps its current default.
+    #[arg(long, env = "PIKA_AGENT_VM_PROVIDER")]
+    provider: Option<AgentVmProviderCli>,
+
     /// Select the agent product/runtime deployed in the microVM guest.
     #[arg(long, env = "PIKA_AGENT_MICROVM_KIND")]
     microvm_kind: Option<AgentMicrovmKindCli>,
@@ -482,6 +486,36 @@ struct AgentMicrovmArgs {
     /// ACP session cwd inside the guest, used when --microvm-backend=acp.
     #[arg(long, env = "PIKA_AGENT_MICROVM_ACP_CWD")]
     microvm_acp_cwd: Option<String>,
+
+    /// Incus API endpoint for request-scoped managed-agent provisioning.
+    #[arg(long, env = "PIKA_AGENT_INCUS_ENDPOINT")]
+    incus_endpoint: Option<String>,
+
+    /// Incus project for request-scoped managed-agent provisioning.
+    #[arg(long, env = "PIKA_AGENT_INCUS_PROJECT")]
+    incus_project: Option<String>,
+
+    /// Incus profile for request-scoped managed-agent provisioning.
+    #[arg(long, env = "PIKA_AGENT_INCUS_PROFILE")]
+    incus_profile: Option<String>,
+
+    /// Incus storage pool for request-scoped managed-agent provisioning.
+    #[arg(long, env = "PIKA_AGENT_INCUS_STORAGE_POOL")]
+    incus_storage_pool: Option<String>,
+
+    /// Incus image alias for request-scoped managed-agent provisioning.
+    #[arg(long, env = "PIKA_AGENT_INCUS_IMAGE_ALIAS")]
+    incus_image_alias: Option<String>,
+
+    /// Allow invalid TLS certificates for the request-scoped Incus API endpoint.
+    #[arg(long, env = "PIKA_AGENT_INCUS_INSECURE_TLS", default_missing_value = "true", num_args = 0..=1)]
+    incus_insecure_tls: Option<bool>,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum AgentVmProviderCli {
+    Microvm,
+    Incus,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -1751,6 +1785,10 @@ async fn cmd_download_media(
 }
 
 fn agent_provision_request(microvm: &AgentMicrovmArgs) -> Option<AgentProvisionRequest> {
+    let provider = microvm.provider.map(|provider| match provider {
+        AgentVmProviderCli::Microvm => ProviderKind::Microvm,
+        AgentVmProviderCli::Incus => ProviderKind::Incus,
+    });
     let kind = match microvm.microvm_kind {
         Some(AgentMicrovmKindCli::Pi) => Some(MicrovmAgentKind::Pi),
         Some(AgentMicrovmKindCli::Openclaw) => Some(MicrovmAgentKind::Openclaw),
@@ -1765,17 +1803,38 @@ fn agent_provision_request(microvm: &AgentMicrovmArgs) -> Option<AgentProvisionR
         None => None,
     };
     let has_microvm_fields = kind.is_some() || backend.is_some();
-    if !has_microvm_fields {
+    let has_incus_fields = [
+        microvm.incus_endpoint.as_deref(),
+        microvm.incus_project.as_deref(),
+        microvm.incus_profile.as_deref(),
+        microvm.incus_storage_pool.as_deref(),
+        microvm.incus_image_alias.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim)
+    .any(|value| !value.is_empty())
+        || microvm.incus_insecure_tls.is_some();
+    if !has_microvm_fields && provider.is_none() && !has_incus_fields {
         return None;
     }
     Some(AgentProvisionRequest {
-        provider: None,
-        microvm: Some(MicrovmProvisionParams {
+        provider,
+        microvm: has_microvm_fields.then_some(MicrovmProvisionParams {
             spawner_url: None,
             kind,
             backend,
         }),
-        incus: None,
+        incus: (provider == Some(ProviderKind::Incus) || has_incus_fields).then_some(
+            IncusProvisionParams {
+                endpoint: microvm.incus_endpoint.clone(),
+                project: microvm.incus_project.clone(),
+                profile: microvm.incus_profile.clone(),
+                storage_pool: microvm.incus_storage_pool.clone(),
+                image_alias: microvm.incus_image_alias.clone(),
+                insecure_tls: microvm.incus_insecure_tls,
+            },
+        ),
     })
 }
 
@@ -3017,6 +3076,90 @@ mod tests {
             }
             _ => panic!("expected agent new command"),
         }
+    }
+
+    #[test]
+    fn agent_new_parses_request_scoped_incus_args() {
+        let cli = Cli::try_parse_from([
+            "pikachat",
+            "agent",
+            "new",
+            "--nsec",
+            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
+            "--provider",
+            "incus",
+            "--microvm-kind",
+            "openclaw",
+            "--incus-endpoint",
+            "https://pika-build:8443",
+            "--incus-project",
+            "pika-managed-agents",
+            "--incus-profile",
+            "pika-agent-dev",
+            "--incus-storage-pool",
+            "default",
+            "--incus-image-alias",
+            "pika-agent/dev",
+            "--incus-insecure-tls",
+        ])
+        .expect("parse args");
+
+        match cli.cmd {
+            Command::Agent {
+                cmd: AgentCommand::New { microvm, .. },
+            } => {
+                assert_eq!(microvm.provider, Some(AgentVmProviderCli::Incus));
+                assert_eq!(microvm.microvm_kind, Some(AgentMicrovmKindCli::Openclaw));
+                assert_eq!(
+                    microvm.incus_endpoint.as_deref(),
+                    Some("https://pika-build:8443")
+                );
+                assert_eq!(
+                    microvm.incus_project.as_deref(),
+                    Some("pika-managed-agents")
+                );
+                assert_eq!(microvm.incus_profile.as_deref(), Some("pika-agent-dev"));
+                assert_eq!(microvm.incus_storage_pool.as_deref(), Some("default"));
+                assert_eq!(microvm.incus_image_alias.as_deref(), Some("pika-agent/dev"));
+                assert_eq!(microvm.incus_insecure_tls, Some(true));
+            }
+            _ => panic!("expected agent new command"),
+        }
+    }
+
+    #[test]
+    fn agent_provision_request_includes_incus_fields_when_selected() {
+        let request = agent_provision_request(&AgentMicrovmArgs {
+            provider: Some(AgentVmProviderCli::Incus),
+            microvm_kind: Some(AgentMicrovmKindCli::Openclaw),
+            microvm_backend: Some(AgentMicrovmBackendCli::Native),
+            microvm_acp_exec: None,
+            microvm_acp_cwd: None,
+            incus_endpoint: Some("https://pika-build:8443".to_string()),
+            incus_project: Some("pika-managed-agents".to_string()),
+            incus_profile: Some("pika-agent-dev".to_string()),
+            incus_storage_pool: Some("default".to_string()),
+            incus_image_alias: Some("pika-agent/dev".to_string()),
+            incus_insecure_tls: Some(true),
+        })
+        .expect("build request");
+
+        assert_eq!(request.provider, Some(ProviderKind::Incus));
+        assert_eq!(
+            request.microvm.as_ref().and_then(|params| params.kind),
+            Some(MicrovmAgentKind::Openclaw)
+        );
+        assert_eq!(
+            request.incus,
+            Some(IncusProvisionParams {
+                endpoint: Some("https://pika-build:8443".to_string()),
+                project: Some("pika-managed-agents".to_string()),
+                profile: Some("pika-agent-dev".to_string()),
+                storage_pool: Some("default".to_string()),
+                image_alias: Some("pika-agent/dev".to_string()),
+                insecure_tls: Some(true),
+            })
+        );
     }
 
     #[test]

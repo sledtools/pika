@@ -301,10 +301,12 @@ Current transition status:
 - managed-agent request/command contracts can carry provider-neutral selection plus provider-specific params
 - the server routes managed-VM lifecycle calls through a thin provider seam, with the existing microVM backend as the default implementation
 - new managed-environment rows now persist the chosen provider identity and resolved provider config so later status/recover/launch paths do not drift with process env changes
-- the first Incus dev lane is now real for create, status, delete, and startup healthcheck probing
-- the Incus dev path currently requires explicit endpoint, project, profile, storage-pool, and image-alias config, and it models each managed environment as one disposable VM root plus one attached persistent custom volume
-- Incus status currently reports a conservative not-ready guest state until the managed guest image publishes a trustworthy ready signal
+- the first Incus dev lane is now real for create, status, delete, and an image-backed guest boot path
+- the Incus dev path currently requires explicit endpoint, project, profile, storage-pool, and image-alias config, and it models each managed environment as one disposable VM root plus one attached persistent custom volume mounted at `/mnt/pika-state`
+- the first managed-agent Incus guest image is Nix-built and imported as a VM image artifact rather than assembled from host-local runner directories
+- Incus readiness now comes from inside the guest via the Incus guest file API against `/workspace/pika-agent/service-ready.json`; `guest_ready=true` is only reported when that marker exists and validates
 - Incus recover, restore, backup status, and OpenClaw launch/proxy behavior remain intentionally unsupported in this phase
+- server startup should remain on the microVM default provider for now; request-scoped Incus provisioning is the current safe canary lane until the OpenClaw launch/proxy surface is migrated
 
 ### 2. Guest Image Pipeline
 
@@ -457,6 +459,12 @@ This image should include:
 This phase should deliberately avoid customer-facing provisioning until we are confident in the base
 image lifecycle.
 
+What we learned from the first real dev lane:
+
+- the image must enable both cloud-init and the Incus guest agent or the control plane cannot inject bootstrap or fetch readiness conservatively
+- the current managed-agent bootstrap bundle can be reused in Incus, but the image must provide the runtime prerequisites that the old microVM host image used to guarantee implicitly
+- the durable-volume contract is simplest when the guest keeps the existing runtime paths and re-homes them onto `/mnt/pika-state` before the managed-agent service starts
+
 ### Phase 3: Introduce An Incus Provider Adapter
 
 Build a new provider layer that can:
@@ -490,6 +498,15 @@ This phase includes:
 
 At the end of this phase, newly provisioned managed agents should no longer depend on
 `microvm.nix`.
+
+Current validation shape:
+
+- `pika-build` is the first real dev target for the Incus lane via a dedicated `pika-build-incus-dev` host config plus an operator-run image import step
+- the `pika-build` role in this phase is the Incus substrate; the agent API still comes from a `pika-server` process pointed at that Incus endpoint
+- `pika-server` should continue to deploy with `microvm` as the default provider and use explicit request-scoped Incus provisioning for internal canary validation
+- the concrete operator path for this phase lives in `docs/incus-dev-lane.md`
+- public validation currently reaches real create plus ready; delete is still validated through the provider seam and the existing dashboard reset path because there is not yet a public v1 delete endpoint
+- we should not flip `PIKA_AGENT_VM_PROVIDER=incus` globally until the customer-facing OpenClaw launch/proxy path is migrated or explicitly replaced
 
 ### Phase 5: Backups, Restore, And Day-2 Operations
 

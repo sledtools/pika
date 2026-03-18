@@ -17,8 +17,8 @@ use pika_agent_control_plane::{
     SpawnerCreateVmRequest as CreateVmRequest,
     SpawnerGuestAutostartRequest as GuestAutostartRequest, SpawnerOpenClawLaunchAuth,
     SpawnerVmBackupStatus, SpawnerVmResponse as VmResponse, VmBackupFreshness,
-    VmBackupStatusRecord, GUEST_FAILED_MARKER_PATH, GUEST_LOG_PATH, GUEST_PID_PATH,
-    GUEST_READY_MARKER_PATH, VM_BACKUP_STATUS_SCHEMA_V1,
+    VmBackupStatusRecord, VmBackupUnitKind, VmRecoveryPointKind, GUEST_FAILED_MARKER_PATH,
+    GUEST_LOG_PATH, GUEST_PID_PATH, GUEST_READY_MARKER_PATH, VM_BACKUP_STATUS_SCHEMA_V1,
 };
 use serde::Deserialize;
 use tempfile::Builder as TempDirBuilder;
@@ -422,9 +422,10 @@ impl VmManager {
         }
         let had_existing_home = home_dir.is_dir();
         let backup_host = self
-            .backup_status(&vm.id)
+            .load_backup_status_record(&vm.id)
             .ok()
-            .map(|status| status.backup_host)
+            .flatten()
+            .map(|record| record.backup_host)
             .filter(|host| !host.trim().is_empty())
             .unwrap_or_else(|| self.cfg.host_id.clone());
 
@@ -1280,26 +1281,52 @@ impl VmManager {
 
         Ok(SpawnerVmBackupStatus {
             vm_id: id.to_string(),
-            backup_host: if record.backup_host.trim().is_empty() {
-                self.cfg.host_id.clone()
-            } else {
-                record.backup_host
-            },
-            durable_home_path: durable_home_path.to_string(),
-            successful_backup_known: true,
+            backup_unit_kind: VmBackupUnitKind::DurableHome,
+            backup_target: durable_home_path.to_string(),
+            recovery_point_kind: VmRecoveryPointKind::MetadataRecord,
             freshness,
+            latest_recovery_point_name: None,
             latest_successful_backup_at: Some(record.latest_successful_backup_at),
             observed_at: Some(record.observed_at),
         })
     }
 
+    fn load_backup_status_record(&self, id: &str) -> anyhow::Result<Option<VmBackupStatusRecord>> {
+        let metadata_path = self
+            .cfg
+            .state_dir
+            .join(id)
+            .join("metadata")
+            .join(BACKUP_STATUS_METADATA);
+        match fs::read_to_string(&metadata_path) {
+            Ok(text) => {
+                let record: VmBackupStatusRecord =
+                    serde_json::from_str(&text).with_context(|| {
+                        format!(
+                            "parse backup status metadata for vm {id} at {}",
+                            metadata_path.display()
+                        )
+                    })?;
+                Ok(Some(record))
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(err).with_context(|| {
+                format!(
+                    "read backup status metadata for vm {id} at {}",
+                    metadata_path.display()
+                )
+            }),
+        }
+    }
+
     fn missing_backup_status(&self, id: &str, durable_home_path: &str) -> SpawnerVmBackupStatus {
         SpawnerVmBackupStatus {
             vm_id: id.to_string(),
-            backup_host: self.cfg.host_id.clone(),
-            durable_home_path: durable_home_path.to_string(),
-            successful_backup_known: false,
+            backup_unit_kind: VmBackupUnitKind::DurableHome,
+            backup_target: durable_home_path.to_string(),
+            recovery_point_kind: VmRecoveryPointKind::MetadataRecord,
             freshness: VmBackupFreshness::Missing,
+            latest_recovery_point_name: None,
             latest_successful_backup_at: None,
             observed_at: None,
         }
@@ -1312,10 +1339,11 @@ impl VmManager {
     ) -> SpawnerVmBackupStatus {
         SpawnerVmBackupStatus {
             vm_id: id.to_string(),
-            backup_host: self.cfg.host_id.clone(),
-            durable_home_path: durable_home_path.to_string(),
-            successful_backup_known: false,
+            backup_unit_kind: VmBackupUnitKind::DurableHome,
+            backup_target: durable_home_path.to_string(),
+            recovery_point_kind: VmRecoveryPointKind::MetadataRecord,
             freshness: VmBackupFreshness::Unavailable,
+            latest_recovery_point_name: None,
             latest_successful_backup_at: None,
             observed_at: None,
         }
@@ -2792,9 +2820,17 @@ mod tests {
         let status = manager.backup_status(vm_id).unwrap();
 
         assert_eq!(status.vm_id, vm_id);
-        assert_eq!(status.backup_host, cfg.host_id);
+        assert_eq!(status.backup_unit_kind, VmBackupUnitKind::DurableHome);
+        assert_eq!(
+            status.backup_target,
+            cfg.state_dir.join(vm_id).join("home").display().to_string()
+        );
+        assert_eq!(
+            status.recovery_point_kind,
+            VmRecoveryPointKind::MetadataRecord
+        );
         assert_eq!(status.freshness, VmBackupFreshness::Missing);
-        assert!(!status.successful_backup_known);
+        assert_eq!(status.latest_recovery_point_name, None);
         assert_eq!(status.latest_successful_backup_at, None);
     }
 
@@ -2814,7 +2850,11 @@ mod tests {
         let status = manager.backup_status(vm_id).unwrap();
 
         assert_eq!(status.freshness, VmBackupFreshness::Healthy);
-        assert!(status.successful_backup_known);
+        assert_eq!(status.backup_unit_kind, VmBackupUnitKind::DurableHome);
+        assert_eq!(
+            status.recovery_point_kind,
+            VmRecoveryPointKind::MetadataRecord
+        );
         assert_eq!(
             status.latest_successful_backup_at.as_deref(),
             Some(recent.as_str())
@@ -2837,7 +2877,11 @@ mod tests {
         let status = manager.backup_status(vm_id).unwrap();
 
         assert_eq!(status.freshness, VmBackupFreshness::Stale);
-        assert!(status.successful_backup_known);
+        assert_eq!(status.backup_unit_kind, VmBackupUnitKind::DurableHome);
+        assert_eq!(
+            status.recovery_point_kind,
+            VmRecoveryPointKind::MetadataRecord
+        );
     }
 
     #[tokio::test]
@@ -2854,7 +2898,11 @@ mod tests {
         let status = manager.backup_status(vm_id).unwrap();
 
         assert_eq!(status.freshness, VmBackupFreshness::Unavailable);
-        assert!(!status.successful_backup_known);
+        assert_eq!(status.backup_unit_kind, VmBackupUnitKind::DurableHome);
+        assert_eq!(
+            status.recovery_point_kind,
+            VmRecoveryPointKind::MetadataRecord
+        );
         assert_eq!(status.latest_successful_backup_at, None);
     }
 

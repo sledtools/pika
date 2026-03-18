@@ -442,6 +442,20 @@ pub enum VmBackupFreshness {
     Unavailable,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VmBackupUnitKind {
+    DurableHome,
+    PersistentStateVolume,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VmRecoveryPointKind {
+    MetadataRecord,
+    VolumeSnapshot,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct VmBackupStatusRecord {
     pub schema_version: String,
@@ -454,10 +468,12 @@ pub struct VmBackupStatusRecord {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SpawnerVmBackupStatus {
     pub vm_id: String,
-    pub backup_host: String,
-    pub durable_home_path: String,
-    pub successful_backup_known: bool,
+    pub backup_unit_kind: VmBackupUnitKind,
+    pub backup_target: String,
+    pub recovery_point_kind: VmRecoveryPointKind,
     pub freshness: VmBackupFreshness,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_recovery_point_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latest_successful_backup_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -909,6 +925,24 @@ mod tests {
         let decoded: VmBackupStatusRecord =
             serde_json::from_str(&encoded).expect("decode backup record");
         assert_eq!(decoded, record);
+    }
+
+    #[test]
+    fn spawner_vm_backup_status_round_trips() {
+        let status = SpawnerVmBackupStatus {
+            vm_id: "vm-00000000".to_string(),
+            backup_unit_kind: VmBackupUnitKind::PersistentStateVolume,
+            backup_target: "default/vm-00000000-state".to_string(),
+            recovery_point_kind: VmRecoveryPointKind::VolumeSnapshot,
+            freshness: VmBackupFreshness::Healthy,
+            latest_recovery_point_name: Some("daily-20260318".to_string()),
+            latest_successful_backup_at: Some("2026-03-18T12:00:00Z".to_string()),
+            observed_at: Some("2026-03-18T12:00:00Z".to_string()),
+        };
+        let encoded = serde_json::to_string(&status).expect("encode backup status");
+        let decoded: SpawnerVmBackupStatus =
+            serde_json::from_str(&encoded).expect("decode backup status");
+        assert_eq!(decoded, status);
     }
 
     #[test]

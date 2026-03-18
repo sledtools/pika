@@ -2721,7 +2721,7 @@ done
     async fn get_vm_backup_status_contract_request_shape() {
         let (base_url, rx) = spawn_one_shot_server(
             "200 OK",
-            r#"{"vm_id":"vm-123","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-123/home","successful_backup_known":true,"freshness":"healthy","latest_successful_backup_at":"2026-03-11T00:00:00Z","observed_at":"2026-03-11T00:00:00Z"}"#,
+            r#"{"vm_id":"vm-123","backup_unit_kind":"durable_home","backup_target":"/var/lib/microvms/vm-123/home","recovery_point_kind":"metadata_record","freshness":"healthy","latest_recovery_point_name":null,"latest_successful_backup_at":"2026-03-11T00:00:00Z","observed_at":"2026-03-11T00:00:00Z"}"#,
         );
         let client = MicrovmSpawnerClient::new(base_url);
 
@@ -2730,7 +2730,7 @@ done
             .await
             .expect("get backup status succeeds");
         assert_eq!(status.vm_id, "vm-123");
-        assert!(status.successful_backup_known);
+        assert_eq!(status.backup_target, "/var/lib/microvms/vm-123/home");
 
         let captured = rx
             .recv_timeout(StdDuration::from_secs(2))

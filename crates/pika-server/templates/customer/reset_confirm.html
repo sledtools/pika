@@ -119,17 +119,23 @@
       </div>
       <p>Signed in as <code>{{ owner_npub }}</code>.</p>
       <p>{{ backup_status_copy }}</p>
-      <p>Destructive reset can still proceed, but it will replace the current managed OpenClaw environment with a fresh one and may leave you without a recent durable-home backup to fall back on.</p>
+      <p>Destructive reset can still proceed, but it will replace the current managed OpenClaw environment with a fresh one and may leave you without a recent recovery point to fall back on.</p>
 
       <dl>
         <div>
-          <dt>Latest successful backup</dt>
+          <dt>Latest recovery point</dt>
           <dd>{{ backup_last_successful_at }}</dd>
         </div>
-        {% if has_backup_host %}
+        {% if has_backup_latest_recovery_point_name %}
         <div>
-          <dt>Backup host</dt>
-          <dd><code>{{ backup_host }}</code></dd>
+          <dt>Recovery point name</dt>
+          <dd><code>{{ backup_latest_recovery_point_name }}</code></dd>
+        </div>
+        {% endif %}
+        {% if has_backup_target %}
+        <div>
+          <dt>{{ backup_target_label }}</dt>
+          <dd><code>{{ backup_target }}</code></dd>
         </div>
         {% endif %}
       </dl>
@@ -138,7 +144,7 @@
         <form method="post" action="/dashboard/reset">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
           <input type="hidden" name="confirmation_token" value="{{ confirmation_token }}" />
-          <button type="submit">Reset Without Recent Backup</button>
+          <button type="submit">Reset Without Recent Recovery Point</button>
         </form>
         <form method="get" action="/dashboard">
           <button class="ghost" type="submit">Cancel</button>

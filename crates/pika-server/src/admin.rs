@@ -90,8 +90,11 @@ struct AdminManagedEnvironmentRow {
     startup_phase: String,
     backup_freshness: String,
     backup_last_successful_at: String,
-    backup_host: String,
-    has_backup_host: bool,
+    backup_latest_recovery_point_name: String,
+    has_backup_latest_recovery_point_name: bool,
+    backup_target_label: String,
+    backup_target: String,
+    has_backup_target: bool,
     backup_status_copy: String,
     can_restore_from_backup: bool,
     restore_blocked_reason: String,
@@ -134,8 +137,11 @@ struct RestoreConfirmTemplate {
     backup_freshness: String,
     backup_status_copy: String,
     backup_last_successful_at: String,
-    backup_host: String,
-    has_backup_host: bool,
+    backup_latest_recovery_point_name: String,
+    has_backup_latest_recovery_point_name: bool,
+    backup_target_label: String,
+    backup_target: String,
+    has_backup_target: bool,
     csrf_token: String,
     confirmation_token: String,
 }
@@ -550,11 +556,17 @@ pub async fn dashboard(
             backup_last_successful_at: format_rfc3339_timestamp(
                 backup.latest_successful_backup_at.as_deref(),
             ),
-            backup_host: backup
-                .backup_host
+            backup_latest_recovery_point_name: backup
+                .latest_recovery_point_name
                 .clone()
                 .unwrap_or_else(|| "not_available".to_string()),
-            has_backup_host: backup.backup_host.is_some(),
+            has_backup_latest_recovery_point_name: backup.latest_recovery_point_name.is_some(),
+            backup_target_label: backup.backup_target_label.clone(),
+            backup_target: backup
+                .backup_target
+                .clone()
+                .unwrap_or_else(|| "not_available".to_string()),
+            has_backup_target: backup.backup_target.is_some(),
             backup_status_copy: backup.status_copy,
             can_restore_from_backup: row.vm_id.is_some(),
             restore_blocked_reason: if row.vm_id.is_some() {
@@ -620,11 +632,17 @@ pub async fn restore_confirm_page(
         backup_last_successful_at: format_rfc3339_timestamp(
             backup.latest_successful_backup_at.as_deref(),
         ),
-        backup_host: backup
-            .backup_host
+        backup_latest_recovery_point_name: backup
+            .latest_recovery_point_name
             .clone()
             .unwrap_or_else(|| "not_available".to_string()),
-        has_backup_host: backup.backup_host.is_some(),
+        has_backup_latest_recovery_point_name: backup.latest_recovery_point_name.is_some(),
+        backup_target_label: backup.backup_target_label,
+        backup_target: backup
+            .backup_target
+            .clone()
+            .unwrap_or_else(|| "not_available".to_string()),
+        has_backup_target: backup.backup_target.is_some(),
         csrf_token: authenticated.csrf_token,
         confirmation_token,
     })
@@ -1155,7 +1173,7 @@ mod tests {
             ),
             (
                 "200 OK",
-                r#"{"vm_id":"vm-admin-backup","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-admin-backup/home","successful_backup_known":true,"freshness":"healthy","latest_successful_backup_at":"2026-03-11T00:00:00Z","observed_at":"2026-03-11T00:00:00Z"}"#,
+                r#"{"vm_id":"vm-admin-backup","backup_unit_kind":"durable_home","backup_target":"/var/lib/microvms/vm-admin-backup/home","recovery_point_kind":"metadata_record","freshness":"healthy","latest_recovery_point_name":null,"latest_successful_backup_at":"2026-03-11T00:00:00Z","observed_at":"2026-03-11T00:00:00Z"}"#,
             ),
         ]);
         let _env = MicrovmEnvGuard::set(&base_url);
@@ -1168,7 +1186,7 @@ mod tests {
         assert!(body.contains("agent-admin-backup"));
         assert!(body.contains("vm-admin-backup"));
         assert!(body.contains("healthy"));
-        assert!(body.contains("pika-build"));
+        assert!(body.contains("/var/lib/microvms/vm-admin-backup/home"));
         assert!(body.contains("Review Restore From Backup"));
 
         clear_test_database(&db_pool);
@@ -1212,7 +1230,7 @@ mod tests {
             ),
             (
                 "200 OK",
-                r#"{"vm_id":"vm-admin-restore","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-admin-restore/home","successful_backup_known":true,"freshness":"stale","latest_successful_backup_at":"2026-03-10T00:00:00Z","observed_at":"2026-03-10T00:00:00Z"}"#,
+                r#"{"vm_id":"vm-admin-restore","backup_unit_kind":"durable_home","backup_target":"/var/lib/microvms/vm-admin-restore/home","recovery_point_kind":"metadata_record","freshness":"stale","latest_recovery_point_name":null,"latest_successful_backup_at":"2026-03-10T00:00:00Z","observed_at":"2026-03-10T00:00:00Z"}"#,
             ),
         ]);
         let _env = MicrovmEnvGuard::set(&base_url);
@@ -1230,7 +1248,7 @@ mod tests {
         assert!(body.contains("agent-admin-restore"));
         assert!(body.contains("vm-admin-restore"));
         assert!(body.contains("stale"));
-        assert!(body.contains("pika-build"));
+        assert!(body.contains("/var/lib/microvms/vm-admin-restore/home"));
 
         clear_test_database(&db_pool);
     }

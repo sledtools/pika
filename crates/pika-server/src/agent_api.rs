@@ -33,7 +33,8 @@ use crate::{RequestContext, State};
 use pika_agent_control_plane::{
     AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams, ManagedVmProvisionParams,
     MicrovmAgentKind, MicrovmProvisionParams, ProviderKind, SpawnerOpenClawLaunchAuth,
-    SpawnerVmBackupStatus, SpawnerVmResponse, VmBackupFreshness, GUEST_READY_MARKER_PATH,
+    SpawnerVmBackupStatus, SpawnerVmResponse, VmBackupFreshness, VmBackupUnitKind,
+    VmRecoveryPointKind, GUEST_READY_MARKER_PATH,
 };
 use pika_agent_microvm::{
     build_create_vm_request, resolve_params, validate_resolved_params, ManagedVmCreateInput,
@@ -68,6 +69,7 @@ const INCUS_PERSISTENT_DAEMON_STATE_DIR: &str = "/mnt/pika-state/pika-agent/stat
 const INCUS_PERSISTENT_OPENCLAW_STATE_DIR: &str = "/mnt/pika-state/pika-agent/openclaw";
 const INCUS_OPERATION_WAIT_TIMEOUT_SECS: i64 = 60;
 const INCUS_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const INCUS_BACKUP_HEALTHY_MAX_AGE_HOURS: i64 = 24;
 const EVENT_PROVISION_REQUESTED: &str = "provision_requested";
 const EVENT_PROVISION_ACCEPTED: &str = "provision_accepted";
 const EVENT_RECOVER_REQUESTED: &str = "recover_requested";
@@ -185,7 +187,9 @@ pub(crate) enum ManagedEnvironmentBackupFreshness {
 #[derive(Debug, Clone)]
 pub(crate) struct ManagedEnvironmentBackupStatus {
     pub freshness: ManagedEnvironmentBackupFreshness,
-    pub backup_host: Option<String>,
+    pub backup_target: Option<String>,
+    pub backup_target_label: String,
+    pub latest_recovery_point_name: Option<String>,
     pub latest_successful_backup_at: Option<String>,
     pub status_copy: String,
     pub reset_requires_confirmation: bool,
@@ -258,6 +262,13 @@ struct IncusOperationMetadata {
 #[derive(Debug, Deserialize)]
 struct IncusInstanceState {
     status: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct IncusStorageVolumeSnapshot {
+    name: String,
+    #[serde(default)]
+    created_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1070,25 +1081,115 @@ impl IncusManagedVmProvider {
     async fn get_vm_backup_status(
         &self,
         vm_id: &str,
-        _request_id: Option<&str>,
+        request_id: Option<&str>,
     ) -> anyhow::Result<SpawnerVmBackupStatus> {
-        anyhow::bail!("managed VM provider incus does not support backup status yet for VM {vm_id}")
+        let volume_name = self.persistent_volume_name(vm_id);
+        let backup_target = format!("{}/{}", self.resolved.storage_pool, volume_name);
+        let snapshots = self
+            .list_persistent_volume_snapshots(&volume_name, request_id)
+            .await
+            .with_context(|| format!("list incus state-volume snapshots for VM {vm_id}"))?;
+        let Some(latest_snapshot) = latest_incus_snapshot(&snapshots) else {
+            return Ok(SpawnerVmBackupStatus {
+                vm_id: vm_id.to_string(),
+                backup_unit_kind: VmBackupUnitKind::PersistentStateVolume,
+                backup_target,
+                recovery_point_kind: VmRecoveryPointKind::VolumeSnapshot,
+                freshness: VmBackupFreshness::Missing,
+                latest_recovery_point_name: None,
+                latest_successful_backup_at: None,
+                observed_at: Some(chrono::Utc::now().to_rfc3339()),
+            });
+        };
+
+        let latest_at = latest_snapshot.created_at.clone().with_context(|| {
+            format!("latest incus snapshot for VM {vm_id} did not include created_at metadata")
+        })?;
+        let latest_parsed = chrono::DateTime::parse_from_rfc3339(&latest_at)
+            .with_context(|| format!("parse incus snapshot created_at for VM {vm_id}"))?
+            .with_timezone(&chrono::Utc);
+        let freshness = if chrono::Utc::now().signed_duration_since(latest_parsed)
+            <= chrono::Duration::hours(INCUS_BACKUP_HEALTHY_MAX_AGE_HOURS)
+        {
+            VmBackupFreshness::Healthy
+        } else {
+            VmBackupFreshness::Stale
+        };
+
+        Ok(SpawnerVmBackupStatus {
+            vm_id: vm_id.to_string(),
+            backup_unit_kind: VmBackupUnitKind::PersistentStateVolume,
+            backup_target,
+            recovery_point_kind: VmRecoveryPointKind::VolumeSnapshot,
+            freshness,
+            latest_recovery_point_name: Some(incus_snapshot_leaf_name(&latest_snapshot.name)),
+            latest_successful_backup_at: Some(latest_at),
+            observed_at: Some(chrono::Utc::now().to_rfc3339()),
+        })
     }
 
     async fn recover_vm(
         &self,
         vm_id: &str,
-        _request_id: Option<&str>,
+        request_id: Option<&str>,
     ) -> anyhow::Result<SpawnerVmResponse> {
-        anyhow::bail!("managed VM provider incus does not support recover yet for VM {vm_id}")
+        let state: IncusInstanceState = self
+            .get_json(
+                &["1.0", "instances", vm_id, "state"],
+                true,
+                request_id,
+                "load incus instance state for recover",
+            )
+            .await
+            .map_err(|err| self.rewrite_not_found(err, format!("incus vm not found: {vm_id}")))?;
+
+        let action = if state.status.trim() == "Running" {
+            "restart"
+        } else {
+            "start"
+        };
+        self.change_instance_state(vm_id, action, request_id)
+            .await
+            .with_context(|| format!("recover incus VM {vm_id}"))?;
+        self.get_vm_status(vm_id, request_id).await
     }
 
     async fn restore_vm(
         &self,
         vm_id: &str,
-        _request_id: Option<&str>,
+        request_id: Option<&str>,
     ) -> anyhow::Result<SpawnerVmResponse> {
-        anyhow::bail!("managed VM provider incus does not support restore yet for VM {vm_id}")
+        let state: IncusInstanceState = self
+            .get_json(
+                &["1.0", "instances", vm_id, "state"],
+                true,
+                request_id,
+                "load incus instance state for restore",
+            )
+            .await
+            .map_err(|err| self.rewrite_not_found(err, format!("incus vm not found: {vm_id}")))?;
+        let volume_name = self.persistent_volume_name(vm_id);
+        let snapshots = self
+            .list_persistent_volume_snapshots(&volume_name, request_id)
+            .await
+            .with_context(|| format!("list incus state-volume snapshots for VM {vm_id}"))?;
+        let latest_snapshot = latest_incus_snapshot(&snapshots).ok_or_else(|| {
+            anyhow!("incus restore requires at least one state-volume snapshot for VM {vm_id}")
+        })?;
+        let snapshot_name = incus_snapshot_leaf_name(&latest_snapshot.name);
+
+        if !matches!(state.status.trim(), "Stopped" | "Frozen") {
+            self.stop_instance(vm_id, request_id)
+                .await
+                .with_context(|| format!("stop incus VM {vm_id} before restore"))?;
+        }
+        self.restore_persistent_volume(&volume_name, &snapshot_name, request_id)
+            .await
+            .with_context(|| format!("restore incus state volume for VM {vm_id}"))?;
+        self.start_instance(vm_id, request_id)
+            .await
+            .with_context(|| format!("start incus VM {vm_id} after restore"))?;
+        self.get_vm_status(vm_id, request_id).await
     }
 
     async fn delete_vm(&self, vm_id: &str, request_id: Option<&str>) -> anyhow::Result<()> {
@@ -1245,6 +1346,89 @@ impl IncusManagedVmProvider {
                 format!("incus persistent volume not found: {volume_name}"),
             )
         })
+    }
+
+    async fn list_persistent_volume_snapshots(
+        &self,
+        volume_name: &str,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<Vec<IncusStorageVolumeSnapshot>> {
+        let response = self
+            .request(
+                reqwest::Method::GET,
+                &[
+                    "1.0",
+                    "storage-pools",
+                    &self.resolved.storage_pool,
+                    "volumes",
+                    INCUS_PERSISTENT_VOLUME_TYPE,
+                    volume_name,
+                    "snapshots",
+                ],
+                true,
+                request_id,
+            )?
+            .query(&[("recursion", "1")])
+            .send()
+            .await
+            .context("load incus storage volume snapshots")?;
+        self.parse_json_response(response, "load incus storage volume snapshots")
+            .await
+    }
+
+    async fn restore_persistent_volume(
+        &self,
+        volume_name: &str,
+        snapshot_name: &str,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let body = serde_json::json!({
+            "restore": snapshot_name,
+        });
+        self.put_expect_empty(
+            &[
+                "1.0",
+                "storage-pools",
+                &self.resolved.storage_pool,
+                "volumes",
+                INCUS_PERSISTENT_VOLUME_TYPE,
+                volume_name,
+            ],
+            true,
+            &body,
+            request_id,
+            format!("restore incus persistent volume {volume_name} from snapshot {snapshot_name}"),
+        )
+        .await
+    }
+
+    async fn change_instance_state(
+        &self,
+        vm_id: &str,
+        action: &str,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let body = serde_json::json!({
+            "action": action,
+            "force": true,
+            "timeout": INCUS_OPERATION_WAIT_TIMEOUT_SECS,
+        });
+        self.post_expect_operation(
+            &["1.0", "instances", vm_id, "state"],
+            true,
+            &body,
+            request_id,
+            &format!("set incus VM {vm_id} state to {action}"),
+        )
+        .await
+    }
+
+    async fn start_instance(&self, vm_id: &str, request_id: Option<&str>) -> anyhow::Result<()> {
+        self.change_instance_state(vm_id, "start", request_id).await
+    }
+
+    async fn stop_instance(&self, vm_id: &str, request_id: Option<&str>) -> anyhow::Result<()> {
+        self.change_instance_state(vm_id, "stop", request_id).await
     }
 
     fn instance_name_for_input(&self, input: &ManagedVmCreateInput<'_>) -> String {
@@ -1546,6 +1730,30 @@ impl IncusManagedVmProvider {
             .await
     }
 
+    async fn put_expect_empty(
+        &self,
+        path_segments: &[&str],
+        include_project: bool,
+        body: &serde_json::Value,
+        request_id: Option<&str>,
+        context: impl Into<String>,
+    ) -> anyhow::Result<()> {
+        let context = context.into();
+        let response = self
+            .request(
+                reqwest::Method::PUT,
+                path_segments,
+                include_project,
+                request_id,
+            )?
+            .json(body)
+            .send()
+            .await
+            .with_context(|| context.clone())?;
+        self.finish_mutating_response(response, request_id, &context)
+            .await
+    }
+
     async fn finish_mutating_response(
         &self,
         response: reqwest::Response,
@@ -1798,6 +2006,43 @@ link_state_dir "$agent_root/openclaw" "$openclaw_state_target"
     )
 }
 
+fn latest_incus_snapshot(
+    snapshots: &[IncusStorageVolumeSnapshot],
+) -> Option<IncusStorageVolumeSnapshot> {
+    let mut snapshots = snapshots.to_vec();
+    snapshots.sort_by(|left, right| {
+        let left_created = left
+            .created_at
+            .as_deref()
+            .and_then(parse_rfc3339_utc)
+            .unwrap_or(chrono::DateTime::<chrono::Utc>::UNIX_EPOCH);
+        let right_created = right
+            .created_at
+            .as_deref()
+            .and_then(parse_rfc3339_utc)
+            .unwrap_or(chrono::DateTime::<chrono::Utc>::UNIX_EPOCH);
+        right_created
+            .cmp(&left_created)
+            .then_with(|| right.name.cmp(&left.name))
+    });
+    snapshots.into_iter().next()
+}
+
+fn parse_rfc3339_utc(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|value| value.with_timezone(&chrono::Utc))
+}
+
+fn incus_snapshot_leaf_name(name: &str) -> String {
+    name.rsplit('/')
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(name)
+        .to_string()
+}
+
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
@@ -1914,7 +2159,7 @@ fn managed_environment_status_copy(
             "Managed OpenClaw is running and ready.".to_string()
         }
         (Some(row), Some(AgentStartupPhase::Failed)) if row.vm_id.is_some() => {
-            "Managed OpenClaw needs recovery. Recover first tries to bring the VM back and preserve the durable home; if that VM is gone, Recover provisions a fresh environment instead."
+            "Managed OpenClaw needs recovery. Recover first tries to bring the VM back and preserve the current persistent state; if that VM is gone, Recover provisions a fresh environment instead."
                 .to_string()
         }
         (Some(_), Some(AgentStartupPhase::Failed)) => {
@@ -1935,33 +2180,52 @@ fn managed_environment_backup_status_from_spawner(
         VmBackupFreshness::Missing => ManagedEnvironmentBackupFreshness::Missing,
         VmBackupFreshness::Unavailable => ManagedEnvironmentBackupFreshness::Unavailable,
     };
-    let backup_host = (!backup.backup_host.trim().is_empty()).then_some(backup.backup_host);
+    let backup_target = (!backup.backup_target.trim().is_empty()).then_some(backup.backup_target);
+    let backup_target_label = match backup.backup_unit_kind {
+        VmBackupUnitKind::DurableHome => "Durable Home".to_string(),
+        VmBackupUnitKind::PersistentStateVolume => "State Volume".to_string(),
+    };
+    let recovery_point_label = match backup.recovery_point_kind {
+        VmRecoveryPointKind::MetadataRecord => "durable-home backup record",
+        VmRecoveryPointKind::VolumeSnapshot => "state-volume snapshot",
+    };
     let latest_successful_backup_at = backup
         .latest_successful_backup_at
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let latest_recovery_point_name = backup
+        .latest_recovery_point_name
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
     let status_copy = match freshness {
         ManagedEnvironmentBackupFreshness::Healthy => {
-            "Recent durable-home backup protection is in place for this managed environment."
-                .to_string()
+            format!("A recent {recovery_point_label} is available for this managed environment.")
         }
         ManagedEnvironmentBackupFreshness::Stale => {
-            "Backup protection is stale. The latest successful durable-home backup is older than the healthy window, so destructive reset now requires explicit confirmation.".to_string()
+            format!(
+                "Recovery-point protection is stale. The latest {recovery_point_label} is older than the healthy window, so destructive reset now requires explicit confirmation."
+            )
         }
         ManagedEnvironmentBackupFreshness::Missing => {
-            "No successful durable-home backup is known yet. Treat destructive reset as unsafe until the first backup completes.".to_string()
+            format!(
+                "No {recovery_point_label} is known yet. Treat destructive reset as unsafe until the first recovery point exists."
+            )
         }
         ManagedEnvironmentBackupFreshness::Unavailable => {
-            "Backup protection could not be verified from the control plane right now. Destructive reset now requires explicit confirmation.".to_string()
+            "Recovery-point protection could not be verified from the control plane right now. Destructive reset now requires explicit confirmation."
+                .to_string()
         }
         ManagedEnvironmentBackupFreshness::NotProvisioned => {
-            "No managed environment exists yet, so backup protection is not tracked.".to_string()
+            "No managed environment exists yet, so recovery-point protection is not tracked."
+                .to_string()
         }
     };
 
     ManagedEnvironmentBackupStatus {
         freshness,
-        backup_host,
+        backup_target,
+        backup_target_label,
+        latest_recovery_point_name,
         latest_successful_backup_at,
         reset_requires_confirmation: !matches!(
             freshness,
@@ -1975,7 +2239,9 @@ fn managed_environment_backup_status_from_spawner(
 fn unavailable_backup_status(status_copy: impl Into<String>) -> ManagedEnvironmentBackupStatus {
     ManagedEnvironmentBackupStatus {
         freshness: ManagedEnvironmentBackupFreshness::Unavailable,
-        backup_host: None,
+        backup_target: None,
+        backup_target_label: "Recovery Target".to_string(),
+        latest_recovery_point_name: None,
         latest_successful_backup_at: None,
         reset_requires_confirmation: true,
         status_copy: status_copy.into(),
@@ -2233,17 +2499,20 @@ pub(crate) async fn load_managed_environment_backup_status(
     let Some(row) = status.row.as_ref() else {
         return ManagedEnvironmentBackupStatus {
             freshness: ManagedEnvironmentBackupFreshness::NotProvisioned,
-            backup_host: None,
+            backup_target: None,
+            backup_target_label: "Recovery Target".to_string(),
+            latest_recovery_point_name: None,
             latest_successful_backup_at: None,
             reset_requires_confirmation: false,
-            status_copy: "No managed environment exists yet, so backup protection is not tracked."
-                .to_string(),
+            status_copy:
+                "No managed environment exists yet, so recovery-point protection is not tracked."
+                    .to_string(),
         };
     };
 
     let Some(vm_id) = row.vm_id.as_deref() else {
         return unavailable_backup_status(
-            "No current VM assignment is available, so backup protection cannot be verified from the control plane.",
+            "No current VM assignment is available, so recovery-point protection cannot be verified from the control plane.",
         );
     };
 
@@ -2978,7 +3247,7 @@ pub(crate) async fn recover_agent_for_owner(
             Some(&active.agent_id),
             None,
             EVENT_RECOVER_FELL_BACK_TO_FRESH,
-            "Recover could not preserve the previous environment because no recoverable VM was available. Provisioning a fresh Managed OpenClaw environment.",
+            "Recover could not preserve the previous persistent state because no recoverable VM was available. Provisioning a fresh Managed OpenClaw environment.",
             request_id,
         )?;
         drop(conn);
@@ -3006,7 +3275,7 @@ pub(crate) async fn recover_agent_for_owner(
             prepare_agent_for_reprovision(&mut conn, &active)
                 .map_err(|err| err.with_request_id(request_id.to_string()))?;
             let message = format!(
-                "Recover could not preserve the previous environment because VM {vm_id} was missing. Provisioning a fresh Managed OpenClaw environment."
+                "Recover could not preserve the previous persistent state because VM {vm_id} was missing. Provisioning a fresh Managed OpenClaw environment."
             );
             record_managed_environment_event(
                 &mut conn,
@@ -3240,7 +3509,7 @@ pub(crate) async fn restore_managed_environment_from_backup(
     };
 
     let restore_requested_message = format!(
-        "Restore from backup requested for Managed OpenClaw on VM {vm_id}. The durable home will be replaced from the latest backup before the environment is recreated."
+        "Restore from backup requested for Managed OpenClaw on VM {vm_id}. The current state volume will be rolled back to the latest recovery snapshot before the environment is restarted."
     );
     record_managed_environment_event(
         &mut conn,
@@ -3309,7 +3578,7 @@ pub(crate) async fn restore_managed_environment_from_backup(
                 Some(&restored.id),
             )?;
             let message = format!(
-                "Restore from backup succeeded. Managed OpenClaw is starting again on VM {} with restored durable-home contents.",
+                "Restore from backup succeeded. Managed OpenClaw is starting again on VM {} with restored state-volume contents.",
                 restored.id
             );
             insert_managed_environment_event(
@@ -4698,6 +4967,237 @@ GFs2pW5hEhS7cCO0qXaa5g==
     }
 
     #[tokio::test]
+    async fn managed_vm_provider_backup_status_uses_latest_incus_volume_snapshot() {
+        let vm_id = "pika-agent-backup";
+        let volume_name = format!("{vm_id}-state");
+        let (base_url, rx) = spawn_response_sequence_server(vec![(
+            "200 OK",
+            r#"{"type":"sync","metadata":[{"name":"custom/pika-agent-backup-state/snapshots/daily-20260317","created_at":"2026-03-17T04:00:00Z"},{"name":"custom/pika-agent-backup-state/snapshots/daily-20260318","created_at":"2026-03-18T04:00:00Z"}]}"#,
+        )]);
+        let requested = ManagedVmProvisionParams {
+            provider: Some(ProviderKind::Incus),
+            microvm: Some(MicrovmProvisionParams {
+                spawner_url: None,
+                kind: Some(MicrovmAgentKind::Openclaw),
+                backend: Some(pika_agent_control_plane::MicrovmAgentBackend::Native),
+            }),
+            incus: Some(IncusProvisionParams {
+                endpoint: Some(base_url.clone()),
+                project: Some("managed-agents".to_string()),
+                profile: Some("pika-agent".to_string()),
+                storage_pool: Some("managed-agents-zfs".to_string()),
+                image_alias: Some("pika-agent/dev".to_string()),
+                insecure_tls: None,
+            }),
+        };
+        let provider = managed_vm_provider(Some(&requested)).expect("resolve incus provider");
+        let status = provider
+            .get_vm_backup_status(vm_id, Some("req-incus-backup"))
+            .await
+            .expect("load incus backup status");
+
+        assert_eq!(status.vm_id, vm_id);
+        assert_eq!(
+            status.backup_unit_kind,
+            VmBackupUnitKind::PersistentStateVolume
+        );
+        assert_eq!(
+            status.backup_target,
+            format!("managed-agents-zfs/{volume_name}")
+        );
+        assert_eq!(
+            status.recovery_point_kind,
+            VmRecoveryPointKind::VolumeSnapshot
+        );
+        assert_eq!(
+            status.latest_recovery_point_name.as_deref(),
+            Some("daily-20260318")
+        );
+        assert_eq!(
+            status.latest_successful_backup_at.as_deref(),
+            Some("2026-03-18T04:00:00Z")
+        );
+
+        let request = rx.recv().expect("captured backup request");
+        assert_eq!(request.method, "GET");
+        assert_eq!(
+            request.path,
+            format!(
+                "/1.0/storage-pools/managed-agents-zfs/volumes/custom/{volume_name}/snapshots?project=managed-agents&recursion=1"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_vm_provider_recover_uses_incus_backend() {
+        let vm_id = "pika-agent-recover";
+        let ready_marker = serde_json::json!({
+            "ready": true,
+            "agent_kind": "openclaw",
+            "probe": "openclaw_gateway_health",
+        });
+        let (base_url, rx) = spawn_response_sequence_server(vec![
+            (
+                "200 OK",
+                r#"{"type":"sync","metadata":{"status":"Stopped"}}"#,
+            ),
+            (
+                "202 Accepted",
+                r#"{"type":"async","operation":"/1.0/operations/op-recover","metadata":{"err":""}}"#,
+            ),
+            ("200 OK", r#"{"type":"sync","metadata":{"err":""}}"#),
+            (
+                "200 OK",
+                r#"{"type":"sync","metadata":{"status":"Running"}}"#,
+            ),
+            ("200 OK", &ready_marker.to_string()),
+        ]);
+        let requested = ManagedVmProvisionParams {
+            provider: Some(ProviderKind::Incus),
+            microvm: Some(MicrovmProvisionParams {
+                spawner_url: None,
+                kind: Some(MicrovmAgentKind::Openclaw),
+                backend: Some(pika_agent_control_plane::MicrovmAgentBackend::Native),
+            }),
+            incus: Some(IncusProvisionParams {
+                endpoint: Some(base_url.clone()),
+                project: Some("managed-agents".to_string()),
+                profile: Some("pika-agent".to_string()),
+                storage_pool: Some("managed-agents-zfs".to_string()),
+                image_alias: Some("pika-agent/dev".to_string()),
+                insecure_tls: None,
+            }),
+        };
+        let provider = managed_vm_provider(Some(&requested)).expect("resolve incus provider");
+        let status = provider
+            .recover_vm(vm_id, Some("req-incus-recover"))
+            .await
+            .expect("recover incus VM");
+        assert_eq!(status.id, vm_id);
+        assert_eq!(status.status, "running");
+        assert!(status.guest_ready);
+
+        let state_request = rx.recv().expect("captured initial state request");
+        assert_eq!(
+            state_request.path,
+            format!("/1.0/instances/{vm_id}/state?project=managed-agents")
+        );
+        let recover_request = rx.recv().expect("captured recover request");
+        assert_eq!(recover_request.method, "POST");
+        assert_eq!(
+            recover_request.path,
+            format!("/1.0/instances/{vm_id}/state?project=managed-agents")
+        );
+        assert!(recover_request.body.contains(r#""action":"start""#));
+        let wait_request = rx.recv().expect("captured operation wait request");
+        assert_eq!(
+            wait_request.path,
+            "/1.0/operations/op-recover/wait?timeout=60"
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_vm_provider_restore_uses_latest_incus_snapshot_and_restarts_vm() {
+        let vm_id = "pika-agent-restore";
+        let volume_name = format!("{vm_id}-state");
+        let ready_marker = serde_json::json!({
+            "ready": true,
+            "agent_kind": "openclaw",
+            "probe": "openclaw_gateway_health",
+        });
+        let (base_url, rx) = spawn_response_sequence_server(vec![
+            (
+                "200 OK",
+                r#"{"type":"sync","metadata":{"status":"Running"}}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"type":"sync","metadata":[{"name":"custom/pika-agent-restore-state/snapshots/daily-20260317","created_at":"2026-03-17T04:00:00Z"},{"name":"custom/pika-agent-restore-state/snapshots/daily-20260318","created_at":"2026-03-18T04:00:00Z"}]}"#,
+            ),
+            (
+                "202 Accepted",
+                r#"{"type":"async","operation":"/1.0/operations/op-stop","metadata":{"err":""}}"#,
+            ),
+            ("200 OK", r#"{"type":"sync","metadata":{"err":""}}"#),
+            ("200 OK", r#"{"type":"sync","metadata":{}}"#),
+            (
+                "202 Accepted",
+                r#"{"type":"async","operation":"/1.0/operations/op-start","metadata":{"err":""}}"#,
+            ),
+            ("200 OK", r#"{"type":"sync","metadata":{"err":""}}"#),
+            (
+                "200 OK",
+                r#"{"type":"sync","metadata":{"status":"Running"}}"#,
+            ),
+            ("200 OK", &ready_marker.to_string()),
+        ]);
+        let requested = ManagedVmProvisionParams {
+            provider: Some(ProviderKind::Incus),
+            microvm: Some(MicrovmProvisionParams {
+                spawner_url: None,
+                kind: Some(MicrovmAgentKind::Openclaw),
+                backend: Some(pika_agent_control_plane::MicrovmAgentBackend::Native),
+            }),
+            incus: Some(IncusProvisionParams {
+                endpoint: Some(base_url.clone()),
+                project: Some("managed-agents".to_string()),
+                profile: Some("pika-agent".to_string()),
+                storage_pool: Some("managed-agents-zfs".to_string()),
+                image_alias: Some("pika-agent/dev".to_string()),
+                insecure_tls: None,
+            }),
+        };
+        let provider = managed_vm_provider(Some(&requested)).expect("resolve incus provider");
+        let status = provider
+            .restore_vm(vm_id, Some("req-incus-restore"))
+            .await
+            .expect("restore incus VM");
+        assert_eq!(status.id, vm_id);
+        assert_eq!(status.status, "running");
+        assert!(status.guest_ready);
+
+        let initial_state_request = rx.recv().expect("captured initial state request");
+        assert_eq!(
+            initial_state_request.path,
+            format!("/1.0/instances/{vm_id}/state?project=managed-agents")
+        );
+        let snapshots_request = rx.recv().expect("captured snapshots request");
+        assert_eq!(
+            snapshots_request.path,
+            format!(
+                "/1.0/storage-pools/managed-agents-zfs/volumes/custom/{volume_name}/snapshots?project=managed-agents&recursion=1"
+            )
+        );
+        let stop_request = rx.recv().expect("captured stop request");
+        assert_eq!(stop_request.method, "POST");
+        assert!(stop_request.body.contains(r#""action":"stop""#));
+        let stop_wait_request = rx.recv().expect("captured stop wait request");
+        assert_eq!(
+            stop_wait_request.path,
+            "/1.0/operations/op-stop/wait?timeout=60"
+        );
+        let restore_request = rx.recv().expect("captured restore request");
+        assert_eq!(restore_request.method, "PUT");
+        assert_eq!(
+            restore_request.path,
+            format!(
+                "/1.0/storage-pools/managed-agents-zfs/volumes/custom/{volume_name}?project=managed-agents"
+            )
+        );
+        assert!(restore_request
+            .body
+            .contains(r#""restore":"daily-20260318""#));
+        let start_request = rx.recv().expect("captured start request");
+        assert_eq!(start_request.method, "POST");
+        assert!(start_request.body.contains(r#""action":"start""#));
+        let start_wait_request = rx.recv().expect("captured start wait request");
+        assert_eq!(
+            start_wait_request.path,
+            "/1.0/operations/op-start/wait?timeout=60"
+        );
+    }
+
+    #[tokio::test]
     async fn managed_vm_provider_create_cleans_up_instance_and_volume_after_failed_start() {
         let (base_url, rx) = spawn_response_sequence_server(vec![
             ("200 OK", r#"{"type":"sync","metadata":{}}"#),
@@ -5290,7 +5790,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
 
         let copy = managed_environment_status_copy(Some(&row), Some(AgentStartupPhase::Failed));
 
-        assert!(copy.contains("preserve the durable home"));
+        assert!(copy.contains("preserve the current persistent state"));
         assert!(copy.contains("provisions a fresh environment instead"));
     }
 

@@ -92,7 +92,7 @@
     <section class="card">
       <h1>Confirm Restore From Backup</h1>
       <p>Signed in as <code>{{ current_admin_npub }}</code>.</p>
-      <p>This replaces the current durable home for <code>{{ owner_npub }}</code> on <code>{{ vm_id }}</code> with the latest backup-restored contents, then recreates the managed OpenClaw environment from that restored state.</p>
+      <p>This replaces the current persistent managed-agent state for <code>{{ owner_npub }}</code> on <code>{{ vm_id }}</code> with the latest snapshot-backed recovery point, then restarts the managed OpenClaw environment from that restored state.</p>
       <p>This is distinct from <strong>Recover</strong>, which tries to preserve the current durable home in place, and from <strong>Destructive Reset</strong>, which provisions fresh and can discard prior durable state.</p>
 
       <dl>
@@ -121,20 +121,26 @@
           <dd>{{ backup_freshness }}</dd>
         </div>
         <div>
-          <dt>Latest Successful Backup</dt>
+          <dt>Latest Recovery Point</dt>
           <dd>{{ backup_last_successful_at }}</dd>
         </div>
-        {% if has_backup_host %}
+        {% if has_backup_latest_recovery_point_name %}
         <div>
-          <dt>Backup Host</dt>
-          <dd><code>{{ backup_host }}</code></dd>
+          <dt>Recovery Point Name</dt>
+          <dd><code>{{ backup_latest_recovery_point_name }}</code></dd>
+        </div>
+        {% endif %}
+        {% if has_backup_target %}
+        <div>
+          <dt>{{ backup_target_label }}</dt>
+          <dd><code>{{ backup_target }}</code></dd>
         </div>
         {% endif %}
       </dl>
 
       <div class="callout">
         <p>{{ backup_status_copy }}</p>
-        <p>If a current guest is running, restore first quiesces it. The current durable home is then replaced from backup contents before the environment is recreated on the same VM slot.</p>
+        <p>If a current guest is running, restore first quiesces it. The current state volume is then rolled back to the selected recovery snapshot before the environment is started again on the same VM slot.</p>
       </div>
 
       <div class="actions">

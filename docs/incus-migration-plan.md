@@ -309,7 +309,12 @@ Current transition status:
 - the provider now supports trusted TLS client-certificate auth for remote `pika-server -> pika-build:8443` mutations via server-side cert/key path config; the repo-managed `pika-server` Nix module can now inject that canary env and sops-backed cert/key paths for a normal deployed canary
 - Incus readiness now comes from inside the guest via the Incus guest file API against `/workspace/pika-agent/service-ready.json`; `guest_ready=true` is only reported when that marker exists and validates
 - the first authenticated end-to-end canary now reaches `state=ready` and `startup_phase=ready` for a fresh request-scoped Incus provision against the canonical `pika-build` host
-- Incus recover, restore, backup status, and OpenClaw launch/proxy behavior remain intentionally unsupported in this phase
+- Incus backup status, recover, and restore now use a first thin Incus-native operational model:
+  state durability lives in the attached custom volume, backup status is the freshness of the latest
+  state-volume snapshot, recover starts or restarts the current appliance around that volume, and
+  restore rolls the state volume back to its latest snapshot before starting the appliance again
+- automatic state-volume snapshot creation policy and operator-selected restore points are still deferred
+- OpenClaw launch/proxy behavior remains intentionally unsupported in this phase
 - server startup should remain on the microVM default provider for now; request-scoped Incus provisioning is the current safe canary lane until the OpenClaw launch/proxy surface is migrated
 
 ### 2. Guest Image Pipeline
@@ -348,6 +353,17 @@ The preferred shape is:
 - one disposable root image
 
 That keeps the recovery model simple and aligns with the immutable appliance approach.
+
+Current first-pass Incus operational model:
+
+- backup unit = the persistent custom volume
+- recovery point = the latest snapshot on that volume
+- recover = start or restart the current instance around the same volume
+- restore = stop the current instance if needed, restore the volume to the latest snapshot, then
+  start the appliance again
+
+This is intentionally opinionated and thin. It does not attempt to preserve the old microVM
+"durable home on a specific host" mental model, and it does not yet automate snapshot creation.
 
 ### 4. Network And Access Model
 

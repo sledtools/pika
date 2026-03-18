@@ -50,7 +50,7 @@
   {% if has_environment_rows %}
   <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse; width:100%; max-width:1200px">
     <thead>
-      <tr><th>Owner</th><th>Agent</th><th>VM</th><th>App State</th><th>Startup Phase</th><th>Backup</th><th>Last Successful Backup (UTC)</th><th>Backup Host</th><th>Notes</th><th>Action</th></tr>
+      <tr><th>Owner</th><th>Agent</th><th>VM</th><th>App State</th><th>Startup Phase</th><th>Backup</th><th>Latest Recovery Point (UTC)</th><th>Recovery Target</th><th>Notes</th><th>Action</th></tr>
     </thead>
     <tbody>
       {% for row in environment_rows %}
@@ -61,8 +61,21 @@
         <td>{{ row.app_state }}</td>
         <td>{{ row.startup_phase }}</td>
         <td>{{ row.backup_freshness }}</td>
-        <td>{{ row.backup_last_successful_at }}</td>
-        <td>{% if row.has_backup_host %}<code>{{ row.backup_host }}</code>{% else %}not_available{% endif %}</td>
+        <td>
+          {{ row.backup_last_successful_at }}
+          {% if row.has_backup_latest_recovery_point_name %}
+          <br />
+          <small><code>{{ row.backup_latest_recovery_point_name }}</code></small>
+          {% endif %}
+        </td>
+        <td>
+          {% if row.has_backup_target %}
+          <div>{{ row.backup_target_label }}</div>
+          <code>{{ row.backup_target }}</code>
+          {% else %}
+          not_available
+          {% endif %}
+        </td>
         <td>{{ row.backup_status_copy }}</td>
         <td>
           {% if row.can_restore_from_backup %}

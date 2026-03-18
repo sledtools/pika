@@ -104,8 +104,11 @@ struct DashboardTemplate {
     backup_state_tone: &'static str,
     backup_status_copy: String,
     backup_last_successful_at: String,
-    backup_host: String,
-    has_backup_host: bool,
+    backup_latest_recovery_point_name: String,
+    has_backup_latest_recovery_point_name: bool,
+    backup_target_label: String,
+    backup_target: String,
+    has_backup_target: bool,
     reset_requires_confirmation: bool,
     reset_safety_copy: String,
     can_launch_openclaw: bool,
@@ -191,8 +194,11 @@ struct ResetConfirmTemplate {
     backup_state_tone: &'static str,
     backup_status_copy: String,
     backup_last_successful_at: String,
-    backup_host: String,
-    has_backup_host: bool,
+    backup_latest_recovery_point_name: String,
+    has_backup_latest_recovery_point_name: bool,
+    backup_target_label: String,
+    backup_target: String,
+    has_backup_target: bool,
 }
 
 fn browser_auth(state: &State) -> &BrowserAuthConfig {
@@ -369,7 +375,7 @@ fn verify_reset_confirmation_ticket(
     let token = token.ok_or_else(|| {
         (
             StatusCode::CONFLICT,
-            "destructive reset requires confirmation because backup protection is not healthy"
+            "destructive reset requires confirmation because recovery-point protection is not healthy"
                 .to_string(),
         )
     })?;
@@ -423,9 +429,13 @@ fn dashboard_template(
         })
         .unwrap_or(false);
     let recoverable_vm_exists = row.as_ref().and_then(|row| row.vm_id.as_deref()).is_some();
-    let has_backup_host = backup.backup_host.is_some();
-    let backup_host = backup
-        .backup_host
+    let has_backup_target = backup.backup_target.is_some();
+    let backup_target = backup
+        .backup_target
+        .unwrap_or_else(|| "not_available".to_string());
+    let has_backup_latest_recovery_point_name = backup.latest_recovery_point_name.is_some();
+    let backup_latest_recovery_point_name = backup
+        .latest_recovery_point_name
         .unwrap_or_else(|| "not_available".to_string());
     DashboardTemplate {
         owner_npub: authenticated.npub,
@@ -482,14 +492,17 @@ fn dashboard_template(
         backup_last_successful_at: format_rfc3339_timestamp(
             backup.latest_successful_backup_at.as_deref(),
         ),
-        backup_host,
-        has_backup_host,
+        backup_latest_recovery_point_name,
+        has_backup_latest_recovery_point_name,
+        backup_target_label: backup.backup_target_label,
+        backup_target,
+        has_backup_target,
         reset_requires_confirmation: backup.reset_requires_confirmation,
         reset_safety_copy: if backup.reset_requires_confirmation {
-            "Because backup protection is stale, missing, or unavailable, destructive reset now requires an explicit confirmation step."
+            "Because recovery-point protection is stale, missing, or unavailable, destructive reset now requires an explicit confirmation step."
                 .to_string()
         } else {
-            "Recent backup protection is healthy, so destructive reset remains available directly from the dashboard."
+            "Recent recovery-point protection is healthy, so destructive reset remains available directly from the dashboard."
                 .to_string()
         },
         can_launch_openclaw: launchability.can_launch(),
@@ -504,9 +517,13 @@ fn reset_confirm_template(
     backup: ManagedEnvironmentBackupStatus,
     confirmation_token: String,
 ) -> ResetConfirmTemplate {
-    let has_backup_host = backup.backup_host.is_some();
-    let backup_host = backup
-        .backup_host
+    let has_backup_target = backup.backup_target.is_some();
+    let backup_target = backup
+        .backup_target
+        .unwrap_or_else(|| "not_available".to_string());
+    let has_backup_latest_recovery_point_name = backup.latest_recovery_point_name.is_some();
+    let backup_latest_recovery_point_name = backup
+        .latest_recovery_point_name
         .unwrap_or_else(|| "not_available".to_string());
     ResetConfirmTemplate {
         owner_npub: authenticated.npub.clone(),
@@ -518,8 +535,11 @@ fn reset_confirm_template(
         backup_last_successful_at: format_rfc3339_timestamp(
             backup.latest_successful_backup_at.as_deref(),
         ),
-        backup_host,
-        has_backup_host,
+        backup_latest_recovery_point_name,
+        has_backup_latest_recovery_point_name,
+        backup_target_label: backup.backup_target_label,
+        backup_target,
+        has_backup_target,
     }
 }
 
@@ -1415,7 +1435,7 @@ mod tests {
             ),
             (
                 "200 OK",
-                r#"{"vm_id":"vm-backup-healthy","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-backup-healthy/home","successful_backup_known":true,"freshness":"healthy","latest_successful_backup_at":"2026-03-11T00:00:00Z","observed_at":"2026-03-11T00:00:00Z"}"#,
+                r#"{"vm_id":"vm-backup-healthy","backup_unit_kind":"durable_home","backup_target":"/var/lib/microvms/vm-backup-healthy/home","recovery_point_kind":"metadata_record","freshness":"healthy","latest_recovery_point_name":null,"latest_successful_backup_at":"2026-03-11T00:00:00Z","observed_at":"2026-03-11T00:00:00Z"}"#,
             ),
         ]);
         let _env = MicrovmEnvGuard::set(&base_url);
@@ -1424,10 +1444,10 @@ mod tests {
             .await
             .expect("dashboard response");
         let body = response_body_string(response).await;
-        assert!(body.contains("Backup Protection"));
+        assert!(body.contains("Recovery Protection"));
         assert!(body.contains("healthy"));
-        assert!(body.contains("Recent durable-home backup protection is in place"));
-        assert!(body.contains("pika-build"));
+        assert!(body.contains("A recent durable-home backup record is available"));
+        assert!(body.contains("/var/lib/microvms/vm-backup-healthy/home"));
         assert!(body.contains("Destructive Reset"));
         assert!(!body.contains("Review Destructive Reset"));
 
@@ -1461,7 +1481,7 @@ mod tests {
             ),
             (
                 "200 OK",
-                r#"{"vm_id":"vm-backup-stale","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-backup-stale/home","successful_backup_known":true,"freshness":"stale","latest_successful_backup_at":"2026-03-09T00:00:00Z","observed_at":"2026-03-09T00:00:00Z"}"#,
+                r#"{"vm_id":"vm-backup-stale","backup_unit_kind":"durable_home","backup_target":"/var/lib/microvms/vm-backup-stale/home","recovery_point_kind":"metadata_record","freshness":"stale","latest_recovery_point_name":null,"latest_successful_backup_at":"2026-03-09T00:00:00Z","observed_at":"2026-03-09T00:00:00Z"}"#,
             ),
         ]);
         let _env = MicrovmEnvGuard::set(&base_url);
@@ -1471,7 +1491,7 @@ mod tests {
             .expect("dashboard response");
         let body = response_body_string(response).await;
         assert!(body.contains("stale"));
-        assert!(body.contains("Backup protection is stale"));
+        assert!(body.contains("Recovery-point protection is stale"));
         assert!(body.contains("Review Destructive Reset"));
         assert!(body.contains("/dashboard/reset/confirm"));
 
@@ -2473,7 +2493,7 @@ mod tests {
             ),
             (
                 "200 OK",
-                r#"{"vm_id":"vm-old","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-old/home","successful_backup_known":true,"freshness":"healthy","latest_successful_backup_at":"2026-03-11T00:00:00Z","observed_at":"2026-03-11T00:00:00Z"}"#,
+                r#"{"vm_id":"vm-old","backup_unit_kind":"durable_home","backup_target":"/var/lib/microvms/vm-old/home","recovery_point_kind":"metadata_record","freshness":"healthy","latest_recovery_point_name":null,"latest_successful_backup_at":"2026-03-11T00:00:00Z","observed_at":"2026-03-11T00:00:00Z"}"#,
             ),
             ("204 No Content", ""),
             ("200 OK", r#"{"id":"vm-fresh","status":"starting"}"#),
@@ -2557,7 +2577,7 @@ mod tests {
             ),
             (
                 "200 OK",
-                r#"{"vm_id":"vm-reset-weak","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-reset-weak/home","successful_backup_known":true,"freshness":"stale","latest_successful_backup_at":"2026-03-09T00:00:00Z","observed_at":"2026-03-09T00:00:00Z"}"#,
+                r#"{"vm_id":"vm-reset-weak","backup_unit_kind":"durable_home","backup_target":"/var/lib/microvms/vm-reset-weak/home","recovery_point_kind":"metadata_record","freshness":"stale","latest_recovery_point_name":null,"latest_successful_backup_at":"2026-03-09T00:00:00Z","observed_at":"2026-03-09T00:00:00Z"}"#,
             ),
         ]);
         let _env = MicrovmEnvGuard::set(&base_url);
@@ -2659,7 +2679,7 @@ mod tests {
             ),
             (
                 "200 OK",
-                r#"{"vm_id":"vm-reset-confirm","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-reset-confirm/home","successful_backup_known":false,"freshness":"missing","latest_successful_backup_at":null,"observed_at":null}"#,
+                r#"{"vm_id":"vm-reset-confirm","backup_unit_kind":"durable_home","backup_target":"/var/lib/microvms/vm-reset-confirm/home","recovery_point_kind":"metadata_record","freshness":"missing","latest_recovery_point_name":null,"latest_successful_backup_at":null,"observed_at":null}"#,
             ),
         ]);
         let _env = MicrovmEnvGuard::set(&base_url);
@@ -2669,8 +2689,8 @@ mod tests {
             .expect("confirm page response");
         let body = response_body_string(response).await;
         assert!(body.contains("Confirm Destructive Reset"));
-        assert!(body.contains("Reset Without Recent Backup"));
-        assert!(body.contains("No successful durable-home backup is known yet"));
+        assert!(body.contains("Reset Without Recent Recovery Point"));
+        assert!(body.contains("No durable-home backup record is known yet"));
 
         clear_test_database(&db_pool);
     }
@@ -2713,7 +2733,7 @@ mod tests {
             ),
             (
                 "200 OK",
-                r#"{"vm_id":"vm-reset-confirmed","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-reset-confirmed/home","successful_backup_known":true,"freshness":"stale","latest_successful_backup_at":"2026-03-09T00:00:00Z","observed_at":"2026-03-09T00:00:00Z"}"#,
+                r#"{"vm_id":"vm-reset-confirmed","backup_unit_kind":"durable_home","backup_target":"/var/lib/microvms/vm-reset-confirmed/home","recovery_point_kind":"metadata_record","freshness":"stale","latest_recovery_point_name":null,"latest_successful_backup_at":"2026-03-09T00:00:00Z","observed_at":"2026-03-09T00:00:00Z"}"#,
             ),
             ("204 No Content", ""),
             ("200 OK", r#"{"id":"vm-reset-fresh","status":"starting"}"#),
@@ -2793,7 +2813,7 @@ mod tests {
             ),
             (
                 "200 OK",
-                r#"{"vm_id":"vm-reset-replacement","backup_host":"pika-build","durable_home_path":"/var/lib/microvms/vm-reset-replacement/home","successful_backup_known":true,"freshness":"stale","latest_successful_backup_at":"2026-03-09T00:00:00Z","observed_at":"2026-03-09T00:00:00Z"}"#,
+                r#"{"vm_id":"vm-reset-replacement","backup_unit_kind":"durable_home","backup_target":"/var/lib/microvms/vm-reset-replacement/home","recovery_point_kind":"metadata_record","freshness":"stale","latest_recovery_point_name":null,"latest_successful_backup_at":"2026-03-09T00:00:00Z","observed_at":"2026-03-09T00:00:00Z"}"#,
             ),
         ]);
         let _env = MicrovmEnvGuard::set(&base_url);

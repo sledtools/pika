@@ -32,9 +32,18 @@ This lane is meant to prove:
 
 It does not yet prove:
 
-- Incus recover
-- Incus restore
-- Incus backup status
+- customer-facing OpenClaw launch or proxy flows
+- a public API delete flow
+
+This lane now also proves the first Incus operational lifecycle model:
+
+- backup status is derived from snapshots on the persistent custom volume
+- recover restarts or starts the current appliance around that same volume
+- restore rolls the persistent custom volume back to its latest snapshot, then restarts the appliance
+
+What it still does not yet prove:
+
+- automated snapshot creation policy
 - customer-facing OpenClaw launch or proxy flows
 - a public API delete flow
 
@@ -205,6 +214,34 @@ ssh pika-build incus list --project pika-managed-agents
 ssh pika-build incus storage volume list default --project pika-managed-agents
 ssh pika-build incus file pull --project pika-managed-agents <vm_id>/workspace/pika-agent/service-ready.json -
 ```
+
+## Incus Operational Lifecycle Model
+
+The first Incus operational model is intentionally narrow and volume-centric.
+
+- backup unit: the persistent custom storage volume attached at `/mnt/pika-state`
+- recovery point: an Incus snapshot of that custom volume
+- recover: bring the current instance back around the existing state volume by starting or restarting it
+- restore: roll the state volume back to its latest snapshot, then start the appliance again
+
+This differs from the old microVM model:
+
+- there is no host-local mutable root to preserve
+- there is no host-specific durable-home path as the primary contract
+- the appliance root stays disposable
+- only the attached state volume is treated as durable product state
+
+Current support:
+
+- `backup-status` reports the freshness of the latest state-volume snapshot
+- `recover` starts or restarts the current Incus instance in place
+- `restore` restores the latest state-volume snapshot and then restarts the current Incus instance
+
+Current limitations:
+
+- this lane does not yet automate snapshot creation
+- restore only uses the latest available snapshot, not an operator-selected one
+- if there are no state-volume snapshots yet, `backup-status` reports `missing` and restore is rejected
 
 ## `pika-server` Canary Mode
 

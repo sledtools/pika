@@ -78,6 +78,8 @@ pub struct IncusProvisionParams {
     pub image_alias: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub insecure_tls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openclaw_guest_ipv4_cidr: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Default)]
@@ -1230,6 +1232,7 @@ mod tests {
                 storage_pool: Some("managed-agents-zfs".to_string()),
                 image_alias: Some("pika-agent/dev".to_string()),
                 insecure_tls: Some(true),
+                openclaw_guest_ipv4_cidr: Some("10.193.52.0/24".to_string()),
             }),
         };
         let encoded = serde_json::to_string(&request).expect("encode request");

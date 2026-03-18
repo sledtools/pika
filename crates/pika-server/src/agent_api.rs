@@ -11,6 +11,7 @@ use base64::Engine;
 use diesel::result::{DatabaseErrorKind, Error as DieselError};
 use diesel::Connection;
 use diesel::PgConnection;
+use ipnet::Ipv4Net;
 use nostr_sdk::prelude::{Keys, PublicKey};
 use nostr_sdk::ToBech32;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -55,6 +56,7 @@ const INCUS_INSECURE_TLS_ENV: &str = "PIKA_AGENT_INCUS_INSECURE_TLS";
 const INCUS_CLIENT_CERT_PATH_ENV: &str = "PIKA_AGENT_INCUS_CLIENT_CERT_PATH";
 const INCUS_CLIENT_KEY_PATH_ENV: &str = "PIKA_AGENT_INCUS_CLIENT_KEY_PATH";
 const INCUS_SERVER_CERT_PATH_ENV: &str = "PIKA_AGENT_INCUS_SERVER_CERT_PATH";
+const INCUS_OPENCLAW_GUEST_IPV4_CIDR_ENV: &str = "PIKA_AGENT_INCUS_OPENCLAW_GUEST_IPV4_CIDR";
 const INCUS_VM_KIND: &str = "virtual-machine";
 const INCUS_PERSISTENT_VOLUME_TYPE: &str = "custom";
 const INCUS_PERSISTENT_VOLUME_CONTENT_TYPE: &str = "filesystem";
@@ -67,6 +69,8 @@ const INCUS_OPENCLAW_PROXY_PORT_START: u16 = 24000;
 const INCUS_OPENCLAW_PROXY_PORT_SPAN: u16 = 10000;
 const INCUS_OPENCLAW_PROXY_HOST_CONFIG_KEY: &str = "user.pika.openclaw_proxy_host";
 const INCUS_OPENCLAW_PROXY_PORT_CONFIG_KEY: &str = "user.pika.openclaw_proxy_port";
+const INCUS_OPENCLAW_GUEST_IPV4_CONFIG_KEY: &str = "user.pika.openclaw_guest_ipv4";
+const INCUS_PRIMARY_NIC_DEVICE_NAME: &str = "eth0";
 const INCUS_BOOTSTRAP_LAUNCHER_PATH: &str = "/workspace/pika-agent/incus-launcher.sh";
 const INCUS_STATE_VOLUME_SETUP_PATH: &str = "/workspace/pika-agent/incus-state-volume-setup.sh";
 const INCUS_PERSISTENT_AGENT_STATE_ROOT: &str = "/mnt/pika-state/pika-agent";
@@ -221,6 +225,7 @@ struct ResolvedIncusParams {
     storage_pool: String,
     image_alias: String,
     insecure_tls: bool,
+    openclaw_guest_ipv4_cidr: Option<String>,
     agent_kind: ResolvedMicrovmAgentKind,
     agent_backend: ResolvedMicrovmAgentBackend,
 }
@@ -404,6 +409,7 @@ fn materialized_managed_vm_params(
                 storage_pool: Some(resolved.storage_pool.clone()),
                 image_alias: Some(resolved.image_alias.clone()),
                 insecure_tls: Some(resolved.insecure_tls),
+                openclaw_guest_ipv4_cidr: resolved.openclaw_guest_ipv4_cidr.clone(),
             }),
         },
     }
@@ -519,6 +525,14 @@ fn merge_incus_provision_params(
         }
         if requested.insecure_tls.is_some() {
             merged.insecure_tls = requested.insecure_tls;
+            changed = true;
+        }
+        if requested
+            .openclaw_guest_ipv4_cidr
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            merged.openclaw_guest_ipv4_cidr = requested.openclaw_guest_ipv4_cidr.clone();
             changed = true;
         }
     }
@@ -770,6 +784,7 @@ fn default_incus_params_from_env() -> IncusProvisionParams {
         insecure_tls: std::env::var(INCUS_INSECURE_TLS_ENV)
             .ok()
             .map(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+        openclaw_guest_ipv4_cidr: non_empty_env_var(INCUS_OPENCLAW_GUEST_IPV4_CIDR_ENV),
     }
 }
 
@@ -870,6 +885,7 @@ fn incus_params_provided(params: &IncusProvisionParams) -> bool {
     .map(str::trim)
     .any(|value| !value.is_empty())
         || params.insecure_tls.is_some()
+        || params.openclaw_guest_ipv4_cidr.is_some()
 }
 
 fn required_non_empty_field(
@@ -1038,6 +1054,8 @@ impl IncusManagedVmProvider {
             matches!(self.resolved.agent_kind, ResolvedMicrovmAgentKind::Openclaw),
             "configured Incus customer flow requires the OpenClaw runtime"
         );
+        self.openclaw_guest_ipv4_network()
+            .context("configured Incus customer flow requires a static guest IPv4 subnet")?;
         Ok(())
     }
 
@@ -1131,10 +1149,77 @@ impl IncusManagedVmProvider {
             })
     }
 
+    fn openclaw_guest_ipv4_network(&self) -> anyhow::Result<Ipv4Net> {
+        let cidr = self
+            .resolved
+            .openclaw_guest_ipv4_cidr
+            .as_deref()
+            .with_context(|| {
+                format!(
+                    "missing incus.openclaw_guest_ipv4_cidr; set request.incus.openclaw_guest_ipv4_cidr or {INCUS_OPENCLAW_GUEST_IPV4_CIDR_ENV}"
+                )
+            })?;
+        let network = cidr
+            .parse::<Ipv4Net>()
+            .with_context(|| format!("invalid incus.openclaw_guest_ipv4_cidr {cidr:?}"))?;
+        let host_start = u32::from(network.network()) + 2;
+        let host_end = u32::from(network.broadcast()) - 1;
+        anyhow::ensure!(
+            host_start <= host_end,
+            "incus.openclaw_guest_ipv4_cidr {cidr:?} must leave at least one guest address after reserving the gateway"
+        );
+        Ok(network)
+    }
+
     fn deterministic_openclaw_proxy_port(&self, vm_id: &str) -> u16 {
         let digest = Sha256::digest(vm_id.as_bytes());
         let offset = u16::from_be_bytes([digest[0], digest[1]]) % INCUS_OPENCLAW_PROXY_PORT_SPAN;
         INCUS_OPENCLAW_PROXY_PORT_START + offset
+    }
+
+    fn deterministic_openclaw_guest_ipv4(&self, vm_id: &str) -> anyhow::Result<Ipv4Addr> {
+        let network = self.openclaw_guest_ipv4_network()?;
+        let host_start = u32::from(network.network()) + 2;
+        let host_end = u32::from(network.broadcast()) - 1;
+        let host_count = host_end - host_start + 1;
+        let digest = Sha256::digest(vm_id.as_bytes());
+        let offset = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) % host_count;
+        Ok(Ipv4Addr::from(host_start + offset))
+    }
+
+    async fn load_primary_nic_network_name(
+        &self,
+        request_id: Option<&str>,
+    ) -> anyhow::Result<String> {
+        let profile: serde_json::Value = self
+            .get_json(
+                &["1.0", "profiles", &self.resolved.profile],
+                true,
+                request_id,
+                "load configured incus profile for primary nic",
+            )
+            .await?;
+        profile
+            .get("devices")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|devices| {
+                devices.values().find_map(|device| {
+                    (device.get("type").and_then(serde_json::Value::as_str) == Some("nic"))
+                        .then(|| {
+                            device
+                                .get("network")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string)
+                        })
+                        .flatten()
+                })
+            })
+            .with_context(|| {
+                format!(
+                    "configured incus profile {} in project {} must include a nic device with a managed network",
+                    self.resolved.profile, self.resolved.project
+                )
+            })
     }
 
     async fn ensure_openclaw_proxy_device(
@@ -1146,6 +1231,10 @@ impl IncusManagedVmProvider {
             .get_instance_details(vm_id, request_id)
             .await
             .with_context(|| format!("load incus instance details for VM {vm_id}"))?;
+        let nic_network = self
+            .load_primary_nic_network_name(request_id)
+            .await
+            .with_context(|| format!("load primary incus nic network for VM {vm_id}"))?;
         let proxy_host = details
             .config
             .get(INCUS_OPENCLAW_PROXY_HOST_CONFIG_KEY)
@@ -1156,10 +1245,37 @@ impl IncusManagedVmProvider {
             .get(INCUS_OPENCLAW_PROXY_PORT_CONFIG_KEY)
             .and_then(|value| value.parse::<u16>().ok())
             .unwrap_or_else(|| self.deterministic_openclaw_proxy_port(vm_id));
-        let guest_ipv4 = self
+        let current_guest_ipv4 = self
             .guest_ipv4_from_instance_state(vm_id, request_id)
             .await
-            .with_context(|| format!("discover incus guest IPv4 for VM {vm_id}"))?;
+            .ok()
+            .filter(|address| {
+                self.openclaw_guest_ipv4_network()
+                    .map(|network| network.contains(address))
+                    .unwrap_or(false)
+            });
+        let guest_ipv4 = details
+            .config
+            .get(INCUS_OPENCLAW_GUEST_IPV4_CONFIG_KEY)
+            .and_then(|value| value.parse::<Ipv4Addr>().ok())
+            .or_else(|| {
+                details
+                    .devices
+                    .get(INCUS_PRIMARY_NIC_DEVICE_NAME)
+                    .and_then(|device| device.get("ipv4.address"))
+                    .and_then(|value| value.parse::<Ipv4Addr>().ok())
+            })
+            .or(current_guest_ipv4)
+            .unwrap_or(self.deterministic_openclaw_guest_ipv4(vm_id)?);
+        let expected_nic = BTreeMap::from([
+            ("type".to_string(), "nic".to_string()),
+            ("network".to_string(), nic_network),
+            (
+                "name".to_string(),
+                INCUS_PRIMARY_NIC_DEVICE_NAME.to_string(),
+            ),
+            ("ipv4.address".to_string(), guest_ipv4.to_string()),
+        ]);
         let expected_device = BTreeMap::from([
             ("type".to_string(), "proxy".to_string()),
             ("bind".to_string(), "host".to_string()),
@@ -1178,10 +1294,15 @@ impl IncusManagedVmProvider {
         ]);
         let expected_host = proxy_host.to_string();
         let expected_port = proxy_port.to_string();
+        let expected_guest_ipv4 = guest_ipv4.to_string();
         let proxy_device_matches = details
             .devices
             .get(INCUS_OPENCLAW_PROXY_DEVICE_NAME)
             .is_some_and(|device| device == &expected_device);
+        let nic_device_matches = details
+            .devices
+            .get(INCUS_PRIMARY_NIC_DEVICE_NAME)
+            .is_some_and(|device| device == &expected_nic);
         let proxy_metadata_matches = details
             .config
             .get(INCUS_OPENCLAW_PROXY_HOST_CONFIG_KEY)
@@ -1189,11 +1310,18 @@ impl IncusManagedVmProvider {
             && details
                 .config
                 .get(INCUS_OPENCLAW_PROXY_PORT_CONFIG_KEY)
-                .is_some_and(|value| value == &expected_port);
-        if proxy_device_matches && proxy_metadata_matches {
+                .is_some_and(|value| value == &expected_port)
+            && details
+                .config
+                .get(INCUS_OPENCLAW_GUEST_IPV4_CONFIG_KEY)
+                .is_some_and(|value| value == &expected_guest_ipv4);
+        if proxy_device_matches && proxy_metadata_matches && nic_device_matches {
             return Ok((proxy_host, proxy_port));
         }
 
+        details
+            .devices
+            .insert(INCUS_PRIMARY_NIC_DEVICE_NAME.to_string(), expected_nic);
         details.devices.insert(
             INCUS_OPENCLAW_PROXY_DEVICE_NAME.to_string(),
             expected_device,
@@ -1205,6 +1333,10 @@ impl IncusManagedVmProvider {
         details.config.insert(
             INCUS_OPENCLAW_PROXY_PORT_CONFIG_KEY.to_string(),
             expected_port,
+        );
+        details.config.insert(
+            INCUS_OPENCLAW_GUEST_IPV4_CONFIG_KEY.to_string(),
+            expected_guest_ipv4,
         );
         let body = serde_json::json!({
             "config": details.config,
@@ -1542,6 +1674,12 @@ impl IncusManagedVmProvider {
                 "path": INCUS_PERSISTENT_VOLUME_PATH,
             }),
         );
+        let openclaw_nic_network =
+            if matches!(self.resolved.agent_kind, ResolvedMicrovmAgentKind::Openclaw) {
+                Some(self.load_primary_nic_network_name(request_id).await?)
+            } else {
+                None
+            };
 
         let cloud_init_user_data = self
             .cloud_init_user_data(input)
@@ -1577,6 +1715,7 @@ impl IncusManagedVmProvider {
         if matches!(self.resolved.agent_kind, ResolvedMicrovmAgentKind::Openclaw) {
             let proxy_host = self.resolve_proxy_host_ipv4().await?;
             let proxy_port = self.deterministic_openclaw_proxy_port(vm_id);
+            let guest_ipv4 = self.deterministic_openclaw_guest_ipv4(vm_id)?;
             instance_config.insert(
                 INCUS_OPENCLAW_PROXY_HOST_CONFIG_KEY.to_string(),
                 serde_json::Value::String(proxy_host.to_string()),
@@ -1584,6 +1723,21 @@ impl IncusManagedVmProvider {
             instance_config.insert(
                 INCUS_OPENCLAW_PROXY_PORT_CONFIG_KEY.to_string(),
                 serde_json::Value::String(proxy_port.to_string()),
+            );
+            instance_config.insert(
+                INCUS_OPENCLAW_GUEST_IPV4_CONFIG_KEY.to_string(),
+                serde_json::Value::String(guest_ipv4.to_string()),
+            );
+            devices.insert(
+                INCUS_PRIMARY_NIC_DEVICE_NAME.to_string(),
+                serde_json::json!({
+                    "type": "nic",
+                    "network": openclaw_nic_network
+                        .as_deref()
+                        .expect("OpenClaw create must resolve a primary nic network"),
+                    "name": INCUS_PRIMARY_NIC_DEVICE_NAME,
+                    "ipv4.address": guest_ipv4.to_string(),
+                }),
             );
         }
         let body = serde_json::json!({
@@ -3216,6 +3370,13 @@ fn resolved_incus_params(
             if requested.insecure_tls.is_some() {
                 params.insecure_tls = requested.insecure_tls;
             }
+            if requested
+                .openclaw_guest_ipv4_cidr
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+            {
+                params.openclaw_guest_ipv4_cidr = requested.openclaw_guest_ipv4_cidr.clone();
+            }
         }
     }
     if provider != ProviderKind::Incus {
@@ -3251,6 +3412,7 @@ fn resolved_incus_params(
             INCUS_IMAGE_ALIAS_ENV,
         )?,
         insecure_tls: params.insecure_tls.unwrap_or(false),
+        openclaw_guest_ipv4_cidr: params.openclaw_guest_ipv4_cidr,
         agent_kind: guest_selection.kind,
         agent_backend: guest_selection.backend,
     })
@@ -4326,6 +4488,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
         prior_incus_profile: Option<String>,
         prior_incus_storage_pool: Option<String>,
         prior_incus_image_alias: Option<String>,
+        prior_incus_openclaw_guest_ipv4_cidr: Option<String>,
         prior_incus_insecure_tls: Option<String>,
         prior_incus_client_cert_path: Option<String>,
         prior_incus_client_key_path: Option<String>,
@@ -4342,6 +4505,8 @@ GFs2pW5hEhS7cCO0qXaa5g==
             let prior_incus_profile = std::env::var(INCUS_PROFILE_ENV).ok();
             let prior_incus_storage_pool = std::env::var(INCUS_STORAGE_POOL_ENV).ok();
             let prior_incus_image_alias = std::env::var(INCUS_IMAGE_ALIAS_ENV).ok();
+            let prior_incus_openclaw_guest_ipv4_cidr =
+                std::env::var(INCUS_OPENCLAW_GUEST_IPV4_CIDR_ENV).ok();
             let prior_incus_insecure_tls = std::env::var(INCUS_INSECURE_TLS_ENV).ok();
             let prior_incus_client_cert_path = std::env::var(INCUS_CLIENT_CERT_PATH_ENV).ok();
             let prior_incus_client_key_path = std::env::var(INCUS_CLIENT_KEY_PATH_ENV).ok();
@@ -4354,6 +4519,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 std::env::remove_var(INCUS_PROFILE_ENV);
                 std::env::remove_var(INCUS_STORAGE_POOL_ENV);
                 std::env::remove_var(INCUS_IMAGE_ALIAS_ENV);
+                std::env::remove_var(INCUS_OPENCLAW_GUEST_IPV4_CIDR_ENV);
                 std::env::remove_var(INCUS_INSECURE_TLS_ENV);
                 std::env::remove_var(INCUS_CLIENT_CERT_PATH_ENV);
                 std::env::remove_var(INCUS_CLIENT_KEY_PATH_ENV);
@@ -4376,6 +4542,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 prior_incus_profile,
                 prior_incus_storage_pool,
                 prior_incus_image_alias,
+                prior_incus_openclaw_guest_ipv4_cidr,
                 prior_incus_insecure_tls,
                 prior_incus_client_cert_path,
                 prior_incus_client_key_path,
@@ -4448,6 +4615,14 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 },
                 None => unsafe {
                     std::env::remove_var(INCUS_IMAGE_ALIAS_ENV);
+                },
+            }
+            match self.prior_incus_openclaw_guest_ipv4_cidr.as_deref() {
+                Some(prior) => unsafe {
+                    std::env::set_var(INCUS_OPENCLAW_GUEST_IPV4_CIDR_ENV, prior);
+                },
+                None => unsafe {
+                    std::env::remove_var(INCUS_OPENCLAW_GUEST_IPV4_CIDR_ENV);
                 },
             }
             match self.prior_incus_insecure_tls.as_deref() {
@@ -4676,6 +4851,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 storage_pool: None,
                 image_alias: None,
                 insecure_tls: None,
+                openclaw_guest_ipv4_cidr: None,
             }),
         };
 
@@ -4697,6 +4873,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 storage_pool: None,
                 image_alias: Some("pika-agent/dev".to_string()),
                 insecure_tls: None,
+                openclaw_guest_ipv4_cidr: None,
             }),
         };
 
@@ -4721,6 +4898,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 storage_pool: Some("managed-agents-zfs".to_string()),
                 image_alias: Some("pika-agent/dev".to_string()),
                 insecure_tls: Some(true),
+                openclaw_guest_ipv4_cidr: None,
             }),
         };
 
@@ -4735,6 +4913,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 storage_pool: "managed-agents-zfs".to_string(),
                 image_alias: "pika-agent/dev".to_string(),
                 insecure_tls: true,
+                openclaw_guest_ipv4_cidr: None,
                 agent_kind: ResolvedMicrovmAgentKind::Openclaw,
                 agent_backend: ResolvedMicrovmAgentBackend::Native,
             })
@@ -4750,6 +4929,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
             storage_pool: "managed-agents-zfs".to_string(),
             image_alias: "pika-agent/dev".to_string(),
             insecure_tls: false,
+            openclaw_guest_ipv4_cidr: None,
             agent_kind: ResolvedMicrovmAgentKind::Openclaw,
             agent_backend: ResolvedMicrovmAgentBackend::Native,
         };
@@ -4777,6 +4957,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
             storage_pool: "managed-agents-zfs".to_string(),
             image_alias: "pika-agent/dev".to_string(),
             insecure_tls: true,
+            openclaw_guest_ipv4_cidr: None,
             agent_kind: ResolvedMicrovmAgentKind::Openclaw,
             agent_backend: ResolvedMicrovmAgentBackend::Native,
         };
@@ -4808,6 +4989,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
             storage_pool: "managed-agents-zfs".to_string(),
             image_alias: "pika-agent/dev".to_string(),
             insecure_tls: true,
+            openclaw_guest_ipv4_cidr: None,
             agent_kind: ResolvedMicrovmAgentKind::Openclaw,
             agent_backend: ResolvedMicrovmAgentBackend::Native,
         };
@@ -4847,6 +5029,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
             storage_pool: Some("managed-agents-zfs".to_string()),
             image_alias: None,
             insecure_tls: None,
+            openclaw_guest_ipv4_cidr: None,
         });
 
         let err = resolved_incus_params(Some(&requested)).expect_err("missing image alias");
@@ -5086,6 +5269,10 @@ GFs2pW5hEhS7cCO0qXaa5g==
         let (base_url, rx) = spawn_response_sequence_server(vec![
             ("200 OK", r#"{"type":"sync","metadata":{}}"#),
             (
+                "200 OK",
+                r#"{"type":"sync","metadata":{"devices":{"eth0":{"type":"nic","network":"incusbr0","name":"eth0"}}}}"#,
+            ),
+            (
                 "202 Accepted",
                 r#"{"type":"async","operation":"/1.0/operations/op-create","metadata":{"err":""}}"#,
             ),
@@ -5109,6 +5296,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 profile: Some("pika-agent".to_string()),
                 storage_pool: Some("managed-agents-zfs".to_string()),
                 image_alias: Some("pika-agent/dev".to_string()),
+                openclaw_guest_ipv4_cidr: Some("10.193.52.0/24".to_string()),
                 insecure_tls: Some(true),
             }),
         };
@@ -5143,6 +5331,13 @@ GFs2pW5hEhS7cCO0qXaa5g==
             .get("name")
             .and_then(serde_json::Value::as_str)
             .expect("volume name");
+
+        let profile_request = rx.recv().expect("captured profile request");
+        assert_eq!(profile_request.method, "GET");
+        assert_eq!(
+            profile_request.path,
+            "/1.0/profiles/pika-agent?project=managed-agents"
+        );
 
         let instance_request = rx.recv().expect("captured instance create request");
         assert_eq!(instance_request.method, "POST");
@@ -5182,7 +5377,13 @@ GFs2pW5hEhS7cCO0qXaa5g==
         assert!(instance_body["devices"]
             .get(INCUS_OPENCLAW_PROXY_DEVICE_NAME)
             .is_none());
-        assert!(instance_body["devices"].get("eth0").is_none());
+        assert_eq!(instance_body["devices"]["eth0"]["type"], "nic");
+        assert_eq!(instance_body["devices"]["eth0"]["network"], "incusbr0");
+        assert_eq!(instance_body["devices"]["eth0"]["name"], "eth0");
+        assert_eq!(
+            instance_body["devices"]["eth0"]["ipv4.address"],
+            instance_body["config"][INCUS_OPENCLAW_GUEST_IPV4_CONFIG_KEY]
+        );
         assert_eq!(
             instance_body["config"][INCUS_OPENCLAW_PROXY_HOST_CONFIG_KEY],
             "127.0.0.1"
@@ -5293,6 +5494,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 storage_pool: Some("managed-agents-zfs".to_string()),
                 image_alias: Some("pika-agent/dev".to_string()),
                 insecure_tls: None,
+                openclaw_guest_ipv4_cidr: None,
             }),
         };
         let provider = managed_vm_provider(Some(&requested)).expect("resolve incus provider");
@@ -5338,6 +5540,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 profile: Some("pika-agent".to_string()),
                 storage_pool: Some("managed-agents-zfs".to_string()),
                 image_alias: Some("pika-agent/dev".to_string()),
+                openclaw_guest_ipv4_cidr: Some("10.193.52.0/24".to_string()),
                 insecure_tls: Some(true),
             }),
         };
@@ -5372,6 +5575,10 @@ GFs2pW5hEhS7cCO0qXaa5g==
             ),
             (
                 "200 OK",
+                r#"{"type":"sync","metadata":{"devices":{"eth0":{"type":"nic","network":"incusbr0","name":"eth0"}}}}"#,
+            ),
+            (
+                "200 OK",
                 r#"{"type":"sync","metadata":{"status":"Running","network":{"enp5s0":{"addresses":[{"address":"10.193.52.24","family":"inet","scope":"global"}]}}}}"#,
             ),
             (
@@ -5393,6 +5600,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 profile: Some("pika-agent".to_string()),
                 storage_pool: Some("managed-agents-zfs".to_string()),
                 image_alias: Some("pika-agent/dev".to_string()),
+                openclaw_guest_ipv4_cidr: Some("10.193.52.0/24".to_string()),
                 insecure_tls: Some(true),
             }),
         };
@@ -5409,6 +5617,12 @@ GFs2pW5hEhS7cCO0qXaa5g==
             request.path,
             format!("/1.0/instances/{vm_id}?project=managed-agents")
         );
+        let profile_request = rx.recv().expect("captured profile request");
+        assert_eq!(profile_request.method, "GET");
+        assert_eq!(
+            profile_request.path,
+            "/1.0/profiles/pika-agent?project=managed-agents"
+        );
         let state_request = rx.recv().expect("captured instance state request");
         assert_eq!(state_request.method, "GET");
         assert_eq!(
@@ -5423,6 +5637,11 @@ GFs2pW5hEhS7cCO0qXaa5g==
         );
         let patch_body: serde_json::Value =
             serde_json::from_str(&patch_request.body).expect("parse proxy patch body");
+        assert_eq!(
+            patch_body["devices"]["eth0"]["ipv4.address"],
+            "10.193.52.24"
+        );
+        assert_eq!(patch_body["devices"]["eth0"]["network"], "incusbr0");
         assert_eq!(
             patch_body["devices"][INCUS_OPENCLAW_PROXY_DEVICE_NAME]["type"],
             "proxy"
@@ -5464,6 +5683,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 storage_pool: Some("managed-agents-zfs".to_string()),
                 image_alias: Some("pika-agent/dev".to_string()),
                 insecure_tls: None,
+                openclaw_guest_ipv4_cidr: None,
             }),
         };
         let provider = managed_vm_provider(Some(&requested)).expect("resolve incus provider");
@@ -5498,6 +5718,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 storage_pool: Some("managed-agents-zfs".to_string()),
                 image_alias: Some("pika-agent/dev".to_string()),
                 insecure_tls: None,
+                openclaw_guest_ipv4_cidr: None,
             }),
         };
         let provider = managed_vm_provider(Some(&requested)).expect("resolve incus provider");
@@ -5576,6 +5797,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 storage_pool: Some("managed-agents-zfs".to_string()),
                 image_alias: Some("pika-agent/dev".to_string()),
                 insecure_tls: None,
+                openclaw_guest_ipv4_cidr: None,
             }),
         };
         let provider = managed_vm_provider(Some(&requested)).expect("resolve incus provider");
@@ -5655,6 +5877,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 storage_pool: Some("managed-agents-zfs".to_string()),
                 image_alias: Some("pika-agent/dev".to_string()),
                 insecure_tls: None,
+                openclaw_guest_ipv4_cidr: None,
             }),
         };
         let provider = managed_vm_provider(Some(&requested)).expect("resolve incus provider");
@@ -5743,6 +5966,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 storage_pool: Some("managed-agents-zfs".to_string()),
                 image_alias: Some("pika-agent/dev".to_string()),
                 insecure_tls: None,
+                openclaw_guest_ipv4_cidr: None,
             }),
         };
         let provider = managed_vm_provider(Some(&requested)).expect("resolve incus provider");
@@ -5814,6 +6038,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
             storage_pool: Some("managed-agents-zfs".to_string()),
             image_alias: Some("pika-agent/dev".to_string()),
             insecure_tls: None,
+            openclaw_guest_ipv4_cidr: None,
         });
         let provider = managed_vm_provider(Some(&requested)).expect("resolve incus provider");
         provider
@@ -5868,6 +6093,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 storage_pool: "managed-agents-zfs".to_string(),
                 image_alias: "pika-agent/dev".to_string(),
                 insecure_tls: true,
+                openclaw_guest_ipv4_cidr: None,
                 agent_kind: ResolvedMicrovmAgentKind::Openclaw,
                 agent_backend: ResolvedMicrovmAgentBackend::Native,
             }),
@@ -5939,6 +6165,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 (INCUS_PROFILE_ENV, Some("pika-agent")),
                 (INCUS_STORAGE_POOL_ENV, Some("managed-agents-zfs")),
                 (INCUS_IMAGE_ALIAS_ENV, Some("pika-agent/dev")),
+                (INCUS_OPENCLAW_GUEST_IPV4_CIDR_ENV, Some("10.193.52.0/24")),
                 (INCUS_INSECURE_TLS_ENV, Some("true")),
                 ("PIKA_AGENT_MICROVM_KIND", Some("openclaw")),
             ],
@@ -5986,6 +6213,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 (INCUS_PROFILE_ENV, Some("pika-agent")),
                 (INCUS_STORAGE_POOL_ENV, Some("managed-agents-zfs")),
                 (INCUS_IMAGE_ALIAS_ENV, Some("pika-agent/dev")),
+                (INCUS_OPENCLAW_GUEST_IPV4_CIDR_ENV, Some("10.193.52.0/24")),
                 (INCUS_INSECURE_TLS_ENV, Some("true")),
             ],
             || {
@@ -6031,6 +6259,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 (INCUS_PROFILE_ENV, Some("pika-agent")),
                 (INCUS_STORAGE_POOL_ENV, Some("managed-agents-zfs")),
                 (INCUS_IMAGE_ALIAS_ENV, Some("pika-agent/dev")),
+                (INCUS_OPENCLAW_GUEST_IPV4_CIDR_ENV, Some("10.193.52.0/24")),
                 (INCUS_INSECURE_TLS_ENV, None),
                 (INCUS_CLIENT_CERT_PATH_ENV, None),
                 (INCUS_CLIENT_KEY_PATH_ENV, None),

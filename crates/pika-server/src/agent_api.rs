@@ -273,7 +273,7 @@ struct IncusOperationMetadata {
 struct IncusInstanceState {
     status: String,
     #[serde(default)]
-    network: BTreeMap<String, IncusInstanceNetwork>,
+    network: Option<BTreeMap<String, IncusInstanceNetwork>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1237,6 +1237,7 @@ impl IncusManagedVmProvider {
             .map_err(|err| self.rewrite_not_found(err, format!("incus vm not found: {vm_id}")))?;
         state
             .network
+            .unwrap_or_default()
             .values()
             .flat_map(|interface| interface.addresses.iter())
             .find_map(|address| {

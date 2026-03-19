@@ -2199,7 +2199,7 @@ impl IncusManagedVmProvider {
             .send()
             .await
             .with_context(|| context.to_string())?;
-        self.finish_operation_response(response, request_id, context)
+        self.finish_mutating_response(response, request_id, context)
             .await
     }
 
@@ -5677,6 +5677,74 @@ GFs2pW5hEhS7cCO0qXaa5g==
         assert_eq!(
             patch_body["devices"][INCUS_OPENCLAW_PROXY_DEVICE_NAME]["listen"],
             "tcp:100.81.250.67:24123"
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_vm_provider_loads_incus_openclaw_proxy_target_when_patch_returns_sync() {
+        let vm_id = "pika-agent-openclaw-target-sync";
+        let (base_url, rx) = spawn_response_sequence_server(vec![
+            (
+                "200 OK",
+                r#"{"type":"sync","metadata":{"config":{"user.pika.openclaw_proxy_host":"100.81.250.67","user.pika.openclaw_proxy_port":"24123"},"devices":{"pikastate":{"type":"disk","path":"/mnt/pika-state"}}}}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"type":"sync","metadata":{"devices":{"eth0":{"type":"nic","network":"incusbr0","name":"eth0"}}}}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"type":"sync","metadata":{"status":"Running","network":{"enp5s0":{"addresses":[{"address":"10.193.52.24","family":"inet","scope":"global"}]}}}}"#,
+            ),
+            ("200 OK", r#"{"type":"sync","metadata":{}}"#),
+        ]);
+        let requested = ManagedVmProvisionParams {
+            provider: Some(ProviderKind::Incus),
+            microvm: Some(MicrovmProvisionParams {
+                spawner_url: None,
+                kind: Some(MicrovmAgentKind::Openclaw),
+                backend: Some(pika_agent_control_plane::MicrovmAgentBackend::Native),
+            }),
+            incus: Some(IncusProvisionParams {
+                endpoint: Some(base_url.clone()),
+                project: Some("managed-agents".to_string()),
+                profile: Some("pika-agent".to_string()),
+                storage_pool: Some("managed-agents-zfs".to_string()),
+                image_alias: Some("pika-agent/dev".to_string()),
+                openclaw_guest_ipv4_cidr: Some("10.193.52.0/24".to_string()),
+                insecure_tls: Some(true),
+            }),
+        };
+        let provider = managed_vm_provider(Some(&requested)).expect("resolve incus provider");
+        let target = provider
+            .get_openclaw_proxy_target(vm_id, Some("req-incus-openclaw-target-sync"))
+            .await
+            .expect("load incus OpenClaw proxy target with sync patch");
+        assert_eq!(target.base_url, "http://100.81.250.67:24123");
+
+        let request = rx.recv().expect("captured instance details request");
+        assert_eq!(request.method, "GET");
+        assert_eq!(
+            request.path,
+            format!("/1.0/instances/{vm_id}?project=managed-agents")
+        );
+        let profile_request = rx.recv().expect("captured profile request");
+        assert_eq!(profile_request.method, "GET");
+        assert_eq!(
+            profile_request.path,
+            "/1.0/profiles/pika-agent?project=managed-agents"
+        );
+        let state_request = rx.recv().expect("captured instance state request");
+        assert_eq!(state_request.method, "GET");
+        assert_eq!(
+            state_request.path,
+            format!("/1.0/instances/{vm_id}/state?project=managed-agents")
+        );
+        let patch_request = rx.recv().expect("captured proxy patch request");
+        assert_eq!(patch_request.method, "PATCH");
+        assert_eq!(
+            patch_request.path,
+            format!("/1.0/instances/{vm_id}?project=managed-agents")
         );
     }
 

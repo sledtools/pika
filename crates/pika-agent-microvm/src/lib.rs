@@ -1098,6 +1098,9 @@ start_service() {{
   case "$service_kind" in
     pikachat_daemon)
       echo "[microvm-agent] starting pikachat daemon via $bin" >&2
+      service_log_path="$(workspace_path "$(plan_value '.readiness_check.path')")"
+      mkdir -p "$(dirname "$service_log_path")"
+      rm -f "$service_log_path"
       daemon_args=(
         daemon
         --state-dir "$daemon_state_dir"
@@ -1133,7 +1136,7 @@ start_service() {{
           exit 1
           ;;
       esac
-      "$bin" "${{daemon_args[@]}}" &
+      "$bin" "${{daemon_args[@]}}" >>"$service_log_path" 2>&1 &
       agent_pid=$!
       ;;
     openclaw_gateway)
@@ -1646,6 +1649,7 @@ if [[ "$cmd" == "daemon" ]]; then
   if [[ -n "${PIKA_TEST_DAEMON_READY_LOG_PATH:-}" ]]; then
     printf '%s\n' "daemon-ready" >> "${PIKA_TEST_DAEMON_READY_LOG_PATH}"
   fi
+  printf '%s\n' '{"type":"ready","pubkey":"test","npub":"npub1test"}'
   printf '%s\n' '{"type":"ready","pubkey":"test","npub":"npub1test"}' >> "${PIKA_TEST_READY_LOG_PATH}"
   trap 'exit 0' TERM INT
   while :; do
@@ -2106,6 +2110,7 @@ done
         assert!(script.contains("STARTUP_PLAN_PATH=\"/workspace/pika-agent/startup-plan.json\""));
         assert!(script.contains("ready_path"));
         assert!(script.contains("failed_path"));
+        assert!(script.contains("service_log_path"));
         assert!(script.contains("trap cleanup_agent EXIT TERM INT"));
         assert!(script.contains("startup plan runner requires jq"));
         assert!(script.contains("--state-dir \"$daemon_state_dir\""));
@@ -2113,6 +2118,7 @@ done
         assert!(script.contains("plan_value '.agent_kind'"));
         assert!(script.contains("plan_value '.backend_mode'"));
         assert!(script.contains("wait_for_service_ready"));
+        assert!(script.contains("rm -f \"$service_log_path\""));
         assert!(script.contains("case \"$backend_mode\" in"));
         assert!(script.contains("case \"$readiness_kind\""));
         assert!(script.contains("curl -fsS --max-time 2 \"$readiness_url\""));
@@ -2145,6 +2151,7 @@ done
         assert!(!script.contains("npm_cache_dir="));
         assert!(!script.contains("NPM_CONFIG_CACHE"));
         assert!(script.contains("plan_value '.service.acp_backend.exec_command'"));
+        assert!(script.contains("\"$bin\" \"${daemon_args[@]}\" >>\"$service_log_path\" 2>&1 &"));
         assert!(
             script.contains("invalid startup plan: backend_mode=acp but ACP payload is missing")
         );

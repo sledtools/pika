@@ -18,6 +18,8 @@ pub struct ForgeLane {
     pub entrypoint: String,
     pub command: Vec<String>,
     pub paths: Vec<String>,
+    pub concurrency_group: Option<String>,
+    pub staged_linux_target: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -40,10 +42,16 @@ struct LaneGroup {
 struct LaneFile {
     id: String,
     title: String,
+    #[serde(default)]
     entrypoint: String,
+    #[serde(default)]
     command: Vec<String>,
     #[serde(default)]
     paths: Vec<String>,
+    #[serde(default)]
+    concurrency_group: Option<String>,
+    #[serde(default)]
+    staged_linux_target: Option<String>,
 }
 
 pub fn parse_manifest(raw: &str) -> anyhow::Result<ForgeCiManifest> {
@@ -99,18 +107,53 @@ fn map_lane(lane: LaneFile) -> anyhow::Result<ForgeLane> {
     if lane.id.trim().is_empty() {
         return Err(anyhow!("forge lane id must not be empty"));
     }
-    if lane.command.is_empty() {
+    let staged_linux_target = lane
+        .staged_linux_target
+        .as_ref()
+        .map(|target| target.trim())
+        .filter(|target| !target.is_empty())
+        .map(ToOwned::to_owned);
+    if staged_linux_target.is_none() && lane.command.is_empty() {
         return Err(anyhow!(
             "forge lane `{}` command must not be empty",
             lane.id
         ));
     }
+    let entrypoint = if lane.entrypoint.trim().is_empty() {
+        staged_linux_target
+            .as_ref()
+            .map(|target| format!("./scripts/pikaci-staged-linux-remote.sh run {target}"))
+            .ok_or_else(|| anyhow!("forge lane `{}` entrypoint must not be empty", lane.id))?
+    } else {
+        lane.entrypoint
+    };
+    let command = match staged_linux_target.as_ref() {
+        Some(target) => vec![
+            "./scripts/pikaci-staged-linux-remote.sh".to_string(),
+            "run".to_string(),
+            target.clone(),
+        ],
+        None => lane.command,
+    };
+    let concurrency_group = lane
+        .concurrency_group
+        .as_ref()
+        .map(|group| group.trim())
+        .filter(|group| !group.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            staged_linux_target
+                .as_ref()
+                .map(|target| format!("staged-linux:{target}"))
+        });
     Ok(ForgeLane {
         id: lane.id,
         title: lane.title,
-        entrypoint: lane.entrypoint,
-        command: lane.command,
+        entrypoint,
+        command,
         paths: lane.paths,
+        concurrency_group,
+        staged_linux_target,
     })
 }
 
@@ -135,7 +178,8 @@ mod tests {
         let selected = select_branch_lanes(&manifest, &changed).expect("select lanes");
         let ids = selected.into_iter().map(|lane| lane.id).collect::<Vec<_>>();
 
-        assert!(ids.contains(&"pika".to_string()));
+        assert!(ids.contains(&"pika_rust".to_string()));
+        assert!(ids.contains(&"pika_followup".to_string()));
         assert!(ids.contains(&"fixture".to_string()));
         assert!(!ids.contains(&"notifications".to_string()));
         assert!(!ids.contains(&"rmp".to_string()));
@@ -149,7 +193,8 @@ mod tests {
         let selected = select_branch_lanes(&manifest, &changed).expect("select lanes");
         let ids = selected.into_iter().map(|lane| lane.id).collect::<Vec<_>>();
 
-        assert!(ids.contains(&"pika".to_string()));
+        assert!(ids.contains(&"pika_rust".to_string()));
+        assert!(ids.contains(&"pika_followup".to_string()));
         assert!(ids.contains(&"pikachat".to_string()));
         assert!(ids.contains(&"apple_host_sanity".to_string()));
         assert!(ids.contains(&"fixture".to_string()));
@@ -164,5 +209,76 @@ mod tests {
 
         assert!(!selected.is_empty());
         assert_eq!(selected.len(), manifest.branch_lanes.len());
+    }
+
+    #[test]
+    fn staged_linux_target_synthesizes_remote_command_and_group() {
+        let manifest = parse_manifest(
+            r#"
+version = 1
+nightly_schedule_utc = "08:00"
+
+[[branch.lanes]]
+id = "linux"
+title = "linux"
+staged_linux_target = "pre-merge-pika-rust"
+
+[[nightly.lanes]]
+id = "nightly"
+title = "nightly"
+entrypoint = "./nightly.sh"
+command = ["./nightly.sh"]
+"#,
+        )
+        .expect("manifest");
+
+        let lane = &manifest.branch_lanes[0];
+        assert_eq!(
+            lane.command,
+            vec![
+                "./scripts/pikaci-staged-linux-remote.sh".to_string(),
+                "run".to_string(),
+                "pre-merge-pika-rust".to_string(),
+            ]
+        );
+        assert_eq!(
+            lane.entrypoint,
+            "./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-rust"
+        );
+        assert_eq!(
+            lane.concurrency_group.as_deref(),
+            Some("staged-linux:pre-merge-pika-rust")
+        );
+    }
+
+    #[test]
+    fn checked_in_authoritative_linux_lanes_use_staged_remote_commands() {
+        let manifest =
+            parse_manifest(include_str!("../../../ci/forge-lanes.toml")).expect("manifest");
+        for (lane_id, target) in [
+            ("pika_rust", "pre-merge-pika-rust"),
+            ("pika_followup", "pre-merge-pika-followup"),
+            ("notifications", "pre-merge-notifications"),
+            ("agent_contracts", "pre-merge-agent-contracts"),
+            ("rmp", "pre-merge-rmp"),
+            ("pikachat", "pre-merge-pikachat-rust"),
+            ("pikachat_openclaw_e2e", "pre-merge-pikachat-openclaw-e2e"),
+            ("fixture", "pre-merge-fixture-rust"),
+        ] {
+            let lane = manifest
+                .branch_lanes
+                .iter()
+                .find(|lane| lane.id == lane_id)
+                .expect("lane exists");
+            assert_eq!(lane.staged_linux_target.as_deref(), Some(target));
+            assert_eq!(
+                lane.command,
+                vec![
+                    "./scripts/pikaci-staged-linux-remote.sh".to_string(),
+                    "run".to_string(),
+                    target.to_string(),
+                ]
+            );
+        }
     }
 }

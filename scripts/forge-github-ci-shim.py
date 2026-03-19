@@ -143,13 +143,27 @@ def lane_timeout_minutes(lane_id: str) -> int:
     return 60
 
 
+def lane_entrypoint(lane: dict) -> str:
+    target = lane.get("staged_linux_target")
+    if target:
+        return f"./scripts/pikaci-staged-linux-remote.sh run {target}"
+    return lane["entrypoint"]
+
+
+def lane_command(lane: dict) -> list[str]:
+    target = lane.get("staged_linux_target")
+    if target:
+        return ["./scripts/pikaci-staged-linux-remote.sh", "run", target]
+    return list(lane["command"])
+
+
 def lane_to_matrix_entry(lane: dict, mode: str) -> dict:
-    command = list(lane["command"])
+    command = lane_command(lane)
     uses_apple_remote = any("pikaci-apple-remote.sh" in part for part in command)
     return {
         "id": lane["id"],
         "title": lane["title"],
-        "entrypoint": lane["entrypoint"],
+        "entrypoint": lane_entrypoint(lane),
         "command": command,
         "command_shell": shlex.join(command),
         "mode": mode,

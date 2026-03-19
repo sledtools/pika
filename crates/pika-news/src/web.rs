@@ -2893,6 +2893,7 @@ mod tests {
                 repo: "sledtools/pika".to_string(),
                 canonical_git_dir: root.path().join("pika.git").display().to_string(),
                 default_branch: "master".to_string(),
+                ci_concurrency: Some(2),
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
@@ -2929,6 +2930,7 @@ mod tests {
                 repo: "sledtools/pika".to_string(),
                 canonical_git_dir: canonical.display().to_string(),
                 default_branch: "master".to_string(),
+                ci_concurrency: Some(2),
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
@@ -3122,6 +3124,7 @@ mod tests {
                 repo: "sledtools/pika".to_string(),
                 canonical_git_dir: "/tmp/pika.git".to_string(),
                 default_branch: "master".to_string(),
+                ci_concurrency: Some(2),
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
@@ -3181,6 +3184,7 @@ mod tests {
                 repo: "sledtools/pika".to_string(),
                 canonical_git_dir: "/tmp/pika.git".to_string(),
                 default_branch: "master".to_string(),
+                ci_concurrency: Some(2),
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
@@ -3235,6 +3239,8 @@ mod tests {
                     entrypoint: "just checks::pre-merge-pika".to_string(),
                     command: vec!["just".to_string(), "checks::pre-merge-pika".to_string()],
                     paths: vec![],
+                    concurrency_group: None,
+                    staged_linux_target: None,
                 }],
             )
             .expect("queue branch ci");
@@ -3254,6 +3260,7 @@ mod tests {
                 repo: "sledtools/pika".to_string(),
                 canonical_git_dir: "/tmp/pika.git".to_string(),
                 default_branch: "master".to_string(),
+                ci_concurrency: Some(2),
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
@@ -3303,6 +3310,8 @@ mod tests {
             entrypoint: "just checks::nightly-pika-e2e".to_string(),
             command: vec!["just".to_string(), "checks::nightly-pika-e2e".to_string()],
             paths: vec![],
+            concurrency_group: None,
+            staged_linux_target: None,
         };
         store
             .queue_nightly_run(
@@ -3344,6 +3353,7 @@ mod tests {
                 repo: "sledtools/pika".to_string(),
                 canonical_git_dir: "/tmp/pika.git".to_string(),
                 default_branch: "master".to_string(),
+                ci_concurrency: Some(2),
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
@@ -3435,6 +3445,7 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
                 repo: "sledtools/pika".to_string(),
                 canonical_git_dir: bare.to_str().expect("bare path").to_string(),
                 default_branch: "master".to_string(),
+                ci_concurrency: Some(2),
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
                 ci_command: vec!["./ci.sh".to_string()],
@@ -3541,6 +3552,8 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
                     entrypoint: "just checks::pre-merge-pika".to_string(),
                     command: vec!["just".to_string(), "checks::pre-merge-pika".to_string()],
                     paths: vec![],
+                    concurrency_group: None,
+                    staged_linux_target: None,
                 }],
             )
             .expect("queue ci");
@@ -3592,6 +3605,8 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
             entrypoint: "just checks::nightly-pika-e2e".to_string(),
             command: vec!["just".to_string(), "checks::nightly-pika-e2e".to_string()],
             paths: vec![],
+            concurrency_group: None,
+            staged_linux_target: None,
         };
         store
             .queue_nightly_run(

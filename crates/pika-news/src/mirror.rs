@@ -215,6 +215,7 @@ mod tests {
                 repo: "sledtools/pika".to_string(),
                 canonical_git_dir: canonical_git_dir.to_string(),
                 default_branch: "master".to_string(),
+                ci_concurrency: Some(2),
                 mirror_remote: mirror_remote.map(str::to_string),
                 mirror_poll_interval_secs: Some(300),
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],

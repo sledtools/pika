@@ -2,10 +2,39 @@ version = 1
 nightly_schedule_utc = "08:00"
 
 [[branch.lanes]]
-id = "pika"
-title = "check-pika"
-entrypoint = "just checks::pre-merge-pika"
-command = ["nix", "develop", ".#default", "-c", "just", "checks::pre-merge-pika"]
+id = "pika_rust"
+title = "check-pika-rust"
+staged_linux_target = "pre-merge-pika-rust"
+paths = [
+  "ci/forge-lanes.toml",
+  "Cargo.toml",
+  "Cargo.lock",
+  "flake.nix",
+  "flake.lock",
+  "nix/**",
+  "justfile",
+  ".github/**",
+  "rust/**",
+  "cli/**",
+  "crates/pika-desktop/**",
+  "crates/pika-media/**",
+  "crates/pika-marmot-runtime/**",
+  "crates/pika-nse/**",
+  "crates/pika-relay-profiles/**",
+  "crates/pika-tls/**",
+  "uniffi-bindgen/**",
+  "android/**",
+  "ios/**",
+  "docs/**",
+  "scripts/forge-nightly-pika-ui-android.sh",
+  "scripts/**",
+  "tools/**",
+]
+
+[[branch.lanes]]
+id = "pika_followup"
+title = "check-pika-followup"
+staged_linux_target = "pre-merge-pika-followup"
 paths = [
   "ci/forge-lanes.toml",
   "Cargo.toml",
@@ -35,8 +64,7 @@ paths = [
 [[branch.lanes]]
 id = "notifications"
 title = "check-notifications"
-entrypoint = "just checks::pre-merge-notifications"
-command = ["nix", "develop", ".#default", "-c", "just", "checks::pre-merge-notifications"]
+staged_linux_target = "pre-merge-notifications"
 paths = [
   "ci/forge-lanes.toml",
   "Cargo.toml",
@@ -70,8 +98,7 @@ paths = [
 [[branch.lanes]]
 id = "agent_contracts"
 title = "check-agent-contracts"
-entrypoint = "just checks::pre-merge-agent-contracts"
-command = ["nix", "develop", ".#default", "-c", "just", "checks::pre-merge-agent-contracts"]
+staged_linux_target = "pre-merge-agent-contracts"
 paths = [
   "ci/forge-lanes.toml",
   "Cargo.toml",
@@ -114,8 +141,7 @@ paths = [
 [[branch.lanes]]
 id = "rmp"
 title = "check-rmp"
-entrypoint = "just checks::pre-merge-rmp"
-command = ["nix", "develop", ".#default", "-c", "just", "checks::pre-merge-rmp"]
+staged_linux_target = "pre-merge-rmp"
 paths = [
   "ci/forge-lanes.toml",
   "Cargo.toml",
@@ -137,8 +163,7 @@ paths = [
 [[branch.lanes]]
 id = "pikachat"
 title = "check-pikachat"
-entrypoint = "just checks::pre-merge-pikachat"
-command = ["nix", "develop", ".#default", "-c", "just", "checks::pre-merge-pikachat"]
+staged_linux_target = "pre-merge-pikachat-rust"
 paths = [
   "ci/forge-lanes.toml",
   "Cargo.toml",
@@ -181,6 +206,7 @@ id = "apple_host_sanity"
 title = "check-apple-host-sanity"
 entrypoint = "./scripts/pikaci-apple-remote.sh run --just-recipe apple-host-sanity"
 command = ["./scripts/pikaci-apple-remote.sh", "run", "--just-recipe", "apple-host-sanity"]
+concurrency_group = "apple-host"
 paths = [
   "ci/forge-lanes.toml",
   "Cargo.toml",
@@ -221,8 +247,7 @@ paths = [
 [[branch.lanes]]
 id = "pikachat_openclaw_e2e"
 title = "check-pikachat-openclaw-e2e"
-entrypoint = "just checks::pre-merge-pikachat-openclaw-e2e"
-command = ["nix", "develop", ".#default", "-c", "just", "checks::pre-merge-pikachat-openclaw-e2e"]
+staged_linux_target = "pre-merge-pikachat-openclaw-e2e"
 paths = [
   "ci/forge-lanes.toml",
   "Cargo.toml",
@@ -257,8 +282,7 @@ paths = [
 [[branch.lanes]]
 id = "fixture"
 title = "check-fixture"
-entrypoint = "just checks::pre-merge-fixture"
-command = ["nix", "develop", ".#default", "-c", "just", "checks::pre-merge-fixture"]
+staged_linux_target = "pre-merge-fixture-rust"
 paths = [
   "ci/forge-lanes.toml",
   "Cargo.toml",
@@ -332,9 +356,11 @@ id = "nightly_pika_ui_android"
 title = "nightly-pika-ui-android"
 entrypoint = "./scripts/forge-nightly-pika-ui-android.sh"
 command = ["./scripts/forge-nightly-pika-ui-android.sh"]
+concurrency_group = "nightly-android"
 
 [[nightly.lanes]]
 id = "nightly_apple_host_bundle"
 title = "nightly-apple-host-bundle"
 entrypoint = "./scripts/pikaci-apple-remote.sh run --just-recipe apple-host-bundle"
 command = ["./scripts/pikaci-apple-remote.sh", "run", "--just-recipe", "apple-host-bundle"]
+concurrency_group = "apple-host"

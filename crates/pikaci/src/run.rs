@@ -17,9 +17,10 @@ use crate::executor::{
     HostContext, compiled_guest_command, materialize_vfkit_runner_flake,
     prepare_remote_linux_vm_backend, prepare_vfkit_runner_link,
     prepared_output_remote_helper_binary, prepared_output_remote_launcher_binary,
-    prepared_output_remote_work_dir, prepared_output_ssh_host, remote_linux_vm_prepare_artifact,
-    run_job_on_runner, ssh_nix_binary, staged_linux_remote_defaults,
-    staged_linux_remote_snapshot_dir, sync_snapshot_to_remote,
+    prepared_output_remote_work_dir, prepared_output_ssh_host,
+    remote_linux_vm_execution_from_error, remote_linux_vm_prepare_artifact, run_job_on_runner,
+    ssh_nix_binary, staged_linux_remote_defaults, staged_linux_remote_snapshot_dir,
+    sync_snapshot_to_remote,
 };
 use crate::model::{
     ExecuteNode, JobRecord, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope, PrepareNode,
@@ -486,6 +487,7 @@ fn run_one_job(job: &JobSpec, plan_node_id: &str, ctx: &HostContext) -> anyhow::
             job_record.status = RunStatus::Failed;
             job_record.finished_at = Some(finished_at);
             job_record.message = Some(format!("{err:#}"));
+            job_record.remote_linux_vm_execution = remote_linux_vm_execution_from_error(&err);
         }
     }
     write_job_record(&ctx.job_dir, &job_record)?;

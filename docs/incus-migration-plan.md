@@ -810,8 +810,15 @@ Current `pika-build` proof status:
   wrapper, pull artifacts, and delete the instance
 - this path is currently validated against bounded follow-up lanes (`pika-actionlint`,
   `pika-doc-contracts`) on `pika-build`
+- the Incus executor now preserves the staged-job read-only workspace contract and persists remote
+  backend phase metadata even when an Incus execution fails during runtime bring-up
 - running `pikaci` on `pika-build` itself still needs a localhost fast path instead of SSH for the
   remote work-dir seam, because self-SSH is not guaranteed there
+- the first explicit single-host shared-mount experiment is implemented behind
+  `PIKACI_REMOTE_LINUX_VM_INCUS_MODE=single_host_shared`, but it is not yet a passing dataplane on
+  `pika-build`: Incus VM start currently fails while attaching the shared disk device with QEMU
+  `vhost-user-fs-pci`/virtiofs slot errors, even after shortening instance names and reducing the
+  share set
 - the same on-host validation flow still does not produce a clean microVM comparison baseline yet;
   the existing remote runner-flake path fails earlier when `pikaci` itself is executed on
   `pika-build`

@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::env;
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -70,26 +71,30 @@ pub fn ensure_canonical_repo(repo: &ForgeRepoConfig) -> anyhow::Result<()> {
 }
 
 pub fn install_hooks(repo: &ForgeRepoConfig, secret: &str) -> anyhow::Result<()> {
-    let git_dir = canonical_git_dir(repo);
-    fs::create_dir_all(git_dir.join("hooks"))
-        .with_context(|| format!("create hooks dir in {}", git_dir.display()))?;
+    let hooks_dir = effective_hooks_dir(repo)?;
+    fs::create_dir_all(&hooks_dir)
+        .with_context(|| format!("create hooks dir in {}", hooks_dir.display()))?;
 
     let update_hook = format!(
-        "#!/usr/bin/env bash\nset -euo pipefail\nref_name=\"$1\"\nif [[ \"$ref_name\" == \"refs/heads/{default_branch}\" ]]; then\n  echo \"direct pushes to {default_branch} are rejected; merge through the forge\" >&2\n  exit 1\nfi\n",
+        "#!/usr/bin/env bash\nset -euo pipefail\nexport PATH=\"/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin:${{PATH:-}}\"\nref_name=\"$1\"\nif [[ \"$ref_name\" == \"refs/heads/{default_branch}\" ]]; then\n  echo \"direct pushes to {default_branch} are rejected; merge through the forge\" >&2\n  exit 1\nfi\n",
         default_branch = repo.default_branch
     );
-    write_hook(&git_dir.join("hooks/update"), &update_hook)?;
+    write_hook(&hooks_dir.join("update"), &update_hook)?;
 
     let hook_url = repo
         .hook_url
         .as_deref()
         .ok_or_else(|| anyhow!("forge hook_url missing for {}", repo.repo))?;
+    let openssl = shell_quote(&resolve_hook_tool("openssl")?);
+    let curl = shell_quote(&resolve_hook_tool("curl")?);
     let post_receive_hook = format!(
-        "#!/usr/bin/env bash\nset -euo pipefail\npayload=\"$(mktemp)\"\ntrap 'rm -f \"$payload\"' EXIT\ncat >\"$payload\"\nif [[ ! -s \"$payload\" ]]; then\n  exit 0\nfi\nsignature=\"sha256=$(openssl dgst -sha256 -hmac {secret} -hex \"$payload\" | sed 's/^.*= //')\"\nif ! curl --silent --show-error --fail -X POST -H \"content-type: text/plain\" -H \"x-pika-signature-256: ${{signature}}\" --data-binary @\"$payload\" {url} >/dev/null; then\n  echo \"warning: failed to notify pika forge post-receive hook\" >&2\nfi\n",
+        "#!/usr/bin/env bash\nset -euo pipefail\nexport PATH=\"/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin:${{PATH:-}}\"\npayload=\"$(mktemp)\"\ntrap 'rm -f \"$payload\"' EXIT\ncat >\"$payload\"\nif [[ ! -s \"$payload\" ]]; then\n  exit 0\nfi\nsignature=\"sha256=$({openssl} dgst -sha256 -hmac {secret} -hex \"$payload\" | sed 's/^.*= //')\"\nif ! {curl} --silent --show-error --fail -X POST -H \"content-type: text/plain\" -H \"x-pika-signature-256: ${{signature}}\" --data-binary @\"$payload\" {url} >/dev/null; then\n  echo \"warning: failed to notify pika forge post-receive hook\" >&2\nfi\n",
+        openssl = openssl,
+        curl = curl,
         secret = shell_quote(secret),
         url = shell_quote(hook_url),
     );
-    write_hook(&git_dir.join("hooks/post-receive"), &post_receive_hook)?;
+    write_hook(&hooks_dir.join("post-receive"), &post_receive_hook)?;
 
     Ok(())
 }
@@ -429,6 +434,40 @@ fn canonical_git_dir(repo: &ForgeRepoConfig) -> PathBuf {
     PathBuf::from(&repo.canonical_git_dir)
 }
 
+fn effective_hooks_dir(repo: &ForgeRepoConfig) -> anyhow::Result<PathBuf> {
+    let git_dir = canonical_git_dir(repo);
+    let output = Command::new("git")
+        .arg("--git-dir")
+        .arg(&git_dir)
+        .args(["config", "--get", "core.hooksPath"])
+        .output()
+        .context("resolve git hooksPath for canonical bare repo")?;
+    if !output.status.success() {
+        return Ok(git_dir.join("hooks"));
+    }
+    let configured = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if configured.is_empty() {
+        return Ok(git_dir.join("hooks"));
+    }
+    let path = PathBuf::from(configured);
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(git_dir.join(path))
+    }
+}
+
+fn resolve_hook_tool(name: &str) -> anyhow::Result<String> {
+    let path = env::var_os("PATH").ok_or_else(|| anyhow!("PATH is not set"))?;
+    for dir in env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Ok(candidate.to_string_lossy().into_owned());
+        }
+    }
+    bail!("required hook tool `{name}` was not found on PATH");
+}
+
 fn push_mirror(
     repo: &ForgeRepoConfig,
     remote_name: &str,
@@ -719,7 +758,8 @@ mod tests {
 
     use super::{
         close_branch, create_merge_commit, current_branch_head, inspect_mirror, install_hooks,
-        merge_branch, publish_merge_refs, run_ci_command_for_head_with_heartbeat, write_merge_tree,
+        merge_branch, publish_merge_refs, resolve_hook_tool,
+        run_ci_command_for_head_with_heartbeat, write_merge_tree,
     };
     use crate::config::ForgeRepoConfig;
 
@@ -816,8 +856,20 @@ mod tests {
 
     #[test]
     fn update_hook_rejects_direct_master_pushes() {
-        let (_root, forge_repo, seed) = setup_repo();
+        let (root, forge_repo, seed) = setup_repo();
+        git(
+            root.path(),
+            &[
+                "--git-dir",
+                forge_repo.canonical_git_dir.as_str(),
+                "config",
+                "core.hooksPath",
+                ".githooks",
+            ],
+        );
         install_hooks(&forge_repo, "secret").expect("install hooks");
+        assert!(root.path().join("pika.git/.githooks/update").exists());
+        assert!(root.path().join("pika.git/.githooks/post-receive").exists());
 
         std::fs::write(seed.join("README.md"), "updated\n").expect("update readme");
         git(&seed, &["add", "README.md"]);
@@ -837,6 +889,21 @@ mod tests {
             "unexpected stderr: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[test]
+    fn post_receive_hook_exports_nixos_safe_path() {
+        let (_root, forge_repo, _seed) = setup_repo();
+        install_hooks(&forge_repo, "secret").expect("install hooks");
+
+        let hook = std::fs::read_to_string(
+            Path::new(&forge_repo.canonical_git_dir).join("hooks/post-receive"),
+        )
+        .expect("read post-receive hook");
+        assert!(hook.contains("/run/current-system/sw/bin"));
+        assert!(hook.contains(&resolve_hook_tool("openssl").expect("resolve openssl")));
+        assert!(hook.contains(&resolve_hook_tool("curl").expect("resolve curl")));
+        assert!(hook.contains("x-pika-signature-256"));
     }
 
     #[test]

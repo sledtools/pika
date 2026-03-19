@@ -548,14 +548,102 @@ command = ["python3", "-c", "print('nightly')"]
             ids = [lane["id"] for lane in payload["include"]]
             self.assertEqual(ids, ["override_lane"])
 
+    def test_checked_in_branch_catalog_matches_expected_pre_merge_shadow_jobs(self) -> None:
+        completed = subprocess.run(
+            ["python3", str(SCRIPT), "select", "--mode", "branch", "--all"],
+            cwd=REPO_ROOT,
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        payload = json.loads(completed.stdout)
+        lanes = payload["include"]
+        self.assertEqual(
+            [lane["id"] for lane in lanes],
+            [
+                "pika_rust",
+                "pika_followup",
+                "notifications",
+                "agent_contracts",
+                "rmp",
+                "pikachat",
+                "apple_host_sanity",
+                "pikachat_openclaw_e2e",
+                "fixture",
+            ],
+        )
+        commands = {lane["id"]: lane["command"] for lane in lanes}
+        groups = {lane["id"]: lane["concurrency_group"] for lane in lanes}
+        self.assertEqual(
+            commands["pika_rust"],
+            ["./scripts/pikaci-staged-linux-remote.sh", "run", "pre-merge-pika-rust"],
+        )
+        self.assertEqual(groups["pika_rust"], "staged-linux:pre-merge-pika-rust")
+        self.assertEqual(
+            commands["pika_followup"],
+            ["./scripts/pikaci-staged-linux-remote.sh", "run", "pre-merge-pika-followup"],
+        )
+        self.assertEqual(groups["pika_followup"], "staged-linux:pre-merge-pika-followup")
+        self.assertEqual(
+            commands["notifications"],
+            ["./scripts/pikaci-staged-linux-remote.sh", "run", "pre-merge-notifications"],
+        )
+        self.assertEqual(groups["notifications"], "staged-linux:pre-merge-notifications")
+        self.assertEqual(
+            commands["agent_contracts"],
+            ["./scripts/pikaci-staged-linux-remote.sh", "run", "pre-merge-agent-contracts"],
+        )
+        self.assertEqual(groups["agent_contracts"], "staged-linux:pre-merge-agent-contracts")
+        self.assertEqual(
+            commands["rmp"],
+            ["./scripts/pikaci-staged-linux-remote.sh", "run", "pre-merge-rmp"],
+        )
+        self.assertEqual(groups["rmp"], "staged-linux:pre-merge-rmp")
+        self.assertEqual(
+            commands["pikachat"],
+            ["./scripts/pikaci-staged-linux-remote.sh", "run", "pre-merge-pikachat-rust"],
+        )
+        self.assertEqual(groups["pikachat"], "staged-linux:pre-merge-pikachat-rust")
+        self.assertEqual(
+            commands["pikachat_openclaw_e2e"],
+            [
+                "./scripts/pikaci-staged-linux-remote.sh",
+                "run",
+                "pre-merge-pikachat-openclaw-e2e",
+            ],
+        )
+        self.assertEqual(
+            groups["pikachat_openclaw_e2e"],
+            "staged-linux:pre-merge-pikachat-openclaw-e2e",
+        )
+        self.assertEqual(
+            commands["fixture"],
+            ["./scripts/pikaci-staged-linux-remote.sh", "run", "pre-merge-fixture-rust"],
+        )
+        self.assertEqual(groups["fixture"], "staged-linux:pre-merge-fixture-rust")
+        self.assertEqual(
+            commands["apple_host_sanity"],
+            [
+                "./scripts/pikaci-apple-remote.sh",
+                "run",
+                "--just-recipe",
+                "apple-host-sanity",
+            ],
+        )
+        self.assertEqual(groups["apple_host_sanity"], "apple-host")
+
     def test_workflow_uses_pull_request_not_pull_request_target(self) -> None:
         workflow = (REPO_ROOT / ".github" / "workflows" / "pre-merge.yml").read_text(
             encoding="utf-8"
         )
         self.assertIn("pull_request:\n", workflow)
         self.assertNotIn("pull_request_target:", workflow)
+        self.assertNotIn("dorny/paths-filter", workflow)
         self.assertIn("path: pr", workflow)
         self.assertIn("FORGE_GITHUB_CI_REPO_ROOT", workflow)
+        self.assertIn('fromJSON(needs.select-branch.outputs.matrix)', workflow)
+        self.assertIn('forge-github-ci-shim.py" select', workflow)
+        self.assertIn('forge-github-ci-shim.py" run', workflow)
         self.assertIn("--compare-repo-root \"$GITHUB_WORKSPACE\"", workflow)
         self.assertIn("--head-repo-root \"$GITHUB_WORKSPACE/pr\"", workflow)
 

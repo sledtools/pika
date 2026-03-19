@@ -13,7 +13,6 @@ let
       repo = "sledtools/pika";
       canonical_git_dir = "${serviceStateDir}/pika.git";
       default_branch = "master";
-      ci_concurrency = 2;
       mirror_remote = "github";
       mirror_poll_interval_secs = 300;
       hook_url = "http://127.0.0.1:${toString servicePort}/news/webhook";

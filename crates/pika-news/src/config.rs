@@ -17,7 +17,6 @@ pub const DEFAULT_BIND_PORT: u16 = 8787;
 pub const DEFAULT_FORGE_REPO: &str = "sledtools/pika";
 pub const DEFAULT_DEFAULT_BRANCH: &str = "master";
 pub const DEFAULT_MIRROR_POLL_INTERVAL_SECS: u64 = 300;
-pub const DEFAULT_FORGE_CI_CONCURRENCY: usize = 2;
 
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
@@ -83,8 +82,8 @@ impl Config {
             if forge.default_branch.trim().is_empty() {
                 forge.default_branch = DEFAULT_DEFAULT_BRANCH.to_string();
             }
-            if forge.ci_concurrency.unwrap_or(0) == 0 {
-                forge.ci_concurrency = Some(DEFAULT_FORGE_CI_CONCURRENCY);
+            if forge.ci_concurrency == Some(0) {
+                forge.ci_concurrency = None;
             }
             if forge.ci_command.is_empty() {
                 forge.ci_command = default_ci_command();
@@ -227,6 +226,7 @@ canonical_git_dir = "/srv/test.git"
         assert_eq!(forge.repo, super::DEFAULT_FORGE_REPO);
         assert_eq!(forge.default_branch, super::DEFAULT_DEFAULT_BRANCH);
         assert_eq!(forge.ci_command, vec!["just", "pre-merge"]);
+        assert_eq!(forge.ci_concurrency, None);
         assert_eq!(forge.mirror_poll_interval_secs, None);
         assert_eq!(
             forge.hook_url.as_deref(),

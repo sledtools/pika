@@ -358,11 +358,17 @@ Current transition status:
 
 Before deploying the schema cut that removes `agent_instances.provider`, operators should:
 
-1. Query `agent_instances` on `pika-server` for rows where `provider='microvm'` and
-   `phase in ('creating', 'ready')`.
-2. Delete those matching legacy VMs on `pika-build` via the local `vm-spawner` API.
-3. Mark those DB rows `phase='error'` with `vm_id=NULL`, or delete them outright.
-4. Deploy the hard cut only after that query returns zero active legacy rows.
+1. On the pre-cut schema, query `agent_instances` on `pika-server` for rows where
+   `provider='microvm'` and `phase in ('creating', 'ready')`.
+2. Record the matching `owner_npub` and `vm_id` values.
+3. Delete those matching legacy VMs on `pika-build`:
+   - if `vm-spawner` still knows about the VM, use its delete path
+   - if `vm-spawner` returns `404`, stop any lingering `microvm@<vm_id>.service` unit and remove
+     `/var/lib/microvms/<vm_id>` directly
+4. Mark those DB rows `phase='error'` with `vm_id=NULL`, or delete them outright.
+5. Deploy the hard cut only after that query returns zero active legacy rows.
+6. After the migration lands, verify that `agent_instances.provider` is gone and
+   `agent_instances.incus_config` is the surviving config column.
 
 This is intentionally destructive. The surviving managed-agent product path is fresh
 reprovision-on-Incus, not perpetual mixed-substrate compatibility.

@@ -287,6 +287,14 @@ ssh root@65.108.234.158 \
 Replace the VM IDs with whatever the SQL query returned. This is destructive; it removes the
 legacy managed-agent environment entirely instead of migrating it.
 
+If `vm-spawner` returns `404`, clean up any stale host-side leftovers directly:
+
+```bash
+ssh root@65.108.234.158 \
+  'systemctl stop "microvm@<vm_id>.service" || true
+   rm -rf "/var/lib/microvms/<vm_id>"'
+```
+
 3. Retire those DB rows on `pika-server` so the surviving Incus/OpenClaw path can reprovision
 fresh environments later:
 
@@ -313,7 +321,21 @@ ssh root@178.156.233.63 \
 
 Deploy the hard cut only once that count is `0`. After the migration lands, `agent_instances`
 will no longer retain a `provider` column for this product path.
-5. click OpenClaw and confirm the UI loads on `openclaw.api.pikachat.org`
+
+5. After deploy, verify the simplified schema shape:
+
+```bash
+ssh root@178.156.233.63 \
+  "sudo -u pika_server psql pika_server -Atc \
+  \"select column_name
+     from information_schema.columns
+    where table_name = 'agent_instances'
+ order by ordinal_position;\""
+```
+
+Expected result:
+- `provider` is gone
+- `incus_config` is the surviving config column
 
 ## Incus Operational Lifecycle Model
 

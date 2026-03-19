@@ -7,7 +7,7 @@ use askama::Template;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse, Json};
+use axum::response::{Html, IntoResponse, Json, Redirect};
 use axum::routing::{get, post};
 use axum::Router;
 use hmac::{Hmac, Mac};
@@ -482,9 +482,35 @@ async fn detail_handler(
 
 async fn inbox_review_handler(
     State(state): State<Arc<AppState>>,
-    Path(pr_id): Path<i64>,
+    Path(review_id): Path<i64>,
 ) -> impl IntoResponse {
-    detail_page(state, pr_id, true).await
+    let response = detail_page(Arc::clone(&state), review_id, true).await;
+    if state.config.effective_forge_repo().is_some() && response.status() == StatusCode::NOT_FOUND {
+        let store = state.store.clone();
+        let legacy_exists =
+            match tokio::task::spawn_blocking(move || store.get_pr_detail(review_id)).await {
+                Ok(Ok(Some(_))) => true,
+                Ok(Ok(None)) => false,
+                Ok(Err(err)) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("failed to query legacy inbox detail: {}", err),
+                    )
+                        .into_response();
+                }
+                Err(err) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("legacy inbox worker task failed: {}", err),
+                    )
+                        .into_response();
+                }
+            };
+        if legacy_exists {
+            return Redirect::to("/news/inbox").into_response();
+        }
+    }
+    response
 }
 
 async fn detail_page(
@@ -1006,6 +1032,26 @@ async fn auth_verify_handler(
     match state.auth.verify_event(&body.event) {
         Ok((token, npub, is_admin)) => {
             let access = state.auth.access_for_npub(&npub);
+            let store = state.store.clone();
+            let forge_mode = state.config.effective_forge_repo().is_some();
+            let npub_for_backfill = npub.clone();
+            match tokio::task::spawn_blocking(move || {
+                if forge_mode {
+                    store.backfill_branch_inbox_for_npub(&npub_for_backfill)
+                } else {
+                    store.backfill_inbox_for_npub(&npub_for_backfill)
+                }
+            })
+            .await
+            {
+                Ok(Ok(_)) => {}
+                Ok(Err(err)) => {
+                    eprintln!("warning: auth inbox backfill failed: {}", err);
+                }
+                Err(err) => {
+                    eprintln!("warning: auth inbox backfill task failed: {}", err);
+                }
+            }
             Json(serde_json::json!({
                 "token": token,
                 "npub": npub,
@@ -1723,6 +1769,7 @@ async fn api_admin_allowlist_upsert_handler(
     let active = body.active;
     let can_forge_write = body.can_forge_write;
     let store = state.store.clone();
+    let forge_mode = state.config.effective_forge_repo().is_some();
     match tokio::task::spawn_blocking(move || {
         let existing = store.get_chat_allowlist_entry(&npub)?;
         let entry = store.upsert_chat_allowlist_entry(
@@ -1733,7 +1780,11 @@ async fn api_admin_allowlist_upsert_handler(
             &admin_npub,
         )?;
         let backfilled = if should_backfill_managed_allowlist_entry(existing.as_ref(), active) {
-            store.backfill_inbox_for_npub(&npub)?
+            if forge_mode {
+                store.backfill_branch_inbox_for_npub(&npub)?
+            } else {
+                store.backfill_inbox_for_npub(&npub)?
+            }
         } else {
             0
         };
@@ -1783,9 +1834,18 @@ async fn api_inbox_list_handler(
     let page = params.page.unwrap_or(1).max(1);
     let offset = (page - 1) * 50;
     let store = state.store.clone();
+    let forge_mode = state.config.effective_forge_repo().is_some();
     match tokio::task::spawn_blocking(move || {
-        let items = store.list_inbox(&npub, 50, offset)?;
-        let count = store.inbox_count(&npub)?;
+        let items = if forge_mode {
+            store.list_branch_inbox(&npub, 50, offset)?
+        } else {
+            store.list_inbox(&npub, 50, offset)?
+        };
+        let count = if forge_mode {
+            store.branch_inbox_count(&npub)?
+        } else {
+            store.inbox_count(&npub)?
+        };
         Ok::<_, anyhow::Error>((items, count))
     })
     .await
@@ -1815,7 +1875,16 @@ async fn api_inbox_count_handler(
         Err(resp) => return resp,
     };
     let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || store.inbox_count(&npub)).await {
+    let forge_mode = state.config.effective_forge_repo().is_some();
+    match tokio::task::spawn_blocking(move || {
+        if forge_mode {
+            store.branch_inbox_count(&npub)
+        } else {
+            store.inbox_count(&npub)
+        }
+    })
+    .await
+    {
         Ok(Ok(count)) => Json(serde_json::json!({"count": count})).into_response(),
         Ok(Err(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1832,6 +1901,7 @@ async fn api_inbox_count_handler(
 
 #[derive(serde::Deserialize)]
 struct InboxDismissRequest {
+    branch_ids: Option<Vec<i64>>,
     pr_ids: Option<Vec<i64>>,
     all: Option<bool>,
 }
@@ -1846,11 +1916,26 @@ async fn api_inbox_dismiss_handler(
         Err(resp) => return resp,
     };
     let store = state.store.clone();
+    let forge_mode = state.config.effective_forge_repo().is_some();
     let dismissed = if body.all.unwrap_or(false) {
-        tokio::task::spawn_blocking(move || store.dismiss_all_inbox(&npub)).await
+        tokio::task::spawn_blocking(move || {
+            if forge_mode {
+                store.dismiss_all_branch_inbox(&npub)
+            } else {
+                store.dismiss_all_inbox(&npub)
+            }
+        })
+        .await
     } else {
-        let pr_ids = body.pr_ids.unwrap_or_default();
-        tokio::task::spawn_blocking(move || store.dismiss_inbox_items(&npub, &pr_ids)).await
+        let review_ids = body.branch_ids.or(body.pr_ids).unwrap_or_default();
+        tokio::task::spawn_blocking(move || {
+            if forge_mode {
+                store.dismiss_branch_inbox_items(&npub, &review_ids)
+            } else {
+                store.dismiss_inbox_items(&npub, &review_ids)
+            }
+        })
+        .await
     };
     match dismissed {
         Ok(Ok(count)) => Json(serde_json::json!({"dismissed": count})).into_response(),
@@ -1869,7 +1954,7 @@ async fn api_inbox_dismiss_handler(
 
 async fn api_inbox_neighbors_handler(
     State(state): State<Arc<AppState>>,
-    Path(pr_id): Path<i64>,
+    Path(review_id): Path<i64>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     let npub = match require_chat_auth(&state.auth, &headers) {
@@ -1877,7 +1962,16 @@ async fn api_inbox_neighbors_handler(
         Err(resp) => return resp,
     };
     let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || store.inbox_review_context(&npub, pr_id)).await {
+    let forge_mode = state.config.effective_forge_repo().is_some();
+    match tokio::task::spawn_blocking(move || {
+        if forge_mode {
+            store.branch_inbox_review_context(&npub, review_id)
+        } else {
+            store.inbox_review_context(&npub, review_id)
+        }
+    })
+    .await
+    {
         Ok(Ok(Some(InboxReviewContext {
             prev,
             next,
@@ -1926,13 +2020,20 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
+    use std::sync::Arc;
 
     use askama::Template;
+    use axum::extract::{Path, State};
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use tokio::sync::Notify;
 
     use super::{
-        markdown_to_safe_html, render_detail_template, should_backfill_managed_allowlist_entry,
-        verify_signature,
+        inbox_review_handler, markdown_to_safe_html, render_detail_template,
+        should_backfill_managed_allowlist_entry, verify_signature, AppState,
     };
+    use crate::auth::AuthState;
+    use crate::branch_store::BranchUpsertInput;
     use crate::ci;
     use crate::config::{Config, ForgeRepoConfig};
     use crate::forge;
@@ -1952,6 +2053,39 @@ mod tests {
             args,
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    fn branch_upsert_input(branch_name: &str, head_sha: &str) -> BranchUpsertInput {
+        BranchUpsertInput {
+            repo: "sledtools/pika".to_string(),
+            canonical_git_dir: "/tmp/pika.git".to_string(),
+            default_branch: "master".to_string(),
+            ci_entrypoint: "just pre-merge".to_string(),
+            branch_name: branch_name.to_string(),
+            title: format!("{branch_name} title"),
+            head_sha: head_sha.to_string(),
+            merge_base_sha: "base123".to_string(),
+            author_name: Some("alice".to_string()),
+            author_email: Some("alice@example.com".to_string()),
+            updated_at: "2026-03-18T12:00:00Z".to_string(),
+        }
+    }
+
+    fn test_state(store: Store, config: Config) -> Arc<AppState> {
+        let bootstrap_admin_npubs = config.effective_bootstrap_admin_npubs();
+        let legacy_allowed_npubs = config.allowed_npubs.clone();
+        Arc::new(AppState {
+            auth: Arc::new(AuthState::new(
+                &bootstrap_admin_npubs,
+                &legacy_allowed_npubs,
+                store.clone(),
+            )),
+            store,
+            config,
+            max_prs: 10,
+            poll_notify: Arc::new(Notify::new()),
+            webhook_secret: None,
+        })
     }
 
     #[test]
@@ -2031,6 +2165,135 @@ mod tests {
             Some(&existing_inactive),
             true
         ));
+    }
+
+    #[tokio::test]
+    async fn inbox_review_route_resolves_branch_ids_in_forge_mode() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let branch = store
+            .upsert_branch_record(&branch_upsert_input("feature/review", "head-1"))
+            .expect("insert branch");
+        let artifact_id = store
+            .with_connection(|conn| {
+                conn.query_row(
+                    "SELECT id
+                     FROM branch_artifact_versions
+                     WHERE branch_id = ?1
+                     ORDER BY version DESC
+                     LIMIT 1",
+                    rusqlite::params![branch.branch_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("branch artifact id");
+        store
+            .mark_branch_generation_ready(
+                artifact_id,
+                r#"{"executive_summary":"ok","media_links":[],"steps":[]}"#,
+                "<p>ok</p>",
+                "head-1",
+                "diff",
+            )
+            .expect("mark ready");
+        store
+            .populate_branch_inbox(artifact_id, &["npub1reviewer".to_string()])
+            .expect("populate branch inbox");
+
+        let config = Config {
+            repos: vec!["sledtools/pika".to_string()],
+            forge_repo: Some(ForgeRepoConfig {
+                repo: "sledtools/pika".to_string(),
+                canonical_git_dir: "/tmp/pika.git".to_string(),
+                default_branch: "master".to_string(),
+                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
+                hook_url: None,
+            }),
+            poll_interval_secs: 60,
+            model: "test-model".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            github_token_env: "GITHUB_TOKEN".to_string(),
+            merged_lookback_hours: 72,
+            worker_concurrency: 1,
+            retry_backoff_secs: 120,
+            webhook_secret_env: "PIKA_NEWS_WEBHOOK_SECRET".to_string(),
+            bind_address: "127.0.0.1".to_string(),
+            bind_port: 8787,
+            allowed_npubs: vec![],
+            bootstrap_admin_npubs: vec![],
+        };
+        let state = test_state(store, config);
+
+        let response = inbox_review_handler(State(state), Path(branch.branch_id))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn inbox_review_legacy_pr_id_redirects_to_inbox_in_forge_mode() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        store
+            .upsert_pull_request(&crate::storage::PrUpsertInput {
+                repo: "sledtools/pika".to_string(),
+                pr_number: 264,
+                title: "legacy review item".to_string(),
+                url: "https://github.com/sledtools/pika/pull/264".to_string(),
+                state: "open".to_string(),
+                head_sha: "legacy-head".to_string(),
+                base_ref: "master".to_string(),
+                author_login: Some("alice".to_string()),
+                updated_at: "2026-03-18T12:00:00Z".to_string(),
+                merged_at: None,
+            })
+            .expect("insert legacy pr");
+        let legacy_pr_id = store
+            .list_feed_items()
+            .expect("list feed")
+            .into_iter()
+            .find(|item| item.pr_number == 264)
+            .expect("legacy pr row")
+            .pr_id;
+
+        let config = Config {
+            repos: vec!["sledtools/pika".to_string()],
+            forge_repo: Some(ForgeRepoConfig {
+                repo: "sledtools/pika".to_string(),
+                canonical_git_dir: "/tmp/pika.git".to_string(),
+                default_branch: "master".to_string(),
+                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
+                hook_url: None,
+            }),
+            poll_interval_secs: 60,
+            model: "test-model".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            github_token_env: "GITHUB_TOKEN".to_string(),
+            merged_lookback_hours: 72,
+            worker_concurrency: 1,
+            retry_backoff_secs: 120,
+            webhook_secret_env: "PIKA_NEWS_WEBHOOK_SECRET".to_string(),
+            bind_address: "127.0.0.1".to_string(),
+            bind_port: 8787,
+            allowed_npubs: vec![],
+            bootstrap_admin_npubs: vec![],
+        };
+        let state = test_state(store, config);
+
+        let response = inbox_review_handler(State(state), Path(legacy_pr_id))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::LOCATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("/news/inbox")
+        );
     }
 
     #[test]

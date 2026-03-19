@@ -24,6 +24,133 @@ def git(cwd: Path, *args: str) -> str:
 
 
 class ForgeGithubCiShimTests(unittest.TestCase):
+    def test_branch_selection_narrows_apple_host_sanity_to_smoke_surface(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            git(repo, "init")
+            git(repo, "config", "user.name", "Test User")
+            git(repo, "config", "user.email", "test@example.com")
+            (repo / "ci").mkdir()
+            (repo / ".github").mkdir()
+            (repo / "crates" / "pikahut" / "src").mkdir(parents=True)
+            (repo / "scripts").mkdir()
+            (repo / "README.md").write_text("base\n", encoding="utf-8")
+            (repo / ".github" / "pikaci-apple.env").write_text("PIKACI_APPLE_SSH_HOST=pika-mini\n", encoding="utf-8")
+            (repo / "crates" / "pikahut" / "src" / "lib.rs").write_text("pub fn old_scope() {}\n", encoding="utf-8")
+            (repo / "scripts" / "pikaci-apple-remote.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+            (repo / "ci" / "forge-lanes.toml").write_text(
+                """
+version = 1
+nightly_schedule_utc = "08:00"
+
+[[branch.lanes]]
+id = "apple_host_sanity"
+title = "check-apple-host-sanity"
+entrypoint = "./scripts/pikaci-apple-remote.sh run --just-recipe apple-host-sanity"
+command = ["./scripts/pikaci-apple-remote.sh", "run", "--just-recipe", "apple-host-sanity"]
+paths = [
+  "ci/forge-lanes.toml",
+  ".github/pikaci-apple.env",
+  "scripts/pikaci-apple-remote.sh",
+  "crates/pika-desktop/**",
+]
+
+[[branch.lanes]]
+id = "pikachat"
+title = "check-pikachat"
+entrypoint = "cargo test -p pikahut"
+command = ["cargo", "test", "-p", "pikahut"]
+paths = ["crates/pikahut/**"]
+
+[[nightly.lanes]]
+id = "nightly"
+title = "nightly"
+entrypoint = "printf nightly"
+command = ["python3", "-c", "print('nightly')"]
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            git(
+                repo,
+                "add",
+                "README.md",
+                ".github/pikaci-apple.env",
+                "crates/pikahut/src/lib.rs",
+                "scripts/pikaci-apple-remote.sh",
+                "ci/forge-lanes.toml",
+            )
+            git(repo, "commit", "-m", "base")
+            base = git(repo, "rev-parse", "HEAD")
+
+            (repo / ".github" / "pikaci-apple.env").write_text(
+                "PIKACI_APPLE_SSH_HOST=pika-mini.tailnet.ts.net\n",
+                encoding="utf-8",
+            )
+            git(repo, "add", ".github/pikaci-apple.env")
+            git(repo, "commit", "-m", "apple smoke infra change")
+            head = git(repo, "rev-parse", "HEAD")
+
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    "select",
+                    "--mode",
+                    "branch",
+                    "--base",
+                    base,
+                    "--head",
+                    head,
+                    "--compare-repo-root",
+                    str(repo),
+                ],
+                cwd=REPO_ROOT,
+                env={**os.environ, "FORGE_GITHUB_CI_REPO_ROOT": str(repo)},
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            payload = json.loads(completed.stdout)
+            self.assertEqual(payload["changed_paths"], [".github/pikaci-apple.env"])
+            self.assertEqual([lane["id"] for lane in payload["include"]], ["apple_host_sanity"])
+
+            apple_env_commit = head
+            (repo / "crates" / "pikahut" / "src" / "lib.rs").write_text(
+                "pub fn old_scope() { println!(\"changed\"); }\n",
+                encoding="utf-8",
+            )
+            git(repo, "add", "crates/pikahut/src/lib.rs")
+            git(repo, "commit", "-m", "pikahut only change")
+            head = git(repo, "rev-parse", "HEAD")
+
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    "select",
+                    "--mode",
+                    "branch",
+                    "--base",
+                    apple_env_commit,
+                    "--head",
+                    head,
+                    "--compare-repo-root",
+                    str(repo),
+                ],
+                cwd=REPO_ROOT,
+                env={**os.environ, "FORGE_GITHUB_CI_REPO_ROOT": str(repo)},
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            payload = json.loads(completed.stdout)
+            self.assertIn("crates/pikahut/src/lib.rs", payload["changed_paths"])
+            self.assertNotIn(
+                "apple_host_sanity",
+                [lane["id"] for lane in payload["include"]],
+            )
+
     def test_branch_selection_uses_merge_base_for_unsynced_fork_pr(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

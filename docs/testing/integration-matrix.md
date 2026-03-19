@@ -109,7 +109,7 @@ Current policy note:
 | `integration-manual` | two `integration_manual` runbook selectors |
 
 Apple Silicon contract note:
-`just pre-merge-pikachat` still explicitly composes staged Linux `pre-merge-pikachat-rust` with the `pikaci` target `pre-merge-pikachat-apple-followup`, but GitHub now treats that follow-up as part of the narrower `check-apple-host-sanity` Mac policy instead of the old “all Mac coverage is nightly” blob.
+`just pre-merge-pikachat` still explicitly composes staged Linux `pre-merge-pikachat-rust` with the `pikaci` target `pre-merge-pikachat-apple-followup`, and GitHub now treats that Apple follow-up as part of the nightly `apple-host-bundle` instead of the blocking `check-apple-host-sanity` smoke lane.
 
 ## Non-Owner Entry Points
 

@@ -67,7 +67,7 @@ cmd=(
   --api-base-url "$api_base_url"
   --nsec "$nsec"
   --provider incus
-  --microvm-kind "$agent_kind"
+  --runtime-kind "$agent_kind"
   --incus-endpoint "$incus_endpoint"
   --incus-project "$incus_project"
   --incus-profile "$incus_profile"

@@ -4,6 +4,7 @@ mod agent_api_v1_contract;
 mod browser_auth;
 mod customer;
 mod listener;
+mod managed_openclaw_guest;
 mod models;
 mod nostr_auth;
 mod routes;

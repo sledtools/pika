@@ -214,7 +214,7 @@
               <dd>{{ template_name }}</dd>
             </div>
             <div>
-              <dt>Managed substrate</dt>
+              <dt>Environment lane</dt>
               <dd>{{ substrate_label }}</dd>
             </div>
           </dl>
@@ -319,7 +319,7 @@
         <h2>Reset Semantics</h2>
         <div class="callout">
           <p><strong>Recover</strong> {{ recover_semantics_copy }}</p>
-          <p><strong>Destructive reset</strong> asks the control plane to delete the current VM if one still exists, then provisions a fresh managed OpenClaw environment. If the old VM is already gone, reset still continues fresh and does not restore missing durable state.</p>
+          <p><strong>Destructive reset</strong> asks the control plane to tear down the current managed environment if one still exists, then provisions a fresh managed OpenClaw environment. If the old environment is already gone, reset still continues fresh and does not restore missing durable state.</p>
           <p><strong>Safety guardrail</strong> {{ reset_safety_copy }}</p>
         </div>
       </section>

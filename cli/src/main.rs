@@ -14,10 +14,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use hypernote_protocol as hn;
 use mdk_core::prelude::*;
 use nostr_sdk::prelude::*;
-use pika_agent_control_plane::{
-    AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams, MicrovmAgentBackend,
-    MicrovmAgentKind, MicrovmProvisionParams, ProviderKind,
-};
+use pika_agent_control_plane::{AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams};
 use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
 use pika_marmot_runtime::runtime::MarmotRuntime;
@@ -401,7 +398,7 @@ enum AgentCommand {
         http: AgentHttpArgs,
 
         #[command(flatten)]
-        microvm: AgentMicrovmArgs,
+        runtime: AgentRuntimeArgs,
     },
 
     /// Fetch the current agent state for the configured Nostr signer
@@ -416,7 +413,7 @@ enum AgentCommand {
         http: AgentHttpArgs,
 
         #[command(flatten)]
-        microvm: AgentMicrovmArgs,
+        runtime: AgentRuntimeArgs,
     },
 
     /// Ensure/reuse your personal agent, send one message, and optionally listen for replies
@@ -429,7 +426,7 @@ enum AgentCommand {
         http: AgentHttpArgs,
 
         #[command(flatten)]
-        microvm: AgentMicrovmArgs,
+        runtime: AgentRuntimeArgs,
 
         /// Message content to send to your personal agent
         message: String,
@@ -465,28 +462,7 @@ struct AgentHttpArgs {
 }
 
 #[derive(Clone, Debug, Args, Default)]
-struct AgentMicrovmArgs {
-    /// Select the managed-VM provider. When omitted, pika-server keeps its current default.
-    #[arg(long, env = "PIKA_AGENT_VM_PROVIDER")]
-    provider: Option<AgentVmProviderCli>,
-
-    /// Select the agent product/runtime deployed in the microVM guest.
-    #[arg(long, env = "PIKA_AGENT_MICROVM_KIND")]
-    microvm_kind: Option<AgentMicrovmKindCli>,
-
-    /// Override the microVM guest backend used for agent replies.
-    /// When omitted, the backend defaults from --microvm-kind.
-    #[arg(long, env = "PIKA_AGENT_MICROVM_BACKEND")]
-    microvm_backend: Option<AgentMicrovmBackendCli>,
-
-    /// ACP backend exec command inside the guest, used when --microvm-backend=acp.
-    #[arg(long, env = "PIKA_AGENT_MICROVM_ACP_EXEC")]
-    microvm_acp_exec: Option<String>,
-
-    /// ACP session cwd inside the guest, used when --microvm-backend=acp.
-    #[arg(long, env = "PIKA_AGENT_MICROVM_ACP_CWD")]
-    microvm_acp_cwd: Option<String>,
-
+struct AgentRuntimeArgs {
     /// Incus API endpoint for request-scoped managed-agent provisioning.
     #[arg(long, env = "PIKA_AGENT_INCUS_ENDPOINT")]
     incus_endpoint: Option<String>,
@@ -510,24 +486,6 @@ struct AgentMicrovmArgs {
     /// Allow invalid TLS certificates for the request-scoped Incus API endpoint.
     #[arg(long, env = "PIKA_AGENT_INCUS_INSECURE_TLS", default_missing_value = "true", num_args = 0..=1)]
     incus_insecure_tls: Option<bool>,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
-enum AgentVmProviderCli {
-    Microvm,
-    Incus,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
-enum AgentMicrovmBackendCli {
-    Native,
-    Acp,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
-enum AgentMicrovmKindCli {
-    Pi,
-    Openclaw,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -788,12 +746,12 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         Command::Agent { cmd } => match cmd {
-            AgentCommand::New { http, microvm } => cmd_agent_new(http, microvm).await,
+            AgentCommand::New { http, runtime } => cmd_agent_new(http, runtime).await,
             AgentCommand::Me { http } => cmd_agent_me(http).await,
-            AgentCommand::Recover { http, microvm } => cmd_agent_recover(http, microvm).await,
+            AgentCommand::Recover { http, runtime } => cmd_agent_recover(http, runtime).await,
             AgentCommand::Chat {
                 http,
-                microvm,
+                runtime,
                 message,
                 listen_timeout,
                 poll_attempts,
@@ -802,7 +760,7 @@ async fn main() -> anyhow::Result<()> {
                 cmd_agent_chat(
                     &cli,
                     http,
-                    microvm,
+                    runtime,
                     message,
                     AgentChatExecutionOptions {
                         listen_timeout: *listen_timeout,
@@ -1784,64 +1742,43 @@ async fn cmd_download_media(
     Ok(())
 }
 
-fn agent_provision_request(microvm: &AgentMicrovmArgs) -> Option<AgentProvisionRequest> {
-    let provider = microvm.provider.map(|provider| match provider {
-        AgentVmProviderCli::Microvm => ProviderKind::Microvm,
-        AgentVmProviderCli::Incus => ProviderKind::Incus,
-    });
-    let kind = match microvm.microvm_kind {
-        Some(AgentMicrovmKindCli::Pi) => Some(MicrovmAgentKind::Pi),
-        Some(AgentMicrovmKindCli::Openclaw) => Some(MicrovmAgentKind::Openclaw),
-        None => None,
-    };
-    let backend = match microvm.microvm_backend {
-        Some(AgentMicrovmBackendCli::Native) => Some(MicrovmAgentBackend::Native),
-        Some(AgentMicrovmBackendCli::Acp) => Some(MicrovmAgentBackend::Acp {
-            exec_command: microvm.microvm_acp_exec.clone(),
-            cwd: microvm.microvm_acp_cwd.clone(),
-        }),
-        None => None,
-    };
-    let has_microvm_fields = kind.is_some() || backend.is_some();
-    let has_incus_fields = [
-        microvm.incus_endpoint.as_deref(),
-        microvm.incus_project.as_deref(),
-        microvm.incus_profile.as_deref(),
-        microvm.incus_storage_pool.as_deref(),
-        microvm.incus_image_alias.as_deref(),
+fn incus_request_fields_present(runtime: &AgentRuntimeArgs) -> bool {
+    [
+        runtime.incus_endpoint.as_deref(),
+        runtime.incus_project.as_deref(),
+        runtime.incus_profile.as_deref(),
+        runtime.incus_storage_pool.as_deref(),
+        runtime.incus_image_alias.as_deref(),
     ]
     .into_iter()
     .flatten()
     .map(str::trim)
     .any(|value| !value.is_empty())
-        || microvm.incus_insecure_tls.is_some();
-    if !has_microvm_fields && provider.is_none() && !has_incus_fields {
+        || runtime.incus_insecure_tls.is_some()
+}
+
+fn agent_provision_request(runtime: &AgentRuntimeArgs) -> Option<AgentProvisionRequest> {
+    let has_incus_fields = incus_request_fields_present(runtime);
+    if !has_incus_fields {
         return None;
     }
     Some(AgentProvisionRequest {
-        provider,
-        microvm: has_microvm_fields.then_some(MicrovmProvisionParams {
-            spawner_url: None,
-            kind,
-            backend,
-        }),
-        incus: (provider == Some(ProviderKind::Incus) || has_incus_fields).then_some(
-            IncusProvisionParams {
-                endpoint: microvm.incus_endpoint.clone(),
-                project: microvm.incus_project.clone(),
-                profile: microvm.incus_profile.clone(),
-                storage_pool: microvm.incus_storage_pool.clone(),
-                image_alias: microvm.incus_image_alias.clone(),
-                insecure_tls: microvm.incus_insecure_tls,
-                openclaw_guest_ipv4_cidr: None,
-                openclaw_proxy_host: None,
-            },
-        ),
+        incus: IncusProvisionParams {
+            endpoint: runtime.incus_endpoint.clone(),
+            project: runtime.incus_project.clone(),
+            profile: runtime.incus_profile.clone(),
+            storage_pool: runtime.incus_storage_pool.clone(),
+            image_alias: runtime.incus_image_alias.clone(),
+            insecure_tls: runtime.incus_insecure_tls,
+            openclaw_guest_ipv4_cidr: None,
+            openclaw_proxy_host: None,
+        },
     })
 }
 
-async fn cmd_agent_new(http: &AgentHttpArgs, microvm: &AgentMicrovmArgs) -> anyhow::Result<()> {
-    let ensured = ensure_agent_idempotent(http, agent_provision_request(microvm).as_ref()).await?;
+async fn cmd_agent_new(http: &AgentHttpArgs, runtime: &AgentRuntimeArgs) -> anyhow::Result<()> {
+    let body = agent_provision_request(runtime);
+    let ensured = ensure_agent_idempotent(http, body.as_ref()).await?;
     print(json!({
         "operation": "ensure",
         "created": ensured.created,
@@ -1859,8 +1796,8 @@ async fn cmd_agent_me(http: &AgentHttpArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_agent_recover(http: &AgentHttpArgs, microvm: &AgentMicrovmArgs) -> anyhow::Result<()> {
-    let body = agent_provision_request(microvm);
+async fn cmd_agent_recover(http: &AgentHttpArgs, runtime: &AgentRuntimeArgs) -> anyhow::Result<()> {
+    let body = agent_provision_request(runtime);
     let agent = call_agent_api(
         http,
         reqwest::Method::POST,
@@ -1966,34 +1903,19 @@ fn parse_agent_startup_phase(agent: &serde_json::Value) -> anyhow::Result<AgentS
     })
 }
 
-fn agent_startup_status_message(
-    kind: Option<MicrovmAgentKind>,
-    phase: AgentStartupPhase,
-) -> &'static str {
-    match (kind, phase) {
-        (_, AgentStartupPhase::Requested) => "Requesting agent...",
-        (_, AgentStartupPhase::ProvisioningVm) => "Provisioning microVM...",
-        (_, AgentStartupPhase::BootingGuest) => "Booting guest...",
-        (Some(MicrovmAgentKind::Pi), AgentStartupPhase::WaitingForServiceReady) => {
-            "Starting Pi daemon and waiting for ACP service..."
-        }
-        (Some(MicrovmAgentKind::Openclaw), AgentStartupPhase::WaitingForServiceReady) => {
+fn agent_startup_status_message(phase: AgentStartupPhase) -> &'static str {
+    match phase {
+        AgentStartupPhase::Requested => "Requesting managed OpenClaw...",
+        AgentStartupPhase::ProvisioningVm => "Provisioning Incus environment...",
+        AgentStartupPhase::BootingGuest => "Booting guest...",
+        AgentStartupPhase::WaitingForServiceReady => {
             "Starting OpenClaw gateway and waiting for health check..."
         }
-        (_, AgentStartupPhase::WaitingForServiceReady) => {
-            "Waiting for guest service to become ready..."
-        }
-        (Some(MicrovmAgentKind::Pi), AgentStartupPhase::WaitingForKeypackagePublish) => {
-            "Pi daemon emitted its ready event. Publishing key package..."
-        }
-        (Some(MicrovmAgentKind::Openclaw), AgentStartupPhase::WaitingForKeypackagePublish) => {
+        AgentStartupPhase::WaitingForKeypackagePublish => {
             "OpenClaw gateway passed health check. Publishing key package..."
         }
-        (_, AgentStartupPhase::WaitingForKeypackagePublish) => {
-            "Startup probe passed. Publishing key package..."
-        }
-        (_, AgentStartupPhase::Ready) => "Agent ready.",
-        (_, AgentStartupPhase::Failed) => "Agent startup failed.",
+        AgentStartupPhase::Ready => "Agent ready.",
+        AgentStartupPhase::Failed => "Agent startup failed.",
     }
 }
 
@@ -2094,7 +2016,7 @@ fn ensure_identity_for_state_dir(state_dir: &Path, keys: &Keys) -> anyhow::Resul
 async fn cmd_agent_chat(
     cli: &Cli,
     http: &AgentHttpArgs,
-    microvm: &AgentMicrovmArgs,
+    runtime: &AgentRuntimeArgs,
     message: &str,
     options: AgentChatExecutionOptions,
 ) -> anyhow::Result<()> {
@@ -2116,18 +2038,14 @@ async fn cmd_agent_chat(
         cmd: Command::Identity,
     };
 
-    let body = agent_provision_request(microvm);
-    let agent_kind = body
-        .as_ref()
-        .and_then(|req| req.microvm.as_ref())
-        .and_then(|microvm| microvm.kind);
-    let _ = ensure_agent_idempotent(http, body.as_ref()).await?;
+    let body = agent_provision_request(runtime);
+    let _ensured = ensure_agent_idempotent(http, body.as_ref()).await?;
     let poll_delay = Duration::from_secs(options.poll_delay_sec);
     let mut last_state = String::new();
     let mut last_phase = Some(AgentStartupPhase::Requested);
     eprintln!(
         "{}",
-        agent_startup_status_message(agent_kind, AgentStartupPhase::Requested)
+        agent_startup_status_message(AgentStartupPhase::Requested)
     );
 
     for attempt in 1..=options.poll_attempts {
@@ -2136,10 +2054,7 @@ async fn cmd_agent_chat(
         let startup_phase = parse_agent_startup_phase(&me)?;
         last_state = state.clone();
         if last_phase != Some(startup_phase) {
-            eprintln!(
-                "{}",
-                agent_startup_status_message(agent_kind, startup_phase)
-            );
+            eprintln!("{}", agent_startup_status_message(startup_phase));
             last_phase = Some(startup_phase);
         }
 
@@ -2268,9 +2183,7 @@ async fn call_agent_api_raw(
         request = request
             .header("Content-Type", "application/json")
             .json(body.unwrap_or(&AgentProvisionRequest {
-                provider: None,
-                microvm: None,
-                incus: None,
+                incus: IncusProvisionParams::default(),
             }));
     }
 
@@ -2793,7 +2706,7 @@ mod tests {
                 cmd:
                     AgentCommand::Chat {
                         http,
-                        microvm: _,
+                        runtime: _,
                         message,
                         listen_timeout,
                         poll_attempts,
@@ -2878,87 +2791,28 @@ mod tests {
     }
 
     #[test]
-    fn agent_startup_status_message_uses_kind_specific_waiting_text() {
+    fn agent_startup_status_message_uses_openclaw_waiting_text() {
         assert!(
-            agent_startup_status_message(
-                Some(MicrovmAgentKind::Pi),
-                AgentStartupPhase::WaitingForServiceReady
-            )
-            .contains("ACP")
+            agent_startup_status_message(AgentStartupPhase::WaitingForServiceReady)
+                .contains("OpenClaw")
         );
         assert!(
-            agent_startup_status_message(
-                Some(MicrovmAgentKind::Openclaw),
-                AgentStartupPhase::WaitingForServiceReady
-            )
-            .contains("OpenClaw")
-        );
-        assert!(
-            agent_startup_status_message(
-                Some(MicrovmAgentKind::Openclaw),
-                AgentStartupPhase::WaitingForKeypackagePublish
-            )
-            .contains("Publishing key package")
+            agent_startup_status_message(AgentStartupPhase::WaitingForKeypackagePublish)
+                .contains("Publishing key package")
         );
     }
 
     #[test]
-    fn agent_chat_requested_kind_and_typed_startup_phase_drive_waiting_text() {
+    fn agent_chat_typed_startup_phase_drives_waiting_text() {
         let payload = json!({
             "agent_id": "npub1test",
             "state": "creating",
             "startup_phase": "waiting_for_service_ready"
         });
         let phase = parse_agent_startup_phase(&payload).expect("startup phase");
-
-        let pi_cli = Cli::try_parse_from([
-            "pikachat",
-            "agent",
-            "chat",
-            "--nsec",
-            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
-            "--microvm-kind",
-            "pi",
-            "hello",
-        ])
-        .expect("parse pi chat args");
-        let pi_kind = match pi_cli.cmd {
-            Command::Agent {
-                cmd: AgentCommand::Chat { microvm, .. },
-            } => agent_provision_request(&microvm)
-                .and_then(|request| request.microvm)
-                .and_then(|microvm| microvm.kind),
-            _ => panic!("expected agent chat command"),
-        };
-        assert_eq!(pi_kind, Some(MicrovmAgentKind::Pi));
         assert!(
-            agent_startup_status_message(pi_kind, phase).contains("ACP"),
-            "pi waiting text should mention ACP readiness"
-        );
-
-        let openclaw_cli = Cli::try_parse_from([
-            "pikachat",
-            "agent",
-            "chat",
-            "--nsec",
-            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
-            "--microvm-kind",
-            "openclaw",
-            "hello",
-        ])
-        .expect("parse openclaw chat args");
-        let openclaw_kind = match openclaw_cli.cmd {
-            Command::Agent {
-                cmd: AgentCommand::Chat { microvm, .. },
-            } => agent_provision_request(&microvm)
-                .and_then(|request| request.microvm)
-                .and_then(|microvm| microvm.kind),
-            _ => panic!("expected agent chat command"),
-        };
-        assert_eq!(openclaw_kind, Some(MicrovmAgentKind::Openclaw));
-        assert!(
-            agent_startup_status_message(openclaw_kind, phase).contains("OpenClaw"),
-            "openclaw waiting text should mention OpenClaw readiness"
+            agent_startup_status_message(phase).contains("OpenClaw"),
+            "waiting text should mention OpenClaw readiness"
         );
     }
 
@@ -2991,96 +2845,6 @@ mod tests {
     }
 
     #[test]
-    fn agent_new_parses_acp_microvm_flags() {
-        let cli = Cli::try_parse_from([
-            "pikachat",
-            "agent",
-            "new",
-            "--nsec",
-            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
-            "--microvm-kind",
-            "pi",
-            "--microvm-backend",
-            "acp",
-            "--microvm-acp-exec",
-            "npx -y pi-acp",
-            "--microvm-acp-cwd",
-            "/root/pika-agent/acp",
-        ])
-        .expect("parse args");
-
-        match cli.cmd {
-            Command::Agent {
-                cmd: AgentCommand::New { microvm, .. },
-            } => {
-                assert_eq!(microvm.microvm_kind, Some(AgentMicrovmKindCli::Pi));
-                assert_eq!(microvm.microvm_backend, Some(AgentMicrovmBackendCli::Acp));
-                assert_eq!(microvm.microvm_acp_exec.as_deref(), Some("npx -y pi-acp"));
-                assert_eq!(
-                    microvm.microvm_acp_cwd.as_deref(),
-                    Some("/root/pika-agent/acp")
-                );
-            }
-            _ => panic!("expected agent new command"),
-        }
-    }
-
-    #[test]
-    fn agent_new_parses_native_microvm_backend() {
-        let cli = Cli::try_parse_from([
-            "pikachat",
-            "agent",
-            "new",
-            "--nsec",
-            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
-            "--microvm-kind",
-            "openclaw",
-            "--microvm-backend",
-            "native",
-        ])
-        .expect("parse args");
-
-        match cli.cmd {
-            Command::Agent {
-                cmd: AgentCommand::New { microvm, .. },
-            } => {
-                assert_eq!(microvm.microvm_kind, Some(AgentMicrovmKindCli::Openclaw));
-                assert_eq!(
-                    microvm.microvm_backend,
-                    Some(AgentMicrovmBackendCli::Native)
-                );
-                assert!(microvm.microvm_acp_exec.is_none());
-                assert!(microvm.microvm_acp_cwd.is_none());
-            }
-            _ => panic!("expected agent new command"),
-        }
-    }
-
-    #[test]
-    fn agent_new_parses_openclaw_kind_without_backend() {
-        let cli = Cli::try_parse_from([
-            "pikachat",
-            "agent",
-            "new",
-            "--nsec",
-            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
-            "--microvm-kind",
-            "openclaw",
-        ])
-        .expect("parse args");
-
-        match cli.cmd {
-            Command::Agent {
-                cmd: AgentCommand::New { microvm, .. },
-            } => {
-                assert_eq!(microvm.microvm_kind, Some(AgentMicrovmKindCli::Openclaw));
-                assert!(microvm.microvm_backend.is_none());
-            }
-            _ => panic!("expected agent new command"),
-        }
-    }
-
-    #[test]
     fn agent_new_parses_request_scoped_incus_args() {
         let cli = Cli::try_parse_from([
             "pikachat",
@@ -3088,10 +2852,6 @@ mod tests {
             "new",
             "--nsec",
             "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
-            "--provider",
-            "incus",
-            "--microvm-kind",
-            "openclaw",
             "--incus-endpoint",
             "https://pika-build:8443",
             "--incus-project",
@@ -3108,22 +2868,20 @@ mod tests {
 
         match cli.cmd {
             Command::Agent {
-                cmd: AgentCommand::New { microvm, .. },
+                cmd: AgentCommand::New { runtime, .. },
             } => {
-                assert_eq!(microvm.provider, Some(AgentVmProviderCli::Incus));
-                assert_eq!(microvm.microvm_kind, Some(AgentMicrovmKindCli::Openclaw));
                 assert_eq!(
-                    microvm.incus_endpoint.as_deref(),
+                    runtime.incus_endpoint.as_deref(),
                     Some("https://pika-build:8443")
                 );
                 assert_eq!(
-                    microvm.incus_project.as_deref(),
+                    runtime.incus_project.as_deref(),
                     Some("pika-managed-agents")
                 );
-                assert_eq!(microvm.incus_profile.as_deref(), Some("pika-agent-dev"));
-                assert_eq!(microvm.incus_storage_pool.as_deref(), Some("default"));
-                assert_eq!(microvm.incus_image_alias.as_deref(), Some("pika-agent/dev"));
-                assert_eq!(microvm.incus_insecure_tls, Some(true));
+                assert_eq!(runtime.incus_profile.as_deref(), Some("pika-agent-dev"));
+                assert_eq!(runtime.incus_storage_pool.as_deref(), Some("default"));
+                assert_eq!(runtime.incus_image_alias.as_deref(), Some("pika-agent/dev"));
+                assert_eq!(runtime.incus_insecure_tls, Some(true));
             }
             _ => panic!("expected agent new command"),
         }
@@ -3131,12 +2889,7 @@ mod tests {
 
     #[test]
     fn agent_provision_request_includes_incus_fields_when_selected() {
-        let request = agent_provision_request(&AgentMicrovmArgs {
-            provider: Some(AgentVmProviderCli::Incus),
-            microvm_kind: Some(AgentMicrovmKindCli::Openclaw),
-            microvm_backend: Some(AgentMicrovmBackendCli::Native),
-            microvm_acp_exec: None,
-            microvm_acp_cwd: None,
+        let request = agent_provision_request(&AgentRuntimeArgs {
             incus_endpoint: Some("https://pika-build:8443".to_string()),
             incus_project: Some("pika-managed-agents".to_string()),
             incus_profile: Some("pika-agent-dev".to_string()),
@@ -3146,14 +2899,9 @@ mod tests {
         })
         .expect("build request");
 
-        assert_eq!(request.provider, Some(ProviderKind::Incus));
-        assert_eq!(
-            request.microvm.as_ref().and_then(|params| params.kind),
-            Some(MicrovmAgentKind::Openclaw)
-        );
         assert_eq!(
             request.incus,
-            Some(IncusProvisionParams {
+            IncusProvisionParams {
                 endpoint: Some("https://pika-build:8443".to_string()),
                 project: Some("pika-managed-agents".to_string()),
                 profile: Some("pika-agent-dev".to_string()),
@@ -3162,50 +2910,24 @@ mod tests {
                 insecure_tls: Some(true),
                 openclaw_guest_ipv4_cidr: None,
                 openclaw_proxy_host: None,
-            })
+            }
         );
     }
 
     #[test]
-    fn agent_new_parses_pi_kind_without_backend() {
-        let cli = Cli::try_parse_from([
-            "pikachat",
-            "agent",
-            "new",
-            "--nsec",
-            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
-            "--microvm-kind",
-            "pi",
-        ])
-        .expect("parse args");
-
-        match cli.cmd {
-            Command::Agent {
-                cmd: AgentCommand::New { microvm, .. },
-            } => {
-                assert_eq!(microvm.microvm_kind, Some(AgentMicrovmKindCli::Pi));
-                assert!(microvm.microvm_backend.is_none());
-            }
-            _ => panic!("expected agent new command"),
-        }
-    }
-
-    #[test]
-    fn agent_new_rejects_legacy_exec_microvm_backend() {
+    fn agent_new_rejects_removed_runtime_flags() {
         let err = Cli::try_parse_from([
             "pikachat",
             "agent",
             "new",
             "--nsec",
             "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfu2v9v",
-            "--microvm-backend",
-            "legacy-exec",
+            "--runtime-kind",
+            "openclaw",
         ])
-        .expect_err("legacy microvm backend should be rejected");
+        .expect_err("removed runtime flag should be rejected");
         let msg = err.to_string();
-        assert!(msg.contains("legacy-exec"));
-        assert!(msg.contains("native"));
-        assert!(msg.contains("acp"));
+        assert!(msg.contains("--runtime-kind"));
     }
 
     #[test]

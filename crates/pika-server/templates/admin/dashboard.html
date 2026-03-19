@@ -46,7 +46,7 @@
     </tbody>
   </table>
 
-  <h2 style="margin-top:24px">Managed Environment Backups</h2>
+  <h2 style="margin-top:24px">Managed Environment Recovery Protection</h2>
   {% if has_environment_rows %}
   <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse; width:100%; max-width:1200px">
     <thead>
@@ -80,7 +80,7 @@
         <td>
           {% if row.can_restore_from_backup %}
           <form method="get" action="/admin/environments/{{ row.owner_npub }}/restore/confirm">
-            <button type="submit">Review Restore From Backup</button>
+            <button type="submit">Review Restore From Recovery Point</button>
           </form>
           {% else %}
           {{ row.restore_blocked_reason }}

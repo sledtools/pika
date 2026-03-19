@@ -274,7 +274,6 @@ impl VmManager {
                 Ok(VmResponse {
                     id,
                     status: runtime_status.to_string(),
-                    agent_kind: Some(req.guest_autostart.startup_plan.agent_kind),
                     startup_probe_satisfied: false,
                     guest_ready: false,
                 })
@@ -336,22 +335,9 @@ impl VmManager {
         } else {
             false
         };
-        let agent_kind = self
-            .load_guest_startup_plan(&vm.microvm_state_dir, id)
-            .map(|plan| plan.agent_kind)
-            .map(Some)
-            .unwrap_or_else(|err| {
-                warn!(
-                    vm_id = %id,
-                    error = %err,
-                    "failed to load guest startup plan while reporting vm runtime kind"
-                );
-                None
-            });
         Ok(VmResponse {
             id: id.to_string(),
             status: status.to_string(),
-            agent_kind,
             startup_probe_satisfied,
             guest_ready,
         })
@@ -400,10 +386,6 @@ impl VmManager {
         Ok(VmResponse {
             id: id.to_string(),
             status: status.to_string(),
-            agent_kind: Some(
-                self.load_guest_startup_plan(&vm.microvm_state_dir, id)?
-                    .agent_kind,
-            ),
             startup_probe_satisfied: false,
             guest_ready: false,
         })
@@ -519,10 +501,6 @@ impl VmManager {
         Ok(VmResponse {
             id: id.to_string(),
             status: status.to_string(),
-            agent_kind: Some(
-                self.load_guest_startup_plan(&vm.microvm_state_dir, id)?
-                    .agent_kind,
-            ),
             startup_probe_satisfied: false,
             guest_ready: false,
         })
@@ -2477,6 +2455,7 @@ fn to_ms(duration: Duration) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pika_agent_microvm::{MicrovmAgentKind, MicrovmProvisionParams};
     use std::collections::BTreeMap;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::os::unix::fs::PermissionsExt;
@@ -2538,11 +2517,10 @@ mod tests {
     }
 
     fn test_guest_autostart_request() -> GuestAutostartRequest {
-        let resolved =
-            pika_agent_microvm::resolve_params(&pika_agent_control_plane::MicrovmProvisionParams {
-                kind: Some(pika_agent_control_plane::MicrovmAgentKind::Pi),
-                ..pika_agent_control_plane::MicrovmProvisionParams::default()
-            });
+        let resolved = pika_agent_microvm::resolve_params(&MicrovmProvisionParams {
+            kind: Some(MicrovmAgentKind::Pi),
+            ..MicrovmProvisionParams::default()
+        });
         pika_agent_microvm::validate_resolved_params(&resolved).unwrap();
 
         let owner_keys = nostr_sdk::prelude::Keys::generate();
@@ -2638,7 +2616,6 @@ mod tests {
                 "#!/usr/bin/env bash\nexit 0\n".to_string(),
             )]),
             startup_plan: GuestStartupPlan {
-                agent_kind: pika_agent_control_plane::MicrovmAgentKind::Openclaw,
                 service_kind: GuestServiceKind::OpenclawGateway,
                 backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Native,
                 daemon_state_dir: "/root/pika-agent/state".to_string(),
@@ -2691,7 +2668,6 @@ mod tests {
                 "#!/usr/bin/env bash\nexit 0\n".to_string(),
             )]),
             startup_plan: GuestStartupPlan {
-                agent_kind: pika_agent_control_plane::MicrovmAgentKind::Openclaw,
                 service_kind: GuestServiceKind::OpenclawGateway,
                 backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Native,
                 daemon_state_dir: "/root/pika-agent/state".to_string(),
@@ -2756,7 +2732,6 @@ mod tests {
                 "#!/usr/bin/env bash\nexit 0\n".to_string(),
             )]),
             startup_plan: GuestStartupPlan {
-                agent_kind: pika_agent_control_plane::MicrovmAgentKind::Openclaw,
                 service_kind: GuestServiceKind::OpenclawGateway,
                 backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Native,
                 daemon_state_dir: "/root/pika-agent/state".to_string(),
@@ -3104,11 +3079,10 @@ mod tests {
     ) {
         let root = tempfile::tempdir().unwrap();
         let cfg = test_config(&root);
-        let resolved =
-            pika_agent_microvm::resolve_params(&pika_agent_control_plane::MicrovmProvisionParams {
-                kind: Some(pika_agent_control_plane::MicrovmAgentKind::Pi),
-                ..pika_agent_control_plane::MicrovmProvisionParams::default()
-            });
+        let resolved = pika_agent_microvm::resolve_params(&MicrovmProvisionParams {
+            kind: Some(MicrovmAgentKind::Pi),
+            ..MicrovmProvisionParams::default()
+        });
         pika_agent_microvm::validate_resolved_params(&resolved).unwrap();
 
         let owner_keys = nostr_sdk::prelude::Keys::generate();
@@ -3545,11 +3519,10 @@ mod tests {
         let mut cfg = test_config(&root);
         cfg.systemctl_cmd = systemctl_script.display().to_string();
 
-        let resolved =
-            pika_agent_microvm::resolve_params(&pika_agent_control_plane::MicrovmProvisionParams {
-                kind: Some(pika_agent_control_plane::MicrovmAgentKind::Pi),
-                ..pika_agent_control_plane::MicrovmProvisionParams::default()
-            });
+        let resolved = pika_agent_microvm::resolve_params(&MicrovmProvisionParams {
+            kind: Some(MicrovmAgentKind::Pi),
+            ..MicrovmProvisionParams::default()
+        });
         pika_agent_microvm::validate_resolved_params(&resolved).unwrap();
 
         let owner_keys = nostr_sdk::prelude::Keys::generate();
@@ -3563,10 +3536,6 @@ mod tests {
         );
         let startup_plan = request.guest_autostart.startup_plan.clone();
         startup_plan.validate().unwrap();
-        assert_eq!(
-            startup_plan.agent_kind,
-            pika_agent_control_plane::MicrovmAgentKind::Pi
-        );
         assert_eq!(
             startup_plan.service_kind,
             pika_agent_control_plane::GuestServiceKind::PikachatDaemon
@@ -4045,7 +4014,6 @@ mod tests {
                 "#!/usr/bin/env bash\nexit 0\n".to_string(),
             )]),
             startup_plan: pika_agent_control_plane::GuestStartupPlan {
-                agent_kind: pika_agent_control_plane::MicrovmAgentKind::Pi,
                 service_kind: pika_agent_control_plane::GuestServiceKind::PikachatDaemon,
                 backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Acp,
                 daemon_state_dir: "/root/pika-agent/state".to_string(),
@@ -4122,7 +4090,6 @@ mod tests {
                 "#!/usr/bin/env bash\nexit 0\n".to_string(),
             )]),
             startup_plan: pika_agent_control_plane::GuestStartupPlan {
-                agent_kind: pika_agent_control_plane::MicrovmAgentKind::Pi,
                 service_kind: pika_agent_control_plane::GuestServiceKind::PikachatDaemon,
                 backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Acp,
                 daemon_state_dir: "/root/pika-agent/state".to_string(),
@@ -4181,7 +4148,6 @@ mod tests {
                 "#!/usr/bin/env bash\nexit 0\n".to_string(),
             )]),
             startup_plan: pika_agent_control_plane::GuestStartupPlan {
-                agent_kind: pika_agent_control_plane::MicrovmAgentKind::Pi,
                 service_kind: pika_agent_control_plane::GuestServiceKind::PikachatDaemon,
                 backend_mode: pika_agent_control_plane::GuestServiceBackendMode::Acp,
                 daemon_state_dir: "/root/pika-agent/state".to_string(),

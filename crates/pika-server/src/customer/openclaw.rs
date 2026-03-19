@@ -543,7 +543,7 @@ pub(crate) async fn openclaw_launch_exchange(
     }
 
     let launch_auth = load_openclaw_launch_auth(
-        &launch_target.managed_vm,
+        &launch_target.incus,
         &ticket.vm_id,
         &request_context.request_id,
     )
@@ -624,13 +624,10 @@ pub(crate) async fn openclaw_proxy(
     let websocket_request = request_is_websocket_upgrade(&method, &headers);
     let internal_path = uri.path();
     let upstream_path = openclaw_proxy_upstream_path(internal_path, websocket_request);
-    let proxy_target = load_openclaw_proxy_target(
-        &current.managed_vm,
-        &current.vm_id,
-        &request_context.request_id,
-    )
-    .await
-    .map_err(map_agent_api_error)?;
+    let proxy_target =
+        load_openclaw_proxy_target(&current.incus, &current.vm_id, &request_context.request_id)
+            .await
+            .map_err(map_agent_api_error)?;
     let upstream_path = if websocket_request && upstream_path == "/" {
         String::new()
     } else {

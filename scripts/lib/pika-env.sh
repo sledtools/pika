@@ -80,7 +80,10 @@ require_agent_api_nsec() {
   fi
 }
 
-set_agent_microvm_backend_default() {
-  local default_backend="${1:-acp}"
-  set_default "PIKA_AGENT_MICROVM_BACKEND" "$default_backend"
+set_agent_incus_lane_defaults() {
+  set_default "PIKA_AGENT_INCUS_ENDPOINT" "https://pika-build:8443"
+  set_default "PIKA_AGENT_INCUS_PROJECT" "pika-managed-agents"
+  set_default "PIKA_AGENT_INCUS_PROFILE" "pika-agent-dev"
+  set_default "PIKA_AGENT_INCUS_STORAGE_POOL" "default"
+  set_default "PIKA_AGENT_INCUS_IMAGE_ALIAS" "pika-agent/dev"
 }

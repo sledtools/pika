@@ -9311,7 +9311,7 @@ mod tests {
         }
 
         #[test]
-        fn ensure_agent_kind_can_start_pi_provisioning() {
+        fn ensure_agent_kind_can_start_openclaw_provisioning() {
             let (mut core, _tmp) = make_logged_in_core();
             core.agent_allowlist_state = super::super::AgentAllowlistState::Allowlisted;
             let pubkey = core.session.as_ref().expect("session").pubkey;
@@ -9322,7 +9322,7 @@ mod tests {
             };
 
             core.handle_action(AppAction::EnsureAgentKind {
-                kind: crate::state::AgentKind::Pi,
+                kind: crate::state::AgentKind::Openclaw,
             });
 
             let provisioning = core
@@ -9330,7 +9330,7 @@ mod tests {
                 .agent_provisioning
                 .as_ref()
                 .expect("provisioning started");
-            assert_eq!(provisioning.agent_kind, crate::state::AgentKind::Pi);
+            assert_eq!(provisioning.agent_kind, crate::state::AgentKind::Openclaw);
             assert_eq!(
                 provisioning.phase,
                 crate::state::AgentProvisioningPhase::Ensuring

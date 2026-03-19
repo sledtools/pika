@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Confirm Restore From Backup</title>
+  <title>Confirm Restore From Recovery Point</title>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
@@ -90,10 +90,10 @@
 <body>
   <main>
     <section class="card">
-      <h1>Confirm Restore From Backup</h1>
+      <h1>Confirm Restore From Recovery Point</h1>
       <p>Signed in as <code>{{ current_admin_npub }}</code>.</p>
       <p>This replaces the current persistent managed-agent state for <code>{{ owner_npub }}</code> on <code>{{ vm_id }}</code> with the latest snapshot-backed recovery point, then restarts the managed OpenClaw environment from that restored state.</p>
-      <p>This is distinct from <strong>Recover</strong>, which tries to preserve the current durable home in place, and from <strong>Destructive Reset</strong>, which provisions fresh and can discard prior durable state.</p>
+      <p>This is distinct from <strong>Recover</strong>, which tries to preserve the current state volume in place, and from <strong>Destructive Reset</strong>, which provisions fresh and can discard prior durable state.</p>
 
       <dl>
         <div>
@@ -117,7 +117,7 @@
           <dd>{{ startup_phase }}</dd>
         </div>
         <div>
-          <dt>Backup Freshness</dt>
+          <dt>Recovery Point Freshness</dt>
           <dd>{{ backup_freshness }}</dd>
         </div>
         <div>
@@ -147,7 +147,7 @@
         <form method="post" action="/admin/environments/{{ owner_npub }}/restore">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
           <input type="hidden" name="confirmation_token" value="{{ confirmation_token }}" />
-          <button type="submit">Confirm Restore From Backup</button>
+          <button type="submit">Confirm Restore From Recovery Point</button>
         </form>
         <form method="get" action="/admin">
           <button class="ghost" type="submit">Cancel</button>

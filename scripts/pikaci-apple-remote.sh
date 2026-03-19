@@ -197,10 +197,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
+ensure_source_history_available() {
+  local is_shallow
+  is_shallow="$(git rev-parse --is-shallow-repository 2>/dev/null || printf 'false\n')"
+  if [[ "$is_shallow" != "true" ]]; then
+    return
+  fi
+
+  # GitHub pull_request_target checkouts default to depth=1 from the base-branch
+  # workflow. Unshallow first so the bundle contains the full cherry-picked stack.
+  git fetch --quiet --no-tags --prune --unshallow origin
+}
+
 create_source_bundle() {
   if [[ "$bundle_created" -eq 1 ]]; then
     return
   fi
+  ensure_source_history_available
   git update-ref "$bundle_ref" "$resolved_commit"
   git bundle create "$bundle_path" "$bundle_ref" >/dev/null
   git update-ref -d "$bundle_ref" >/dev/null 2>&1 || true

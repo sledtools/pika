@@ -2,9 +2,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use nostr_sdk::prelude::{EventBuilder, Keys, Kind, Tag, TagKind};
-use pika_agent_control_plane::{
-    AgentProvisionRequest, AgentStartupPhase, MicrovmAgentKind, MicrovmProvisionParams,
-};
+use pika_agent_control_plane::{AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams};
 use reqwest::Method;
 use serde::Deserialize;
 
@@ -149,21 +147,10 @@ async fn ensure_agent(
     client: &reqwest::Client,
     keys: &Keys,
     base_url: &str,
-    agent_kind: crate::state::AgentKind,
+    _agent_kind: crate::state::AgentKind,
 ) -> Result<(), AgentFlowError> {
-    let body = serde_json::to_value(AgentProvisionRequest {
-        provider: None,
-        microvm: Some(MicrovmProvisionParams {
-            spawner_url: None,
-            kind: Some(match agent_kind {
-                crate::state::AgentKind::Openclaw => MicrovmAgentKind::Openclaw,
-                crate::state::AgentKind::Pi => MicrovmAgentKind::Pi,
-            }),
-            backend: None,
-        }),
-        incus: None,
-    })
-    .map_err(|_| AgentFlowError::InvalidResponse)?;
+    let body = serde_json::to_value(internal_managed_agent_request())
+        .map_err(|_| AgentFlowError::InvalidResponse)?;
     let response = send_agent_request(
         client,
         keys,
@@ -244,21 +231,10 @@ async fn recover_my_agent(
     client: &reqwest::Client,
     keys: &Keys,
     base_url: &str,
-    agent_kind: crate::state::AgentKind,
+    _agent_kind: crate::state::AgentKind,
 ) -> Result<AgentStateResponse, AgentFlowError> {
-    let body = serde_json::to_value(AgentProvisionRequest {
-        provider: None,
-        microvm: Some(MicrovmProvisionParams {
-            spawner_url: None,
-            kind: Some(match agent_kind {
-                crate::state::AgentKind::Openclaw => MicrovmAgentKind::Openclaw,
-                crate::state::AgentKind::Pi => MicrovmAgentKind::Pi,
-            }),
-            backend: None,
-        }),
-        incus: None,
-    })
-    .map_err(|_| AgentFlowError::InvalidResponse)?;
+    let body = serde_json::to_value(internal_managed_agent_request())
+        .map_err(|_| AgentFlowError::InvalidResponse)?;
     let response = send_agent_request(
         client,
         keys,
@@ -329,6 +305,12 @@ fn send_progress(
             agent_npub,
         },
     )));
+}
+
+fn internal_managed_agent_request() -> AgentProvisionRequest {
+    AgentProvisionRequest {
+        incus: IncusProvisionParams::default(),
+    }
 }
 
 fn provisioning_phase_from_startup(
@@ -421,7 +403,7 @@ pub(super) fn provisioning_status_message(phase: &crate::state::AgentProvisionin
         crate::state::AgentProvisioningPhase::Ensuring => "Requesting agent...".to_string(),
         crate::state::AgentProvisioningPhase::Requested => "Request received...".to_string(),
         crate::state::AgentProvisioningPhase::ProvisioningVm => {
-            "Provisioning microVM...".to_string()
+            "Provisioning managed environment...".to_string()
         }
         crate::state::AgentProvisioningPhase::BootingGuest => "Booting guest...".to_string(),
         crate::state::AgentProvisioningPhase::WaitingForServiceReady => {
@@ -916,6 +898,18 @@ mod tests {
     }
 
     #[test]
+    fn internal_managed_agent_request_targets_incus_for_hosted_api() {
+        let request = internal_managed_agent_request();
+        assert_eq!(request.incus, IncusProvisionParams::default());
+    }
+
+    #[test]
+    fn internal_managed_agent_request_targets_incus_for_custom_server_too() {
+        let request = internal_managed_agent_request();
+        assert_eq!(request.incus, IncusProvisionParams::default());
+    }
+
+    #[test]
     fn agent_flow_error_maps_to_human_messages() {
         let msg = AgentFlowError::NotWhitelisted.to_user_message();
         assert!(msg.contains("allowlisted"));
@@ -925,7 +919,7 @@ mod tests {
     fn provisioning_status_message_uses_typed_startup_messages() {
         assert_eq!(
             provisioning_status_message(&crate::state::AgentProvisioningPhase::ProvisioningVm),
-            "Provisioning microVM..."
+            "Provisioning managed environment..."
         );
         assert_eq!(
             provisioning_status_message(&crate::state::AgentProvisioningPhase::BootingGuest),
@@ -982,7 +976,7 @@ mod tests {
         assert!(captured[1].0.starts_with("GET /v1/agents/me "));
         assert!(captured[0].1.starts_with("Nostr "));
         assert!(captured[1].1.starts_with("Nostr "));
-        assert!(captured[0].2.contains("\"kind\":\"openclaw\""));
+        assert_eq!(captured[0].2.trim(), "{}");
     }
 
     #[tokio::test]
@@ -1034,7 +1028,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_agent_flow_recover_sends_selected_agent_kind() {
+    async fn run_agent_flow_recover_uses_incus_request_shape() {
         let (base_url, handle) = spawn_agent_flow_mock_server_scripted(vec![
             (
                 "POST /v1/agents/ensure ",
@@ -1050,7 +1044,7 @@ mod tests {
             ),
             (
                 "GET /v1/agents/me ",
-                r#"{"agent_id":"npub1piagent","state":"ready","startup_phase":"ready"}"#,
+                r#"{"agent_id":"npub1recovered","state":"ready","startup_phase":"ready"}"#,
             ),
         ])
         .expect("start mock server");
@@ -1058,10 +1052,17 @@ mod tests {
         let keys = Keys::generate();
 
         let (tx, _rx) = flume::unbounded();
-        let agent_id = run_agent_flow(client, keys, base_url, crate::state::AgentKind::Pi, tx, 1)
-            .await
-            .expect("run agent flow");
-        assert_eq!(agent_id, "npub1piagent");
+        let agent_id = run_agent_flow(
+            client,
+            keys,
+            base_url,
+            crate::state::AgentKind::Openclaw,
+            tx,
+            1,
+        )
+        .await
+        .expect("run agent flow");
+        assert_eq!(agent_id, "npub1recovered");
 
         let captured = handle
             .join()
@@ -1072,6 +1073,33 @@ mod tests {
             .iter()
             .find(|(request_line, _, _)| request_line.starts_with("POST /v1/agents/me/recover "))
             .expect("recover request");
-        assert!(recover.2.contains("\"kind\":\"pi\""));
+        assert_eq!(recover.2.trim(), "{}");
+    }
+
+    #[tokio::test]
+    async fn run_agent_flow_uses_incus_request_shape_for_custom_server() {
+        let (base_url, handle) = spawn_agent_flow_mock_server().expect("start mock server");
+        let client = reqwest::Client::new();
+        let keys = Keys::generate();
+
+        let (tx, _rx) = flume::unbounded();
+        let agent_id = run_agent_flow(
+            client,
+            keys,
+            base_url,
+            crate::state::AgentKind::Openclaw,
+            tx,
+            1,
+        )
+        .await
+        .expect("run agent flow");
+        assert_eq!(agent_id, "npub1testagent");
+
+        let captured = handle
+            .join()
+            .map_err(|_| anyhow!("mock server thread panicked"))
+            .and_then(|result| result)
+            .expect("collect captured requests");
+        assert_eq!(captured[0].2.trim(), "{}");
     }
 }

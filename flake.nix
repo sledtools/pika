@@ -402,6 +402,54 @@
         EOF
       '';
 
+      pikaciIncusDevImageSystem = nixpkgs.lib.nixosSystem {
+        system = "x86_64-linux";
+        modules = [
+          ./nix/incus/pikaci-image.nix
+        ];
+      };
+
+      pikaciIncusDevImageDisk = import "${serverPkgs.path}/nixos/lib/make-disk-image.nix" {
+        inherit (pikaciIncusDevImageSystem) config pkgs;
+        lib = serverPkgs.lib;
+        format = "qcow2";
+        diskSize = 12288;
+        partitionTableType = "efi";
+        installBootLoader = true;
+        copyChannel = false;
+        name = "pikaci-incus-dev";
+      };
+
+      pikaciIncusDevImagePkg = serverPkgs.runCommand "pikaci-incus-dev-image" {
+        nativeBuildInputs = [ serverPkgs.findutils serverPkgs.gnutar serverPkgs.xz ];
+      } ''
+        mkdir -p "$out"
+        cat >"$TMPDIR/metadata.yaml" <<'EOF'
+        architecture: x86_64
+        creation_date: 1
+        properties:
+          description: Pika CI Incus dev image
+          os: NixOS
+          release: unstable
+          variant: pikaci-incus-dev
+        EOF
+        tar --sort=name --mtime='@1' --owner=0 --group=0 --numeric-owner \
+          -C "$TMPDIR" -cJf "$out/metadata.tar.xz" metadata.yaml
+        qcow2_path="$(find ${pikaciIncusDevImageDisk} -maxdepth 1 -type f -name '*.qcow2' | head -n 1)"
+        if [ -z "$qcow2_path" ]; then
+          echo "missing qcow2 image output from ${pikaciIncusDevImageDisk}" >&2
+          exit 1
+        fi
+        ln -s "$qcow2_path" "$out/disk.qcow2"
+        cat >"$out/README.txt" <<'EOF'
+        Build:
+          nix build .#packages.x86_64-linux.pikaci-incus-dev-image
+
+        Import on a remote Incus dev host:
+          ./scripts/pikaci-incus-image.sh build-import --remote-host pika-build --alias pikaci/dev
+        EOF
+      '';
+
       pikaRelayPkg = serverPkgs.buildGoModule {
         pname = "pika-relay";
         version = "0.1.0";
@@ -1031,6 +1079,7 @@ EOF
         pikachat = pikachatPkg;
         pikaci = pikaciServerPkg;
         pika-agent-incus-dev-image = pikaAgentIncusDevImagePkg;
+        pikaci-incus-dev-image = pikaciIncusDevImagePkg;
       };
 
       nixosConfigurations = {

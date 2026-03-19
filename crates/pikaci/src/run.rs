@@ -14,10 +14,11 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::executor::{
-    HostContext, compiled_guest_command, materialize_runner_flake, prepare_remote_microvm_runner,
-    prepare_vfkit_runner_link, prepared_output_remote_helper_binary,
-    prepared_output_remote_launcher_binary, prepared_output_remote_work_dir,
-    prepared_output_ssh_host, run_job_on_runner, ssh_nix_binary, staged_linux_remote_defaults,
+    HostContext, compiled_guest_command, materialize_vfkit_runner_flake,
+    prepare_remote_linux_vm_backend, prepare_vfkit_runner_link,
+    prepared_output_remote_helper_binary, prepared_output_remote_launcher_binary,
+    prepared_output_remote_work_dir, prepared_output_ssh_host, remote_linux_vm_prepare_artifact,
+    run_job_on_runner, ssh_nix_binary, staged_linux_remote_defaults,
     staged_linux_remote_snapshot_dir, sync_snapshot_to_remote,
 };
 use crate::model::{
@@ -479,6 +480,7 @@ fn run_one_job(job: &JobSpec, plan_node_id: &str, ctx: &HostContext) -> anyhow::
             job_record.finished_at = Some(finished_at);
             job_record.exit_code = outcome.exit_code;
             job_record.message = Some(outcome.message);
+            job_record.remote_linux_vm_execution = outcome.remote_linux_vm_execution;
         }
         Err(err) => {
             job_record.status = RunStatus::Failed;
@@ -504,6 +506,7 @@ fn running_job_record(job: &JobSpec, plan_node_id: &str, ctx: &HostContext) -> J
         finished_at: None,
         exit_code: None,
         message: None,
+        remote_linux_vm_execution: None,
     }
 }
 
@@ -719,7 +722,7 @@ enum PrepareAction {
         runner_link: PathBuf,
         log_paths: Vec<PathBuf>,
     },
-    RemoteMicrovmRunner {
+    RemoteLinuxVmBackend {
         job: JobSpec,
         ctx: Box<HostContext>,
         log_paths: Vec<PathBuf>,
@@ -1176,30 +1179,63 @@ fn build_run_plan(
         }
         if matches!(
             job.runner_kind(),
-            RunnerKind::VfkitLocal | RunnerKind::MicrovmRemote
+            RunnerKind::VfkitLocal | RunnerKind::RemoteLinuxVm
         ) {
             let prepare_node_id = format!("prepare-{}-runner", job.id);
-            let installable = materialize_runner_flake(job, &ctx)?;
             let runner_description = match job.runner_kind() {
                 RunnerKind::HostLocal => unreachable!("host-local jobs skip Linux microvm runner"),
                 RunnerKind::VfkitLocal => format!("Build vfkit runner for `{}`", job.id),
-                RunnerKind::MicrovmRemote => {
-                    format!("Build remote microvm runner for `{}`", job.id)
+                RunnerKind::RemoteLinuxVm => {
+                    format!("Prepare remote Linux VM backend for `{}`", job.id)
                 }
                 RunnerKind::TartLocal => unreachable!("tart jobs skip Linux microvm runner"),
             };
-            let action = match job.runner_kind() {
+            let (action, prepare) = match job.runner_kind() {
                 RunnerKind::HostLocal => unreachable!("host-local jobs skip Linux microvm runner"),
-                RunnerKind::VfkitLocal => PrepareAction::VfkitRunner {
-                    installable: installable.clone(),
-                    runner_link: ctx.job_dir.join("vm").join("runner"),
-                    log_paths: vec![ctx.host_log_path.clone()],
-                },
-                RunnerKind::MicrovmRemote => PrepareAction::RemoteMicrovmRunner {
-                    job: job.clone(),
-                    ctx: Box::new(ctx.clone()),
-                    log_paths: vec![ctx.host_log_path.clone()],
-                },
+                RunnerKind::VfkitLocal => {
+                    let installable = materialize_vfkit_runner_flake(job, &ctx)?;
+                    (
+                        PrepareAction::VfkitRunner {
+                            installable: installable.clone(),
+                            runner_link: ctx.job_dir.join("vm").join("runner"),
+                            log_paths: vec![ctx.host_log_path.clone()],
+                        },
+                        PrepareNode::NixBuild {
+                            installable,
+                            output_name:
+                                "nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
+                                    .to_string(),
+                            residency: PreparedOutputResidency::LocalAuthoritative,
+                            handoff: None,
+                        },
+                    )
+                }
+                RunnerKind::RemoteLinuxVm => {
+                    let prepare = match remote_linux_vm_prepare_artifact(job, &ctx)? {
+                        Some(artifact) => PrepareNode::NixBuild {
+                            installable: artifact.installable,
+                            output_name: artifact.output_name,
+                            residency: PreparedOutputResidency::LocalAuthoritative,
+                            handoff: None,
+                        },
+                        None => PrepareNode::RemoteLinuxVmBackend {
+                            backend: job.remote_linux_vm_backend().ok_or_else(|| {
+                                anyhow!(
+                                    "remote Linux VM backend is missing for prepare node `{}`",
+                                    job.id
+                                )
+                            })?,
+                        },
+                    };
+                    (
+                        PrepareAction::RemoteLinuxVmBackend {
+                            job: job.clone(),
+                            ctx: Box::new(ctx.clone()),
+                            log_paths: vec![ctx.host_log_path.clone()],
+                        },
+                        prepare,
+                    )
+                }
                 RunnerKind::TartLocal => unreachable!("tart jobs skip Linux microvm runner"),
             };
             planned_prepares.push(PlannedPrepare {
@@ -1214,14 +1250,7 @@ fn build_run_plan(
                     description: runner_description,
                     executor: PlanExecutorKind::HostLocal,
                     depends_on: Vec::new(),
-                    prepare: PrepareNode::NixBuild {
-                        installable,
-                        output_name:
-                            "nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
-                                .to_string(),
-                        residency: PreparedOutputResidency::LocalAuthoritative,
-                        handoff: None,
-                    },
+                    prepare,
                 },
             );
             depends_on.push(prepare_node_id);
@@ -3769,16 +3798,16 @@ fn run_prepare_nodes(
                     }
                 })?;
             }
-            PrepareAction::RemoteMicrovmRunner {
+            PrepareAction::RemoteLinuxVmBackend {
                 job,
                 ctx,
                 log_paths,
             } => {
                 let log_path = log_paths.first().ok_or_else(|| PrepareFailure {
                     node_id: prepare.node_id.clone(),
-                    message: "missing remote microvm runner prepare log path".to_string(),
+                    message: "missing remote Linux VM backend prepare log path".to_string(),
                 })?;
-                prepare_remote_microvm_runner(job, ctx.as_ref(), log_path).map_err(|err| {
+                prepare_remote_linux_vm_backend(job, ctx.as_ref(), log_path).map_err(|err| {
                     PrepareFailure {
                         node_id: prepare.node_id.clone(),
                         message: format!("{err:#}"),
@@ -4077,9 +4106,42 @@ mod tests {
         PreparedOutputHandoff, PreparedOutputHandoffProtocol, PreparedOutputInvocationMode,
         PreparedOutputLauncherTransportMode, PreparedOutputRemoteExposureRequest,
         PreparedOutputResidency, PreparedOutputsRecord, RealizedPreparedOutputRecord,
-        RunPlanRecord, RunRecord, RunStatus, StagedLinuxRustLane,
+        RemoteLinuxVmBackend, RunPlanRecord, RunRecord, RunStatus, StagedLinuxRustLane,
     };
     use crate::snapshot::{SnapshotProfile, compute_source_fingerprint_with_profile};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn with_incus_lane_env<T>(value: Option<&str>, action: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock");
+        let previous = std::env::var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES").ok();
+        match value {
+            Some(value) => {
+                // SAFETY: tests serialize process environment access with ENV_LOCK.
+                unsafe { std::env::set_var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES", value) };
+            }
+            None => {
+                // SAFETY: tests serialize process environment access with ENV_LOCK.
+                unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES") };
+            }
+        }
+        let result = action();
+        match previous {
+            Some(previous) => {
+                // SAFETY: tests serialize process environment access with ENV_LOCK.
+                unsafe { std::env::set_var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES", previous) };
+            }
+            None => {
+                // SAFETY: tests serialize process environment access with ENV_LOCK.
+                unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES") };
+            }
+        }
+        result
+    }
+
     #[test]
     fn gc_runs_keeps_latest_run_directories() {
         let root = std::env::temp_dir().join(format!("pikaci-gc-test-{}", uuid::Uuid::new_v4()));
@@ -4107,6 +4169,55 @@ mod tests {
         assert!(!runs_root.join("20260307T000001Z-aaaa0001").exists());
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn build_run_plan_records_incus_backend_prepare_without_fake_nix_build() {
+        with_incus_lane_env(Some("pika-actionlint"), || {
+            let root =
+                std::env::temp_dir().join(format!("pikaci-plan-test-{}", uuid::Uuid::new_v4()));
+            let prepared = sample_prepared_run(&root);
+            let metadata = RunMetadata {
+                target_id: Some("pre-merge-pika-followup".to_string()),
+                target_description: Some("Run pika follow-up lane".to_string()),
+                ..RunMetadata::default()
+            };
+            let jobs = vec![JobSpec {
+                id: "pika-actionlint",
+                description: "Run actionlint in a remote Linux VM guest",
+                timeout_secs: 1800,
+                writable_workspace: false,
+                guest_command: GuestCommand::ShellCommand {
+                    command: "actionlint",
+                },
+                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupActionlint),
+            }];
+
+            let snapshot = sample_snapshot_source(&prepared);
+            let plan = build_run_plan(&jobs, &prepared, &snapshot, &metadata).expect("build plan");
+            let prepare = plan
+                .record
+                .nodes
+                .iter()
+                .find_map(|node| match node {
+                    PlanNodeRecord::Prepare { id, prepare, .. }
+                        if id == "prepare-pika-actionlint-runner" =>
+                    {
+                        Some(prepare)
+                    }
+                    _ => None,
+                })
+                .expect("Incus prepare node");
+
+            match prepare {
+                PrepareNode::RemoteLinuxVmBackend { backend } => {
+                    assert_eq!(*backend, RemoteLinuxVmBackend::Incus);
+                }
+                other => panic!("expected Incus backend prepare node, got {other:?}"),
+            }
+
+            let _ = fs::remove_dir_all(&root);
+        });
     }
 
     #[test]
@@ -4196,6 +4307,7 @@ mod tests {
                             )
                         }));
                     }
+                    other => panic!("expected nix build prepare node, got {other:?}"),
                 }
             }
             other => panic!("expected prepare node, got {other:?}"),
@@ -4242,6 +4354,7 @@ mod tests {
                                 && exposure.access == PreparedOutputExposureAccess::ReadOnly
                         }));
                     }
+                    other => panic!("expected nix build prepare node, got {other:?}"),
                 }
             }
             other => panic!("expected staged build prepare node, got {other:?}"),
@@ -4250,11 +4363,16 @@ mod tests {
         match &plan.record.nodes[2] {
             PlanNodeRecord::Prepare {
                 id,
+                description,
                 executor,
                 prepare,
                 ..
             } => {
                 assert_eq!(id, "prepare-pika-core-lib-app-flows-tests-runner");
+                assert_eq!(
+                    description,
+                    "Prepare remote Linux VM backend for `pika-core-lib-app-flows-tests`"
+                );
                 assert_eq!(*executor, PlanExecutorKind::HostLocal);
                 match prepare {
                     PrepareNode::NixBuild {
@@ -4273,6 +4391,7 @@ mod tests {
                         assert_eq!(*residency, PreparedOutputResidency::LocalAuthoritative);
                         assert!(handoff.is_none());
                     }
+                    other => panic!("expected nix build prepare node, got {other:?}"),
                 }
             }
             other => panic!("expected runner prepare node, got {other:?}"),
@@ -4281,11 +4400,16 @@ mod tests {
         match &plan.record.nodes[3] {
             PlanNodeRecord::Prepare {
                 id,
+                description,
                 executor,
                 prepare,
                 ..
             } => {
                 assert_eq!(id, "prepare-pika-core-messaging-e2e-tests-runner");
+                assert_eq!(
+                    description,
+                    "Prepare remote Linux VM backend for `pika-core-messaging-e2e-tests`"
+                );
                 assert_eq!(*executor, PlanExecutorKind::HostLocal);
                 match prepare {
                     PrepareNode::NixBuild {
@@ -4304,6 +4428,7 @@ mod tests {
                         assert_eq!(*residency, PreparedOutputResidency::LocalAuthoritative);
                         assert!(handoff.is_none());
                     }
+                    other => panic!("expected nix build prepare node, got {other:?}"),
                 }
             }
             other => panic!("expected runner prepare node, got {other:?}"),
@@ -4318,7 +4443,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(id, "execute-pika-core-lib-app-flows-tests");
-                assert_eq!(*executor, PlanExecutorKind::MicrovmRemote);
+                assert_eq!(*executor, PlanExecutorKind::RemoteLinuxVm);
                 assert_eq!(
                     depends_on,
                     &vec![
@@ -4357,7 +4482,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(id, "execute-pika-core-messaging-e2e-tests");
-                assert_eq!(*executor, PlanExecutorKind::MicrovmRemote);
+                assert_eq!(*executor, PlanExecutorKind::RemoteLinuxVm);
                 assert_eq!(
                     depends_on,
                     &vec![

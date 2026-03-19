@@ -1,4 +1,4 @@
-use anyhow::{Context, bail};
+use anyhow::{Context, anyhow, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use pikaci::{
     GuestCommand, JobSpec, LogKind, RunMetadata, RunOptions, RunRecord, RunStatus,
@@ -235,6 +235,24 @@ fn staged_linux_target_spec(
         filters,
         jobs,
     }
+}
+
+fn single_job_target_spec(
+    id: &'static str,
+    description: &'static str,
+    filters: &'static [&'static str],
+    jobs: Vec<JobSpec>,
+) -> anyhow::Result<TargetSpec> {
+    let job = jobs
+        .into_iter()
+        .find(|job| job.id == id)
+        .ok_or_else(|| anyhow!("missing single-job target `{id}`"))?;
+    Ok(TargetSpec {
+        id,
+        description,
+        filters,
+        jobs: vec![job],
+    })
 }
 
 fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
@@ -502,6 +520,18 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
             ],
             pika_followup_jobs(),
         )),
+        "pika-actionlint" => single_job_target_spec(
+            "pika-actionlint",
+            "Run the staged Pika actionlint follow-up lane",
+            &[],
+            pika_followup_jobs(),
+        ),
+        "pika-doc-contracts" => single_job_target_spec(
+            "pika-doc-contracts",
+            "Run the staged Pika docs/contracts follow-up lane",
+            &[],
+            pika_followup_jobs(),
+        ),
         "pre-merge-pikachat-apple-followup" => Ok(TargetSpec {
             id: "pre-merge-pikachat-apple-followup",
             description: "Run the Apple-host pikachat follow-up after the staged Linux Rust lane",
@@ -801,6 +831,12 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
             ],
             rmp_jobs(),
         )),
+        "rmp-init-smoke-ci" => single_job_target_spec(
+            "rmp-init-smoke-ci",
+            "Run the staged RMP init smoke lane",
+            &[],
+            rmp_jobs(),
+        ),
         other => bail!("unknown job `{other}`"),
     }
 }
@@ -1680,8 +1716,8 @@ mod tests {
         target_spec_for_rerun,
     };
     use pikaci::{
-        JobRecord, PreparedOutputConsumerKind, RunRecord, RunStatus, RunnerKind,
-        StagedLinuxRustLane, StagedLinuxRustTarget,
+        JobRecord, PreparedOutputConsumerKind, RemoteLinuxVmBackend, RunRecord, RunStatus,
+        RunnerKind, StagedLinuxRustLane, StagedLinuxRustTarget,
     };
 
     #[test]
@@ -1710,7 +1746,7 @@ mod tests {
             pre_merge
                 .jobs
                 .iter()
-                .all(|job| job.runner_kind() == RunnerKind::MicrovmRemote)
+                .all(|job| job.runner_kind() == RunnerKind::RemoteLinuxVm)
         );
         assert!(pre_merge.jobs.iter().any(|job| {
             job.staged_linux_rust_lane()
@@ -1727,7 +1763,11 @@ mod tests {
             target.jobs[0].staged_linux_rust_lane(),
             Some(StagedLinuxRustLane::NotificationsServerPackageTests)
         );
-        assert_eq!(target.jobs[0].runner_kind(), RunnerKind::MicrovmRemote);
+        assert_eq!(target.jobs[0].runner_kind(), RunnerKind::RemoteLinuxVm);
+        assert_eq!(
+            target.jobs[0].remote_linux_vm_backend(),
+            Some(RemoteLinuxVmBackend::Microvm)
+        );
     }
 
     #[test]
@@ -1739,12 +1779,12 @@ mod tests {
             target.jobs[0].staged_linux_rust_lane(),
             Some(StagedLinuxRustLane::FixturePikahutClippy)
         );
-        assert_eq!(target.jobs[0].runner_kind(), RunnerKind::MicrovmRemote);
+        assert_eq!(target.jobs[0].runner_kind(), RunnerKind::RemoteLinuxVm);
         assert_eq!(
             target.jobs[1].staged_linux_rust_lane(),
             Some(StagedLinuxRustLane::FixtureRelaySmoke)
         );
-        assert_eq!(target.jobs[1].runner_kind(), RunnerKind::MicrovmRemote);
+        assert_eq!(target.jobs[1].runner_kind(), RunnerKind::RemoteLinuxVm);
     }
 
     #[test]
@@ -1759,7 +1799,7 @@ mod tests {
             target.jobs[0].staged_linux_rust_lane(),
             Some(StagedLinuxRustLane::RmpInitSmokeCi)
         );
-        assert_eq!(target.jobs[0].runner_kind(), RunnerKind::MicrovmRemote);
+        assert_eq!(target.jobs[0].runner_kind(), RunnerKind::RemoteLinuxVm);
     }
 
     #[test]
@@ -1783,7 +1823,7 @@ mod tests {
             target
                 .jobs
                 .iter()
-                .all(|job| job.runner_kind() == RunnerKind::MicrovmRemote)
+                .all(|job| job.runner_kind() == RunnerKind::RemoteLinuxVm)
         );
     }
 
@@ -1797,7 +1837,7 @@ mod tests {
             target.jobs[0].staged_linux_rust_lane(),
             Some(StagedLinuxRustLane::OpenclawGatewayE2e)
         );
-        assert_eq!(target.jobs[0].runner_kind(), RunnerKind::MicrovmRemote);
+        assert_eq!(target.jobs[0].runner_kind(), RunnerKind::RemoteLinuxVm);
     }
 
     #[test]
@@ -1809,7 +1849,7 @@ mod tests {
             target
                 .jobs
                 .iter()
-                .all(|job| job.runner_kind() == RunnerKind::MicrovmRemote)
+                .all(|job| job.runner_kind() == RunnerKind::RemoteLinuxVm)
         );
         assert!(!target.jobs[0].writable_workspace);
         assert_eq!(
@@ -1825,6 +1865,25 @@ mod tests {
                 .jobs
                 .iter()
                 .any(|job| job.id == "pika-rust-deps-hygiene")
+        );
+    }
+
+    #[test]
+    fn standalone_experimental_targets_can_address_single_staged_linux_lanes() {
+        let actionlint = target_spec("pika-actionlint").expect("actionlint target");
+        assert_eq!(actionlint.jobs.len(), 1);
+        assert_eq!(actionlint.jobs[0].id, "pika-actionlint");
+        assert_eq!(
+            actionlint.jobs[0].staged_linux_rust_lane(),
+            Some(StagedLinuxRustLane::PikaFollowupActionlint)
+        );
+
+        let rmp = target_spec("rmp-init-smoke-ci").expect("rmp target");
+        assert_eq!(rmp.jobs.len(), 1);
+        assert_eq!(rmp.jobs[0].id, "rmp-init-smoke-ci");
+        assert_eq!(
+            rmp.jobs[0].staged_linux_rust_lane(),
+            Some(StagedLinuxRustLane::RmpInitSmokeCi)
         );
     }
 
@@ -2155,6 +2214,7 @@ mod tests {
             finished_at: Some("2026-03-07T00:00:01Z".to_string()),
             exit_code: Some(0),
             message: Some("ok".to_string()),
+            remote_linux_vm_execution: None,
         }
     }
 }

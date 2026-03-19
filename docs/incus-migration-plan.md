@@ -869,13 +869,24 @@ Current `pika-build` proof status:
 - running `pikaci` on `pika-build` itself still needs a localhost fast path instead of SSH for the
   remote work-dir seam, because self-SSH is not guaranteed there
 - the first explicit single-host shared-mount experiment is implemented behind
-  `PIKACI_REMOTE_LINUX_VM_INCUS_MODE=single_host_shared`, but it is not yet a passing dataplane on
-  `pika-build`: Incus VM start currently fails while attaching the shared disk device with QEMU
-  `vhost-user-fs-pci`/virtiofs slot errors, even after shortening instance names and reducing the
-  share set
-- the same on-host validation flow still does not produce a clean microVM comparison baseline yet;
-  the existing remote runner-flake path fails earlier when `pikaci` itself is executed on
-  `pika-build`
+  `PIKACI_REMOTE_LINUX_VM_INCUS_MODE=single_host_shared` and now passes on `pika-build`, but the
+  winning dataplane is intentionally mixed-mode rather than a whole-workdir share:
+  readonly `virtiofs` mounts for the synced snapshot and staged Linux Rust outputs, guest-local
+  writable `/artifacts`, `/cargo-home`, and `/cargo-target`, and no closure import in shared mode
+- on `pika-build`, `pika-actionlint` measured about `63s` total wall time via the transfer Incus
+  path and about `37s` total wall time via the shared single-host Incus path, which is a strong
+  enough result to show a plausible path to ~1 minute CI on this host
+- within the recorded remote-executor phases, the dominant Incus cost is still `prepare_runtime`,
+  but the shared mode cut that executor-local phase from about `53s` to about `27s`
+- the current same-host microVM comparison for `pika-actionlint` was about `116s` total wall
+  time, but that number is not yet a clean apples-to-apples executor dataplane comparison because
+  the run still pays older backend-specific prepare-node work outside the recorded remote phase
+  list, including the runner-flake path
+- `pika-doc-contracts` also passes on `pika-build` at about `60s` via transfer Incus and `32s`
+  via the shared single-host Incus path
+- the same on-host microVM comparison path now works again after fixing stale remote runner-flake
+  replacement and snapshot sync behavior, but a cleaner microVM apples-to-apples benchmark would
+  still be needed before making a stronger dataplane-only claim against it
 
 #### Phase C: Validate Performance And Developer Experience
 

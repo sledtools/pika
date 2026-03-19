@@ -446,6 +446,10 @@ fn push_mirror(
     decode_git_output(output).map(|_| ())
 }
 
+pub fn mirror_remote_url(repo: &ForgeRepoConfig, remote_name: &str) -> anyhow::Result<String> {
+    remote_url(repo, remote_name)
+}
+
 fn remote_url(repo: &ForgeRepoConfig, remote_name: &str) -> anyhow::Result<String> {
     git_bare(repo, ["remote", "get-url", remote_name])
         .map(|url| url.trim().to_string())

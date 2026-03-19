@@ -50,6 +50,10 @@ bootstrap_admin_npubs = ["npub1..."]
 - GitHub Actions release and TestFlight workflows remain in place, but GitHub is no longer the canonical control plane for day-to-day pre-merge or nightly CI.
 - Hosted mirror sync needs the configured Git remote plus whatever credentials that remote requires. For a GitHub HTTPS remote, set the env named by `github_token_env` so the admin page and manual sync controls can report failures cleanly.
 
+## Hosted Deploy And QA
+
+- Use `docs/forge-hosted-manual-qa.md` as the short deploy and manual testing checklist for hosted forge mode.
+
 ## Local mode
 
 `pika-news local` runs against the current git repo/worktree.

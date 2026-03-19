@@ -137,7 +137,7 @@
             var isBranch = !!item.branch_id;
             var titleText = isBranch
               ? (escapeHtml(item.repo) + ' · branch ' + escapeHtml(item.branch_name || ('#' + reviewId)) + ': ' + escapeHtml(item.title))
-              : (escapeHtml(item.repo) + ' #' + item.pr_number + ': ' + escapeHtml(item.title));
+              : (escapeHtml(item.repo) + ' · legacy review #' + reviewId + ': ' + escapeHtml(item.title));
             var div = document.createElement('div');
             div.className = 'inbox-item';
             div.dataset.reviewId = reviewId;

@@ -1,5 +1,5 @@
 use std::env;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -10,6 +10,7 @@ use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Json, Redirect};
 use axum::routing::{get, post};
 use axum::Router;
+use chrono::{SecondsFormat, Utc};
 use hmac::{Hmac, Mac};
 use pulldown_cmark::{html, Options, Parser};
 use sha2::Sha256;
@@ -17,8 +18,8 @@ use tokio::sync::Notify;
 
 use crate::auth::{normalize_npub, AuthState};
 use crate::branch_store::{
-    BranchCiLaneRecord, BranchCiRunRecord, BranchDetailRecord, BranchFeedItem, NightlyFeedItem,
-    NightlyLaneRecord, NightlyRunRecord,
+    BranchCiLaneRecord, BranchCiRunRecord, BranchDetailRecord, BranchFeedItem, MirrorStatusRecord,
+    NightlyFeedItem, NightlyLaneRecord, NightlyRunRecord,
 };
 use crate::ci;
 use crate::config::Config;
@@ -39,6 +40,141 @@ struct AppState {
     auth: Arc<AuthState>,
     poll_notify: Arc<Notify>,
     webhook_secret: Option<String>,
+    forge_health: Arc<Mutex<ForgeHealthState>>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+struct ForgeHealthIssue {
+    severity: String,
+    code: String,
+    message: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+struct ForgeSubsystemStatus {
+    state: String,
+    last_checked_at: Option<String>,
+    last_activity_at: Option<String>,
+    last_error_at: Option<String>,
+    summary: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+struct ForgeMirrorHealthStatus {
+    state: String,
+    background_enabled: bool,
+    background_interval_secs: Option<u64>,
+    last_success_at: Option<String>,
+    last_failure_at: Option<String>,
+    summary: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+struct ForgeHealthSnapshot {
+    enabled: bool,
+    issues: Vec<ForgeHealthIssue>,
+    poller: ForgeSubsystemStatus,
+    generation_worker: ForgeSubsystemStatus,
+    ci: ForgeSubsystemStatus,
+    mirror: ForgeMirrorHealthStatus,
+}
+
+#[derive(Clone, Debug)]
+struct ForgeSubsystemTracker {
+    enabled: bool,
+    state: &'static str,
+    last_checked_at: Option<String>,
+    last_activity_at: Option<String>,
+    last_error_at: Option<String>,
+    summary: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ForgeHealthState {
+    enabled: bool,
+    issues: Vec<ForgeHealthIssue>,
+    poller: ForgeSubsystemTracker,
+    generation_worker: ForgeSubsystemTracker,
+    ci: ForgeSubsystemTracker,
+}
+
+impl ForgeSubsystemTracker {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            state: if enabled { "idle" } else { "disabled" },
+            last_checked_at: None,
+            last_activity_at: None,
+            last_error_at: None,
+            summary: None,
+        }
+    }
+
+    fn mark_success(&mut self, summary: String, active: bool) {
+        if !self.enabled {
+            return;
+        }
+        let now = now_string();
+        self.state = if active { "active" } else { "idle" };
+        self.last_checked_at = Some(now.clone());
+        if active {
+            self.last_activity_at = Some(now);
+        }
+        self.summary = Some(summary);
+    }
+
+    fn mark_error(&mut self, message: String) {
+        if !self.enabled {
+            return;
+        }
+        let now = now_string();
+        self.state = "error";
+        self.last_checked_at = Some(now.clone());
+        self.last_error_at = Some(now);
+        self.summary = Some(message);
+    }
+
+    fn snapshot(&self) -> ForgeSubsystemStatus {
+        ForgeSubsystemStatus {
+            state: self.state.to_string(),
+            last_checked_at: self.last_checked_at.clone(),
+            last_activity_at: self.last_activity_at.clone(),
+            last_error_at: self.last_error_at.clone(),
+            summary: self.summary.clone(),
+        }
+    }
+}
+
+impl ForgeHealthState {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            issues: Vec::new(),
+            poller: ForgeSubsystemTracker::new(enabled),
+            generation_worker: ForgeSubsystemTracker::new(enabled),
+            ci: ForgeSubsystemTracker::new(enabled),
+        }
+    }
+
+    fn replace_issues(&mut self, issues: Vec<ForgeHealthIssue>) {
+        self.issues = issues;
+    }
+
+    fn snapshot(
+        &self,
+        config: &Config,
+        mirror_status: Option<&MirrorStatusRecord>,
+    ) -> ForgeHealthSnapshot {
+        let mirror_runtime = mirror::mirror_runtime_status(config);
+        ForgeHealthSnapshot {
+            enabled: self.enabled,
+            issues: self.issues.clone(),
+            poller: self.poller.snapshot(),
+            generation_worker: self.generation_worker.snapshot(),
+            ci: self.ci.snapshot(),
+            mirror: build_mirror_health_status(&mirror_runtime, mirror_status),
+        }
+    }
 }
 
 #[derive(Template)]
@@ -178,6 +314,186 @@ struct NightlyLaneView {
     finished_at: Option<String>,
 }
 
+fn now_string() -> String {
+    Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+fn forge_issue(severity: &str, code: &str, message: impl Into<String>) -> ForgeHealthIssue {
+    ForgeHealthIssue {
+        severity: severity.to_string(),
+        code: code.to_string(),
+        message: message.into(),
+    }
+}
+
+fn poller_summary(result: &poller::PollResult) -> String {
+    format!(
+        "repos {} · branches {} · queued tutorials {} · queued ci {} · stale closed {}",
+        result.repos_polled,
+        result.branches_seen,
+        result.queued_regenerations,
+        result.queued_ci_runs,
+        result.stale_closed
+    )
+}
+
+fn worker_summary(result: &worker::WorkerPassResult) -> String {
+    format!(
+        "claimed {} · ready {} · failed {} · retry {}",
+        result.claimed, result.ready, result.failed, result.retry_scheduled
+    )
+}
+
+fn ci_summary(result: &ci::CiPassResult) -> String {
+    format!(
+        "claimed {} · succeeded {} · failed {} · nightlies {} · recovered {}",
+        result.claimed,
+        result.succeeded,
+        result.failed,
+        result.nightlies_scheduled,
+        result.retries_recovered
+    )
+}
+
+fn build_mirror_health_status(
+    runtime: &mirror::MirrorRuntimeStatus,
+    status: Option<&MirrorStatusRecord>,
+) -> ForgeMirrorHealthStatus {
+    if !runtime.configured {
+        return ForgeMirrorHealthStatus {
+            state: "disabled".to_string(),
+            background_enabled: false,
+            background_interval_secs: None,
+            last_success_at: None,
+            last_failure_at: None,
+            summary: Some("mirror remote not configured".to_string()),
+        };
+    }
+    if !runtime.background_enabled {
+        return ForgeMirrorHealthStatus {
+            state: "disabled".to_string(),
+            background_enabled: false,
+            background_interval_secs: runtime.background_interval_secs,
+            last_success_at: status.and_then(|s| s.last_success_at.clone()),
+            last_failure_at: status.and_then(|s| s.last_failure_at.clone()),
+            summary: Some("background sync disabled; manual sync only".to_string()),
+        };
+    }
+    if let Some(status) = status {
+        let state = if status.current_failure_kind.is_some() {
+            "error"
+        } else {
+            "idle"
+        };
+        let summary = if status.current_failure_kind.is_some() {
+            Some(format!(
+                "last background attempt failed{}",
+                status
+                    .current_failure_kind
+                    .as_ref()
+                    .map(|kind| format!(" ({kind})"))
+                    .unwrap_or_default()
+            ))
+        } else {
+            Some("background sync enabled".to_string())
+        };
+        return ForgeMirrorHealthStatus {
+            state: state.to_string(),
+            background_enabled: true,
+            background_interval_secs: runtime.background_interval_secs,
+            last_success_at: status.last_success_at.clone(),
+            last_failure_at: status.last_failure_at.clone(),
+            summary,
+        };
+    }
+    ForgeMirrorHealthStatus {
+        state: "idle".to_string(),
+        background_enabled: true,
+        background_interval_secs: runtime.background_interval_secs,
+        last_success_at: None,
+        last_failure_at: None,
+        summary: Some("background sync enabled; no attempts recorded yet".to_string()),
+    }
+}
+
+fn collect_forge_startup_issues(
+    config: &Config,
+    forge_repo: &crate::config::ForgeRepoConfig,
+    webhook_secret: Option<&str>,
+) -> Vec<ForgeHealthIssue> {
+    let mut issues = Vec::new();
+
+    if webhook_secret.is_none() {
+        issues.push(forge_issue(
+            "error",
+            "webhook_secret_missing",
+            format!(
+                "{} is not set. Install hooks and webhook-triggered refresh stay disabled until it is configured.",
+                config.webhook_secret_env
+            ),
+        ));
+    }
+
+    match forge::ensure_canonical_repo(forge_repo) {
+        Ok(()) => {
+            if let Some(secret) = webhook_secret {
+                if let Err(err) = forge::install_hooks(forge_repo, secret) {
+                    issues.push(forge_issue(
+                        "error",
+                        "hook_install_failed",
+                        format!(
+                            "Could not install forge hooks in {}: {}",
+                            forge_repo.canonical_git_dir, err
+                        ),
+                    ));
+                }
+            }
+        }
+        Err(err) => {
+            issues.push(forge_issue(
+                "error",
+                "canonical_repo_unavailable",
+                format!(
+                    "Canonical repo path {} is not usable: {}",
+                    forge_repo.canonical_git_dir, err
+                ),
+            ));
+        }
+    }
+
+    match forge_repo.mirror_remote.as_deref() {
+        None => issues.push(forge_issue(
+            "warning",
+            "mirror_remote_missing",
+            "Mirror remote is not configured. GitHub stays disabled until forge_repo.mirror_remote is set.",
+        )),
+        Some(remote_name) => match forge::mirror_remote_url(forge_repo, remote_name) {
+            Ok(remote_url) => {
+                let token_missing = env::var(&config.github_token_env)
+                    .ok()
+                    .is_none_or(|value| value.trim().is_empty());
+                if remote_url.contains("github.com") && token_missing {
+                    issues.push(forge_issue(
+                        "warning",
+                        "mirror_auth_missing",
+                        format!(
+                            "Mirror remote `{remote_name}` points at GitHub, but {} is not set. Background and manual sync will fail until credentials are available.",
+                            config.github_token_env
+                        ),
+                    ));
+                }
+            }
+            Err(err) => issues.push(forge_issue(
+                "error",
+                "mirror_remote_invalid",
+                format!("Mirror remote `{remote_name}` could not be resolved: {err}"),
+            )),
+        },
+    }
+
+    issues
+}
+
 pub async fn serve(
     store: Store,
     config: Config,
@@ -204,22 +520,20 @@ pub async fn serve(
 
     let poll_notify = Arc::new(Notify::new());
     let webhook_secret = env::var(&config.webhook_secret_env).ok();
+    let forge_mode = config.effective_forge_repo().is_some();
+    let forge_health = Arc::new(Mutex::new(ForgeHealthState::new(forge_mode)));
     if let Some(forge_repo) = config.effective_forge_repo() {
-        let secret = webhook_secret
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("forge mode requires {}", config.webhook_secret_env))?;
-        forge::ensure_canonical_repo(&forge_repo).with_context(|| {
-            format!(
-                "ensure canonical bare repo exists at {}",
-                forge_repo.canonical_git_dir
-            )
-        })?;
-        forge::install_hooks(&forge_repo, secret).with_context(|| {
-            format!(
-                "install canonical git hooks in {}",
-                forge_repo.canonical_git_dir
-            )
-        })?;
+        let startup_issues =
+            collect_forge_startup_issues(&config, &forge_repo, webhook_secret.as_deref());
+        if let Ok(mut health) = forge_health.lock() {
+            health.replace_issues(startup_issues.clone());
+        }
+        for issue in &startup_issues {
+            eprintln!(
+                "forge startup {} [{}]: {}",
+                issue.severity, issue.code, issue.message
+            );
+        }
         eprintln!(
             "forge: canonical_repo={} default_branch={} lane_manifest={}",
             forge_repo.canonical_git_dir,
@@ -245,6 +559,7 @@ pub async fn serve(
         auth,
         poll_notify: Arc::clone(&poll_notify),
         webhook_secret,
+        forge_health: Arc::clone(&forge_health),
     });
 
     let background_state = Arc::clone(&state);
@@ -264,56 +579,88 @@ pub async fn serve(
             {
                 Ok((poll_result, worker_result, ci_result, mirror_result)) => {
                     match poll_result {
-                        Ok(pr)
+                        Ok(pr) => {
                             if pr.branches_seen > 0
                                 || pr.queued_regenerations > 0
-                                || pr.stale_closed > 0 =>
-                        {
-                            eprintln!(
-                                "poll: repos={} branches_seen={} queued_tutorials={} queued_ci={} head_changes={} stale_closed={}",
-                                pr.repos_polled,
-                                pr.branches_seen,
-                                pr.queued_regenerations,
-                                pr.queued_ci_runs,
-                                pr.head_sha_changes,
-                                pr.stale_closed
-                            );
+                                || pr.stale_closed > 0
+                            {
+                                eprintln!(
+                                    "poll: repos={} branches_seen={} queued_tutorials={} queued_ci={} head_changes={} stale_closed={}",
+                                    pr.repos_polled,
+                                    pr.branches_seen,
+                                    pr.queued_regenerations,
+                                    pr.queued_ci_runs,
+                                    pr.head_sha_changes,
+                                    pr.stale_closed
+                                );
+                            }
+                            if let Ok(mut health) = background_state.forge_health.lock() {
+                                let active = pr.queued_regenerations > 0
+                                    || pr.queued_ci_runs > 0
+                                    || pr.head_sha_changes > 0
+                                    || pr.stale_closed > 0;
+                                health.poller.mark_success(poller_summary(&pr), active);
+                            }
                         }
-                        Ok(_) => {}
                         Err(err) => {
                             eprintln!("pika-news background poller error: {}", err);
+                            if let Ok(mut health) = background_state.forge_health.lock() {
+                                health.poller.mark_error(err.to_string());
+                            }
                         }
                     }
                     match worker_result {
-                        Ok(wr) if wr.claimed > 0 => {
-                            eprintln!(
-                                "worker: claimed={} ready={} failed={} retry={}",
-                                wr.claimed, wr.ready, wr.failed, wr.retry_scheduled
-                            );
+                        Ok(wr) => {
+                            if wr.claimed > 0 {
+                                eprintln!(
+                                    "worker: claimed={} ready={} failed={} retry={}",
+                                    wr.claimed, wr.ready, wr.failed, wr.retry_scheduled
+                                );
+                            }
+                            if let Ok(mut health) = background_state.forge_health.lock() {
+                                let active = wr.claimed > 0
+                                    || wr.ready > 0
+                                    || wr.failed > 0
+                                    || wr.retry_scheduled > 0;
+                                health
+                                    .generation_worker
+                                    .mark_success(worker_summary(&wr), active);
+                            }
                         }
-                        Ok(_) => {}
                         Err(err) => {
                             eprintln!("pika-news background worker error: {}", err);
+                            if let Ok(mut health) = background_state.forge_health.lock() {
+                                health.generation_worker.mark_error(err.to_string());
+                            }
                         }
                     }
                     match ci_result {
-                        Ok(ci)
+                        Ok(ci) => {
                             if ci.claimed > 0
                                 || ci.nightlies_scheduled > 0
-                                || ci.retries_recovered > 0 =>
-                        {
-                            eprintln!(
-                                "ci: claimed={} succeeded={} failed={} nightlies_scheduled={} retries_recovered={}",
-                                ci.claimed,
-                                ci.succeeded,
-                                ci.failed,
-                                ci.nightlies_scheduled,
-                                ci.retries_recovered
-                            );
+                                || ci.retries_recovered > 0
+                            {
+                                eprintln!(
+                                    "ci: claimed={} succeeded={} failed={} nightlies_scheduled={} retries_recovered={}",
+                                    ci.claimed,
+                                    ci.succeeded,
+                                    ci.failed,
+                                    ci.nightlies_scheduled,
+                                    ci.retries_recovered
+                                );
+                            }
+                            if let Ok(mut health) = background_state.forge_health.lock() {
+                                let active = ci.claimed > 0
+                                    || ci.nightlies_scheduled > 0
+                                    || ci.retries_recovered > 0;
+                                health.ci.mark_success(ci_summary(&ci), active);
+                            }
                         }
-                        Ok(_) => {}
                         Err(err) => {
                             eprintln!("pika-news ci runner error: {}", err);
+                            if let Ok(mut health) = background_state.forge_health.lock() {
+                                health.ci.mark_error(err.to_string());
+                            }
                         }
                     }
                     match mirror_result {
@@ -1873,18 +2220,34 @@ async fn api_admin_forge_status_handler(
     };
 
     let store = state.store.clone();
-    let config = state.config.clone();
-    match tokio::task::spawn_blocking(move || mirror::get_mirror_status(&store, &config)).await {
+    let mirror_config = state.config.clone();
+    let health_config = state.config.clone();
+    let forge_health_state = Arc::clone(&state.forge_health);
+    match tokio::task::spawn_blocking(move || mirror::get_mirror_status(&store, &mirror_config))
+        .await
+    {
         Ok(Ok(mirror_admin)) => {
+            let forge_health = forge_health_state
+                .lock()
+                .map(|health| {
+                    let mirror_status = mirror_admin.detail.as_ref().map(|(status, _)| status);
+                    health.snapshot(&health_config, mirror_status)
+                })
+                .unwrap_or_else(|_| {
+                    ForgeHealthState::new(health_config.effective_forge_repo().is_some())
+                        .snapshot(&health_config, None)
+                });
             let mirror_runtime = mirror_admin.runtime;
             match mirror_admin.detail {
                 Some((mirror_status, mirror_history)) => Json(serde_json::json!({
+                    "forge_health": forge_health,
                     "mirror_runtime": mirror_runtime,
                     "mirror_status": mirror_status,
                     "mirror_history": mirror_history,
                 }))
                 .into_response(),
                 None => Json(serde_json::json!({
+                    "forge_health": forge_health,
                     "mirror_runtime": mirror_runtime,
                     "mirror_status": null,
                     "mirror_history": [],
@@ -2239,7 +2602,7 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use askama::Template;
     use axum::extract::{Path, State};
@@ -2248,15 +2611,17 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::{
-        inbox_review_handler, markdown_to_safe_html, render_detail_template,
-        render_nightly_template, rerun_branch_ci_lane_handler, rerun_nightly_lane_handler,
-        should_backfill_managed_allowlist_entry, verify_signature, AppState,
+        build_mirror_health_status, collect_forge_startup_issues, inbox_review_handler,
+        markdown_to_safe_html, render_detail_template, render_nightly_template,
+        rerun_branch_ci_lane_handler, rerun_nightly_lane_handler,
+        should_backfill_managed_allowlist_entry, verify_signature, AppState, ForgeHealthState,
     };
     use crate::auth::AuthState;
-    use crate::branch_store::BranchUpsertInput;
+    use crate::branch_store::{BranchUpsertInput, MirrorStatusRecord, MirrorSyncRunRecord};
     use crate::ci;
     use crate::config::{Config, ForgeRepoConfig};
     use crate::forge;
+    use crate::mirror::MirrorRuntimeStatus;
     use crate::poller;
     use crate::storage::ChatAllowlistEntry;
     use crate::storage::Store;
@@ -2296,6 +2661,7 @@ mod tests {
     fn test_state(store: Store, config: Config) -> Arc<AppState> {
         let bootstrap_admin_npubs = config.effective_bootstrap_admin_npubs();
         let legacy_allowed_npubs = config.allowed_npubs.clone();
+        let forge_mode = config.effective_forge_repo().is_some();
         Arc::new(AppState {
             auth: Arc::new(AuthState::new(
                 &bootstrap_admin_npubs,
@@ -2307,6 +2673,7 @@ mod tests {
             max_prs: 10,
             poll_notify: Arc::new(Notify::new()),
             webhook_secret: None,
+            forge_health: Arc::new(Mutex::new(ForgeHealthState::new(forge_mode))),
         })
     }
 
@@ -2344,6 +2711,89 @@ mod tests {
         let header = format!("sha256={}", sig);
 
         assert!(verify_signature(secret, payload, &header));
+    }
+
+    #[test]
+    fn forge_startup_issues_surface_missing_secret_and_mirror_remote() {
+        let root = tempfile::tempdir().expect("create temp root");
+        let config = Config {
+            repos: vec!["sledtools/pika".to_string()],
+            forge_repo: Some(ForgeRepoConfig {
+                repo: "sledtools/pika".to_string(),
+                canonical_git_dir: root.path().join("pika.git").display().to_string(),
+                default_branch: "master".to_string(),
+                mirror_remote: None,
+                mirror_poll_interval_secs: None,
+                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
+                hook_url: Some("http://127.0.0.1:8788/news/webhook".to_string()),
+            }),
+            poll_interval_secs: 60,
+            model: "test-model".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            github_token_env: "GITHUB_TOKEN".to_string(),
+            merged_lookback_hours: 72,
+            worker_concurrency: 1,
+            retry_backoff_secs: 120,
+            webhook_secret_env: "PIKA_NEWS_WEBHOOK_SECRET".to_string(),
+            bind_address: "127.0.0.1".to_string(),
+            bind_port: 8787,
+            allowed_npubs: vec![],
+            bootstrap_admin_npubs: vec![],
+        };
+        let forge_repo = config.effective_forge_repo().expect("forge repo");
+        let issues = collect_forge_startup_issues(&config, &forge_repo, None);
+        let codes: Vec<&str> = issues.iter().map(|issue| issue.code.as_str()).collect();
+        assert!(codes.contains(&"webhook_secret_missing"));
+        assert!(codes.contains(&"mirror_remote_missing"));
+        assert!(!codes.contains(&"canonical_repo_unavailable"));
+    }
+
+    #[test]
+    fn mirror_health_distinguishes_disabled_and_error_states() {
+        let disabled = build_mirror_health_status(
+            &MirrorRuntimeStatus {
+                configured: true,
+                remote_name: Some("github".to_string()),
+                background_enabled: false,
+                background_interval_secs: Some(0),
+                github_token_env: "GITHUB_TOKEN".to_string(),
+            },
+            None,
+        );
+        assert_eq!(disabled.state, "disabled");
+
+        let errored = build_mirror_health_status(
+            &MirrorRuntimeStatus {
+                configured: true,
+                remote_name: Some("github".to_string()),
+                background_enabled: true,
+                background_interval_secs: Some(300),
+                github_token_env: "GITHUB_TOKEN".to_string(),
+            },
+            Some(&MirrorStatusRecord {
+                remote_name: "github".to_string(),
+                last_attempt: Some(MirrorSyncRunRecord {
+                    id: 1,
+                    remote_name: "github".to_string(),
+                    trigger_source: "background".to_string(),
+                    status: "failed".to_string(),
+                    failure_kind: Some("config".to_string()),
+                    local_default_head: None,
+                    remote_default_head: None,
+                    lagging_ref_count: None,
+                    synced_ref_count: None,
+                    error_text: Some("boom".to_string()),
+                    created_at: "2026-03-19T10:00:00Z".to_string(),
+                    finished_at: "2026-03-19T10:00:01Z".to_string(),
+                }),
+                last_success_at: None,
+                last_failure_at: Some("2026-03-19T10:00:01Z".to_string()),
+                consecutive_failure_count: 1,
+                current_lagging_ref_count: None,
+                current_failure_kind: Some("config".to_string()),
+            }),
+        );
+        assert_eq!(errored.state, "error");
     }
 
     #[test]

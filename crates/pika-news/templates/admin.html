@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Admin - pika-news{% endblock %}
+{% block title %}Forge Admin - pika-news{% endblock %}
 
 {% block styles %}
       .shell { max-width: 980px; margin: 0 auto; padding: 2rem 1rem; }
@@ -28,11 +28,22 @@
       .mirror-event { border: 1px solid var(--border); border-radius: 12px; padding: 0.85rem; background: var(--surface); }
       .mirror-meta { display: flex; gap: 0.75rem; flex-wrap: wrap; color: var(--text-muted); font-size: 0.9rem; margin-top: 0.45rem; }
       .mirror-error { white-space: pre-wrap; margin-top: 0.6rem; font-size: 0.9rem; }
+      .health-grid { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); margin-top: 0.75rem; }
+      .health-card { border: 1px solid var(--border); border-radius: 12px; padding: 0.85rem; background: var(--surface-solid); }
+      .health-card h3 { margin: 0 0 0.45rem; font-size: 0.95rem; }
+      .health-card p { margin: 0.25rem 0; font-size: 0.88rem; }
+      .health-state { display: inline-block; padding: 0.12rem 0.5rem; border-radius: 999px; border: 1px solid var(--border); font-size: 0.78rem; text-transform: lowercase; }
+      .health-state.active { color: #166534; border-color: #16653455; }
+      .health-state.idle { color: var(--text-secondary); }
+      .health-state.disabled { color: #92400e; border-color: #92400e55; }
+      .health-state.error { color: #b91c1c; border-color: #b91c1c55; }
+      .issue-list { margin: 0.75rem 0 0; padding-left: 1rem; }
+      .issue-list li { margin: 0.35rem 0; }
 {% endblock %}
 
 {% block body %}
     <main class="shell">
-      <h1>Contributor Access</h1>
+      <h1>Forge Admin</h1>
 
       <div id="admin-auth" class="panel muted" style="display:none;">
         <p>Sign in with a bootstrap admin Nostr key to manage contributor access.</p>
@@ -51,14 +62,14 @@
           <div id="bootstrap-admins"></div>
         </section>
 
-        <section class="panel">
-          <h2>Config Chat Access</h2>
-          <p class="muted">These keys come from `allowed_npubs` config and keep trusted contributor access until config changes. They are not editable here.</p>
+        <section class="panel" id="legacy-allowed-section">
+          <h2>Legacy Chat Access</h2>
+          <p class="muted">These keys come from `allowed_npubs` config. They keep chat access for compatibility, but they are not the main forge write path and are not editable here.</p>
           <div id="legacy-allowed"></div>
         </section>
 
         <section class="panel">
-          <h2>Add Or Update User</h2>
+          <h2>Add Or Update Contributor</h2>
           <form id="allowlist-form">
             <label>
               Npub or hex pubkey
@@ -104,6 +115,12 @@
         </section>
 
         <section class="panel">
+          <h2>Forge Health</h2>
+          <p class="muted">Use this first during deploy and manual testing. It shows whether the hosted forge loop is alive and whether required forge wiring is missing.</p>
+          <div id="forge-health" class="status">Loading forge health...</div>
+        </section>
+
+        <section class="panel">
           <h2>GitHub Mirror</h2>
           <p class="muted">git.pikachat.org is canonical. GitHub is a mirror and advisory CI surface.</p>
           <div class="btn-row">
@@ -124,6 +141,7 @@
         var loadingEl = document.getElementById('admin-loading');
         var contentEl = document.getElementById('admin-content');
         var bootstrapEl = document.getElementById('bootstrap-admins');
+        var legacyAllowedSectionEl = document.getElementById('legacy-allowed-section');
         var legacyAllowedEl = document.getElementById('legacy-allowed');
         var statusEl = document.getElementById('admin-status');
         var formEl = document.getElementById('allowlist-form');
@@ -135,6 +153,7 @@
         var tableEl = document.getElementById('allowlist-table');
         var emptyEl = document.getElementById('allowlist-empty');
         var rowsEl = document.getElementById('allowlist-rows');
+        var forgeHealthEl = document.getElementById('forge-health');
         var mirrorStatusEl = document.getElementById('mirror-status');
         var mirrorHistoryEl = document.getElementById('mirror-history');
         var mirrorSyncBtn = document.getElementById('mirror-sync-btn');
@@ -179,12 +198,74 @@
 
         function renderLegacyAllowed(npubs) {
           if (!npubs || npubs.length === 0) {
-            legacyAllowedEl.innerHTML = '<p class="muted">No legacy config trusted contributors configured.</p>';
+            legacyAllowedSectionEl.style.display = 'none';
             return;
           }
+          legacyAllowedSectionEl.style.display = '';
           legacyAllowedEl.innerHTML = npubs.map(function (npub) {
             return '<p><code>' + escapeHtml(npub) + '</code></p>';
           }).join('');
+        }
+
+        function statusTone(state) {
+          if (state === 'active') return 'active';
+          if (state === 'error') return 'error';
+          if (state === 'disabled') return 'disabled';
+          return 'idle';
+        }
+
+        function renderForgeSubsystemCard(title, subsystem, extraLines) {
+          var state = subsystem && subsystem.state ? subsystem.state : 'idle';
+          var lines = [];
+          if (subsystem && subsystem.summary) lines.push(escapeHtml(subsystem.summary));
+          if (subsystem && subsystem.last_checked_at) lines.push('last check ' + escapeHtml(subsystem.last_checked_at));
+          if (subsystem && subsystem.last_activity_at) lines.push('last activity ' + escapeHtml(subsystem.last_activity_at));
+          if (subsystem && subsystem.last_error_at) lines.push('last error ' + escapeHtml(subsystem.last_error_at));
+          (extraLines || []).forEach(function (line) {
+            if (line) lines.push(line);
+          });
+          return '' +
+            '<div class="health-card">' +
+              '<h3>' + escapeHtml(title) + '</h3>' +
+              '<span class="health-state ' + statusTone(state) + '">' + escapeHtml(state) + '</span>' +
+              lines.map(function (line) {
+                return '<p>' + line + '</p>';
+              }).join('') +
+            '</div>';
+        }
+
+        function renderForgeHealth(health) {
+          if (!health || !health.enabled) {
+            forgeHealthEl.className = 'status muted';
+            forgeHealthEl.innerHTML = 'Forge mode is disabled for this runtime.';
+            return;
+          }
+
+          var issuesHtml = '';
+          if (health.issues && health.issues.length > 0) {
+            issuesHtml = '<ul class="issue-list">' + health.issues.map(function (issue) {
+              return '<li class="' + escapeHtml(issue.severity || 'warning') + '">' +
+                '<strong>' + escapeHtml(issue.severity || 'warning') + '</strong>: ' + escapeHtml(issue.message || '') +
+              '</li>';
+            }).join('') + '</ul>';
+          }
+
+          var mirror = health.mirror || {};
+          var mirrorLines = [];
+          if (mirror.summary) mirrorLines.push(escapeHtml(mirror.summary));
+          if (mirror.background_interval_secs) mirrorLines.push('background interval ' + escapeHtml(String(mirror.background_interval_secs)) + 's');
+          if (mirror.last_success_at) mirrorLines.push('last success ' + escapeHtml(mirror.last_success_at));
+          if (mirror.last_failure_at) mirrorLines.push('last failure ' + escapeHtml(mirror.last_failure_at));
+
+          forgeHealthEl.className = 'status';
+          forgeHealthEl.innerHTML =
+            issuesHtml +
+            '<div class="health-grid">' +
+              renderForgeSubsystemCard('Poller', health.poller || {}, []) +
+              renderForgeSubsystemCard('Generation Worker', health.generation_worker || {}, []) +
+              renderForgeSubsystemCard('CI Runner', health.ci || {}, []) +
+              renderForgeSubsystemCard('Mirror Background', mirror, mirrorLines) +
+            '</div>';
         }
 
         function renderEntries(entries) {
@@ -359,8 +440,11 @@
             }
             var data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Failed to load mirror status');
+            renderForgeHealth(data.forge_health);
             renderMirrorStatus(data.mirror_runtime, data.mirror_status, data.mirror_history);
           } catch (e) {
+            forgeHealthEl.className = 'status error';
+            forgeHealthEl.textContent = e.message;
             mirrorStatusEl.className = 'status error';
             mirrorStatusEl.textContent = e.message;
             mirrorHistoryEl.innerHTML = '';

@@ -204,8 +204,8 @@ paths = [
 [[branch.lanes]]
 id = "apple_host_sanity"
 title = "check-apple-host-sanity"
-entrypoint = "./scripts/pikaci-apple-remote.sh run --just-recipe apple-host-sanity"
-command = ["./scripts/pikaci-apple-remote.sh", "run", "--just-recipe", "apple-host-sanity"]
+entrypoint = "./scripts/pikaci-apple-github-step remote-run --just-recipe apple-host-sanity"
+command = ["./scripts/pikaci-apple-github-step", "remote-run", "--just-recipe", "apple-host-sanity"]
 concurrency_group = "apple-host"
 paths = [
   "ci/forge-lanes.toml",
@@ -353,6 +353,6 @@ concurrency_group = "nightly-android"
 [[nightly.lanes]]
 id = "nightly_apple_host_bundle"
 title = "nightly-apple-host-bundle"
-entrypoint = "./scripts/pikaci-apple-remote.sh run --just-recipe apple-host-bundle"
-command = ["./scripts/pikaci-apple-remote.sh", "run", "--just-recipe", "apple-host-bundle"]
+entrypoint = "./scripts/pikaci-apple-github-step remote-run --just-recipe apple-host-bundle"
+command = ["./scripts/pikaci-apple-github-step", "remote-run", "--just-recipe", "apple-host-bundle"]
 concurrency_group = "apple-host"

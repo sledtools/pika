@@ -31,6 +31,9 @@ jobs:
 
       - uses: nixbuild/nix-quick-install-action@v30
 
+      - name: Install age
+        run: nix --extra-experimental-features 'nix-command flakes' profile install nixpkgs#age
+
       - name: Resolve Apple lane
         id: lane
         run: |
@@ -52,9 +55,8 @@ jobs:
       - name: Join Tailscale
         env:
           AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
-          PIKA_SHELL_QUIET: "1"
         run: |
-          nix develop .#default -c ./scripts/with-pikaci-apple-ci-env --secret-set tailscale \
+          ./scripts/with-pikaci-apple-ci-env --secret-set tailscale \
             ./scripts/pikaci-apple-github-step tailscale-up \
               --hostname "gha-pikaci-apple-validate-${{ github.run_id }}"
 
@@ -62,9 +64,8 @@ jobs:
         id: remote
         env:
           AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
-          PIKA_SHELL_QUIET: "1"
         run: |
-          nix develop .#default -c ./scripts/with-pikaci-apple-ci-env --secret-set ssh \
+          ./scripts/with-pikaci-apple-ci-env --secret-set ssh \
             ./scripts/pikaci-apple-github-step remote-run \
               --just-recipe "${{ steps.lane.outputs.just_recipe }}" \
               --github-output "$GITHUB_OUTPUT"

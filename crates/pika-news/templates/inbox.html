@@ -133,20 +133,25 @@
         function renderItems(items) {
           listEl.innerHTML = '';
           items.forEach(function (item) {
+            var reviewId = item.review_id;
+            var isBranch = !!item.branch_id;
+            var titleText = isBranch
+              ? (escapeHtml(item.repo) + ' · branch ' + escapeHtml(item.branch_name || ('#' + reviewId)) + ': ' + escapeHtml(item.title))
+              : (escapeHtml(item.repo) + ' #' + item.pr_number + ': ' + escapeHtml(item.title));
             var div = document.createElement('div');
             div.className = 'inbox-item';
-            div.dataset.prId = item.pr_id;
+            div.dataset.reviewId = reviewId;
             div.innerHTML =
-              '<input type="checkbox" class="inbox-check" data-pr-id="' + item.pr_id + '" />' +
+              '<input type="checkbox" class="inbox-check" data-review-id="' + reviewId + '" />' +
               '<div class="inbox-item-body">' +
-                '<div class="inbox-item-title"><a href="/news/inbox/review/' + item.pr_id + '">' +
-                  escapeHtml(item.repo) + ' #' + item.pr_number + ': ' + escapeHtml(item.title) +
+                '<div class="inbox-item-title"><a href="/news/inbox/review/' + reviewId + '">' +
+                  titleText +
                 '</a></div>' +
                 '<div class="inbox-item-meta">Updated ' + escapeHtml(item.updated_at) + ' · ' + escapeHtml(item.state) + '</div>' +
               '</div>' +
               '<div class="inbox-item-actions">' +
-                '<button class="review-btn" data-pr-id="' + item.pr_id + '">Review</button>' +
-                '<button class="dismiss-btn" data-pr-id="' + item.pr_id + '">Dismiss</button>' +
+                '<button class="review-btn" data-review-id="' + reviewId + '">Review</button>' +
+                '<button class="dismiss-btn" data-review-id="' + reviewId + '">Dismiss</button>' +
               '</div>';
             listEl.appendChild(div);
           });
@@ -154,12 +159,12 @@
           // Bind per-item buttons
           listEl.querySelectorAll('.review-btn').forEach(function (btn) {
             btn.addEventListener('click', function () {
-              window.location.href = '/news/inbox/review/' + btn.dataset.prId;
+              window.location.href = '/news/inbox/review/' + btn.dataset.reviewId;
             });
           });
           listEl.querySelectorAll('.dismiss-btn').forEach(function (btn) {
             btn.addEventListener('click', function () {
-              dismissItems([parseInt(btn.dataset.prId)]);
+              dismissItems([parseInt(btn.dataset.reviewId)]);
             });
           });
           listEl.querySelectorAll('.inbox-check').forEach(function (cb) {
@@ -189,7 +194,7 @@
         }
 
         var dismissing = false;
-        async function dismissItems(prIds) {
+        async function dismissItems(reviewIds) {
           if (dismissing) return;
           dismissing = true;
           dismissSelectedBtn.disabled = true;
@@ -200,7 +205,7 @@
             var res = await fetch('/news/api/inbox/dismiss', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-              body: JSON.stringify({ pr_ids: prIds }),
+              body: JSON.stringify({ branch_ids: reviewIds }),
             });
             if (res.status === 401 || res.status === 403) {
               clearAuth();
@@ -250,7 +255,7 @@
 
         dismissSelectedBtn.addEventListener('click', function () {
           var checked = listEl.querySelectorAll('.inbox-check:checked');
-          var ids = Array.from(checked).map(function (cb) { return parseInt(cb.dataset.prId); });
+          var ids = Array.from(checked).map(function (cb) { return parseInt(cb.dataset.reviewId); });
           if (ids.length > 0) dismissItems(ids);
         });
 

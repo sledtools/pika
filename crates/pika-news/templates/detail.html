@@ -353,7 +353,7 @@
                 'Content-Type': 'application/json',
                 'Authorization': 'Bearer ' + token
               },
-              body: JSON.stringify({ pr_ids: [branchId] })
+              body: JSON.stringify({ branch_ids: [branchId] })
             });
             if (!dismissRes.ok) {
               const data = await dismissRes.json().catch(() => ({}));

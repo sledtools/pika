@@ -1,7 +1,9 @@
+use std::collections::BTreeSet;
 use std::thread;
 
 use anyhow::Context;
 
+use crate::auth::normalize_npub;
 use crate::branch_store::BranchGenerationJob;
 use crate::config::Config;
 use crate::forge;
@@ -35,6 +37,7 @@ pub fn run_generation_pass(store: &Store, config: &Config) -> anyhow::Result<Wor
     for job in jobs {
         let store = store.clone();
         let forge_repo = forge_repo.clone();
+        let config = config.clone();
         let model = config.model.clone();
         let api_key_env = config.api_key_env.clone();
         let retry_backoff_secs = config.retry_backoff_secs;
@@ -42,6 +45,7 @@ pub fn run_generation_pass(store: &Store, config: &Config) -> anyhow::Result<Wor
         handles.push(thread::spawn(move || {
             process_job(
                 &store,
+                &config,
                 &forge_repo,
                 &job,
                 &model,
@@ -82,6 +86,7 @@ enum JobOutcome {
 
 fn process_job(
     store: &Store,
+    config: &Config,
     forge_repo: &crate::config::ForgeRepoConfig,
     job: &BranchGenerationJob,
     model_name: &str,
@@ -168,6 +173,143 @@ fn process_job(
     store
         .mark_branch_generation_ready(job.artifact_id, &tutorial_json, &html, &job.head_sha, &diff)
         .with_context(|| format!("mark branch artifact {} ready", job.artifact_id))?;
+    populate_ready_branch_inbox(store, config, job.artifact_id)
+        .with_context(|| format!("populate inbox for branch artifact {}", job.artifact_id))?;
 
     Ok(JobOutcome::Ready)
+}
+
+fn branch_inbox_recipients(store: &Store, config: &Config) -> anyhow::Result<Vec<String>> {
+    let mut recipients = BTreeSet::new();
+    for npub in config.effective_bootstrap_admin_npubs() {
+        if let Ok(normalized) = normalize_npub(&npub) {
+            recipients.insert(normalized);
+        }
+    }
+    for npub in &config.allowed_npubs {
+        if let Ok(normalized) = normalize_npub(npub) {
+            recipients.insert(normalized);
+        }
+    }
+    for npub in store.list_active_chat_allowlist_npubs()? {
+        if let Ok(normalized) = normalize_npub(&npub) {
+            recipients.insert(normalized);
+        }
+    }
+    Ok(recipients.into_iter().collect())
+}
+
+fn populate_ready_branch_inbox(
+    store: &Store,
+    config: &Config,
+    artifact_id: i64,
+) -> anyhow::Result<usize> {
+    let recipients = branch_inbox_recipients(store, config)?;
+    store.populate_branch_inbox(artifact_id, &recipients)
+}
+
+#[cfg(test)]
+mod tests {
+    use nostr::nips::nip19::ToBech32;
+    use nostr::Keys;
+
+    use super::populate_ready_branch_inbox;
+    use crate::branch_store::BranchUpsertInput;
+    use crate::config::Config;
+    use crate::storage::Store;
+
+    fn branch_upsert_input(branch_name: &str, head_sha: &str) -> BranchUpsertInput {
+        BranchUpsertInput {
+            repo: "sledtools/pika".to_string(),
+            canonical_git_dir: "/tmp/pika.git".to_string(),
+            default_branch: "master".to_string(),
+            ci_entrypoint: "just pre-merge".to_string(),
+            branch_name: branch_name.to_string(),
+            title: format!("{branch_name} title"),
+            head_sha: head_sha.to_string(),
+            merge_base_sha: "base123".to_string(),
+            author_name: Some("alice".to_string()),
+            author_email: Some("alice@example.com".to_string()),
+            updated_at: "2026-03-18T12:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn ready_branch_artifacts_feed_branch_inbox() {
+        let admin_npub = Keys::generate()
+            .public_key()
+            .to_bech32()
+            .expect("encode admin npub");
+        let legacy_npub = Keys::generate()
+            .public_key()
+            .to_bech32()
+            .expect("encode legacy npub");
+        let allowlisted_npub = Keys::generate()
+            .public_key()
+            .to_bech32()
+            .expect("encode allowlisted npub");
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        store
+            .upsert_chat_allowlist_entry(
+                &allowlisted_npub,
+                true,
+                false,
+                Some("reviewer"),
+                &admin_npub,
+            )
+            .expect("upsert allowlist");
+        let branch = store
+            .upsert_branch_record(&branch_upsert_input("feature/inbox", "head-1"))
+            .expect("insert branch");
+        let artifact_id = store
+            .with_connection(|conn| {
+                conn.query_row(
+                    "SELECT id
+                     FROM branch_artifact_versions
+                     WHERE branch_id = ?1
+                     ORDER BY version DESC
+                     LIMIT 1",
+                    rusqlite::params![branch.branch_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("branch artifact id");
+        store
+            .mark_branch_generation_ready(
+                artifact_id,
+                r#"{"executive_summary":"ok","media_links":[],"steps":[]}"#,
+                "<p>ok</p>",
+                "head-1",
+                "diff",
+            )
+            .expect("mark ready");
+
+        let config = Config {
+            repos: vec!["sledtools/pika".to_string()],
+            forge_repo: None,
+            poll_interval_secs: 60,
+            model: "test-model".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            github_token_env: "GITHUB_TOKEN".to_string(),
+            merged_lookback_hours: 72,
+            worker_concurrency: 1,
+            retry_backoff_secs: 120,
+            webhook_secret_env: "PIKA_NEWS_WEBHOOK_SECRET".to_string(),
+            bind_address: "127.0.0.1".to_string(),
+            bind_port: 8787,
+            allowed_npubs: vec![legacy_npub.clone()],
+            bootstrap_admin_npubs: vec![admin_npub.clone()],
+        };
+
+        assert_eq!(
+            populate_ready_branch_inbox(&store, &config, artifact_id).unwrap(),
+            3
+        );
+        assert_eq!(store.branch_inbox_count(&admin_npub).unwrap(), 1);
+        assert_eq!(store.branch_inbox_count(&legacy_npub).unwrap(), 1);
+        assert_eq!(store.branch_inbox_count(&allowlisted_npub).unwrap(), 1);
+    }
 }

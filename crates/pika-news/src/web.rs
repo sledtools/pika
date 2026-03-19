@@ -2861,7 +2861,6 @@ mod tests {
         );
         headers
     }
-
     #[test]
     fn sanitizes_markdown_html_output() {
         let rendered = markdown_to_safe_html("ok<script>alert('xss')</script>");
@@ -3374,7 +3373,6 @@ mod tests {
         .into_response();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
-
     #[test]
     fn merged_branch_page_renders_after_source_branch_deletion() {
         let root = tempfile::tempdir().expect("create temp root");

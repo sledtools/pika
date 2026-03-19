@@ -37,10 +37,19 @@
       .action-btn, .secondary-btn { border-radius: 10px; border: 1px solid var(--input-border); background: var(--btn-bg); color: var(--text); padding: 0.5rem 0.85rem; cursor: pointer; }
       .merge-btn { background: var(--accent); border-color: transparent; color: #fff; }
       .danger-btn { background: #8b1e3f; border-color: transparent; color: #fff; }
+      .notice { border-radius: 12px; padding: 0.85rem 1rem; margin-top: 1rem; border: 1px solid var(--border); background: var(--badge-bg-row); }
+      .notice.warning { border-color: #d9a441; background: rgba(217, 164, 65, 0.12); }
+      .notice.error { border-color: #b8475b; background: rgba(184, 71, 91, 0.12); }
+      .ci-summary { border-radius: 10px; padding: 0.8rem 0.9rem; margin-bottom: 0.9rem; border: 1px solid #b8475b; background: rgba(184, 71, 91, 0.12); }
       .ci-run { border-top: 1px solid var(--border); padding-top: 0.85rem; margin-top: 0.85rem; }
       .ci-run:first-child { border-top: none; padding-top: 0; margin-top: 0; }
       .ci-run pre { overflow-x: auto; background: var(--badge-bg); border-radius: 8px; padding: 0.75rem; font-size: 0.82rem; }
+      .lane-details { border: 1px solid var(--border); border-radius: 10px; padding: 0.55rem 0.7rem; margin-top: 0.75rem; background: var(--badge-bg-row); }
+      .lane-details[open] { background: var(--badge-bg-alt); }
+      .lane-details.lane-failed { border-color: #b8475b; background: rgba(184, 71, 91, 0.09); }
+      .failure-hint { color: #8b1e3f; font-weight: 600; }
       .muted { color: var(--text-muted); }
+      .lane-btn { margin-top: 0.5rem; }
       button:disabled { opacity: 0.55; cursor: default; }
       .review-nav-center { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
       .review-nav-pos { font-size: 0.82rem; color: var(--text-muted); }
@@ -57,6 +66,11 @@
         <span class="status">tutorial: {{ tutorial_status }}</span>
         <span class="status">ci: {{ ci_status }}</span>
       </div>
+      {% for notice in page_notices %}
+      <section class="notice {{ notice.tone }}">
+        <p>{{ notice.message }}</p>
+      </section>
+      {% endfor %}
       {% match merge_commit_sha %}
       {% when Some with (merge_commit) %}
       <p class="meta">merge commit <code>{{ merge_commit }}</code></p>
@@ -131,6 +145,11 @@
 
       <section class="panel">
         <h2>CI</h2>
+        {% if latest_failed_lane_count > 0 %}
+        <div class="ci-summary">
+          Latest run has {{ latest_failed_lane_count }} failed lane(s). Open the highlighted lane rows below for logs, then rerun from this page after fixing the cause.
+        </div>
+        {% endif %}
         {% if ci_runs.is_empty() %}
         <p class="muted">No CI runs yet.</p>
         {% else %}
@@ -138,6 +157,10 @@
         <article class="ci-run">
           <p><strong>Run #{{ run.id }}</strong> · {{ run.status }} · {{ run.lane_count }} lane(s)</p>
           <p class="muted">head <code>{{ run.source_head_sha }}</code> · queued {{ run.created_at }}</p>
+          {% match run.rerun_of_run_id %}
+          {% when Some with (original_run_id) %}
+          <p class="muted">manual rerun of run #{{ original_run_id }}</p>
+          {% when None %}{% endmatch %}
           {% match run.started_at %}
           {% when Some with (started_at) %}
           <p class="muted">started {{ started_at }}</p>
@@ -150,9 +173,16 @@
           <p class="muted">No lanes were selected for this branch head.</p>
           {% else %}
           {% for lane in run.lanes %}
-          <details>
+          <details class="lane-details {% if lane.status == "failed" %}lane-failed{% endif %}" {% if lane.status == "failed" %}open{% endif %}>
             <summary>Lane #{{ lane.id }} · {{ lane.title }} · {{ lane.status }} · <code>{{ lane.entrypoint }}</code></summary>
             <p class="muted">lane id <code>{{ lane.lane_id }}</code> · retries {{ lane.retry_count }} · queued {{ lane.created_at }}</p>
+            {% if lane.status == "failed" %}
+            <p class="failure-hint">This lane failed. Check the log output below before rerunning.</p>
+            {% endif %}
+            {% match lane.rerun_of_lane_run_id %}
+            {% when Some with (original_lane_run_id) %}
+            <p class="muted">manual rerun of lane #{{ original_lane_run_id }}</p>
+            {% when None %}{% endmatch %}
             {% match lane.started_at %}
             {% when Some with (started_at) %}
             <p class="muted">started {{ started_at }}</p>
@@ -167,6 +197,14 @@
             {% when None %}
             <p class="muted">No logs yet.</p>
             {% endmatch %}
+            {% if lane.status != "queued" && lane.status != "running" %}
+            <button
+              type="button"
+              class="secondary-btn lane-btn lane-rerun-btn"
+              data-lane-run-id="{{ lane.id }}"
+              style="display:none;"
+            >{% if lane.status == "failed" %}Rerun Failed Lane{% else %}Rerun Lane{% endif %}</button>
+            {% endif %}
           </details>
           {% endfor %}
           {% endif %}
@@ -252,6 +290,7 @@
         const reviewNextBtn = document.getElementById('review-next');
         const reviewDismissBtn = document.getElementById('review-dismiss');
         const reviewPosEl = document.getElementById('review-pos');
+        const rerunButtons = Array.from(document.querySelectorAll('.lane-rerun-btn'));
         const branchId = {{ branch_id }};
         const reviewMode = {% if review_mode %}true{% else %}false{% endif %};
 
@@ -260,9 +299,13 @@
         }
 
         function showActions() {
-          if (!actionWrap) return;
           const canForgeWrite = window.pikaAuth && window.pikaAuth.canForgeWrite ? window.pikaAuth.canForgeWrite() : false;
-          actionWrap.style.display = canForgeWrite ? 'flex' : 'none';
+          if (actionWrap) {
+            actionWrap.style.display = canForgeWrite ? 'flex' : 'none';
+          }
+          rerunButtons.forEach((button) => {
+            button.style.display = canForgeWrite ? '' : 'none';
+          });
         }
 
         async function branchAction(path, button, busyLabel, doneLabel) {
@@ -297,6 +340,16 @@
             branchAction(`/news/branch/${branchId}/close`, closeBtn, 'Closing branch...', 'Branch closed.');
           });
         }
+        rerunButtons.forEach((button) => {
+          button.addEventListener('click', () => {
+            branchAction(
+              `/news/branch/${branchId}/ci/rerun/${button.dataset.laneRunId}`,
+              button,
+              'Queueing lane rerun...',
+              'Lane rerun queued.'
+            );
+          });
+        });
 
         async function refreshReviewControls() {
           if (!reviewMode || !reviewPrevBtn || !reviewNextBtn || !reviewDismissBtn || !reviewPosEl) return;

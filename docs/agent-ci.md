@@ -11,7 +11,7 @@ This document defines deterministic CI coverage for `pikachat agent new` provide
 
 ## Blocking Pre-merge Contract Lanes
 
-These lanes are required in `.github/workflows/pre-merge.yml`:
+These lanes are defined canonically in `ci/forge-lanes.toml` and orchestrated by the forge on `git.pikachat.org`. GitHub mirrors them through `.github/workflows/pre-merge.yml` as advisory shadow CI:
 
 - `check-agent-contracts`:
   - Runs mocked HTTP control-plane contracts for MicroVM (no real cloud credentials/hosts).
@@ -22,7 +22,7 @@ These lanes are required in `.github/workflows/pre-merge.yml`:
 
 Real-provider probes stay outside pre-merge gating:
 
-- They run in nightly/manual workflow mode (`mode=nightly`) and are advisory for merge safety.
+- They run canonically from forge nightly orchestration, with GitHub `mode=nightly` as an advisory mirror.
 - A failure in an integration probe should not be used as a pre-merge gate.
 
 ## Local Reproduction
@@ -49,7 +49,7 @@ just openclaw-pikachat-e2e
 
 ## Trigger Sanity Checks
 
-Use these PR-change patterns to confirm path-filter behavior in GitHub Actions:
+Use these PR-change patterns to confirm manifest-driven path-filter behavior:
 
 - Touch `just/checks.just`:
   - expected: `check-agent-contracts` runs.

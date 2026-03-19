@@ -1,5 +1,6 @@
+use std::collections::BTreeSet;
 use std::env;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -10,6 +11,7 @@ use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Json, Redirect};
 use axum::routing::{get, post};
 use axum::Router;
+use chrono::{SecondsFormat, Utc};
 use hmac::{Hmac, Mac};
 use pulldown_cmark::{html, Options, Parser};
 use sha2::Sha256;
@@ -17,12 +19,13 @@ use tokio::sync::Notify;
 
 use crate::auth::{normalize_npub, AuthState};
 use crate::branch_store::{
-    BranchCiLaneRecord, BranchCiRunRecord, BranchDetailRecord, BranchFeedItem, NightlyFeedItem,
-    NightlyLaneRecord, NightlyRunRecord,
+    BranchCiLaneRecord, BranchCiRunRecord, BranchDetailRecord, BranchFeedItem, MirrorStatusRecord,
+    NightlyFeedItem, NightlyLaneRecord, NightlyRunRecord,
 };
 use crate::ci;
 use crate::config::Config;
 use crate::forge;
+use crate::mirror;
 use crate::model;
 use crate::poller;
 use crate::render::is_safe_http_url;
@@ -38,6 +41,141 @@ struct AppState {
     auth: Arc<AuthState>,
     poll_notify: Arc<Notify>,
     webhook_secret: Option<String>,
+    forge_health: Arc<Mutex<ForgeHealthState>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+struct ForgeHealthIssue {
+    severity: String,
+    code: String,
+    message: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+struct ForgeSubsystemStatus {
+    state: String,
+    last_checked_at: Option<String>,
+    last_activity_at: Option<String>,
+    last_error_at: Option<String>,
+    summary: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+struct ForgeMirrorHealthStatus {
+    state: String,
+    background_enabled: bool,
+    background_interval_secs: Option<u64>,
+    last_success_at: Option<String>,
+    last_failure_at: Option<String>,
+    summary: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+struct ForgeHealthSnapshot {
+    enabled: bool,
+    issues: Vec<ForgeHealthIssue>,
+    poller: ForgeSubsystemStatus,
+    generation_worker: ForgeSubsystemStatus,
+    ci: ForgeSubsystemStatus,
+    mirror: ForgeMirrorHealthStatus,
+}
+
+#[derive(Clone, Debug)]
+struct ForgeSubsystemTracker {
+    enabled: bool,
+    state: &'static str,
+    last_checked_at: Option<String>,
+    last_activity_at: Option<String>,
+    last_error_at: Option<String>,
+    summary: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ForgeHealthState {
+    enabled: bool,
+    issues: Vec<ForgeHealthIssue>,
+    poller: ForgeSubsystemTracker,
+    generation_worker: ForgeSubsystemTracker,
+    ci: ForgeSubsystemTracker,
+}
+
+impl ForgeSubsystemTracker {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            state: if enabled { "idle" } else { "disabled" },
+            last_checked_at: None,
+            last_activity_at: None,
+            last_error_at: None,
+            summary: None,
+        }
+    }
+
+    fn mark_success(&mut self, summary: String, active: bool) {
+        if !self.enabled {
+            return;
+        }
+        let now = now_string();
+        self.state = if active { "active" } else { "idle" };
+        self.last_checked_at = Some(now.clone());
+        if active {
+            self.last_activity_at = Some(now);
+        }
+        self.summary = Some(summary);
+    }
+
+    fn mark_error(&mut self, message: String) {
+        if !self.enabled {
+            return;
+        }
+        let now = now_string();
+        self.state = "error";
+        self.last_checked_at = Some(now.clone());
+        self.last_error_at = Some(now);
+        self.summary = Some(message);
+    }
+
+    fn snapshot(&self) -> ForgeSubsystemStatus {
+        ForgeSubsystemStatus {
+            state: self.state.to_string(),
+            last_checked_at: self.last_checked_at.clone(),
+            last_activity_at: self.last_activity_at.clone(),
+            last_error_at: self.last_error_at.clone(),
+            summary: self.summary.clone(),
+        }
+    }
+}
+
+impl ForgeHealthState {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            issues: Vec::new(),
+            poller: ForgeSubsystemTracker::new(enabled),
+            generation_worker: ForgeSubsystemTracker::new(enabled),
+            ci: ForgeSubsystemTracker::new(enabled),
+        }
+    }
+
+    fn replace_issues(&mut self, issues: Vec<ForgeHealthIssue>) {
+        self.issues = issues;
+    }
+
+    fn snapshot(
+        &self,
+        config: &Config,
+        mirror_status: Option<&MirrorStatusRecord>,
+    ) -> ForgeHealthSnapshot {
+        let mirror_runtime = mirror::mirror_runtime_status(config);
+        ForgeHealthSnapshot {
+            enabled: self.enabled,
+            issues: self.issues.clone(),
+            poller: self.poller.snapshot(),
+            generation_worker: self.generation_worker.snapshot(),
+            ci: self.ci.snapshot(),
+            mirror: build_mirror_health_status(&mirror_runtime, mirror_status),
+        }
+    }
 }
 
 #[derive(Template)]
@@ -67,6 +205,8 @@ struct DetailTemplate {
     steps: Vec<StepView>,
     diff_json: Option<String>,
     ci_runs: Vec<CiRunView>,
+    page_notices: Vec<PageNoticeView>,
+    latest_failed_lane_count: usize,
     review_mode: bool,
 }
 
@@ -81,10 +221,13 @@ struct NightlyTemplate {
     source_ref: String,
     source_head_sha: String,
     scheduled_for: String,
+    rerun_of_run_id: Option<i64>,
     created_at: String,
     started_at: Option<String>,
     finished_at: Option<String>,
     lanes: Vec<NightlyLaneView>,
+    page_notices: Vec<PageNoticeView>,
+    failed_lane_count: usize,
 }
 
 #[derive(Template)]
@@ -134,11 +277,18 @@ struct MediaLinkView {
 }
 
 #[derive(Clone)]
+struct PageNoticeView {
+    tone: String,
+    message: String,
+}
+
+#[derive(Clone)]
 struct CiRunView {
     id: i64,
     source_head_sha: String,
     status: String,
     lane_count: usize,
+    rerun_of_run_id: Option<i64>,
     created_at: String,
     started_at: Option<String>,
     finished_at: Option<String>,
@@ -154,6 +304,7 @@ struct CiLaneView {
     status: String,
     log_text: Option<String>,
     retry_count: i64,
+    rerun_of_lane_run_id: Option<i64>,
     created_at: String,
     started_at: Option<String>,
     finished_at: Option<String>,
@@ -161,15 +312,310 @@ struct CiLaneView {
 
 #[derive(Clone)]
 struct NightlyLaneView {
+    id: i64,
     lane_id: String,
     title: String,
     entrypoint: String,
     status: String,
     log_text: Option<String>,
     retry_count: i64,
+    rerun_of_lane_run_id: Option<i64>,
     created_at: String,
     started_at: Option<String>,
     finished_at: Option<String>,
+}
+
+fn now_string() -> String {
+    Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+fn forge_issue(severity: &str, code: &str, message: impl Into<String>) -> ForgeHealthIssue {
+    ForgeHealthIssue {
+        severity: severity.to_string(),
+        code: code.to_string(),
+        message: message.into(),
+    }
+}
+
+fn poller_summary(result: &poller::PollResult) -> String {
+    format!(
+        "repos {} · branches {} · queued tutorials {} · queued ci {} · stale closed {}",
+        result.repos_polled,
+        result.branches_seen,
+        result.queued_regenerations,
+        result.queued_ci_runs,
+        result.stale_closed
+    )
+}
+
+fn worker_summary(result: &worker::WorkerPassResult) -> String {
+    format!(
+        "claimed {} · ready {} · failed {} · retry {}",
+        result.claimed, result.ready, result.failed, result.retry_scheduled
+    )
+}
+
+fn ci_summary(result: &ci::CiPassResult) -> String {
+    format!(
+        "claimed {} · succeeded {} · failed {} · nightlies {} · recovered {}",
+        result.claimed,
+        result.succeeded,
+        result.failed,
+        result.nightlies_scheduled,
+        result.retries_recovered
+    )
+}
+
+fn build_mirror_health_status(
+    runtime: &mirror::MirrorRuntimeStatus,
+    status: Option<&MirrorStatusRecord>,
+) -> ForgeMirrorHealthStatus {
+    if !runtime.configured {
+        return ForgeMirrorHealthStatus {
+            state: "disabled".to_string(),
+            background_enabled: false,
+            background_interval_secs: None,
+            last_success_at: None,
+            last_failure_at: None,
+            summary: Some("mirror remote not configured".to_string()),
+        };
+    }
+    if !runtime.background_enabled {
+        return ForgeMirrorHealthStatus {
+            state: "disabled".to_string(),
+            background_enabled: false,
+            background_interval_secs: runtime.background_interval_secs,
+            last_success_at: status.and_then(|s| s.last_success_at.clone()),
+            last_failure_at: status.and_then(|s| s.last_failure_at.clone()),
+            summary: Some("background sync disabled; manual sync only".to_string()),
+        };
+    }
+    if let Some(status) = status {
+        let state = if status.current_failure_kind.is_some() {
+            "error"
+        } else {
+            "idle"
+        };
+        let summary = if status.current_failure_kind.is_some() {
+            Some(format!(
+                "last background attempt failed{}",
+                status
+                    .current_failure_kind
+                    .as_ref()
+                    .map(|kind| format!(" ({kind})"))
+                    .unwrap_or_default()
+            ))
+        } else {
+            Some("background sync enabled".to_string())
+        };
+        return ForgeMirrorHealthStatus {
+            state: state.to_string(),
+            background_enabled: true,
+            background_interval_secs: runtime.background_interval_secs,
+            last_success_at: status.last_success_at.clone(),
+            last_failure_at: status.last_failure_at.clone(),
+            summary,
+        };
+    }
+    ForgeMirrorHealthStatus {
+        state: "idle".to_string(),
+        background_enabled: true,
+        background_interval_secs: runtime.background_interval_secs,
+        last_success_at: None,
+        last_failure_at: None,
+        summary: Some("background sync enabled; no attempts recorded yet".to_string()),
+    }
+}
+
+fn collect_forge_startup_issues(
+    config: &Config,
+    forge_repo: &crate::config::ForgeRepoConfig,
+    webhook_secret: Option<&str>,
+) -> Vec<ForgeHealthIssue> {
+    let mut issues = Vec::new();
+
+    if webhook_secret.is_none() {
+        issues.push(forge_issue(
+            "error",
+            "webhook_secret_missing",
+            format!(
+                "{} is not set. Install hooks and webhook-triggered refresh stay disabled until it is configured.",
+                config.webhook_secret_env
+            ),
+        ));
+    }
+
+    match forge::ensure_canonical_repo(forge_repo) {
+        Ok(()) => {
+            if let Some(secret) = webhook_secret {
+                if let Err(err) = forge::install_hooks(forge_repo, secret) {
+                    issues.push(forge_issue(
+                        "error",
+                        "hook_install_failed",
+                        format!(
+                            "Could not install forge hooks in {}: {}",
+                            forge_repo.canonical_git_dir, err
+                        ),
+                    ));
+                }
+            }
+        }
+        Err(err) => {
+            issues.push(forge_issue(
+                "error",
+                "canonical_repo_unavailable",
+                format!(
+                    "Canonical repo path {} is not usable: {}",
+                    forge_repo.canonical_git_dir, err
+                ),
+            ));
+        }
+    }
+
+    match forge_repo.mirror_remote.as_deref() {
+        None => issues.push(forge_issue(
+            "warning",
+            "mirror_remote_missing",
+            "Mirror remote is not configured. GitHub stays disabled until forge_repo.mirror_remote is set.",
+        )),
+        Some(remote_name) => match forge::mirror_remote_url(forge_repo, remote_name) {
+            Ok(remote_url) => {
+                let token_missing = env::var(&config.github_token_env)
+                    .ok()
+                    .is_none_or(|value| value.trim().is_empty());
+                if remote_url.contains("github.com") && token_missing {
+                    issues.push(forge_issue(
+                        "warning",
+                        "mirror_auth_missing",
+                        format!(
+                            "Mirror remote `{remote_name}` points at GitHub, but {} is not set. Background and manual sync will fail until credentials are available.",
+                            config.github_token_env
+                        ),
+                    ));
+                }
+            }
+            Err(err) => issues.push(forge_issue(
+                "error",
+                "mirror_remote_invalid",
+                format!("Mirror remote `{remote_name}` could not be resolved: {err}"),
+            )),
+        },
+    }
+
+    issues
+}
+
+fn current_forge_runtime_issues(
+    config: &Config,
+    webhook_secret: Option<&str>,
+) -> Vec<ForgeHealthIssue> {
+    let Some(forge_repo) = config.effective_forge_repo() else {
+        return Vec::new();
+    };
+    collect_forge_startup_issues(config, &forge_repo, webhook_secret)
+}
+
+fn push_page_notice(
+    notices: &mut Vec<PageNoticeView>,
+    seen: &mut BTreeSet<String>,
+    tone: &str,
+    message: &str,
+) {
+    if seen.insert(message.to_string()) {
+        notices.push(PageNoticeView {
+            tone: tone.to_string(),
+            message: message.to_string(),
+        });
+    }
+}
+
+fn branch_page_notices(state: &AppState) -> Vec<PageNoticeView> {
+    let Ok(health) = state.forge_health.lock() else {
+        return Vec::new();
+    };
+    if !health.enabled {
+        return Vec::new();
+    }
+    let mut notices = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for issue in &health.issues {
+        match issue.code.as_str() {
+            "canonical_repo_unavailable" => push_page_notice(
+                &mut notices,
+                &mut seen,
+                "error",
+                "Forge repo access is degraded. Branch state and CI may be stale until canonical repo access is fixed.",
+            ),
+            "webhook_secret_missing" | "hook_install_failed" => push_page_notice(
+                &mut notices,
+                &mut seen,
+                "warning",
+                "Webhook refresh is unavailable. New pushes may appear on the next poll instead of immediately.",
+            ),
+            _ => {}
+        }
+    }
+
+    if health.poller.state == "error" {
+        push_page_notice(
+            &mut notices,
+            &mut seen,
+            "warning",
+            "Forge polling hit an error. Recent branch updates may be stale until it recovers.",
+        );
+    }
+    if health.generation_worker.state == "error" {
+        push_page_notice(
+            &mut notices,
+            &mut seen,
+            "warning",
+            "Summary generation hit an error. New tutorial updates may be delayed until it recovers.",
+        );
+    }
+    if health.ci.state == "error" {
+        push_page_notice(
+            &mut notices,
+            &mut seen,
+            "error",
+            "Forge CI hit an error. New lane runs may stay queued until the runner recovers.",
+        );
+    }
+
+    notices
+}
+
+fn nightly_page_notices(state: &AppState) -> Vec<PageNoticeView> {
+    let Ok(health) = state.forge_health.lock() else {
+        return Vec::new();
+    };
+    if !health.enabled {
+        return Vec::new();
+    }
+    let mut notices = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for issue in &health.issues {
+        if issue.code.as_str() == "canonical_repo_unavailable" {
+            push_page_notice(
+                &mut notices,
+                &mut seen,
+                "error",
+                "Forge repo access is degraded. Nightly state may be stale until canonical repo access is fixed.",
+            );
+        }
+    }
+
+    if health.ci.state == "error" {
+        push_page_notice(
+            &mut notices,
+            &mut seen,
+            "error",
+            "Forge CI hit an error. New nightly lanes may stay queued until the runner recovers.",
+        );
+    }
+
+    notices
 }
 
 pub async fn serve(
@@ -198,28 +644,36 @@ pub async fn serve(
 
     let poll_notify = Arc::new(Notify::new());
     let webhook_secret = env::var(&config.webhook_secret_env).ok();
+    let forge_mode = config.effective_forge_repo().is_some();
+    let forge_health = Arc::new(Mutex::new(ForgeHealthState::new(forge_mode)));
     if let Some(forge_repo) = config.effective_forge_repo() {
-        let secret = webhook_secret
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("forge mode requires {}", config.webhook_secret_env))?;
-        forge::ensure_canonical_repo(&forge_repo).with_context(|| {
-            format!(
-                "ensure canonical bare repo exists at {}",
-                forge_repo.canonical_git_dir
-            )
-        })?;
-        forge::install_hooks(&forge_repo, secret).with_context(|| {
-            format!(
-                "install canonical git hooks in {}",
-                forge_repo.canonical_git_dir
-            )
-        })?;
+        let startup_issues = current_forge_runtime_issues(&config, webhook_secret.as_deref());
+        if let Ok(mut health) = forge_health.lock() {
+            health.replace_issues(startup_issues.clone());
+        }
+        for issue in &startup_issues {
+            eprintln!(
+                "forge startup {} [{}]: {}",
+                issue.severity, issue.code, issue.message
+            );
+        }
         eprintln!(
             "forge: canonical_repo={} default_branch={} lane_manifest={}",
             forge_repo.canonical_git_dir,
             forge_repo.default_branch,
             ci::FORGE_LANE_MANIFEST_PATH
         );
+        if let Some(remote_name) = forge_repo.mirror_remote.as_deref() {
+            let interval = forge_repo.mirror_poll_interval_secs.unwrap_or(0);
+            eprintln!(
+                "forge: mirror_remote={} background_enabled={} background_interval_secs={}",
+                remote_name,
+                interval > 0,
+                interval
+            );
+        } else {
+            eprintln!("forge: mirror_remote=disabled");
+        }
     }
     let state = Arc::new(AppState {
         store,
@@ -228,6 +682,7 @@ pub async fn serve(
         auth,
         poll_notify: Arc::clone(&poll_notify),
         webhook_secret,
+        forge_health: Arc::clone(&forge_health),
     });
 
     let background_state = Arc::clone(&state);
@@ -237,65 +692,119 @@ pub async fn serve(
             let state = Arc::clone(&background_state);
             match tokio::task::spawn_blocking(move || {
                 (
+                    current_forge_runtime_issues(&state.config, state.webhook_secret.as_deref()),
                     poller::poll_once_limited(&state.store, &state.config, state.max_prs),
                     worker::run_generation_pass(&state.store, &state.config),
                     ci::run_ci_pass(&state.store, &state.config),
+                    mirror::run_background_mirror_pass(&state.store, &state.config),
                 )
             })
             .await
             {
-                Ok((poll_result, worker_result, ci_result)) => {
+                Ok((issues, poll_result, worker_result, ci_result, mirror_result)) => {
+                    if let Ok(mut health) = background_state.forge_health.lock() {
+                        health.replace_issues(issues);
+                    }
                     match poll_result {
-                        Ok(pr)
+                        Ok(pr) => {
                             if pr.branches_seen > 0
                                 || pr.queued_regenerations > 0
-                                || pr.stale_closed > 0 =>
-                        {
-                            eprintln!(
-                                "poll: repos={} branches_seen={} queued_tutorials={} queued_ci={} head_changes={} stale_closed={}",
-                                pr.repos_polled,
-                                pr.branches_seen,
-                                pr.queued_regenerations,
-                                pr.queued_ci_runs,
-                                pr.head_sha_changes,
-                                pr.stale_closed
-                            );
+                                || pr.stale_closed > 0
+                            {
+                                eprintln!(
+                                    "poll: repos={} branches_seen={} queued_tutorials={} queued_ci={} head_changes={} stale_closed={}",
+                                    pr.repos_polled,
+                                    pr.branches_seen,
+                                    pr.queued_regenerations,
+                                    pr.queued_ci_runs,
+                                    pr.head_sha_changes,
+                                    pr.stale_closed
+                                );
+                            }
+                            if let Ok(mut health) = background_state.forge_health.lock() {
+                                let active = pr.queued_regenerations > 0
+                                    || pr.queued_ci_runs > 0
+                                    || pr.head_sha_changes > 0
+                                    || pr.stale_closed > 0;
+                                health.poller.mark_success(poller_summary(&pr), active);
+                            }
                         }
-                        Ok(_) => {}
                         Err(err) => {
                             eprintln!("pika-news background poller error: {}", err);
+                            if let Ok(mut health) = background_state.forge_health.lock() {
+                                health.poller.mark_error(err.to_string());
+                            }
                         }
                     }
                     match worker_result {
-                        Ok(wr) if wr.claimed > 0 => {
-                            eprintln!(
-                                "worker: claimed={} ready={} failed={} retry={}",
-                                wr.claimed, wr.ready, wr.failed, wr.retry_scheduled
-                            );
+                        Ok(wr) => {
+                            if wr.claimed > 0 {
+                                eprintln!(
+                                    "worker: claimed={} ready={} failed={} retry={}",
+                                    wr.claimed, wr.ready, wr.failed, wr.retry_scheduled
+                                );
+                            }
+                            if let Ok(mut health) = background_state.forge_health.lock() {
+                                let active = wr.claimed > 0
+                                    || wr.ready > 0
+                                    || wr.failed > 0
+                                    || wr.retry_scheduled > 0;
+                                health
+                                    .generation_worker
+                                    .mark_success(worker_summary(&wr), active);
+                            }
                         }
-                        Ok(_) => {}
                         Err(err) => {
                             eprintln!("pika-news background worker error: {}", err);
+                            if let Ok(mut health) = background_state.forge_health.lock() {
+                                health.generation_worker.mark_error(err.to_string());
+                            }
                         }
                     }
                     match ci_result {
-                        Ok(ci)
+                        Ok(ci) => {
                             if ci.claimed > 0
                                 || ci.nightlies_scheduled > 0
-                                || ci.retries_recovered > 0 =>
+                                || ci.retries_recovered > 0
+                            {
+                                eprintln!(
+                                    "ci: claimed={} succeeded={} failed={} nightlies_scheduled={} retries_recovered={}",
+                                    ci.claimed,
+                                    ci.succeeded,
+                                    ci.failed,
+                                    ci.nightlies_scheduled,
+                                    ci.retries_recovered
+                                );
+                            }
+                            if let Ok(mut health) = background_state.forge_health.lock() {
+                                let active = ci.claimed > 0
+                                    || ci.nightlies_scheduled > 0
+                                    || ci.retries_recovered > 0;
+                                health.ci.mark_success(ci_summary(&ci), active);
+                            }
+                        }
+                        Err(err) => {
+                            eprintln!("pika-news ci runner error: {}", err);
+                            if let Ok(mut health) = background_state.forge_health.lock() {
+                                health.ci.mark_error(err.to_string());
+                            }
+                        }
+                    }
+                    match mirror_result {
+                        Ok(mirror)
+                            if mirror.attempted
+                                && (mirror.status.as_deref() != Some("success")
+                                    || mirror.lagging_ref_count.unwrap_or(0) > 0) =>
                         {
                             eprintln!(
-                                "ci: claimed={} succeeded={} failed={} nightlies_scheduled={} retries_recovered={}",
-                                ci.claimed,
-                                ci.succeeded,
-                                ci.failed,
-                                ci.nightlies_scheduled,
-                                ci.retries_recovered
+                                "mirror: status={} lagging_refs={}",
+                                mirror.status.as_deref().unwrap_or("unknown"),
+                                mirror.lagging_ref_count.unwrap_or(-1)
                             );
                         }
                         Ok(_) => {}
                         Err(err) => {
-                            eprintln!("pika-news ci runner error: {}", err);
+                            eprintln!("pika-news mirror runner error: {}", err);
                         }
                     }
                 }
@@ -321,6 +830,14 @@ pub async fn serve(
         .route("/news/pr/:pr_id", get(detail_handler))
         .route("/news/branch/:pr_id/merge", post(merge_handler))
         .route("/news/branch/:pr_id/close", post(close_handler))
+        .route(
+            "/news/branch/:branch_id/ci/rerun/:lane_run_id",
+            post(rerun_branch_ci_lane_handler),
+        )
+        .route(
+            "/news/nightly/:nightly_run_id/rerun/:lane_run_id",
+            post(rerun_nightly_lane_handler),
+        )
         .route("/news/inbox", get(inbox_handler))
         .route("/news/admin", get(admin_handler))
         .route("/news/inbox/review/:pr_id", get(inbox_review_handler))
@@ -331,6 +848,14 @@ pub async fn serve(
         .route(
             "/news/api/admin/allowlist",
             get(api_admin_allowlist_handler).post(api_admin_allowlist_upsert_handler),
+        )
+        .route(
+            "/news/api/admin/forge-status",
+            get(api_admin_forge_status_handler),
+        )
+        .route(
+            "/news/api/admin/mirror/sync",
+            post(api_admin_mirror_sync_handler),
         )
         .route(
             "/news/api/inbox/neighbors/:pr_id",
@@ -462,7 +987,7 @@ async fn nightly_handler(
                     .into_response();
             }
         };
-    let template = render_nightly_template(nightly);
+    let template = render_nightly_template_with_notices(nightly, nightly_page_notices(&state));
     match template.render() {
         Ok(rendered) => Html(rendered).into_response(),
         Err(err) => (
@@ -569,7 +1094,12 @@ async fn detail_page(
             }
         };
 
-    match render_detail_template(detail, ci_runs, review_mode) {
+    match render_detail_template_with_notices(
+        detail,
+        ci_runs,
+        review_mode,
+        branch_page_notices(&state),
+    ) {
         Ok(template) => match template.render() {
             Ok(rendered) => Html(rendered).into_response(),
             Err(err) => (
@@ -611,14 +1141,33 @@ fn map_nightly_feed_item(item: NightlyFeedItem) -> NightlyFeedItemView {
     }
 }
 
+#[cfg(test)]
 fn render_detail_template(
     record: BranchDetailRecord,
     ci_runs: Vec<BranchCiRunRecord>,
     review_mode: bool,
 ) -> anyhow::Result<DetailTemplate> {
+    render_detail_template_with_notices(record, ci_runs, review_mode, Vec::new())
+}
+
+fn render_detail_template_with_notices(
+    record: BranchDetailRecord,
+    ci_runs: Vec<BranchCiRunRecord>,
+    review_mode: bool,
+    page_notices: Vec<PageNoticeView>,
+) -> anyhow::Result<DetailTemplate> {
     let mut steps = Vec::new();
     let mut executive_html = None;
     let mut media_links = Vec::new();
+    let latest_failed_lane_count = ci_runs
+        .first()
+        .map(|run| {
+            run.lanes
+                .iter()
+                .filter(|lane| lane.status == "failed")
+                .count()
+        })
+        .unwrap_or(0);
 
     if let Some(tutorial_json) = &record.tutorial_json {
         let tutorial: TutorialDoc = serde_json::from_str(tutorial_json)
@@ -682,17 +1231,33 @@ fn render_detail_template(
                 source_head_sha: run.source_head_sha,
                 status: run.status,
                 lane_count: run.lane_count,
+                rerun_of_run_id: run.rerun_of_run_id,
                 created_at: run.created_at,
                 started_at: run.started_at,
                 finished_at: run.finished_at,
                 lanes: run.lanes.into_iter().map(map_ci_lane_view).collect(),
             })
             .collect(),
+        page_notices,
+        latest_failed_lane_count,
         review_mode,
     })
 }
 
+#[cfg(test)]
 fn render_nightly_template(run: NightlyRunRecord) -> NightlyTemplate {
+    render_nightly_template_with_notices(run, Vec::new())
+}
+
+fn render_nightly_template_with_notices(
+    run: NightlyRunRecord,
+    page_notices: Vec<PageNoticeView>,
+) -> NightlyTemplate {
+    let failed_lane_count = run
+        .lanes
+        .iter()
+        .filter(|lane| lane.status == "failed")
+        .count();
     NightlyTemplate {
         page_title: format!("{} nightly #{}", run.repo, run.nightly_run_id),
         repo: run.repo,
@@ -702,10 +1267,13 @@ fn render_nightly_template(run: NightlyRunRecord) -> NightlyTemplate {
         source_ref: run.source_ref,
         source_head_sha: run.source_head_sha,
         scheduled_for: run.scheduled_for,
+        rerun_of_run_id: run.rerun_of_run_id,
         created_at: run.created_at,
         started_at: run.started_at,
         finished_at: run.finished_at,
         lanes: run.lanes.into_iter().map(map_nightly_lane_view).collect(),
+        page_notices,
+        failed_lane_count,
     }
 }
 
@@ -718,6 +1286,7 @@ fn map_ci_lane_view(lane: BranchCiLaneRecord) -> CiLaneView {
         status: lane.status,
         log_text: lane.log_text,
         retry_count: lane.retry_count,
+        rerun_of_lane_run_id: lane.rerun_of_lane_run_id,
         created_at: lane.created_at,
         started_at: lane.started_at,
         finished_at: lane.finished_at,
@@ -726,12 +1295,14 @@ fn map_ci_lane_view(lane: BranchCiLaneRecord) -> CiLaneView {
 
 fn map_nightly_lane_view(lane: NightlyLaneRecord) -> NightlyLaneView {
     NightlyLaneView {
+        id: lane.id,
         lane_id: lane.lane_id,
         title: lane.title,
         entrypoint: lane.entrypoint,
         status: lane.status,
         log_text: lane.log_text,
         retry_count: lane.retry_count,
+        rerun_of_lane_run_id: lane.rerun_of_lane_run_id,
         created_at: lane.created_at,
         started_at: lane.started_at,
         finished_at: lane.finished_at,
@@ -988,6 +1559,84 @@ async fn close_handler(
         }
         Ok(Err(err)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn rerun_branch_ci_lane_handler(
+    State(state): State<Arc<AppState>>,
+    Path((branch_id, lane_run_id)): Path<(i64, i64)>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    if let Err(resp) = require_trusted_auth(&state.auth, &headers) {
+        return resp;
+    }
+    let store = state.store.clone();
+    match tokio::task::spawn_blocking(move || store.rerun_branch_ci_lane(branch_id, lane_run_id))
+        .await
+    {
+        Ok(Ok(Some(rerun_suite_id))) => {
+            state.poll_notify.notify_one();
+            Json(serde_json::json!({
+                "status": "ok",
+                "branch_id": branch_id,
+                "rerun_suite_id": rerun_suite_id
+            }))
+            .into_response()
+        }
+        Ok(Ok(None)) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "branch lane not found"})),
+        )
+            .into_response(),
+        Ok(Err(err)) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn rerun_nightly_lane_handler(
+    State(state): State<Arc<AppState>>,
+    Path((nightly_run_id, lane_run_id)): Path<(i64, i64)>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    if let Err(resp) = require_trusted_auth(&state.auth, &headers) {
+        return resp;
+    }
+    let store = state.store.clone();
+    match tokio::task::spawn_blocking(move || store.rerun_nightly_lane(nightly_run_id, lane_run_id))
+        .await
+    {
+        Ok(Ok(Some(rerun_run_id))) => {
+            state.poll_notify.notify_one();
+            Json(serde_json::json!({
+                "status": "ok",
+                "nightly_run_id": nightly_run_id,
+                "rerun_run_id": rerun_run_id
+            }))
+            .into_response()
+        }
+        Ok(Ok(None)) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "nightly lane not found"})),
+        )
+            .into_response(),
+        Ok(Err(err)) => (
+            StatusCode::CONFLICT,
             Json(serde_json::json!({"error": err.to_string()})),
         )
             .into_response(),
@@ -1315,7 +1964,11 @@ async fn regenerate_handler(
         }
         Ok(Ok(false)) => (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "no artifact found for this PR"})),
+            Json(serde_json::json!({"error": if state.config.effective_forge_repo().is_some() {
+                "no tutorial artifact found for this branch"
+            } else {
+                "no artifact found for this PR"
+            }})),
         )
             .into_response(),
         Ok(Err(e)) => (
@@ -1729,6 +2382,107 @@ async fn api_admin_allowlist_handler(
     }
 }
 
+async fn api_admin_forge_status_handler(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let _admin_npub = match require_admin_auth(&state.auth, &headers) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+
+    let store = state.store.clone();
+    let mirror_config = state.config.clone();
+    let health_config = state.config.clone();
+    let forge_health_state = Arc::clone(&state.forge_health);
+    match tokio::task::spawn_blocking(move || mirror::get_mirror_status(&store, &mirror_config))
+        .await
+    {
+        Ok(Ok(mirror_admin)) => {
+            let forge_health = forge_health_state
+                .lock()
+                .map(|health| {
+                    let mirror_status = mirror_admin.detail.as_ref().map(|(status, _)| status);
+                    health.snapshot(&health_config, mirror_status)
+                })
+                .unwrap_or_else(|_| {
+                    ForgeHealthState::new(health_config.effective_forge_repo().is_some())
+                        .snapshot(&health_config, None)
+                });
+            let mirror_runtime = mirror_admin.runtime;
+            match mirror_admin.detail {
+                Some((mirror_status, mirror_history)) => Json(serde_json::json!({
+                    "forge_health": forge_health,
+                    "mirror_runtime": mirror_runtime,
+                    "mirror_status": mirror_status,
+                    "mirror_history": mirror_history,
+                }))
+                .into_response(),
+                None => Json(serde_json::json!({
+                    "forge_health": forge_health,
+                    "mirror_runtime": mirror_runtime,
+                    "mirror_status": null,
+                    "mirror_history": [],
+                }))
+                .into_response(),
+            }
+        }
+        Ok(Err(err)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_admin_mirror_sync_handler(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let _admin_npub = match require_admin_auth(&state.auth, &headers) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+
+    let store = state.store.clone();
+    let config = state.config.clone();
+    match tokio::task::spawn_blocking(move || mirror::run_mirror_pass(&store, &config, "manual"))
+        .await
+    {
+        Ok(Ok(result)) if result.attempted => {
+            state.poll_notify.notify_one();
+            Json(serde_json::json!({
+                "attempted": result.attempted,
+                "status": result.status,
+                "lagging_ref_count": result.lagging_ref_count,
+            }))
+            .into_response()
+        }
+        Ok(Ok(_)) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "mirror sync is unavailable; configure forge_repo.mirror_remote to enable mirroring"
+            })),
+        )
+            .into_response(),
+        Ok(Err(err)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
 async fn api_admin_allowlist_upsert_handler(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
@@ -2020,26 +2774,31 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use askama::Template;
     use axum::extract::{Path, State};
-    use axum::http::StatusCode;
+    use axum::http::{header::AUTHORIZATION, HeaderMap, HeaderValue, StatusCode};
     use axum::response::IntoResponse;
     use tokio::sync::Notify;
 
     use super::{
+        build_mirror_health_status, collect_forge_startup_issues, current_forge_runtime_issues,
         inbox_review_handler, markdown_to_safe_html, render_detail_template,
-        should_backfill_managed_allowlist_entry, verify_signature, AppState,
+        render_nightly_template, rerun_branch_ci_lane_handler, rerun_nightly_lane_handler,
+        should_backfill_managed_allowlist_entry, verify_signature, AppState, ForgeHealthState,
     };
     use crate::auth::AuthState;
-    use crate::branch_store::BranchUpsertInput;
+    use crate::branch_store::{BranchUpsertInput, MirrorStatusRecord, MirrorSyncRunRecord};
     use crate::ci;
     use crate::config::{Config, ForgeRepoConfig};
     use crate::forge;
+    use crate::mirror::MirrorRuntimeStatus;
     use crate::poller;
     use crate::storage::ChatAllowlistEntry;
     use crate::storage::Store;
+
+    const TRUSTED_NPUB: &str = "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y";
 
     fn git<P: AsRef<std::path::Path>>(cwd: P, args: &[&str]) {
         let output = Command::new("git")
@@ -2074,6 +2833,7 @@ mod tests {
     fn test_state(store: Store, config: Config) -> Arc<AppState> {
         let bootstrap_admin_npubs = config.effective_bootstrap_admin_npubs();
         let legacy_allowed_npubs = config.allowed_npubs.clone();
+        let forge_mode = config.effective_forge_repo().is_some();
         Arc::new(AppState {
             auth: Arc::new(AuthState::new(
                 &bootstrap_admin_npubs,
@@ -2085,7 +2845,21 @@ mod tests {
             max_prs: 10,
             poll_notify: Arc::new(Notify::new()),
             webhook_secret: None,
+            forge_health: Arc::new(Mutex::new(ForgeHealthState::new(forge_mode))),
         })
+    }
+
+    fn trusted_headers(store: &Store, npub: &str) -> HeaderMap {
+        let token = "test-token";
+        store
+            .insert_auth_token(token, npub)
+            .expect("insert auth token");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}")).expect("auth header"),
+        );
+        headers
     }
 
     #[test]
@@ -2109,6 +2883,147 @@ mod tests {
         let header = format!("sha256={}", sig);
 
         assert!(verify_signature(secret, payload, &header));
+    }
+
+    #[test]
+    fn forge_startup_issues_surface_missing_secret_and_mirror_remote() {
+        let root = tempfile::tempdir().expect("create temp root");
+        let config = Config {
+            repos: vec!["sledtools/pika".to_string()],
+            forge_repo: Some(ForgeRepoConfig {
+                repo: "sledtools/pika".to_string(),
+                canonical_git_dir: root.path().join("pika.git").display().to_string(),
+                default_branch: "master".to_string(),
+                mirror_remote: None,
+                mirror_poll_interval_secs: None,
+                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
+                hook_url: Some("http://127.0.0.1:8788/news/webhook".to_string()),
+            }),
+            poll_interval_secs: 60,
+            model: "test-model".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            github_token_env: "GITHUB_TOKEN".to_string(),
+            merged_lookback_hours: 72,
+            worker_concurrency: 1,
+            retry_backoff_secs: 120,
+            webhook_secret_env: "PIKA_NEWS_WEBHOOK_SECRET".to_string(),
+            bind_address: "127.0.0.1".to_string(),
+            bind_port: 8787,
+            allowed_npubs: vec![],
+            bootstrap_admin_npubs: vec![],
+        };
+        let forge_repo = config.effective_forge_repo().expect("forge repo");
+        let issues = collect_forge_startup_issues(&config, &forge_repo, None);
+        let codes: Vec<&str> = issues.iter().map(|issue| issue.code.as_str()).collect();
+        assert!(codes.contains(&"webhook_secret_missing"));
+        assert!(codes.contains(&"mirror_remote_missing"));
+        assert!(!codes.contains(&"canonical_repo_unavailable"));
+    }
+
+    #[test]
+    fn forge_runtime_issues_clear_after_hook_install_recovery() {
+        let root = tempfile::tempdir().expect("create temp root");
+        let canonical = root.path().join("recovered.git");
+        let config = Config {
+            repos: vec!["sledtools/pika".to_string()],
+            forge_repo: Some(ForgeRepoConfig {
+                repo: "sledtools/pika".to_string(),
+                canonical_git_dir: canonical.display().to_string(),
+                default_branch: "master".to_string(),
+                mirror_remote: None,
+                mirror_poll_interval_secs: None,
+                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
+                hook_url: Some("http://127.0.0.1:8788/news/webhook".to_string()),
+            }),
+            poll_interval_secs: 60,
+            model: "test-model".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            github_token_env: "GITHUB_TOKEN".to_string(),
+            merged_lookback_hours: 72,
+            worker_concurrency: 1,
+            retry_backoff_secs: 120,
+            webhook_secret_env: "PIKA_NEWS_WEBHOOK_SECRET".to_string(),
+            bind_address: "127.0.0.1".to_string(),
+            bind_port: 8787,
+            allowed_npubs: vec![],
+            bootstrap_admin_npubs: vec![],
+        };
+
+        let output = Command::new("git")
+            .args([
+                "init",
+                "--bare",
+                canonical.to_str().expect("canonical path"),
+            ])
+            .output()
+            .expect("init bare repo");
+        assert!(
+            output.status.success(),
+            "git init --bare failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fs::remove_dir_all(canonical.join("hooks")).expect("remove hooks dir");
+        fs::write(canonical.join("hooks"), "blocked").expect("create blocking hooks file");
+
+        let issues = current_forge_runtime_issues(&config, Some("secret"));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.code == "hook_install_failed"));
+
+        fs::remove_file(canonical.join("hooks")).expect("remove blocking hooks file");
+
+        let issues = current_forge_runtime_issues(&config, Some("secret"));
+        assert!(!issues
+            .iter()
+            .any(|issue| issue.code == "hook_install_failed"));
+    }
+
+    #[test]
+    fn mirror_health_distinguishes_disabled_and_error_states() {
+        let disabled = build_mirror_health_status(
+            &MirrorRuntimeStatus {
+                configured: true,
+                remote_name: Some("github".to_string()),
+                background_enabled: false,
+                background_interval_secs: Some(0),
+                github_token_env: "GITHUB_TOKEN".to_string(),
+            },
+            None,
+        );
+        assert_eq!(disabled.state, "disabled");
+
+        let errored = build_mirror_health_status(
+            &MirrorRuntimeStatus {
+                configured: true,
+                remote_name: Some("github".to_string()),
+                background_enabled: true,
+                background_interval_secs: Some(300),
+                github_token_env: "GITHUB_TOKEN".to_string(),
+            },
+            Some(&MirrorStatusRecord {
+                remote_name: "github".to_string(),
+                last_attempt: Some(MirrorSyncRunRecord {
+                    id: 1,
+                    remote_name: "github".to_string(),
+                    trigger_source: "background".to_string(),
+                    status: "failed".to_string(),
+                    failure_kind: Some("config".to_string()),
+                    local_default_head: None,
+                    remote_default_head: None,
+                    lagging_ref_count: None,
+                    synced_ref_count: None,
+                    error_text: Some("boom".to_string()),
+                    created_at: "2026-03-19T10:00:00Z".to_string(),
+                    finished_at: "2026-03-19T10:00:01Z".to_string(),
+                }),
+                last_success_at: None,
+                last_failure_at: Some("2026-03-19T10:00:01Z".to_string()),
+                consecutive_failure_count: 1,
+                current_lagging_ref_count: None,
+                current_failure_kind: Some("config".to_string()),
+            }),
+        );
+        assert_eq!(errored.state, "error");
     }
 
     #[test]
@@ -2208,6 +3123,8 @@ mod tests {
                 repo: "sledtools/pika".to_string(),
                 canonical_git_dir: "/tmp/pika.git".to_string(),
                 default_branch: "master".to_string(),
+                mirror_remote: None,
+                mirror_poll_interval_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -2265,6 +3182,8 @@ mod tests {
                 repo: "sledtools/pika".to_string(),
                 canonical_git_dir: "/tmp/pika.git".to_string(),
                 default_branch: "master".to_string(),
+                mirror_remote: None,
+                mirror_poll_interval_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -2294,6 +3213,166 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("/news/inbox")
         );
+    }
+
+    #[tokio::test]
+    async fn rerun_branch_handler_rejects_lane_from_another_branch() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let first = store
+            .upsert_branch_record(&branch_upsert_input("feature/one", "head-1"))
+            .expect("insert first branch");
+        let second = store
+            .upsert_branch_record(&branch_upsert_input("feature/two", "head-2"))
+            .expect("insert second branch");
+        store
+            .queue_branch_ci_run_for_head(
+                first.branch_id,
+                "head-1",
+                &[crate::ci_manifest::ForgeLane {
+                    id: "pika".to_string(),
+                    title: "check-pika".to_string(),
+                    entrypoint: "just checks::pre-merge-pika".to_string(),
+                    command: vec!["just".to_string(), "checks::pre-merge-pika".to_string()],
+                    paths: vec![],
+                }],
+            )
+            .expect("queue branch ci");
+        let job = store
+            .claim_pending_branch_ci_lane_runs(1, 120)
+            .expect("claim branch job")
+            .into_iter()
+            .next()
+            .expect("job");
+        store
+            .finish_branch_ci_lane_run(job.lane_run_id, job.claim_token, "failed", "boom")
+            .expect("finish lane");
+
+        let config = Config {
+            repos: vec!["sledtools/pika".to_string()],
+            forge_repo: Some(ForgeRepoConfig {
+                repo: "sledtools/pika".to_string(),
+                canonical_git_dir: "/tmp/pika.git".to_string(),
+                default_branch: "master".to_string(),
+                mirror_remote: None,
+                mirror_poll_interval_secs: None,
+                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
+                hook_url: None,
+            }),
+            poll_interval_secs: 60,
+            model: "test-model".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            github_token_env: "GITHUB_TOKEN".to_string(),
+            merged_lookback_hours: 72,
+            worker_concurrency: 1,
+            retry_backoff_secs: 120,
+            webhook_secret_env: "PIKA_NEWS_WEBHOOK_SECRET".to_string(),
+            bind_address: "127.0.0.1".to_string(),
+            bind_port: 8787,
+            allowed_npubs: vec![],
+            bootstrap_admin_npubs: vec![TRUSTED_NPUB.to_string()],
+        };
+        let headers = trusted_headers(&store, TRUSTED_NPUB);
+        let state = test_state(store, config);
+        let response = rerun_branch_ci_lane_handler(
+            State(state),
+            Path((second.branch_id, job.lane_run_id)),
+            headers,
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn rerun_nightly_handler_rejects_lane_from_another_run() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let repo_id = store
+            .ensure_forge_repo_metadata(
+                "sledtools/pika",
+                "/tmp/pika.git",
+                "master",
+                "ci/forge-lanes.toml",
+            )
+            .expect("ensure repo metadata");
+        let lane = crate::ci_manifest::ForgeLane {
+            id: "nightly_pika".to_string(),
+            title: "nightly-pika".to_string(),
+            entrypoint: "just checks::nightly-pika-e2e".to_string(),
+            command: vec!["just".to_string(), "checks::nightly-pika-e2e".to_string()],
+            paths: vec![],
+        };
+        store
+            .queue_nightly_run(
+                repo_id,
+                "refs/heads/master",
+                "head-a",
+                "2026-03-17T08:00:00Z",
+                std::slice::from_ref(&lane),
+            )
+            .expect("queue first nightly");
+        store
+            .queue_nightly_run(
+                repo_id,
+                "refs/heads/master",
+                "head-b",
+                "2026-03-18T08:00:00Z",
+                std::slice::from_ref(&lane),
+            )
+            .expect("queue second nightly");
+        let job = store
+            .claim_pending_nightly_lane_runs(1, 120)
+            .expect("claim nightly job")
+            .into_iter()
+            .next()
+            .expect("job");
+        store
+            .finish_nightly_lane_run(job.lane_run_id, job.claim_token, "failed", "boom")
+            .expect("finish lane");
+        let wrong_nightly = store
+            .list_recent_nightly_runs(8)
+            .expect("list nightly runs")
+            .into_iter()
+            .find(|run| run.nightly_run_id != job.nightly_run_id)
+            .expect("other nightly");
+
+        let config = Config {
+            repos: vec!["sledtools/pika".to_string()],
+            forge_repo: Some(ForgeRepoConfig {
+                repo: "sledtools/pika".to_string(),
+                canonical_git_dir: "/tmp/pika.git".to_string(),
+                default_branch: "master".to_string(),
+                mirror_remote: None,
+                mirror_poll_interval_secs: None,
+                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
+                hook_url: None,
+            }),
+            poll_interval_secs: 60,
+            model: "test-model".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            github_token_env: "GITHUB_TOKEN".to_string(),
+            merged_lookback_hours: 72,
+            worker_concurrency: 1,
+            retry_backoff_secs: 120,
+            webhook_secret_env: "PIKA_NEWS_WEBHOOK_SECRET".to_string(),
+            bind_address: "127.0.0.1".to_string(),
+            bind_port: 8787,
+            allowed_npubs: vec![],
+            bootstrap_admin_npubs: vec![TRUSTED_NPUB.to_string()],
+        };
+        let headers = trusted_headers(&store, TRUSTED_NPUB);
+        let state = test_state(store, config);
+        let response = rerun_nightly_lane_handler(
+            State(state),
+            Path((wrong_nightly.nightly_run_id, job.lane_run_id)),
+            headers,
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]
@@ -2358,6 +3437,8 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
                 repo: "sledtools/pika".to_string(),
                 canonical_git_dir: bare.to_str().expect("bare path").to_string(),
                 default_branch: "master".to_string(),
+                mirror_remote: None,
+                mirror_poll_interval_secs: None,
                 ci_command: vec!["./ci.sh".to_string()],
                 hook_url: Some("http://127.0.0.1:9999/news/webhook".to_string()),
             }),
@@ -2442,5 +3523,109 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
         assert!(rendered.contains("feature/render-history"));
         assert!(rendered.contains("branch-ci-ok"));
         assert!(rendered.contains("merge commit"));
+    }
+
+    #[test]
+    fn branch_detail_renders_manual_rerun_provenance() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let branch = store
+            .upsert_branch_record(&branch_upsert_input("feature/rerun-ui", "head-rerun"))
+            .expect("insert branch");
+        store
+            .queue_branch_ci_run_for_head(
+                branch.branch_id,
+                "head-rerun",
+                &[crate::ci_manifest::ForgeLane {
+                    id: "pika".to_string(),
+                    title: "check-pika".to_string(),
+                    entrypoint: "just checks::pre-merge-pika".to_string(),
+                    command: vec!["just".to_string(), "checks::pre-merge-pika".to_string()],
+                    paths: vec![],
+                }],
+            )
+            .expect("queue ci");
+        let failed = store
+            .claim_pending_branch_ci_lane_runs(1, 120)
+            .expect("claim ci")
+            .into_iter()
+            .next()
+            .expect("ci lane");
+        store
+            .finish_branch_ci_lane_run(failed.lane_run_id, failed.claim_token, "failed", "boom")
+            .expect("finish ci");
+        store
+            .rerun_branch_ci_lane(branch.branch_id, failed.lane_run_id)
+            .expect("rerun ci")
+            .expect("rerun suite");
+
+        let detail = store
+            .get_branch_detail(branch.branch_id)
+            .expect("branch detail")
+            .expect("detail");
+        let ci_runs = store
+            .list_branch_ci_runs(branch.branch_id, 8)
+            .expect("branch ci runs");
+        let rendered = render_detail_template(detail, ci_runs, false)
+            .expect("render detail template")
+            .render()
+            .expect("render detail html");
+        assert!(rendered.contains("manual rerun of run #"));
+        assert!(rendered.contains("manual rerun of lane #"));
+    }
+
+    #[test]
+    fn nightly_page_renders_manual_rerun_provenance() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let repo_id = store
+            .ensure_forge_repo_metadata(
+                "sledtools/pika",
+                "/tmp/pika.git",
+                "master",
+                "ci/forge-lanes.toml",
+            )
+            .expect("ensure repo metadata");
+        let lane = crate::ci_manifest::ForgeLane {
+            id: "nightly_pika".to_string(),
+            title: "nightly-pika".to_string(),
+            entrypoint: "just checks::nightly-pika-e2e".to_string(),
+            command: vec!["just".to_string(), "checks::nightly-pika-e2e".to_string()],
+            paths: vec![],
+        };
+        store
+            .queue_nightly_run(
+                repo_id,
+                "refs/heads/master",
+                "nightly-head",
+                "2026-03-19T08:00:00Z",
+                std::slice::from_ref(&lane),
+            )
+            .expect("queue nightly");
+        let failed = store
+            .claim_pending_nightly_lane_runs(1, 120)
+            .expect("claim nightly")
+            .into_iter()
+            .next()
+            .expect("nightly lane");
+        store
+            .finish_nightly_lane_run(failed.lane_run_id, failed.claim_token, "failed", "boom")
+            .expect("finish nightly");
+        let rerun_run_id = store
+            .rerun_nightly_lane(failed.nightly_run_id, failed.lane_run_id)
+            .expect("rerun nightly")
+            .expect("rerun run");
+
+        let run = store
+            .get_nightly_run(rerun_run_id)
+            .expect("nightly detail")
+            .expect("nightly run");
+        let rendered = render_nightly_template(run)
+            .render()
+            .expect("render nightly html");
+        assert!(rendered.contains("manual rerun of nightly #"));
+        assert!(rendered.contains("manual rerun of lane #"));
     }
 }

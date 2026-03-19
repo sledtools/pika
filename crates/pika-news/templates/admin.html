@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Admin - pika-news{% endblock %}
+{% block title %}Forge Admin - pika-news{% endblock %}
 
 {% block styles %}
       .shell { max-width: 980px; margin: 0 auto; padding: 2rem 1rem; }
@@ -10,6 +10,7 @@
       .status { margin-top: 0.75rem; font-size: 0.9rem; color: var(--text-secondary); }
       .error { color: #b91c1c; }
       .success { color: #166534; }
+      .warning { color: #92400e; }
       form { display: grid; gap: 0.75rem; }
       label { display: grid; gap: 0.3rem; font-size: 0.92rem; }
       input[type=text] { width: 100%; padding: 0.65rem 0.75rem; border-radius: 10px; border: 1px solid var(--input-border); background: var(--surface-solid); color: var(--text); }
@@ -23,11 +24,26 @@
       th { font-size: 0.82rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
       td code { font-size: 0.82rem; }
       .empty { color: var(--text-muted); padding: 1rem 0; }
+      .mirror-history { display: grid; gap: 0.75rem; margin-top: 1rem; }
+      .mirror-event { border: 1px solid var(--border); border-radius: 12px; padding: 0.85rem; background: var(--surface); }
+      .mirror-meta { display: flex; gap: 0.75rem; flex-wrap: wrap; color: var(--text-muted); font-size: 0.9rem; margin-top: 0.45rem; }
+      .mirror-error { white-space: pre-wrap; margin-top: 0.6rem; font-size: 0.9rem; }
+      .health-grid { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); margin-top: 0.75rem; }
+      .health-card { border: 1px solid var(--border); border-radius: 12px; padding: 0.85rem; background: var(--surface-solid); }
+      .health-card h3 { margin: 0 0 0.45rem; font-size: 0.95rem; }
+      .health-card p { margin: 0.25rem 0; font-size: 0.88rem; }
+      .health-state { display: inline-block; padding: 0.12rem 0.5rem; border-radius: 999px; border: 1px solid var(--border); font-size: 0.78rem; text-transform: lowercase; }
+      .health-state.active { color: #166534; border-color: #16653455; }
+      .health-state.idle { color: var(--text-secondary); }
+      .health-state.disabled { color: #92400e; border-color: #92400e55; }
+      .health-state.error { color: #b91c1c; border-color: #b91c1c55; }
+      .issue-list { margin: 0.75rem 0 0; padding-left: 1rem; }
+      .issue-list li { margin: 0.35rem 0; }
 {% endblock %}
 
 {% block body %}
     <main class="shell">
-      <h1>Contributor Access</h1>
+      <h1>Forge Admin</h1>
 
       <div id="admin-auth" class="panel muted" style="display:none;">
         <p>Sign in with a bootstrap admin Nostr key to manage contributor access.</p>
@@ -46,14 +62,14 @@
           <div id="bootstrap-admins"></div>
         </section>
 
-        <section class="panel">
-          <h2>Config Chat Access</h2>
-          <p class="muted">These keys come from `allowed_npubs` config and keep trusted contributor access until config changes. They are not editable here.</p>
+        <section class="panel" id="legacy-allowed-section">
+          <h2>Legacy Chat Access</h2>
+          <p class="muted">These keys come from `allowed_npubs` config. They keep chat access for compatibility, but they are not the main forge write path and are not editable here.</p>
           <div id="legacy-allowed"></div>
         </section>
 
         <section class="panel">
-          <h2>Add Or Update User</h2>
+          <h2>Add Or Update Contributor</h2>
           <form id="allowlist-form">
             <label>
               Npub or hex pubkey
@@ -97,6 +113,22 @@
             <tbody id="allowlist-rows"></tbody>
           </table>
         </section>
+
+        <section class="panel">
+          <h2>Forge Health</h2>
+          <p class="muted">Use this first during deploy and manual testing. It shows whether the hosted forge loop is alive and whether required forge wiring is missing.</p>
+          <div id="forge-health" class="status">Loading forge health...</div>
+        </section>
+
+        <section class="panel">
+          <h2>GitHub Mirror</h2>
+          <p class="muted">git.pikachat.org is canonical. GitHub is a mirror and advisory CI surface.</p>
+          <div class="btn-row">
+            <button class="secondary-btn" id="mirror-sync-btn" type="button">Sync Mirror Now</button>
+          </div>
+          <div id="mirror-status" class="status">Loading mirror status...</div>
+          <div id="mirror-history" class="mirror-history"></div>
+        </section>
       </div>
     </main>
 {% endblock %}
@@ -109,6 +141,7 @@
         var loadingEl = document.getElementById('admin-loading');
         var contentEl = document.getElementById('admin-content');
         var bootstrapEl = document.getElementById('bootstrap-admins');
+        var legacyAllowedSectionEl = document.getElementById('legacy-allowed-section');
         var legacyAllowedEl = document.getElementById('legacy-allowed');
         var statusEl = document.getElementById('admin-status');
         var formEl = document.getElementById('allowlist-form');
@@ -120,6 +153,10 @@
         var tableEl = document.getElementById('allowlist-table');
         var emptyEl = document.getElementById('allowlist-empty');
         var rowsEl = document.getElementById('allowlist-rows');
+        var forgeHealthEl = document.getElementById('forge-health');
+        var mirrorStatusEl = document.getElementById('mirror-status');
+        var mirrorHistoryEl = document.getElementById('mirror-history');
+        var mirrorSyncBtn = document.getElementById('mirror-sync-btn');
 
         function getToken() {
           return window.pikaAuth && window.pikaAuth.getToken();
@@ -161,12 +198,74 @@
 
         function renderLegacyAllowed(npubs) {
           if (!npubs || npubs.length === 0) {
-            legacyAllowedEl.innerHTML = '<p class="muted">No legacy config trusted contributors configured.</p>';
+            legacyAllowedSectionEl.style.display = 'none';
             return;
           }
+          legacyAllowedSectionEl.style.display = '';
           legacyAllowedEl.innerHTML = npubs.map(function (npub) {
             return '<p><code>' + escapeHtml(npub) + '</code></p>';
           }).join('');
+        }
+
+        function statusTone(state) {
+          if (state === 'active') return 'active';
+          if (state === 'error') return 'error';
+          if (state === 'disabled') return 'disabled';
+          return 'idle';
+        }
+
+        function renderForgeSubsystemCard(title, subsystem, extraLines) {
+          var state = subsystem && subsystem.state ? subsystem.state : 'idle';
+          var lines = [];
+          if (subsystem && subsystem.summary) lines.push(escapeHtml(subsystem.summary));
+          if (subsystem && subsystem.last_checked_at) lines.push('last check ' + escapeHtml(subsystem.last_checked_at));
+          if (subsystem && subsystem.last_activity_at) lines.push('last activity ' + escapeHtml(subsystem.last_activity_at));
+          if (subsystem && subsystem.last_error_at) lines.push('last error ' + escapeHtml(subsystem.last_error_at));
+          (extraLines || []).forEach(function (line) {
+            if (line) lines.push(line);
+          });
+          return '' +
+            '<div class="health-card">' +
+              '<h3>' + escapeHtml(title) + '</h3>' +
+              '<span class="health-state ' + statusTone(state) + '">' + escapeHtml(state) + '</span>' +
+              lines.map(function (line) {
+                return '<p>' + line + '</p>';
+              }).join('') +
+            '</div>';
+        }
+
+        function renderForgeHealth(health) {
+          if (!health || !health.enabled) {
+            forgeHealthEl.className = 'status muted';
+            forgeHealthEl.innerHTML = 'Forge mode is disabled for this runtime.';
+            return;
+          }
+
+          var issuesHtml = '';
+          if (health.issues && health.issues.length > 0) {
+            issuesHtml = '<ul class="issue-list">' + health.issues.map(function (issue) {
+              return '<li class="' + escapeHtml(issue.severity || 'warning') + '">' +
+                '<strong>' + escapeHtml(issue.severity || 'warning') + '</strong>: ' + escapeHtml(issue.message || '') +
+              '</li>';
+            }).join('') + '</ul>';
+          }
+
+          var mirror = health.mirror || {};
+          var mirrorLines = [];
+          if (mirror.summary) mirrorLines.push(escapeHtml(mirror.summary));
+          if (mirror.background_interval_secs) mirrorLines.push('background interval ' + escapeHtml(String(mirror.background_interval_secs)) + 's');
+          if (mirror.last_success_at) mirrorLines.push('last success ' + escapeHtml(mirror.last_success_at));
+          if (mirror.last_failure_at) mirrorLines.push('last failure ' + escapeHtml(mirror.last_failure_at));
+
+          forgeHealthEl.className = 'status';
+          forgeHealthEl.innerHTML =
+            issuesHtml +
+            '<div class="health-grid">' +
+              renderForgeSubsystemCard('Poller', health.poller || {}, []) +
+              renderForgeSubsystemCard('Generation Worker', health.generation_worker || {}, []) +
+              renderForgeSubsystemCard('CI Runner', health.ci || {}, []) +
+              renderForgeSubsystemCard('Mirror Background', mirror, mirrorLines) +
+            '</div>';
         }
 
         function renderEntries(entries) {
@@ -209,6 +308,149 @@
           return div.innerHTML;
         }
 
+        function formatMirrorStatus(runtime, status) {
+          if (!runtime || !runtime.configured) {
+            return {
+              html: 'Mirror not configured. Set <code>forge_repo.mirror_remote</code> to enable GitHub mirroring.',
+              className: 'status muted'
+            };
+          }
+          var remoteName = escapeHtml(runtime.remote_name || (status && status.remote_name) || 'unknown');
+          if (!runtime.background_enabled) {
+            if (status && status.last_attempt) {
+              return {
+                html:
+                  'Mirror remote <code>' + remoteName + '</code> is configured, but background sync is disabled. ' +
+                  'Recent status reflects manual sync attempts only.<br />' +
+                  'last success ' + escapeHtml(status.last_success_at || 'never') + ' · ' +
+                  'last failure ' + escapeHtml(status.last_failure_at || 'none') + ' · ' +
+                  'consecutive failures <strong>' + escapeHtml(String(status.consecutive_failure_count || 0)) + '</strong>',
+                className: 'status warning'
+              };
+            }
+            return {
+              html:
+                'Mirror remote <code>' + remoteName + '</code> is configured, but background sync is disabled. ' +
+                'Manual sync is still available. Set <code>forge_repo.mirror_poll_interval_secs</code> to a value above 0 to re-enable background sync.',
+              className: 'status warning'
+            };
+          }
+          if (!status || !status.last_attempt) {
+            return {
+              html:
+                'Mirror remote <code>' + remoteName + '</code> is configured and background sync is enabled. ' +
+                'No sync attempts recorded yet. Background interval: <strong>' + escapeHtml(String(runtime.background_interval_secs || 0)) + 's</strong>.',
+              className: 'status muted'
+            };
+          }
+
+          var lastAttempt = status.last_attempt;
+          var backgroundState = status.current_failure_kind === 'config'
+            ? 'background sync enabled but blocked by config or credentials'
+            : (lastAttempt.status === 'failed'
+              ? 'background sync enabled but currently failing'
+              : 'background sync enabled');
+          var stateClass = status.current_failure_kind === 'config'
+            ? 'error'
+            : (lastAttempt.status === 'failed'
+              ? 'error'
+              : ((status.current_lagging_ref_count || 0) > 0 ? 'warning' : 'success'));
+          var remoteHead = lastAttempt.remote_default_head || 'missing';
+          var localHead = lastAttempt.local_default_head || 'missing';
+          var lagText = (status.current_lagging_ref_count || 0) > 0
+            ? ('lagging on <strong>' + escapeHtml(String(status.current_lagging_ref_count || 0)) + '</strong> ref(s)')
+            : 'in sync';
+          var configHelp = status.current_failure_kind === 'config'
+            ? ('<br />Check mirror remote configuration and credentials in <code>' + escapeHtml(runtime.github_token_env) + '</code>.')
+            : '';
+          return {
+            className: 'status ' + stateClass,
+            html:
+              'remote <code>' + escapeHtml(status.remote_name) + '</code> · ' +
+              backgroundState + ' · ' +
+              'last attempt <strong>' + escapeHtml(lastAttempt.status) + '</strong> at ' + escapeHtml(lastAttempt.finished_at || lastAttempt.created_at || 'unknown') + ' · ' +
+              lagText + '<br />' +
+              'last success ' + escapeHtml(status.last_success_at || 'never') + ' · ' +
+              'last failure ' + escapeHtml(status.last_failure_at || 'none') + ' · ' +
+              'consecutive failures <strong>' + escapeHtml(String(status.consecutive_failure_count || 0)) + '</strong><br />' +
+              'canonical ' + escapeHtml(localHead) + ' · mirror ' + escapeHtml(remoteHead) +
+              configHelp
+          };
+        }
+
+        function renderMirrorStatus(runtime, status, history) {
+          mirrorSyncBtn.disabled = !runtime || !runtime.configured;
+          var rendered = formatMirrorStatus(runtime, status);
+          mirrorStatusEl.className = rendered.className;
+          mirrorStatusEl.innerHTML = rendered.html;
+
+          if (!history || history.length === 0) {
+            mirrorHistoryEl.innerHTML = '<div class="empty">No mirror sync attempts recorded yet.</div>';
+            return;
+          }
+
+          mirrorHistoryEl.innerHTML = history.map(function (run) {
+            var stateClass = run.failure_kind === 'config'
+              ? 'error'
+              : (run.status === 'failed'
+              ? 'error'
+              : ((run.lagging_ref_count || 0) > 0 ? 'warning' : 'success'));
+            var errorBlock = run.error_text
+              ? '<div class="mirror-error ' + stateClass + '">' + escapeHtml(run.error_text) + '</div>'
+              : '';
+            var failureMeta = run.failure_kind
+              ? '<span>failure kind ' + escapeHtml(run.failure_kind) + '</span>'
+              : '';
+            return '' +
+              '<div class="mirror-event">' +
+                '<div><strong>' + escapeHtml(run.status) + '</strong> · ' + escapeHtml(run.trigger_source) + '</div>' +
+                '<div class="mirror-meta">' +
+                  '<span>created ' + escapeHtml(run.created_at || '') + '</span>' +
+                  '<span>finished ' + escapeHtml(run.finished_at || '') + '</span>' +
+                  '<span>lagging refs ' + escapeHtml(String(run.lagging_ref_count || 0)) + '</span>' +
+                  '<span>synced refs ' + escapeHtml(String(run.synced_ref_count || 0)) + '</span>' +
+                  failureMeta +
+                '</div>' +
+                '<div class="mirror-meta">' +
+                  '<span>canonical ' + escapeHtml(run.local_default_head || 'missing') + '</span>' +
+                  '<span>mirror ' + escapeHtml(run.remote_default_head || 'missing') + '</span>' +
+                '</div>' +
+                errorBlock +
+              '</div>';
+          }).join('');
+        }
+
+        async function loadMirrorStatus(token) {
+          mirrorStatusEl.className = 'status muted';
+          mirrorStatusEl.textContent = 'Loading mirror status...';
+          mirrorHistoryEl.innerHTML = '';
+          try {
+            var res = await fetch('/news/api/admin/forge-status', {
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            if (res.status === 401) {
+              clearAuth();
+              loadAdminPage();
+              return;
+            }
+            if (res.status === 403) {
+              forbiddenEl.style.display = '';
+              contentEl.style.display = 'none';
+              return;
+            }
+            var data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Failed to load mirror status');
+            renderForgeHealth(data.forge_health);
+            renderMirrorStatus(data.mirror_runtime, data.mirror_status, data.mirror_history);
+          } catch (e) {
+            forgeHealthEl.className = 'status error';
+            forgeHealthEl.textContent = e.message;
+            mirrorStatusEl.className = 'status error';
+            mirrorStatusEl.textContent = e.message;
+            mirrorHistoryEl.innerHTML = '';
+          }
+        }
+
         async function loadAdminPage() {
           var token = getToken();
           if (!token) {
@@ -243,11 +485,48 @@
             renderBootstrapAdmins(data.bootstrap_admin_npubs || []);
             renderLegacyAllowed(data.legacy_allowed_npubs || []);
             renderEntries(data.entries || []);
+            loadMirrorStatus(token);
             loadingEl.style.display = 'none';
             contentEl.style.display = '';
           } catch (e) {
             loadingEl.style.display = 'none';
             showStatus(e.message, false);
+          }
+        }
+
+        async function syncMirror() {
+          var token = getToken();
+          if (!token) {
+            loadAdminPage();
+            return;
+          }
+          mirrorSyncBtn.disabled = true;
+          mirrorStatusEl.className = 'status muted';
+          mirrorStatusEl.textContent = 'Syncing mirror...';
+          try {
+            var res = await fetch('/news/api/admin/mirror/sync', {
+              method: 'POST',
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            if (res.status === 401) {
+              clearAuth();
+              loadAdminPage();
+              return;
+            }
+            if (res.status === 403) {
+              forbiddenEl.style.display = '';
+              contentEl.style.display = 'none';
+              return;
+            }
+            var data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Mirror sync failed');
+            await loadMirrorStatus(token);
+            showStatus('Mirror sync completed.', true);
+          } catch (e) {
+            mirrorStatusEl.className = 'status error';
+            mirrorStatusEl.textContent = e.message;
+          } finally {
+            mirrorSyncBtn.disabled = false;
           }
         }
 
@@ -302,6 +581,7 @@
         });
 
         resetEl.addEventListener('click', resetForm);
+        mirrorSyncBtn.addEventListener('click', syncMirror);
 
         if (window.pikaAuth && window.pikaAuth.isAuthed()) {
           loadAdminPage();

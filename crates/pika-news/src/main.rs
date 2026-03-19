@@ -7,6 +7,7 @@ mod config;
 mod forge;
 mod github;
 mod local;
+mod mirror;
 mod model;
 mod poller;
 mod render;

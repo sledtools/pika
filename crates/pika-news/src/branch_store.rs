@@ -1,4 +1,5 @@
 use anyhow::{bail, Context};
+use chrono::{SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use crate::ci_manifest::ForgeLane;
@@ -82,6 +83,7 @@ pub struct BranchCiRunRecord {
     pub source_head_sha: String,
     pub status: String,
     pub lane_count: usize,
+    pub rerun_of_run_id: Option<i64>,
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
@@ -97,6 +99,7 @@ pub struct BranchCiLaneRecord {
     pub status: String,
     pub log_text: Option<String>,
     pub retry_count: i64,
+    pub rerun_of_lane_run_id: Option<i64>,
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
@@ -136,6 +139,7 @@ pub struct NightlyRunRecord {
     pub status: String,
     pub summary: Option<String>,
     pub scheduled_for: String,
+    pub rerun_of_run_id: Option<i64>,
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
@@ -144,12 +148,14 @@ pub struct NightlyRunRecord {
 
 #[derive(Debug, Clone)]
 pub struct NightlyLaneRecord {
+    pub id: i64,
     pub lane_id: String,
     pub title: String,
     pub entrypoint: String,
     pub status: String,
     pub log_text: Option<String>,
     pub retry_count: i64,
+    pub rerun_of_lane_run_id: Option<i64>,
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
@@ -163,6 +169,73 @@ pub struct PendingNightlyLaneJob {
     pub source_head_sha: String,
     pub lane_id: String,
     pub command: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MirrorSyncRunRecord {
+    pub id: i64,
+    pub remote_name: String,
+    pub trigger_source: String,
+    pub status: String,
+    pub failure_kind: Option<String>,
+    pub local_default_head: Option<String>,
+    pub remote_default_head: Option<String>,
+    pub lagging_ref_count: Option<i64>,
+    pub synced_ref_count: Option<i64>,
+    pub error_text: Option<String>,
+    pub created_at: String,
+    pub finished_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MirrorStatusRecord {
+    pub remote_name: String,
+    pub last_attempt: Option<MirrorSyncRunRecord>,
+    pub last_success_at: Option<String>,
+    pub last_failure_at: Option<String>,
+    pub consecutive_failure_count: i64,
+    pub current_lagging_ref_count: Option<i64>,
+    pub current_failure_kind: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MirrorSyncRunInput {
+    pub repo: String,
+    pub canonical_git_dir: String,
+    pub default_branch: String,
+    pub remote_name: String,
+    pub trigger_source: String,
+    pub status: String,
+    pub local_default_head: Option<String>,
+    pub remote_default_head: Option<String>,
+    pub lagging_ref_count: Option<i64>,
+    pub synced_ref_count: Option<i64>,
+    pub error_text: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct BranchLaneRerunSource {
+    original_run_id: i64,
+    branch_id: i64,
+    source_head_sha: String,
+    lane_id: String,
+    title: String,
+    entrypoint: String,
+    command_json: String,
+    status: String,
+}
+
+#[derive(Debug, Clone)]
+struct NightlyLaneRerunSource {
+    original_run_id: i64,
+    repo_id: i64,
+    source_ref: String,
+    source_head_sha: String,
+    lane_id: String,
+    title: String,
+    entrypoint: String,
+    command_json: String,
+    status: String,
 }
 
 #[derive(Debug, Clone)]
@@ -487,7 +560,7 @@ impl Store {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, source_head_sha, status, created_at, started_at, finished_at
+                    "SELECT id, source_head_sha, status, rerun_of_run_id, created_at, started_at, finished_at
                      FROM branch_ci_runs
                      WHERE branch_id = ?1
                      ORDER BY id DESC
@@ -500,17 +573,25 @@ impl Store {
                         row.get::<_, i64>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, String>(4)?,
                         row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
                     ))
                 })
                 .context("query branch ci runs")?;
 
             let mut runs = Vec::new();
             for row in rows {
-                let (run_id, source_head_sha, status, created_at, started_at, finished_at) =
-                    row.context("read branch ci run row")?;
+                let (
+                    run_id,
+                    source_head_sha,
+                    status,
+                    rerun_of_run_id,
+                    created_at,
+                    started_at,
+                    finished_at,
+                ) = row.context("read branch ci run row")?;
                 let lanes = list_branch_ci_run_lanes(conn, run_id)?;
                 let lane_count = lanes.len();
                 runs.push(BranchCiRunRecord {
@@ -518,6 +599,7 @@ impl Store {
                     source_head_sha,
                     status,
                     lane_count,
+                    rerun_of_run_id,
                     created_at,
                     started_at,
                     finished_at,
@@ -693,7 +775,7 @@ impl Store {
         self.with_connection(|conn| {
             let row = conn
                 .query_row(
-                    "SELECT nr.id, r.repo, nr.source_ref, nr.source_head_sha, nr.status, nr.summary, nr.scheduled_for, nr.created_at, nr.started_at, nr.finished_at
+                    "SELECT nr.id, r.repo, nr.source_ref, nr.source_head_sha, nr.status, nr.summary, nr.scheduled_for, nr.rerun_of_run_id, nr.created_at, nr.started_at, nr.finished_at
                      FROM nightly_runs nr
                      JOIN repos r ON r.id = nr.repo_id
                      WHERE nr.id = ?1",
@@ -707,15 +789,16 @@ impl Store {
                             row.get::<_, String>(4)?,
                             row.get::<_, Option<String>>(5)?,
                             row.get::<_, String>(6)?,
-                            row.get::<_, String>(7)?,
-                            row.get::<_, Option<String>>(8)?,
+                            row.get::<_, Option<i64>>(7)?,
+                            row.get::<_, String>(8)?,
                             row.get::<_, Option<String>>(9)?,
+                            row.get::<_, Option<String>>(10)?,
                         ))
                     },
                 )
                 .optional()
                 .context("query nightly run detail")?;
-            let Some((id, repo, source_ref, source_head_sha, status, summary, scheduled_for, created_at, started_at, finished_at)) = row else {
+            let Some((id, repo, source_ref, source_head_sha, status, summary, scheduled_for, rerun_of_run_id, created_at, started_at, finished_at)) = row else {
                 return Ok(None);
             };
             let lanes = list_nightly_run_lanes(conn, id)?;
@@ -727,6 +810,7 @@ impl Store {
                 status,
                 summary,
                 scheduled_for,
+                rerun_of_run_id,
                 created_at,
                 started_at,
                 finished_at,
@@ -790,6 +874,367 @@ impl Store {
             }
             tx.commit().context("commit queue nightly transaction")?;
             Ok(true)
+        })
+    }
+
+    pub fn rerun_branch_ci_lane(
+        &self,
+        branch_id: i64,
+        lane_run_id: i64,
+    ) -> anyhow::Result<Option<i64>> {
+        self.with_connection(|conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .context("start rerun branch ci lane transaction")?;
+            let row: Option<BranchLaneRerunSource> = tx
+                .query_row(
+                    "SELECT lane.branch_ci_run_id,
+                            suite.branch_id,
+                            suite.source_head_sha,
+                            lane.lane_id,
+                            lane.title,
+                            lane.entrypoint,
+                            lane.command_json,
+                            lane.status
+                     FROM branch_ci_run_lanes lane
+                     JOIN branch_ci_runs suite ON suite.id = lane.branch_ci_run_id
+                     WHERE lane.id = ?1 AND suite.branch_id = ?2",
+                    params![lane_run_id, branch_id],
+                    |row| {
+                        Ok(BranchLaneRerunSource {
+                            original_run_id: row.get(0)?,
+                            branch_id: row.get(1)?,
+                            source_head_sha: row.get(2)?,
+                            lane_id: row.get(3)?,
+                            title: row.get(4)?,
+                            entrypoint: row.get(5)?,
+                            command_json: row.get(6)?,
+                            status: row.get(7)?,
+                        })
+                    },
+                )
+                .optional()
+                .context("lookup branch ci lane for rerun")?;
+            let Some(row) = row else {
+                return Ok(None);
+            };
+            if matches!(row.status.as_str(), "queued" | "running") {
+                bail!("lane {} is still {}", row.lane_id, row.status);
+            }
+
+            tx.execute(
+                "INSERT INTO branch_ci_runs(
+                    branch_id,
+                    source_head_sha,
+                    entrypoint,
+                    command_json,
+                    status,
+                    log_text,
+                    rerun_of_run_id
+                 ) VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6)",
+                params![
+                    row.branch_id,
+                    row.source_head_sha,
+                    "manual-rerun",
+                    serde_json::to_string(&vec![row.lane_id.clone()])
+                        .context("serialize rerun branch lane id")?,
+                    format!(
+                        "Manual rerun of lane {} from branch CI run #{}",
+                        row.lane_id, row.original_run_id
+                    ),
+                    row.original_run_id,
+                ],
+            )
+            .context("insert rerun branch ci suite")?;
+            let rerun_suite_id = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO branch_ci_run_lanes(
+                    branch_ci_run_id,
+                    lane_id,
+                    title,
+                    entrypoint,
+                    command_json,
+                    status,
+                    rerun_of_lane_run_id
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6)",
+                params![
+                    rerun_suite_id,
+                    row.lane_id,
+                    row.title,
+                    row.entrypoint,
+                    row.command_json,
+                    lane_run_id
+                ],
+            )
+            .context("insert rerun branch ci lane")?;
+            tx.commit()
+                .context("commit rerun branch ci lane transaction")?;
+            Ok(Some(rerun_suite_id))
+        })
+    }
+
+    pub fn rerun_nightly_lane(
+        &self,
+        nightly_run_id: i64,
+        lane_run_id: i64,
+    ) -> anyhow::Result<Option<i64>> {
+        self.with_connection(|conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .context("start rerun nightly lane transaction")?;
+            let row: Option<NightlyLaneRerunSource> = tx
+                .query_row(
+                    "SELECT lane.nightly_run_id,
+                            nightly.repo_id,
+                            nightly.source_ref,
+                            nightly.source_head_sha,
+                            lane.lane_id,
+                            lane.title,
+                            lane.entrypoint,
+                            lane.command_json,
+                            lane.status
+                     FROM nightly_run_lanes lane
+                     JOIN nightly_runs nightly ON nightly.id = lane.nightly_run_id
+                     WHERE lane.id = ?1 AND nightly.id = ?2",
+                    params![lane_run_id, nightly_run_id],
+                    |row| {
+                        Ok(NightlyLaneRerunSource {
+                            original_run_id: row.get(0)?,
+                            repo_id: row.get(1)?,
+                            source_ref: row.get(2)?,
+                            source_head_sha: row.get(3)?,
+                            lane_id: row.get(4)?,
+                            title: row.get(5)?,
+                            entrypoint: row.get(6)?,
+                            command_json: row.get(7)?,
+                            status: row.get(8)?,
+                        })
+                    },
+                )
+                .optional()
+                .context("lookup nightly lane for rerun")?;
+            let Some(row) = row else {
+                return Ok(None);
+            };
+            if matches!(row.status.as_str(), "queued" | "running") {
+                bail!("lane {} is still {}", row.lane_id, row.status);
+            }
+            let scheduled_for = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+            tx.execute(
+                "INSERT INTO nightly_runs(
+                    repo_id,
+                    source_ref,
+                    source_head_sha,
+                    status,
+                    summary,
+                    scheduled_for,
+                    rerun_of_run_id
+                 ) VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6)",
+                params![
+                    row.repo_id,
+                    row.source_ref,
+                    row.source_head_sha,
+                    format!(
+                        "Manual rerun of nightly #{} lane {}",
+                        row.original_run_id, row.lane_id
+                    ),
+                    scheduled_for,
+                    row.original_run_id,
+                ],
+            )
+            .context("insert rerun nightly run")?;
+            let rerun_run_id = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO nightly_run_lanes(
+                    nightly_run_id,
+                    lane_id,
+                    title,
+                    entrypoint,
+                    command_json,
+                    status,
+                    rerun_of_lane_run_id
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6)",
+                params![
+                    rerun_run_id,
+                    row.lane_id,
+                    row.title,
+                    row.entrypoint,
+                    row.command_json,
+                    lane_run_id
+                ],
+            )
+            .context("insert rerun nightly lane")?;
+            tx.commit()
+                .context("commit rerun nightly lane transaction")?;
+            Ok(Some(rerun_run_id))
+        })
+    }
+
+    pub fn record_mirror_sync_run(&self, input: &MirrorSyncRunInput) -> anyhow::Result<i64> {
+        self.with_connection(|conn| {
+            let repo_id = ensure_repo_metadata(
+                conn,
+                &input.repo,
+                &input.canonical_git_dir,
+                &input.default_branch,
+                "ci/forge-lanes.toml",
+            )?;
+            conn.execute(
+                "INSERT INTO mirror_sync_runs(
+                    repo_id,
+                    remote_name,
+                    trigger_source,
+                    status,
+                    local_default_head,
+                    remote_default_head,
+                    lagging_ref_count,
+                    synced_ref_count,
+                    error_text
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    repo_id,
+                    &input.remote_name,
+                    &input.trigger_source,
+                    &input.status,
+                    &input.local_default_head,
+                    &input.remote_default_head,
+                    input.lagging_ref_count,
+                    input.synced_ref_count,
+                    &input.error_text,
+                ],
+            )
+            .context("insert mirror sync run")?;
+            Ok(conn.last_insert_rowid())
+        })
+    }
+
+    pub fn get_mirror_status(
+        &self,
+        repo: &str,
+        remote_name: &str,
+    ) -> anyhow::Result<Option<MirrorStatusRecord>> {
+        self.with_connection(|conn| {
+            let repo_id: Option<i64> = conn
+                .query_row(
+                    "SELECT id FROM repos WHERE repo = ?1",
+                    params![repo],
+                    |row| row.get(0),
+                )
+                .optional()
+                .context("lookup repo for mirror status")?;
+            let Some(repo_id) = repo_id else {
+                return Ok(None);
+            };
+            let last_attempt = conn
+                .query_row(
+                    "SELECT id, remote_name, trigger_source, status, local_default_head, remote_default_head,
+                            lagging_ref_count, synced_ref_count, error_text, created_at, finished_at
+                     FROM mirror_sync_runs
+                     WHERE repo_id = ?1 AND remote_name = ?2
+                     ORDER BY id DESC
+                     LIMIT 1",
+                    params![repo_id, remote_name],
+                    map_mirror_sync_row,
+                )
+                .optional()
+                .context("query last mirror attempt")?;
+            let last_success_at = conn
+                .query_row(
+                    "SELECT finished_at
+                     FROM mirror_sync_runs
+                     WHERE repo_id = ?1 AND remote_name = ?2 AND status = 'success'
+                     ORDER BY id DESC
+                     LIMIT 1",
+                    params![repo_id, remote_name],
+                    |row| row.get(0),
+                )
+                .optional()
+                .context("query last successful mirror sync")?;
+            let last_failure_at = conn
+                .query_row(
+                    "SELECT finished_at
+                     FROM mirror_sync_runs
+                     WHERE repo_id = ?1 AND remote_name = ?2 AND status = 'failed'
+                     ORDER BY id DESC
+                     LIMIT 1",
+                    params![repo_id, remote_name],
+                    |row| row.get(0),
+                )
+                .optional()
+                .context("query last failed mirror sync")?;
+            let mut recent_statuses = conn
+                .prepare(
+                    "SELECT status
+                     FROM mirror_sync_runs
+                     WHERE repo_id = ?1 AND remote_name = ?2
+                     ORDER BY id DESC
+                     LIMIT 32",
+                )
+                .context("prepare mirror status streak query")?;
+            let statuses = recent_statuses
+                .query_map(params![repo_id, remote_name], |row| row.get::<_, String>(0))
+                .context("query mirror status streak")?;
+            let mut consecutive_failure_count = 0_i64;
+            for status in statuses {
+                let status = status.context("read mirror streak row")?;
+                if status == "failed" {
+                    consecutive_failure_count += 1;
+                } else {
+                    break;
+                }
+            }
+            let current_lagging_ref_count = last_attempt.as_ref().and_then(|run| run.lagging_ref_count);
+            let current_failure_kind = last_attempt
+                .as_ref()
+                .and_then(|run| run.failure_kind.clone());
+            Ok(Some(MirrorStatusRecord {
+                remote_name: remote_name.to_string(),
+                last_attempt,
+                last_success_at,
+                last_failure_at,
+                consecutive_failure_count,
+                current_lagging_ref_count,
+                current_failure_kind,
+            }))
+        })
+    }
+
+    pub fn list_recent_mirror_sync_runs(
+        &self,
+        repo: &str,
+        remote_name: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<MirrorSyncRunRecord>> {
+        self.with_connection(|conn| {
+            let repo_id: Option<i64> = conn
+                .query_row(
+                    "SELECT id FROM repos WHERE repo = ?1",
+                    params![repo],
+                    |row| row.get(0),
+                )
+                .optional()
+                .context("lookup repo for mirror run list")?;
+            let Some(repo_id) = repo_id else {
+                return Ok(Vec::new());
+            };
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, remote_name, trigger_source, status, local_default_head, remote_default_head,
+                            lagging_ref_count, synced_ref_count, error_text, created_at, finished_at
+                     FROM mirror_sync_runs
+                     WHERE repo_id = ?1 AND remote_name = ?2
+                     ORDER BY id DESC
+                     LIMIT ?3",
+                )
+                .context("prepare mirror run list query")?;
+            let rows = stmt
+                .query_map(params![repo_id, remote_name, limit as i64], map_mirror_sync_row)
+                .context("query mirror run rows")?;
+            let mut runs = Vec::new();
+            for row in rows {
+                runs.push(row.context("read mirror run row")?);
+            }
+            Ok(runs)
         })
     }
 
@@ -1515,7 +1960,7 @@ fn list_branch_ci_run_lanes(
 ) -> anyhow::Result<Vec<BranchCiLaneRecord>> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, lane_id, title, entrypoint, status, log_text, retry_count, created_at, started_at, finished_at
+            "SELECT id, lane_id, title, entrypoint, status, log_text, retry_count, rerun_of_lane_run_id, created_at, started_at, finished_at
              FROM branch_ci_run_lanes
              WHERE branch_ci_run_id = ?1
              ORDER BY id ASC",
@@ -1531,9 +1976,10 @@ fn list_branch_ci_run_lanes(
                 status: row.get(4)?,
                 log_text: row.get(5)?,
                 retry_count: row.get(6)?,
-                created_at: row.get(7)?,
-                started_at: row.get(8)?,
-                finished_at: row.get(9)?,
+                rerun_of_lane_run_id: row.get(7)?,
+                created_at: row.get(8)?,
+                started_at: row.get(9)?,
+                finished_at: row.get(10)?,
             })
         })
         .context("query branch ci lane rows")?;
@@ -1550,7 +1996,7 @@ fn list_nightly_run_lanes(
 ) -> anyhow::Result<Vec<NightlyLaneRecord>> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, lane_id, title, entrypoint, status, log_text, retry_count, created_at, started_at, finished_at
+            "SELECT id, lane_id, title, entrypoint, status, log_text, retry_count, rerun_of_lane_run_id, created_at, started_at, finished_at
              FROM nightly_run_lanes
              WHERE nightly_run_id = ?1
              ORDER BY id ASC",
@@ -1559,15 +2005,17 @@ fn list_nightly_run_lanes(
     let rows = stmt
         .query_map(params![nightly_run_id], |row| {
             Ok(NightlyLaneRecord {
+                id: row.get(0)?,
                 lane_id: row.get(1)?,
                 title: row.get(2)?,
                 entrypoint: row.get(3)?,
                 status: row.get(4)?,
                 log_text: row.get(5)?,
                 retry_count: row.get(6)?,
-                created_at: row.get(7)?,
-                started_at: row.get(8)?,
-                finished_at: row.get(9)?,
+                rerun_of_lane_run_id: row.get(7)?,
+                created_at: row.get(8)?,
+                started_at: row.get(9)?,
+                finished_at: row.get(10)?,
             })
         })
         .context("query nightly lane rows")?;
@@ -1576,6 +2024,50 @@ fn list_nightly_run_lanes(
         lanes.push(row.context("read nightly lane row")?);
     }
     Ok(lanes)
+}
+
+fn map_mirror_sync_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MirrorSyncRunRecord> {
+    let status: String = row.get(3)?;
+    let error_text: Option<String> = row.get(8)?;
+    Ok(MirrorSyncRunRecord {
+        id: row.get(0)?,
+        remote_name: row.get(1)?,
+        trigger_source: row.get(2)?,
+        failure_kind: classify_mirror_failure_kind(&status, error_text.as_deref())
+            .map(str::to_string),
+        status,
+        local_default_head: row.get(4)?,
+        remote_default_head: row.get(5)?,
+        lagging_ref_count: row.get(6)?,
+        synced_ref_count: row.get(7)?,
+        error_text,
+        created_at: row.get(9)?,
+        finished_at: row.get(10)?,
+    })
+}
+
+fn classify_mirror_failure_kind(status: &str, error_text: Option<&str>) -> Option<&'static str> {
+    if status != "failed" {
+        return None;
+    }
+    let lower = error_text.unwrap_or_default().to_ascii_lowercase();
+    let config_markers = [
+        "mirror remote",
+        "authentication failed",
+        "could not read username",
+        "repository not found",
+        "permission denied",
+        "not authorized",
+        "access denied",
+        "requested url returned error: 403",
+        "requested url returned error: 401",
+        "no such remote",
+    ];
+    if config_markers.iter().any(|marker| lower.contains(marker)) {
+        Some("config")
+    } else {
+        Some("transient")
+    }
 }
 
 fn aggregate_lane_status(
@@ -1787,6 +2279,214 @@ mod tests {
         assert_eq!(runs[0].source_head_sha, "head222");
         assert_eq!(runs[1].source_head_sha, "head111");
         assert_eq!(runs[0].lanes.len(), 1);
+    }
+
+    #[test]
+    fn rerun_failed_branch_lane_creates_new_single_lane_suite() {
+        let store = open_store();
+        let branch = store
+            .upsert_branch_record(&upsert_input("feature/rerun", "head777"))
+            .expect("insert branch");
+        store
+            .queue_branch_ci_run_for_head(
+                branch.branch_id,
+                "head777",
+                &[sample_lane("pika"), sample_lane("fixture")],
+            )
+            .expect("queue ci suite");
+        let jobs = store
+            .claim_pending_branch_ci_lane_runs(2, 120)
+            .expect("claim ci jobs");
+        let failed_lane = jobs
+            .iter()
+            .find(|job| job.lane_id == "pika")
+            .expect("failed lane");
+        let passed_lane = jobs
+            .iter()
+            .find(|job| job.lane_id == "fixture")
+            .expect("passed lane");
+        store
+            .finish_branch_ci_lane_run(
+                failed_lane.lane_run_id,
+                failed_lane.claim_token,
+                "failed",
+                "boom",
+            )
+            .expect("finish failed lane");
+        store
+            .finish_branch_ci_lane_run(
+                passed_lane.lane_run_id,
+                passed_lane.claim_token,
+                "success",
+                "ok",
+            )
+            .expect("finish passed lane");
+
+        let rerun_suite_id = store
+            .rerun_branch_ci_lane(branch.branch_id, failed_lane.lane_run_id)
+            .expect("rerun branch lane")
+            .expect("rerun suite id");
+        let runs = store
+            .list_branch_ci_runs(branch.branch_id, 8)
+            .expect("list branch runs");
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].id, rerun_suite_id);
+        assert_eq!(runs[0].status, "queued");
+        assert_eq!(runs[0].rerun_of_run_id, Some(failed_lane.suite_id));
+        assert_eq!(runs[0].lanes.len(), 1);
+        assert_eq!(runs[0].lanes[0].lane_id, "pika");
+        assert_eq!(
+            runs[0].lanes[0].rerun_of_lane_run_id,
+            Some(failed_lane.lane_run_id)
+        );
+    }
+
+    #[test]
+    fn rerun_failed_nightly_lane_creates_new_single_lane_run() {
+        let store = open_store();
+        let repo_id = store
+            .ensure_forge_repo_metadata(
+                "sledtools/pika",
+                "/tmp/pika.git",
+                "master",
+                "ci/forge-lanes.toml",
+            )
+            .expect("ensure repo metadata");
+        store
+            .queue_nightly_run(
+                repo_id,
+                "refs/heads/master",
+                "nightly-head",
+                "2026-03-17T08:00:00Z",
+                &[sample_lane("nightly_pika"), sample_lane("nightly_fixture")],
+            )
+            .expect("queue nightly");
+        let jobs = store
+            .claim_pending_nightly_lane_runs(2, 120)
+            .expect("claim nightly jobs");
+        let failed_lane = jobs
+            .iter()
+            .find(|job| job.lane_id == "nightly_pika")
+            .expect("failed nightly lane");
+        let passed_lane = jobs
+            .iter()
+            .find(|job| job.lane_id == "nightly_fixture")
+            .expect("passed nightly lane");
+        store
+            .finish_nightly_lane_run(
+                failed_lane.lane_run_id,
+                failed_lane.claim_token,
+                "failed",
+                "nightly boom",
+            )
+            .expect("finish failed nightly lane");
+        store
+            .finish_nightly_lane_run(
+                passed_lane.lane_run_id,
+                passed_lane.claim_token,
+                "success",
+                "nightly ok",
+            )
+            .expect("finish passed nightly lane");
+
+        let rerun_run_id = store
+            .rerun_nightly_lane(failed_lane.nightly_run_id, failed_lane.lane_run_id)
+            .expect("rerun nightly lane")
+            .expect("rerun nightly run");
+        let nightlies = store.list_recent_nightly_runs(8).expect("nightly feed");
+        assert_eq!(nightlies.len(), 2);
+        assert_eq!(nightlies[0].nightly_run_id, rerun_run_id);
+        let rerun = store
+            .get_nightly_run(rerun_run_id)
+            .expect("rerun nightly detail")
+            .expect("rerun nightly exists");
+        assert_eq!(rerun.status, "queued");
+        assert_eq!(rerun.rerun_of_run_id, Some(failed_lane.nightly_run_id));
+        assert_eq!(rerun.lanes.len(), 1);
+        assert_eq!(rerun.lanes[0].lane_id, "nightly_pika");
+        assert_eq!(
+            rerun.lanes[0].rerun_of_lane_run_id,
+            Some(failed_lane.lane_run_id)
+        );
+    }
+
+    #[test]
+    fn rerun_branch_lane_rejects_parent_mismatch() {
+        let store = open_store();
+        let first = store
+            .upsert_branch_record(&upsert_input("feature/first", "head-a"))
+            .expect("insert first branch");
+        let second = store
+            .upsert_branch_record(&upsert_input("feature/second", "head-b"))
+            .expect("insert second branch");
+        store
+            .queue_branch_ci_run_for_head(first.branch_id, "head-a", &[sample_lane("pika")])
+            .expect("queue first suite");
+        let job = store
+            .claim_pending_branch_ci_lane_runs(1, 120)
+            .expect("claim first job")
+            .into_iter()
+            .next()
+            .expect("job");
+        store
+            .finish_branch_ci_lane_run(job.lane_run_id, job.claim_token, "failed", "boom")
+            .expect("finish lane");
+
+        let rerun = store
+            .rerun_branch_ci_lane(second.branch_id, job.lane_run_id)
+            .expect("rerun mismatch");
+        assert!(rerun.is_none());
+    }
+
+    #[test]
+    fn rerun_nightly_lane_rejects_parent_mismatch() {
+        let store = open_store();
+        let repo_id = store
+            .ensure_forge_repo_metadata(
+                "sledtools/pika",
+                "/tmp/pika.git",
+                "master",
+                "ci/forge-lanes.toml",
+            )
+            .expect("ensure repo metadata");
+        store
+            .queue_nightly_run(
+                repo_id,
+                "refs/heads/master",
+                "nightly-a",
+                "2026-03-17T08:00:00Z",
+                &[sample_lane("nightly_pika")],
+            )
+            .expect("queue first nightly");
+        store
+            .queue_nightly_run(
+                repo_id,
+                "refs/heads/master",
+                "nightly-b",
+                "2026-03-18T08:00:00Z",
+                &[sample_lane("nightly_fixture")],
+            )
+            .expect("queue second nightly");
+        let job = store
+            .claim_pending_nightly_lane_runs(1, 120)
+            .expect("claim nightly job")
+            .into_iter()
+            .next()
+            .expect("job");
+        store
+            .finish_nightly_lane_run(job.lane_run_id, job.claim_token, "failed", "boom")
+            .expect("finish nightly lane");
+        let wrong_nightly = store
+            .list_recent_nightly_runs(8)
+            .expect("list nightlies")
+            .into_iter()
+            .find(|run| run.nightly_run_id != job.nightly_run_id)
+            .expect("wrong nightly");
+
+        let rerun = store
+            .rerun_nightly_lane(wrong_nightly.nightly_run_id, job.lane_run_id)
+            .expect("rerun mismatch");
+        assert!(rerun.is_none());
     }
 
     #[test]

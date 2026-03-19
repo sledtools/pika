@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -41,6 +42,15 @@ pub struct CloseOutcome {
 pub struct CiExecutionResult {
     pub success: bool,
     pub log: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct MirrorSyncOutcome {
+    pub remote_name: String,
+    pub local_default_head: Option<String>,
+    pub remote_default_head: Option<String>,
+    pub lagging_ref_count: i64,
+    pub synced_ref_count: i64,
 }
 
 pub fn ensure_canonical_repo(repo: &ForgeRepoConfig) -> anyhow::Result<()> {
@@ -330,6 +340,51 @@ where
     }
 }
 
+pub fn sync_mirror(
+    repo: &ForgeRepoConfig,
+    remote_name: &str,
+    github_token: Option<&str>,
+) -> anyhow::Result<MirrorSyncOutcome> {
+    push_mirror(repo, remote_name, github_token)?;
+    inspect_mirror(repo, remote_name)
+}
+
+pub fn inspect_mirror(
+    repo: &ForgeRepoConfig,
+    remote_name: &str,
+) -> anyhow::Result<MirrorSyncOutcome> {
+    let local_heads = local_head_refs(repo)?;
+    let remote_heads = remote_head_refs(repo, remote_name)?;
+    let default_ref = format!("refs/heads/{}", repo.default_branch);
+    let local_default_head = local_heads.get(&default_ref).cloned();
+    let remote_default_head = remote_heads.get(&default_ref).cloned();
+
+    let mut lagging = 0_i64;
+    let mut synced = 0_i64;
+    let ref_names = local_heads
+        .keys()
+        .chain(remote_heads.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    for ref_name in ref_names {
+        let local = local_heads.get(&ref_name);
+        let remote = remote_heads.get(&ref_name);
+        if local == remote {
+            synced += 1;
+        } else {
+            lagging += 1;
+        }
+    }
+
+    Ok(MirrorSyncOutcome {
+        remote_name: remote_name.to_string(),
+        local_default_head,
+        remote_default_head,
+        lagging_ref_count: lagging,
+        synced_ref_count: synced,
+    })
+}
+
 fn describe_branch(
     repo: &ForgeRepoConfig,
     branch_name: &str,
@@ -372,6 +427,85 @@ fn describe_branch(
 
 fn canonical_git_dir(repo: &ForgeRepoConfig) -> PathBuf {
     PathBuf::from(&repo.canonical_git_dir)
+}
+
+fn push_mirror(
+    repo: &ForgeRepoConfig,
+    remote_name: &str,
+    github_token: Option<&str>,
+) -> anyhow::Result<()> {
+    let mut cmd = Command::new("git");
+    cmd.arg("--git-dir").arg(canonical_git_dir(repo));
+    let remote_url = remote_url(repo, remote_name)?;
+    if remote_url.contains("github.com") {
+        if let Some(token) = github_token {
+            cmd.args([
+                "-c",
+                &format!("http.extraheader=Authorization: Bearer {token}"),
+            ]);
+        }
+    }
+    let output = cmd
+        .args(["push", "--prune", remote_name, "refs/heads/*:refs/heads/*"])
+        .output()
+        .with_context(|| format!("push canonical refs to mirror remote `{remote_name}`"))?;
+    decode_git_output(output).map(|_| ())
+}
+
+pub fn mirror_remote_url(repo: &ForgeRepoConfig, remote_name: &str) -> anyhow::Result<String> {
+    remote_url(repo, remote_name)
+}
+
+fn remote_url(repo: &ForgeRepoConfig, remote_name: &str) -> anyhow::Result<String> {
+    git_bare(repo, ["remote", "get-url", remote_name])
+        .map(|url| url.trim().to_string())
+        .with_context(|| format!("resolve mirror remote `{remote_name}`"))
+}
+
+fn local_head_refs(
+    repo: &ForgeRepoConfig,
+) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
+    let output = git_bare(
+        repo,
+        [
+            "for-each-ref",
+            "--format=%(refname)%00%(objectname)",
+            "refs/heads",
+        ],
+    )?;
+    parse_ref_map(&output)
+}
+
+fn remote_head_refs(
+    repo: &ForgeRepoConfig,
+    remote_name: &str,
+) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
+    let output = git_bare(repo, ["ls-remote", "--heads", remote_name])
+        .with_context(|| format!("list remote heads for mirror `{remote_name}`"))?;
+    let mut refs = std::collections::BTreeMap::new();
+    for line in output.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(sha) = parts.next() else { continue };
+        let Some(ref_name) = parts.next() else {
+            continue;
+        };
+        refs.insert(ref_name.to_string(), sha.to_string());
+    }
+    Ok(refs)
+}
+
+fn parse_ref_map(raw: &str) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
+    let mut refs = std::collections::BTreeMap::new();
+    for line in raw.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Some((ref_name, sha)) = line.split_once('\0') else {
+            bail!("unexpected ref map line `{line}`");
+        };
+        refs.insert(ref_name.to_string(), sha.to_string());
+    }
+    Ok(refs)
 }
 
 fn resolve_ref(repo: &ForgeRepoConfig, git_ref: &str) -> anyhow::Result<Option<String>> {
@@ -584,8 +718,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        close_branch, create_merge_commit, current_branch_head, install_hooks, merge_branch,
-        publish_merge_refs, run_ci_command_for_head_with_heartbeat, write_merge_tree,
+        close_branch, create_merge_commit, current_branch_head, inspect_mirror, install_hooks,
+        merge_branch, publish_merge_refs, run_ci_command_for_head_with_heartbeat, write_merge_tree,
     };
     use crate::config::ForgeRepoConfig;
 
@@ -628,6 +762,8 @@ mod tests {
             repo: "sledtools/pika".to_string(),
             canonical_git_dir: bare.to_str().expect("bare path").to_string(),
             default_branch: "master".to_string(),
+            mirror_remote: None,
+            mirror_poll_interval_secs: None,
             ci_command: vec!["./ci.sh".to_string()],
             hook_url: Some("http://127.0.0.1:9/news/webhook".to_string()),
         };
@@ -836,5 +972,47 @@ mod tests {
 
         assert!(err.to_string().contains("run ci command"));
         assert_eq!(worktree_count(&forge_repo), before);
+    }
+
+    #[test]
+    fn inspect_mirror_counts_refs_once_per_name() {
+        let (root, mut forge_repo, seed) = setup_repo();
+        let mirror = root.path().join("mirror.git");
+        git(
+            root.path(),
+            &["init", "--bare", mirror.to_str().expect("mirror path")],
+        );
+        git(
+            root.path(),
+            &[
+                "--git-dir",
+                &forge_repo.canonical_git_dir,
+                "remote",
+                "add",
+                "github",
+                mirror.to_str().expect("mirror path"),
+            ],
+        );
+        git(
+            &seed,
+            &[
+                "remote",
+                "add",
+                "github",
+                mirror.to_str().expect("mirror path"),
+            ],
+        );
+        git(&seed, &["push", "github", "master"]);
+        forge_repo.mirror_remote = Some("github".to_string());
+
+        git(&seed, &["checkout", "-b", "feature/mirror-counts"]);
+        std::fs::write(seed.join("counts.txt"), "v1\n").expect("write counts");
+        git(&seed, &["add", "counts.txt"]);
+        git(&seed, &["commit", "-m", "counts"]);
+        git(&seed, &["push", "origin", "feature/mirror-counts"]);
+
+        let outcome = inspect_mirror(&forge_repo, "github").expect("inspect mirror");
+        assert_eq!(outcome.synced_ref_count, 1);
+        assert_eq!(outcome.lagging_ref_count, 1);
     }
 }

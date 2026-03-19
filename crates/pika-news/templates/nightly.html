@@ -7,10 +7,17 @@
       .meta { color: var(--text-secondary); font-size: 0.92rem; }
       .status { display: inline-block; border-radius: 999px; border: 1px solid var(--border-light); padding: 0.1rem 0.55rem; font-size: 0.8rem; }
       .panel { background: var(--surface-solid); border: 1px solid var(--border); border-radius: 14px; padding: 1rem; margin-top: 1rem; }
+      .notice { border-radius: 12px; padding: 0.85rem 1rem; margin-top: 1rem; border: 1px solid var(--border); background: var(--badge-bg-row); }
+      .notice.warning { border-color: #d9a441; background: rgba(217, 164, 65, 0.12); }
+      .notice.error { border-color: #b8475b; background: rgba(184, 71, 91, 0.12); }
+      .lane-summary { border-radius: 10px; padding: 0.8rem 0.9rem; margin-bottom: 0.9rem; border: 1px solid #b8475b; background: rgba(184, 71, 91, 0.12); }
       .lane { border-top: 1px solid var(--border); padding-top: 0.85rem; margin-top: 0.85rem; }
       .lane:first-child { border-top: none; padding-top: 0; margin-top: 0; }
+      .lane.failed { border-top-color: #b8475b; background: rgba(184, 71, 91, 0.09); border-radius: 10px; padding: 0.85rem; }
       .lane pre { overflow-x: auto; background: var(--badge-bg); border-radius: 8px; padding: 0.75rem; font-size: 0.82rem; }
+      .failure-hint { color: #8b1e3f; font-weight: 600; }
       .muted { color: var(--text-muted); }
+      .lane-btn { margin-top: 0.5rem; }
 {% endblock %}
 
 {% block body %}
@@ -19,7 +26,16 @@
       <h1>Nightly #{{ nightly_run_id }}</h1>
       <p class="meta">{{ repo }} · scheduled {{ scheduled_for }} · created {{ created_at }}</p>
       <p><span class="status">nightly: {{ status }}</span></p>
+      {% for notice in page_notices %}
+      <section class="notice {{ notice.tone }}">
+        <p>{{ notice.message }}</p>
+      </section>
+      {% endfor %}
       <p class="meta">source <code>{{ source_ref }}</code> @ <code>{{ source_head_sha }}</code></p>
+      {% match rerun_of_run_id %}
+      {% when Some with (original_run_id) %}
+      <p class="meta">manual rerun of nightly #{{ original_run_id }}</p>
+      {% when None %}{% endmatch %}
       {% match started_at %}
       {% when Some with (started_at) %}
       <p class="meta">started {{ started_at }}</p>
@@ -38,13 +54,25 @@
 
       <section class="panel">
         <h2>Lanes</h2>
+        {% if failed_lane_count > 0 %}
+        <div class="lane-summary">
+          This nightly has {{ failed_lane_count }} failed lane(s). Failed lanes are highlighted below with logs and rerun controls.
+        </div>
+        {% endif %}
         {% if lanes.is_empty() %}
         <p class="muted">No nightly lanes recorded.</p>
         {% else %}
         {% for lane in lanes %}
-        <article class="lane">
+        <article class="lane {% if lane.status == "failed" %}failed{% endif %}">
           <p><strong>{{ lane.title }}</strong> · {{ lane.status }} · <code>{{ lane.entrypoint }}</code></p>
           <p class="muted">lane id <code>{{ lane.lane_id }}</code> · retries {{ lane.retry_count }} · queued {{ lane.created_at }}</p>
+          {% if lane.status == "failed" %}
+          <p class="failure-hint">This lane failed. Check the log output below before rerunning.</p>
+          {% endif %}
+          {% match lane.rerun_of_lane_run_id %}
+          {% when Some with (original_lane_run_id) %}
+          <p class="muted">manual rerun of lane #{{ original_lane_run_id }}</p>
+          {% when None %}{% endmatch %}
           {% match lane.started_at %}
           {% when Some with (started_at) %}
           <p class="muted">started {{ started_at }}</p>
@@ -55,16 +83,71 @@
           {% when None %}{% endmatch %}
           {% match lane.log_text %}
           {% when Some with (log_text) %}
-          <details>
+          <details {% if lane.status == "failed" %}open{% endif %}>
             <summary>Logs</summary>
             <pre><code>{{ log_text }}</code></pre>
           </details>
           {% when None %}
           <p class="muted">No logs yet.</p>
           {% endmatch %}
+          {% if lane.status != "queued" && lane.status != "running" %}
+          <button
+            type="button"
+            class="secondary-btn lane-btn lane-rerun-btn"
+            data-lane-run-id="{{ lane.id }}"
+            style="display:none;"
+          >{% if lane.status == "failed" %}Rerun Failed Lane{% else %}Rerun Lane{% endif %}</button>
+          {% endif %}
         </article>
         {% endfor %}
         {% endif %}
       </section>
     </main>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+      (function () {
+        const rerunButtons = Array.from(document.querySelectorAll('.lane-rerun-btn'));
+        const nightlyRunId = {{ nightly_run_id }};
+
+        function authToken() {
+          return window.pikaAuth && window.pikaAuth.getToken ? window.pikaAuth.getToken() : null;
+        }
+
+        function showRerunButtons() {
+          const canForgeWrite = window.pikaAuth && window.pikaAuth.canForgeWrite ? window.pikaAuth.canForgeWrite() : false;
+          rerunButtons.forEach((button) => {
+            button.style.display = canForgeWrite ? '' : 'none';
+          });
+        }
+
+        async function rerunLane(button) {
+          const token = authToken();
+          if (!token) return;
+          const originalLabel = button.textContent;
+          button.disabled = true;
+          button.textContent = 'Queueing...';
+          try {
+            const res = await fetch(`/news/nightly/${nightlyRunId}/rerun/${button.dataset.laneRunId}`, {
+              method: 'POST',
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || 'rerun failed');
+            window.location.reload();
+          } catch (err) {
+            button.disabled = false;
+            button.textContent = err.message || originalLabel;
+          }
+        }
+
+        rerunButtons.forEach((button) => {
+          button.addEventListener('click', () => rerunLane(button));
+        });
+
+        window.addEventListener('pika-auth', showRerunButtons);
+        showRerunButtons();
+      })();
+    </script>
 {% endblock %}

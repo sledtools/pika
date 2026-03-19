@@ -16,6 +16,7 @@ pub const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1";
 pub const DEFAULT_BIND_PORT: u16 = 8787;
 pub const DEFAULT_FORGE_REPO: &str = "sledtools/pika";
 pub const DEFAULT_DEFAULT_BRANCH: &str = "master";
+pub const DEFAULT_MIRROR_POLL_INTERVAL_SECS: u64 = 300;
 
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
@@ -56,6 +57,10 @@ pub struct ForgeRepoConfig {
     pub canonical_git_dir: String,
     #[serde(default = "default_default_branch")]
     pub default_branch: String,
+    #[serde(default)]
+    pub mirror_remote: Option<String>,
+    #[serde(default)]
+    pub mirror_poll_interval_secs: Option<u64>,
     #[serde(default = "default_ci_command")]
     pub ci_command: Vec<String>,
     #[serde(default)]
@@ -77,6 +82,9 @@ impl Config {
             }
             if forge.ci_command.is_empty() {
                 forge.ci_command = default_ci_command();
+            }
+            if forge.mirror_remote.is_some() && forge.mirror_poll_interval_secs.is_none() {
+                forge.mirror_poll_interval_secs = Some(DEFAULT_MIRROR_POLL_INTERVAL_SECS);
             }
             if forge.hook_url.is_none() {
                 forge.hook_url = Some(format!("http://127.0.0.1:{}/news/webhook", self.bind_port));
@@ -167,6 +175,8 @@ bind_port = 8080
 [forge_repo]
 canonical_git_dir = "/srv/pika.git"
 default_branch = "master"
+mirror_remote = "github"
+mirror_poll_interval_secs = 300
 ci_command = ["just", "pre-merge"]
 "#;
 
@@ -186,6 +196,8 @@ ci_command = ["just", "pre-merge"]
         assert_eq!(forge.repo, super::DEFAULT_FORGE_REPO);
         assert_eq!(forge.canonical_git_dir, "/srv/pika.git");
         assert_eq!(forge.default_branch, "master");
+        assert_eq!(forge.mirror_remote.as_deref(), Some("github"));
+        assert_eq!(forge.mirror_poll_interval_secs, Some(300));
         assert_eq!(forge.ci_command, vec!["just", "pre-merge"]);
     }
 
@@ -209,6 +221,7 @@ canonical_git_dir = "/srv/test.git"
         assert_eq!(forge.repo, super::DEFAULT_FORGE_REPO);
         assert_eq!(forge.default_branch, super::DEFAULT_DEFAULT_BRANCH);
         assert_eq!(forge.ci_command, vec!["just", "pre-merge"]);
+        assert_eq!(forge.mirror_poll_interval_secs, None);
         assert_eq!(
             forge.hook_url.as_deref(),
             Some("http://127.0.0.1:9999/news/webhook")

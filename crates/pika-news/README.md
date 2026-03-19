@@ -10,6 +10,8 @@ repos = ["sledtools/pika"]
 repo = "sledtools/pika"
 canonical_git_dir = "/var/lib/pika-news/pika.git"
 default_branch = "master"
+mirror_remote = "github"
+mirror_poll_interval_secs = 300
 hook_url = "http://127.0.0.1:8788/news/webhook"
 
 poll_interval_secs = 60
@@ -25,7 +27,9 @@ bootstrap_admin_npubs = ["npub1..."]
 
 - `repos`: legacy repo slug list; keep `["sledtools/pika"]`.
 - `forge_repo`: canonical forge metadata for the single hosted `pika` bare repo.
-- `ci/forge-lanes.toml`: checked-in source of truth for canonical pre-merge lane selection and nightly lane definitions. The forge reads it from `master`, not from branch heads.
+- `forge_repo.mirror_remote`: outbound mirror remote name in the canonical bare repo, for example `github`.
+- `forge_repo.mirror_poll_interval_secs`: hosted background mirror cadence in seconds. Set `0` to disable background mirroring and keep manual sync only.
+- `ci/forge-lanes.toml`: checked-in source of truth for canonical pre-merge lane selection and nightly lane definitions. Branch pushes are evaluated against the branch head's proposed manifest; nightly uses the default branch manifest.
 - `poll_interval_secs`: interval used by hosted mode repair scans of the canonical bare repo.
 - `model`: Anthropic model name for tutorial generation.
 - `api_key_env`: environment variable containing the API key.
@@ -42,7 +46,13 @@ bootstrap_admin_npubs = ["npub1..."]
 
 - Branch-push pre-merge CI is now orchestrated by the forge from `ci/forge-lanes.toml`.
 - Nightly scheduling is now orchestrated by the forge service from the same manifest.
+- GitHub mirrors the same manifest through `scripts/forge-github-ci-shim.py` and `.github/workflows/pre-merge.yml`, but that path is advisory only.
 - GitHub Actions release and TestFlight workflows remain in place, but GitHub is no longer the canonical control plane for day-to-day pre-merge or nightly CI.
+- Hosted mirror sync needs the configured Git remote plus whatever credentials that remote requires. For a GitHub HTTPS remote, set the env named by `github_token_env` so the admin page and manual sync controls can report failures cleanly.
+
+## Hosted Deploy And QA
+
+- Use `docs/forge-hosted-manual-qa.md` as the short deploy and manual testing checklist for hosted forge mode.
 
 ## Local mode
 

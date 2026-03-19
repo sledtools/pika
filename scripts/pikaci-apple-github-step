@@ -129,6 +129,8 @@ remote_run() {
   local just_recipe=""
   local ref="HEAD"
   local github_output=""
+  local tmp_key=""
+  local ssh_wrapper=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --just-recipe)
@@ -155,18 +157,25 @@ remote_run() {
     exit 2
   fi
 
-  local tmp_key
   tmp_key="$(mktemp "${TMPDIR:-/tmp}/pikaci-apple-ssh.XXXXXX")"
+  ssh_wrapper="$(mktemp "${TMPDIR:-/tmp}/pikaci-apple-ssh-wrapper.XXXXXX")"
   cleanup_key() {
-    rm -f "$tmp_key"
+    rm -f "${tmp_key:-}" "${ssh_wrapper:-}"
   }
   trap cleanup_key EXIT INT TERM
   chmod 600 "$tmp_key"
   printf '%s\n' "$PIKACI_APPLE_SSH_KEY" >"$tmp_key"
-
-  eval "$(ssh-agent -s)" >/dev/null
-  trap 'ssh-agent -k >/dev/null 2>&1 || true; cleanup_key' EXIT INT TERM
-  ssh-add "$tmp_key" >/dev/null
+  cat >"$ssh_wrapper" <<EOF
+#!/usr/bin/env bash
+exec ssh \\
+  -i $(printf '%q' "$tmp_key") \\
+  -o IdentityAgent=none \\
+  -o IdentitiesOnly=yes \\
+  -o PreferredAuthentications=publickey \\
+  -o BatchMode=yes \\
+  "\$@"
+EOF
+  chmod 700 "$ssh_wrapper"
 
   local checked_out_ref
   checked_out_ref="$(git -C "$ROOT" rev-parse "${ref}^{commit}")"
@@ -174,6 +183,7 @@ remote_run() {
     printf 'checked_out_ref=%s\n' "$checked_out_ref" >> "$github_output"
   fi
 
+  export PIKACI_APPLE_SSH_BINARY="$ssh_wrapper"
   "$ROOT/scripts/pikaci-apple-remote.sh" run \
     --ref "$checked_out_ref" \
     --just-recipe "$just_recipe" \

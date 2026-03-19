@@ -12,7 +12,7 @@ in
   networking.hostName = "pika-agent-incus-dev";
   networking.useDHCP = lib.mkForce false;
   networking.useNetworkd = true;
-  networking.firewall.interfaces.eth0.allowedTCPPorts = [ 18789 ];
+  networking.firewall.allowedTCPPorts = [ 18789 ];
   services.resolved.enable = true;
   systemd.network.enable = true;
   systemd.network.wait-online.enable = true;

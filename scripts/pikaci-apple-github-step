@@ -37,14 +37,27 @@ tailscale_install_if_missing() {
 }
 
 tailscale_wait_ready() {
-  local socket="${1:-}"
-  local cmd=(sudo tailscale)
-  if [[ -n "$socket" ]]; then
-    cmd+=(--socket "$socket")
-  fi
+  local mode="${1:-}"
+  local socket="${2:-}"
   for _ in $(seq 1 120); do
-    if "${cmd[@]}" status >/dev/null 2>&1; then
-      return
+    case "$mode" in
+      systemd)
+        if sudo systemctl is-active --quiet tailscaled; then
+          return 0
+        fi
+        ;;
+      manual)
+        if [[ -n "$socket" && -S "$socket" ]] && pgrep -x tailscaled >/dev/null 2>&1; then
+          return 0
+        fi
+        ;;
+      *)
+        echo "error: unsupported tailscale wait mode: $mode" >&2
+        exit 2
+        ;;
+    esac
+    if pgrep -x tailscaled >/dev/null 2>&1; then
+      return 0
     fi
     sleep 1
   done
@@ -87,17 +100,19 @@ tailscale_up() {
   tailscale_install_if_missing
 
   local socket=""
+  local wait_mode="systemd"
   if command -v systemctl >/dev/null 2>&1 && sudo systemctl list-unit-files tailscaled.service >/dev/null 2>&1; then
     sudo systemctl enable --now tailscaled
   else
     socket="/var/run/tailscale/tailscaled.sock"
+    wait_mode="manual"
     sudo mkdir -p /var/run/tailscale /var/lib/tailscale
     if ! pgrep -x tailscaled >/dev/null 2>&1; then
       sudo nohup tailscaled --state=/var/lib/tailscale/tailscaled.state --socket="$socket" >/tmp/tailscaled.log 2>&1 &
     fi
   fi
 
-  tailscale_wait_ready "$socket"
+  tailscale_wait_ready "$wait_mode" "$socket"
   local tailscale_cmd=(sudo tailscale)
   if [[ -n "$socket" ]]; then
     tailscale_cmd+=(--socket "$socket")

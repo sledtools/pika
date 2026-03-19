@@ -779,6 +779,17 @@ Before writing code, define:
 - how logs and result artifacts come back
 - how remote execution timeout and cancellation work
 
+The first implementation chunk should land a thin `remote Linux VM` seam before any real Incus
+backend exists:
+
+- keep the current remote `microvm` path as one backend behind that seam
+- move backend selection to an explicit `remote Linux VM backend` concept rather than
+  `microvm_remote`
+- keep backend responsibilities small: prepare dirs, stage snapshot, prepare runtime, launch,
+  wait, collect artifacts
+- record per-phase timing boundaries so later Incus chunks can benchmark prepare, launch, wait,
+  and artifact collection without another schema change
+
 #### Phase B: Build An Incus Executor Backend
 
 Implement a new `pikaci` executor that can:
@@ -788,6 +799,22 @@ Implement a new `pikaci` executor that can:
 - execute the guest workload
 - collect artifacts and logs
 - tear down or recycle the instance
+
+Current `pika-build` proof status:
+
+- the first real Incus path now uses an env-gated per-lane selector
+  (`PIKACI_REMOTE_LINUX_VM_INCUS_LANES`) on top of `RemoteLinuxVmBackend`
+- the first working backend shape is explicitly Incus-native:
+  build staged workspace outputs on the host, sync the snapshot to `pika-build`, create one
+  ephemeral Incus VM, import the staged output closures into the guest Nix store, run the staged
+  wrapper, pull artifacts, and delete the instance
+- this path is currently validated against bounded follow-up lanes (`pika-actionlint`,
+  `pika-doc-contracts`) on `pika-build`
+- running `pikaci` on `pika-build` itself still needs a localhost fast path instead of SSH for the
+  remote work-dir seam, because self-SSH is not guaranteed there
+- the same on-host validation flow still does not produce a clean microVM comparison baseline yet;
+  the existing remote runner-flake path fails earlier when `pikaci` itself is executed on
+  `pika-build`
 
 #### Phase C: Validate Performance And Developer Experience
 

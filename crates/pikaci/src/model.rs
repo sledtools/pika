@@ -42,7 +42,8 @@ pub struct JobSpec {
 pub enum RunnerKind {
     HostLocal,
     VfkitLocal,
-    MicrovmRemote,
+    #[serde(alias = "microvm_remote")]
+    RemoteLinuxVm,
     TartLocal,
 }
 
@@ -51,7 +52,7 @@ impl RunnerKind {
         match self {
             Self::HostLocal => "host_local",
             Self::VfkitLocal => "vfkit_local",
-            Self::MicrovmRemote => "microvm_remote",
+            Self::RemoteLinuxVm => "remote_linux_vm",
             Self::TartLocal => "tart_local",
         }
     }
@@ -62,7 +63,8 @@ impl RunnerKind {
 pub enum PlanExecutorKind {
     HostLocal,
     VfkitLocal,
-    MicrovmRemote,
+    #[serde(alias = "microvm_remote")]
+    RemoteLinuxVm,
     TartLocal,
 }
 
@@ -71,7 +73,7 @@ impl PlanExecutorKind {
         match self {
             Self::HostLocal => "host_local",
             Self::VfkitLocal => "vfkit_local",
-            Self::MicrovmRemote => "microvm_remote",
+            Self::RemoteLinuxVm => "remote_linux_vm",
             Self::TartLocal => "tart_local",
         }
     }
@@ -82,11 +84,20 @@ impl From<RunnerKind> for PlanExecutorKind {
         match value {
             RunnerKind::HostLocal => Self::HostLocal,
             RunnerKind::VfkitLocal => Self::VfkitLocal,
-            RunnerKind::MicrovmRemote => Self::MicrovmRemote,
+            RunnerKind::RemoteLinuxVm => Self::RemoteLinuxVm,
             RunnerKind::TartLocal => Self::TartLocal,
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteLinuxVmBackend {
+    Microvm,
+    Incus,
+}
+
+const REMOTE_LINUX_VM_INCUS_LANES_ENV: &str = "PIKACI_REMOTE_LINUX_VM_INCUS_LANES";
 
 impl JobSpec {
     pub fn runner_kind(&self) -> RunnerKind {
@@ -95,9 +106,16 @@ impl JobSpec {
         } else if self.id.starts_with("tart-") {
             RunnerKind::TartLocal
         } else if self.staged_linux_rust_lane().is_some() {
-            RunnerKind::MicrovmRemote
+            RunnerKind::RemoteLinuxVm
         } else {
             RunnerKind::VfkitLocal
+        }
+    }
+
+    pub fn remote_linux_vm_backend(&self) -> Option<RemoteLinuxVmBackend> {
+        match self.runner_kind() {
+            RunnerKind::RemoteLinuxVm => Some(select_remote_linux_vm_backend(self)),
+            _ => None,
         }
     }
 
@@ -185,6 +203,39 @@ pub enum StagedLinuxRustLane {
 }
 
 impl StagedLinuxRustLane {
+    pub fn selector_key(self) -> &'static str {
+        match self {
+            Self::PikaFollowupAndroidTestCompile => "pika_followup_android_test_compile",
+            Self::PikaFollowupPikachatBuild => "pika_followup_pikachat_build",
+            Self::PikaFollowupDesktopCheck => "pika_followup_desktop_check",
+            Self::PikaFollowupActionlint => "pika_followup_actionlint",
+            Self::PikaFollowupDocContracts => "pika_followup_doc_contracts",
+            Self::PikaFollowupRustDepsHygiene => "pika_followup_rust_deps_hygiene",
+            Self::PikaCoreLibAppFlows => "pika_core_lib_app_flows",
+            Self::PikaCoreMessagingE2e => "pika_core_messaging_e2e",
+            Self::AgentContractsControlPlaneUnit => "agent_contracts_control_plane_unit",
+            Self::AgentContractsMicrovmTests => "agent_contracts_microvm_tests",
+            Self::AgentContractsServerAgentApi => "agent_contracts_server_agent_api",
+            Self::AgentContractsCoreNip98 => "agent_contracts_core_nip98",
+            Self::AgentContractsDeterministicHttp => "agent_contracts_deterministic_http",
+            Self::NotificationsServerPackageTests => "notifications_server_package_tests",
+            Self::FixturePikahutClippy => "fixture_pikahut_clippy",
+            Self::FixtureRelaySmoke => "fixture_relay_smoke",
+            Self::RmpInitSmokeCi => "rmp_init_smoke_ci",
+            Self::PikachatPackageTests => "pikachat_package_tests",
+            Self::PikachatSidecarPackageTests => "pikachat_sidecar_package_tests",
+            Self::PikachatDesktopPackageTests => "pikachat_desktop_package_tests",
+            Self::PikachatCliSmokeLocal => "pikachat_cli_smoke_local",
+            Self::PikachatPostRebaseInvalidEvent => "pikachat_post_rebase_invalid_event",
+            Self::PikachatPostRebaseLogoutSession => "pikachat_post_rebase_logout_session",
+            Self::OpenclawInviteAndChat => "openclaw_invite_and_chat",
+            Self::OpenclawInviteAndChatRustBot => "openclaw_invite_and_chat_rust_bot",
+            Self::OpenclawInviteAndChatDaemon => "openclaw_invite_and_chat_daemon",
+            Self::OpenclawAudioEcho => "openclaw_audio_echo",
+            Self::OpenclawGatewayE2e => "openclaw_gateway_e2e",
+        }
+    }
+
     pub fn target(self) -> StagedLinuxRustTarget {
         match self {
             Self::PikaFollowupAndroidTestCompile
@@ -488,11 +539,43 @@ pub enum PreparedOutputInvocationMode {
     ExternalWrapperCommandV1,
 }
 
+fn select_remote_linux_vm_backend(job: &JobSpec) -> RemoteLinuxVmBackend {
+    if incus_experiment_selectors_match(job) {
+        RemoteLinuxVmBackend::Incus
+    } else {
+        RemoteLinuxVmBackend::Microvm
+    }
+}
+
+fn incus_experiment_selectors_match(job: &JobSpec) -> bool {
+    let Some(lane) = job.staged_linux_rust_lane() else {
+        return false;
+    };
+    let Ok(raw) = std::env::var(REMOTE_LINUX_VM_INCUS_LANES_ENV) else {
+        return false;
+    };
+    parse_remote_linux_vm_incus_selectors(&raw).any(|selector| {
+        selector.eq_ignore_ascii_case(job.id) || selector.eq_ignore_ascii_case(lane.selector_key())
+    })
+}
+
+fn parse_remote_linux_vm_incus_selectors(raw: &str) -> impl Iterator<Item = &str> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{GuestCommand, JobSpec, StagedLinuxRustLane, StagedLinuxRustTarget};
+    use super::{
+        GuestCommand, JobSpec, RemoteLinuxVmBackend, RemoteLinuxVmExecutionRecord,
+        RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord, StagedLinuxRustLane, StagedLinuxRustTarget,
+    };
     use std::fs;
     use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     fn workspace_root() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -518,7 +601,113 @@ mod tests {
             spec.staged_linux_rust_lane(),
             Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit)
         );
-        assert_eq!(spec.runner_kind(), super::RunnerKind::MicrovmRemote);
+        assert_eq!(spec.runner_kind(), super::RunnerKind::RemoteLinuxVm);
+        assert_eq!(
+            spec.remote_linux_vm_backend(),
+            Some(RemoteLinuxVmBackend::Microvm)
+        );
+    }
+
+    fn with_incus_lane_env<T>(value: Option<&str>, action: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock");
+        let previous = std::env::var(super::REMOTE_LINUX_VM_INCUS_LANES_ENV).ok();
+        match value {
+            Some(value) => {
+                // SAFETY: tests serialize process environment access with ENV_LOCK.
+                unsafe { std::env::set_var(super::REMOTE_LINUX_VM_INCUS_LANES_ENV, value) };
+            }
+            None => {
+                // SAFETY: tests serialize process environment access with ENV_LOCK.
+                unsafe { std::env::remove_var(super::REMOTE_LINUX_VM_INCUS_LANES_ENV) };
+            }
+        }
+        let result = action();
+        match previous {
+            Some(previous) => {
+                // SAFETY: tests serialize process environment access with ENV_LOCK.
+                unsafe { std::env::set_var(super::REMOTE_LINUX_VM_INCUS_LANES_ENV, previous) };
+            }
+            None => {
+                // SAFETY: tests serialize process environment access with ENV_LOCK.
+                unsafe { std::env::remove_var(super::REMOTE_LINUX_VM_INCUS_LANES_ENV) };
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn staged_linux_lane_exposes_stable_incus_selector_key() {
+        assert_eq!(
+            StagedLinuxRustLane::PikaFollowupActionlint.selector_key(),
+            "pika_followup_actionlint"
+        );
+        assert_eq!(
+            StagedLinuxRustLane::RmpInitSmokeCi.selector_key(),
+            "rmp_init_smoke_ci"
+        );
+    }
+
+    #[test]
+    fn remote_linux_vm_incus_selector_parser_ignores_empty_entries() {
+        let selectors = super::parse_remote_linux_vm_incus_selectors(
+            " pika-actionlint ,, pika_followup_actionlint ,",
+        )
+        .collect::<Vec<_>>();
+        assert_eq!(
+            selectors,
+            vec!["pika-actionlint", "pika_followup_actionlint"]
+        );
+    }
+
+    #[test]
+    fn remote_linux_vm_backend_stays_microvm_without_incus_experiment_env() {
+        let spec = JobSpec {
+            id: "pika-actionlint",
+            description: "Run actionlint in a remote Linux VM guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "actionlint",
+            },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupActionlint),
+        };
+
+        with_incus_lane_env(None, || {
+            assert_eq!(
+                spec.remote_linux_vm_backend(),
+                Some(RemoteLinuxVmBackend::Microvm)
+            );
+        });
+    }
+
+    #[test]
+    fn remote_linux_vm_backend_can_select_incus_by_job_id_or_lane_selector() {
+        let spec = JobSpec {
+            id: "pika-actionlint",
+            description: "Run actionlint in a remote Linux VM guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "actionlint",
+            },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupActionlint),
+        };
+
+        with_incus_lane_env(Some("pika-actionlint"), || {
+            assert_eq!(
+                spec.remote_linux_vm_backend(),
+                Some(RemoteLinuxVmBackend::Incus)
+            );
+        });
+        with_incus_lane_env(Some("pika_followup_actionlint"), || {
+            assert_eq!(
+                spec.remote_linux_vm_backend(),
+                Some(RemoteLinuxVmBackend::Incus)
+            );
+        });
     }
 
     #[test]
@@ -536,6 +725,7 @@ mod tests {
 
         assert_eq!(spec.staged_linux_rust_lane(), None);
         assert_eq!(spec.runner_kind(), super::RunnerKind::VfkitLocal);
+        assert_eq!(spec.remote_linux_vm_backend(), None);
     }
 
     #[test]
@@ -553,6 +743,37 @@ mod tests {
 
         assert_eq!(spec.staged_linux_rust_lane(), None);
         assert_eq!(spec.runner_kind(), super::RunnerKind::HostLocal);
+        assert_eq!(spec.remote_linux_vm_backend(), None);
+    }
+
+    #[test]
+    fn remote_linux_vm_execution_metadata_round_trips_with_stable_phase_names() {
+        let record = RemoteLinuxVmExecutionRecord {
+            backend: RemoteLinuxVmBackend::Microvm,
+            phases: vec![
+                RemoteLinuxVmPhaseRecord {
+                    phase: RemoteLinuxVmPhase::PrepareRuntime,
+                    started_at: "2026-03-19T15:00:00Z".to_string(),
+                    finished_at: "2026-03-19T15:00:02Z".to_string(),
+                    duration_ms: 2000,
+                },
+                RemoteLinuxVmPhaseRecord {
+                    phase: RemoteLinuxVmPhase::WaitForCompletion,
+                    started_at: "2026-03-19T15:00:02Z".to_string(),
+                    finished_at: "2026-03-19T15:00:10Z".to_string(),
+                    duration_ms: 8000,
+                },
+            ],
+        };
+
+        let json = serde_json::to_string(&record).expect("encode metadata");
+        assert!(json.contains("\"backend\":\"microvm\""));
+        assert!(json.contains("\"phase\":\"prepare_runtime\""));
+        assert!(json.contains("\"phase\":\"wait_for_completion\""));
+
+        let decoded: RemoteLinuxVmExecutionRecord =
+            serde_json::from_str(&json).expect("decode metadata");
+        assert_eq!(decoded, record);
     }
 
     #[test]
@@ -1009,6 +1230,9 @@ pub enum PrepareNode {
         #[serde(default)]
         handoff: Option<PreparedOutputHandoff>,
     },
+    RemoteLinuxVmBackend {
+        backend: RemoteLinuxVmBackend,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1084,6 +1308,34 @@ pub struct JobOutcome {
     pub status: RunStatus,
     pub exit_code: Option<i32>,
     pub message: String,
+    #[serde(default)]
+    pub remote_linux_vm_execution: Option<RemoteLinuxVmExecutionRecord>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteLinuxVmPhase {
+    PrepareDirectories,
+    StageWorkspaceSnapshot,
+    PrepareRuntime,
+    LaunchGuest,
+    WaitForCompletion,
+    CollectArtifacts,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct RemoteLinuxVmPhaseRecord {
+    pub phase: RemoteLinuxVmPhase,
+    pub started_at: String,
+    pub finished_at: String,
+    pub duration_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct RemoteLinuxVmExecutionRecord {
+    pub backend: RemoteLinuxVmBackend,
+    #[serde(default)]
+    pub phases: Vec<RemoteLinuxVmPhaseRecord>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1132,6 +1384,8 @@ pub struct JobRecord {
     pub finished_at: Option<String>,
     pub exit_code: Option<i32>,
     pub message: Option<String>,
+    #[serde(default)]
+    pub remote_linux_vm_execution: Option<RemoteLinuxVmExecutionRecord>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

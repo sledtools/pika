@@ -48,6 +48,14 @@ use pika_relay_profiles::default_message_relays;
 const AGENT_OWNER_ACTIVE_INDEX: &str = "agent_instances_owner_active_idx";
 const VM_PROVIDER_ENV: &str = "PIKA_AGENT_VM_PROVIDER";
 const MICROVM_SPAWNER_URL_ENV: &str = "PIKA_AGENT_MICROVM_SPAWNER_URL";
+const MICROVM_KIND_ENV: &str = "PIKA_AGENT_MICROVM_KIND";
+const MICROVM_BACKEND_ENV: &str = "PIKA_AGENT_MICROVM_BACKEND";
+const MICROVM_ACP_EXEC_ENV: &str = "PIKA_AGENT_MICROVM_ACP_EXEC";
+const MICROVM_ACP_CWD_ENV: &str = "PIKA_AGENT_MICROVM_ACP_CWD";
+const RUNTIME_KIND_ENV: &str = "PIKA_AGENT_RUNTIME_KIND";
+const RUNTIME_BACKEND_ENV: &str = "PIKA_AGENT_RUNTIME_BACKEND";
+const RUNTIME_ACP_EXEC_ENV: &str = "PIKA_AGENT_RUNTIME_ACP_EXEC";
+const RUNTIME_ACP_CWD_ENV: &str = "PIKA_AGENT_RUNTIME_ACP_CWD";
 const ANTHROPIC_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
 const INCUS_ENDPOINT_ENV: &str = "PIKA_AGENT_INCUS_ENDPOINT";
 const INCUS_PROJECT_ENV: &str = "PIKA_AGENT_INCUS_PROJECT";
@@ -751,11 +759,9 @@ fn required_microvm_spawner_url(raw: Option<String>) -> anyhow::Result<String> {
 }
 
 fn microvm_kind_from_env() -> Option<MicrovmAgentKind> {
-    match std::env::var("PIKA_AGENT_MICROVM_KIND")
-        .ok()
+    match non_empty_env_var(RUNTIME_KIND_ENV)
+        .or_else(|| non_empty_env_var(MICROVM_KIND_ENV))
         .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
     {
         Some("openclaw") => Some(MicrovmAgentKind::Openclaw),
         Some("pi") => Some(MicrovmAgentKind::Pi),
@@ -763,11 +769,39 @@ fn microvm_kind_from_env() -> Option<MicrovmAgentKind> {
     }
 }
 
+fn runtime_backend_from_env() -> Option<pika_agent_control_plane::MicrovmAgentBackend> {
+    match non_empty_env_var(RUNTIME_BACKEND_ENV)
+        .or_else(|| non_empty_env_var(MICROVM_BACKEND_ENV))
+        .as_deref()
+    {
+        Some("native") => Some(pika_agent_control_plane::MicrovmAgentBackend::Native),
+        Some("acp") => Some(pika_agent_control_plane::MicrovmAgentBackend::Acp {
+            exec_command: non_empty_env_var(RUNTIME_ACP_EXEC_ENV)
+                .or_else(|| non_empty_env_var(MICROVM_ACP_EXEC_ENV)),
+            cwd: non_empty_env_var(RUNTIME_ACP_CWD_ENV)
+                .or_else(|| non_empty_env_var(MICROVM_ACP_CWD_ENV)),
+        }),
+        _ => None,
+    }
+}
+
+fn runtime_params_from_env() -> Option<AgentRuntimeParams> {
+    let kind = microvm_kind_from_env().map(Into::into);
+    let backend = runtime_backend_from_env().map(Into::into);
+    if kind.is_none() && backend.is_none() {
+        return None;
+    }
+    Some(AgentRuntimeParams { kind, backend })
+}
+
 fn default_microvm_params_from_env() -> MicrovmProvisionParams {
+    let runtime = runtime_params_from_env();
     MicrovmProvisionParams {
         spawner_url: non_empty_env_var(MICROVM_SPAWNER_URL_ENV),
-        kind: microvm_kind_from_env(),
-        ..MicrovmProvisionParams::default()
+        kind: runtime
+            .clone()
+            .and_then(|params| params.kind.map(Into::into)),
+        backend: runtime.and_then(|params| params.backend.map(Into::into)),
     }
 }
 
@@ -3724,10 +3758,13 @@ fn resolved_incus_params(
 ) -> anyhow::Result<ResolvedIncusParams> {
     let provider = resolve_requested_provider_kind(requested)?;
     let mut params = default_incus_params_from_env();
+    let default_runtime = runtime_params_from_env();
     let mut guest_selection = MicrovmProvisionParams {
         spawner_url: None,
-        kind: microvm_kind_from_env(),
-        backend: None,
+        kind: default_runtime
+            .clone()
+            .and_then(|params| params.kind.map(Into::into)),
+        backend: default_runtime.and_then(|params| params.backend.map(Into::into)),
     };
     if let Some(requested) = requested {
         if let Some(microvm) = requested
@@ -4947,6 +4984,13 @@ GFs2pW5hEhS7cCO0qXaa5g==
     struct ServerMicrovmEnvGuard {
         prior_spawner: Option<String>,
         prior_kind: Option<String>,
+        prior_backend: Option<String>,
+        prior_acp_exec: Option<String>,
+        prior_acp_cwd: Option<String>,
+        prior_runtime_kind: Option<String>,
+        prior_runtime_backend: Option<String>,
+        prior_runtime_acp_exec: Option<String>,
+        prior_runtime_acp_cwd: Option<String>,
         prior_provider: Option<String>,
         prior_incus_endpoint: Option<String>,
         prior_incus_project: Option<String>,
@@ -4964,7 +5008,14 @@ GFs2pW5hEhS7cCO0qXaa5g==
     impl ServerMicrovmEnvGuard {
         fn set(spawner_url: &str, kind: Option<&str>) -> Self {
             let prior_spawner = std::env::var(MICROVM_SPAWNER_URL_ENV).ok();
-            let prior_kind = std::env::var("PIKA_AGENT_MICROVM_KIND").ok();
+            let prior_kind = std::env::var(MICROVM_KIND_ENV).ok();
+            let prior_backend = std::env::var(MICROVM_BACKEND_ENV).ok();
+            let prior_acp_exec = std::env::var(MICROVM_ACP_EXEC_ENV).ok();
+            let prior_acp_cwd = std::env::var(MICROVM_ACP_CWD_ENV).ok();
+            let prior_runtime_kind = std::env::var(RUNTIME_KIND_ENV).ok();
+            let prior_runtime_backend = std::env::var(RUNTIME_BACKEND_ENV).ok();
+            let prior_runtime_acp_exec = std::env::var(RUNTIME_ACP_EXEC_ENV).ok();
+            let prior_runtime_acp_cwd = std::env::var(RUNTIME_ACP_CWD_ENV).ok();
             let prior_provider = std::env::var(VM_PROVIDER_ENV).ok();
             let prior_incus_endpoint = std::env::var(INCUS_ENDPOINT_ENV).ok();
             let prior_incus_project = std::env::var(INCUS_PROJECT_ENV).ok();
@@ -4992,18 +5043,32 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 std::env::remove_var(INCUS_CLIENT_CERT_PATH_ENV);
                 std::env::remove_var(INCUS_CLIENT_KEY_PATH_ENV);
                 std::env::remove_var(INCUS_SERVER_CERT_PATH_ENV);
+                std::env::remove_var(MICROVM_BACKEND_ENV);
+                std::env::remove_var(MICROVM_ACP_EXEC_ENV);
+                std::env::remove_var(MICROVM_ACP_CWD_ENV);
+                std::env::remove_var(RUNTIME_KIND_ENV);
+                std::env::remove_var(RUNTIME_BACKEND_ENV);
+                std::env::remove_var(RUNTIME_ACP_EXEC_ENV);
+                std::env::remove_var(RUNTIME_ACP_CWD_ENV);
             }
             match kind {
                 Some(kind) => unsafe {
-                    std::env::set_var("PIKA_AGENT_MICROVM_KIND", kind);
+                    std::env::set_var(MICROVM_KIND_ENV, kind);
                 },
                 None => unsafe {
-                    std::env::remove_var("PIKA_AGENT_MICROVM_KIND");
+                    std::env::remove_var(MICROVM_KIND_ENV);
                 },
             }
             Self {
                 prior_spawner,
                 prior_kind,
+                prior_backend,
+                prior_acp_exec,
+                prior_acp_cwd,
+                prior_runtime_kind,
+                prior_runtime_backend,
+                prior_runtime_acp_exec,
+                prior_runtime_acp_cwd,
                 prior_provider,
                 prior_incus_endpoint,
                 prior_incus_project,
@@ -5032,10 +5097,66 @@ GFs2pW5hEhS7cCO0qXaa5g==
             }
             match self.prior_kind.as_deref() {
                 Some(prior) => unsafe {
-                    std::env::set_var("PIKA_AGENT_MICROVM_KIND", prior);
+                    std::env::set_var(MICROVM_KIND_ENV, prior);
                 },
                 None => unsafe {
-                    std::env::remove_var("PIKA_AGENT_MICROVM_KIND");
+                    std::env::remove_var(MICROVM_KIND_ENV);
+                },
+            }
+            match self.prior_backend.as_deref() {
+                Some(prior) => unsafe {
+                    std::env::set_var(MICROVM_BACKEND_ENV, prior);
+                },
+                None => unsafe {
+                    std::env::remove_var(MICROVM_BACKEND_ENV);
+                },
+            }
+            match self.prior_acp_exec.as_deref() {
+                Some(prior) => unsafe {
+                    std::env::set_var(MICROVM_ACP_EXEC_ENV, prior);
+                },
+                None => unsafe {
+                    std::env::remove_var(MICROVM_ACP_EXEC_ENV);
+                },
+            }
+            match self.prior_acp_cwd.as_deref() {
+                Some(prior) => unsafe {
+                    std::env::set_var(MICROVM_ACP_CWD_ENV, prior);
+                },
+                None => unsafe {
+                    std::env::remove_var(MICROVM_ACP_CWD_ENV);
+                },
+            }
+            match self.prior_runtime_kind.as_deref() {
+                Some(prior) => unsafe {
+                    std::env::set_var(RUNTIME_KIND_ENV, prior);
+                },
+                None => unsafe {
+                    std::env::remove_var(RUNTIME_KIND_ENV);
+                },
+            }
+            match self.prior_runtime_backend.as_deref() {
+                Some(prior) => unsafe {
+                    std::env::set_var(RUNTIME_BACKEND_ENV, prior);
+                },
+                None => unsafe {
+                    std::env::remove_var(RUNTIME_BACKEND_ENV);
+                },
+            }
+            match self.prior_runtime_acp_exec.as_deref() {
+                Some(prior) => unsafe {
+                    std::env::set_var(RUNTIME_ACP_EXEC_ENV, prior);
+                },
+                None => unsafe {
+                    std::env::remove_var(RUNTIME_ACP_EXEC_ENV);
+                },
+            }
+            match self.prior_runtime_acp_cwd.as_deref() {
+                Some(prior) => unsafe {
+                    std::env::set_var(RUNTIME_ACP_CWD_ENV, prior);
+                },
+                None => unsafe {
+                    std::env::remove_var(RUNTIME_ACP_CWD_ENV);
                 },
             }
             match self.prior_provider.as_deref() {
@@ -5398,7 +5519,6 @@ GFs2pW5hEhS7cCO0qXaa5g==
 
     #[test]
     fn resolved_managed_vm_provider_config_accepts_incus_request_params() {
-        let _guard = serial_test_guard();
         with_env_overrides(
             &[
                 (INCUS_ENDPOINT_ENV, None),
@@ -5457,7 +5577,6 @@ GFs2pW5hEhS7cCO0qXaa5g==
 
     #[test]
     fn resolved_managed_vm_provider_config_accepts_runtime_only_incus_request_params() {
-        let _guard = serial_test_guard();
         with_env_overrides(
             &[
                 (INCUS_ENDPOINT_ENV, None),
@@ -5504,6 +5623,86 @@ GFs2pW5hEhS7cCO0qXaa5g==
                         openclaw_proxy_host: Some("100.81.250.67".to_string()),
                         agent_kind: ResolvedMicrovmAgentKind::Openclaw,
                         agent_backend: ResolvedMicrovmAgentBackend::Native,
+                    })
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn resolved_managed_vm_provider_config_reads_runtime_env_defaults_for_incus() {
+        with_env_overrides(
+            &[
+                (VM_PROVIDER_ENV, Some("incus")),
+                (INCUS_ENDPOINT_ENV, Some("https://incus.internal:8443")),
+                (INCUS_PROJECT_ENV, Some("managed-agents")),
+                (INCUS_PROFILE_ENV, Some("pika-agent")),
+                (INCUS_STORAGE_POOL_ENV, Some("managed-agents-zfs")),
+                (INCUS_IMAGE_ALIAS_ENV, Some("pika-agent/dev")),
+                (INCUS_OPENCLAW_GUEST_IPV4_CIDR_ENV, None),
+                (INCUS_OPENCLAW_PROXY_HOST_ENV, Some("100.81.250.67")),
+                (INCUS_INSECURE_TLS_ENV, Some("true")),
+                (RUNTIME_KIND_ENV, Some("openclaw")),
+                (RUNTIME_BACKEND_ENV, Some("native")),
+                (RUNTIME_ACP_EXEC_ENV, None),
+                (RUNTIME_ACP_CWD_ENV, None),
+                (MICROVM_KIND_ENV, None),
+                (MICROVM_BACKEND_ENV, None),
+                (MICROVM_ACP_EXEC_ENV, None),
+                (MICROVM_ACP_CWD_ENV, None),
+            ],
+            || {
+                let resolved = resolve_managed_vm_provider_config(None)
+                    .expect("resolve env-backed incus config");
+                assert_eq!(
+                    resolved,
+                    ResolvedManagedVmProviderConfig::Incus(ResolvedIncusParams {
+                        endpoint: "https://incus.internal:8443".to_string(),
+                        project: "managed-agents".to_string(),
+                        profile: "pika-agent".to_string(),
+                        storage_pool: "managed-agents-zfs".to_string(),
+                        image_alias: "pika-agent/dev".to_string(),
+                        insecure_tls: true,
+                        openclaw_guest_ipv4_cidr: None,
+                        openclaw_proxy_host: Some("100.81.250.67".to_string()),
+                        agent_kind: ResolvedMicrovmAgentKind::Openclaw,
+                        agent_backend: ResolvedMicrovmAgentBackend::Native,
+                    })
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn resolved_managed_vm_provider_config_reads_runtime_env_defaults_for_microvm() {
+        with_env_overrides(
+            &[
+                (VM_PROVIDER_ENV, Some("microvm")),
+                (
+                    MICROVM_SPAWNER_URL_ENV,
+                    Some("http://spawner.internal:8080"),
+                ),
+                (RUNTIME_KIND_ENV, Some("pi")),
+                (RUNTIME_BACKEND_ENV, Some("acp")),
+                (RUNTIME_ACP_EXEC_ENV, Some("uv run pika-agent")),
+                (RUNTIME_ACP_CWD_ENV, Some("/srv/pika")),
+                (MICROVM_KIND_ENV, None),
+                (MICROVM_BACKEND_ENV, None),
+                (MICROVM_ACP_EXEC_ENV, None),
+                (MICROVM_ACP_CWD_ENV, None),
+            ],
+            || {
+                let resolved = resolve_managed_vm_provider_config(None)
+                    .expect("resolve env-backed microvm config");
+                assert_eq!(
+                    resolved,
+                    ResolvedManagedVmProviderConfig::Microvm(ResolvedMicrovmParams {
+                        spawner_url: "http://spawner.internal:8080".to_string(),
+                        kind: ResolvedMicrovmAgentKind::Pi,
+                        backend: ResolvedMicrovmAgentBackend::Acp {
+                            exec_command: "uv run pika-agent".to_string(),
+                            cwd: "/srv/pika".to_string(),
+                        },
                     })
                 );
             },
@@ -7121,7 +7320,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 (INCUS_OPENCLAW_GUEST_IPV4_CIDR_ENV, Some("10.193.52.0/24")),
                 (INCUS_OPENCLAW_PROXY_HOST_ENV, Some("100.81.250.67")),
                 (INCUS_INSECURE_TLS_ENV, Some("true")),
-                ("PIKA_AGENT_MICROVM_KIND", Some("openclaw")),
+                (RUNTIME_KIND_ENV, Some("openclaw")),
             ],
             || {
                 let runtime = tokio::runtime::Builder::new_current_thread()
@@ -7219,7 +7418,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 (INCUS_CLIENT_CERT_PATH_ENV, None),
                 (INCUS_CLIENT_KEY_PATH_ENV, None),
                 (INCUS_SERVER_CERT_PATH_ENV, None),
-                ("PIKA_AGENT_MICROVM_KIND", Some("openclaw")),
+                (RUNTIME_KIND_ENV, Some("openclaw")),
             ],
             || {
                 let runtime = tokio::runtime::Builder::new_current_thread()
@@ -7308,10 +7507,10 @@ GFs2pW5hEhS7cCO0qXaa5g==
     async fn with_server_microvm_env_async_keeps_env_set_until_future_completes() {
         let _guard = serial_test_guard();
         let prior_spawner = std::env::var(MICROVM_SPAWNER_URL_ENV).ok();
-        let prior_kind = std::env::var("PIKA_AGENT_MICROVM_KIND").ok();
+        let prior_kind = std::env::var(MICROVM_KIND_ENV).ok();
         unsafe {
             std::env::set_var(MICROVM_SPAWNER_URL_ENV, "http://prior-spawner:1234");
-            std::env::set_var("PIKA_AGENT_MICROVM_KIND", "pi");
+            std::env::set_var(MICROVM_KIND_ENV, "pi");
         }
 
         with_server_microvm_env_async("http://test-spawner:8080", Some("openclaw"), || async {
@@ -7321,7 +7520,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
                 Some("http://test-spawner:8080")
             );
             assert_eq!(
-                std::env::var("PIKA_AGENT_MICROVM_KIND").ok().as_deref(),
+                std::env::var(MICROVM_KIND_ENV).ok().as_deref(),
                 Some("openclaw")
             );
         })
@@ -7331,10 +7530,7 @@ GFs2pW5hEhS7cCO0qXaa5g==
             std::env::var(MICROVM_SPAWNER_URL_ENV).ok().as_deref(),
             Some("http://prior-spawner:1234")
         );
-        assert_eq!(
-            std::env::var("PIKA_AGENT_MICROVM_KIND").ok().as_deref(),
-            Some("pi")
-        );
+        assert_eq!(std::env::var(MICROVM_KIND_ENV).ok().as_deref(), Some("pi"));
 
         match prior_spawner {
             Some(prior) => unsafe {
@@ -7346,10 +7542,10 @@ GFs2pW5hEhS7cCO0qXaa5g==
         }
         match prior_kind {
             Some(prior) => unsafe {
-                std::env::set_var("PIKA_AGENT_MICROVM_KIND", prior);
+                std::env::set_var(MICROVM_KIND_ENV, prior);
             },
             None => unsafe {
-                std::env::remove_var("PIKA_AGENT_MICROVM_KIND");
+                std::env::remove_var(MICROVM_KIND_ENV);
             },
         }
     }

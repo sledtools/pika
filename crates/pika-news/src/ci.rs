@@ -8,6 +8,7 @@ use crate::branch_store::{PendingBranchCiLaneJob, PendingNightlyLaneJob, CI_LANE
 use crate::ci_manifest::{self, ForgeCiManifest};
 use crate::config::Config;
 use crate::forge;
+use crate::live::CiLiveUpdates;
 use crate::storage::Store;
 
 pub const FORGE_LANE_MANIFEST_PATH: &str = "ci/forge-lanes.toml";
@@ -57,12 +58,22 @@ fn load_manifest_at_ref(
     ci_manifest::parse_manifest(&raw)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn run_ci_pass(store: &Store, config: &Config) -> anyhow::Result<CiPassResult> {
+    run_ci_pass_with_updates(store, config, None)
+}
+
+pub fn run_ci_pass_with_updates(
+    store: &Store,
+    config: &Config,
+    live_updates: Option<&CiLiveUpdates>,
+) -> anyhow::Result<CiPassResult> {
     run_ci_pass_with_timing(
         store,
         config,
         Duration::from_secs(CI_LANE_HEARTBEAT_INTERVAL_SECS),
         CI_LANE_LEASE_SECS,
+        live_updates,
     )
 }
 
@@ -71,8 +82,16 @@ fn run_ci_pass_with_timing(
     config: &Config,
     heartbeat_interval: Duration,
     lease_secs: u64,
+    live_updates: Option<&CiLiveUpdates>,
 ) -> anyhow::Result<CiPassResult> {
-    run_ci_pass_with_timing_at(store, config, heartbeat_interval, lease_secs, Utc::now())
+    run_ci_pass_with_timing_at(
+        store,
+        config,
+        heartbeat_interval,
+        lease_secs,
+        Utc::now(),
+        live_updates,
+    )
 }
 
 fn run_ci_pass_with_timing_at(
@@ -81,6 +100,7 @@ fn run_ci_pass_with_timing_at(
     heartbeat_interval: Duration,
     lease_secs: u64,
     now: DateTime<Utc>,
+    live_updates: Option<&CiLiveUpdates>,
 ) -> anyhow::Result<CiPassResult> {
     let Some(forge_repo) = config.effective_forge_repo() else {
         return Ok(CiPassResult::default());
@@ -120,6 +140,19 @@ fn run_ci_pass_with_timing_at(
                 let store = store.clone();
                 let forge_repo = forge_repo.clone();
                 let tx = tx.clone();
+                let live_updates = live_updates.cloned();
+                match &job {
+                    ClaimedLaneJob::Branch(job) => {
+                        if let Some(live_updates) = live_updates.as_ref() {
+                            live_updates.branch_changed(job.branch_id, "lane_claimed");
+                        }
+                    }
+                    ClaimedLaneJob::Nightly(job) => {
+                        if let Some(live_updates) = live_updates.as_ref() {
+                            live_updates.nightly_changed(job.nightly_run_id, "lane_claimed");
+                        }
+                    }
+                }
                 thread::spawn(move || {
                     let outcome = match job {
                         ClaimedLaneJob::Branch(job) => execute_branch_job(
@@ -128,6 +161,7 @@ fn run_ci_pass_with_timing_at(
                             job,
                             heartbeat_interval,
                             lease_secs,
+                            live_updates.clone(),
                         ),
                         ClaimedLaneJob::Nightly(job) => execute_nightly_job(
                             &store,
@@ -135,6 +169,7 @@ fn run_ci_pass_with_timing_at(
                             job,
                             heartbeat_interval,
                             lease_secs,
+                            live_updates.clone(),
                         ),
                     };
                     let _ = tx.send(outcome);
@@ -203,6 +238,7 @@ fn execute_branch_job(
     job: PendingBranchCiLaneJob,
     heartbeat_interval: Duration,
     lease_secs: u64,
+    live_updates: Option<CiLiveUpdates>,
 ) -> anyhow::Result<LaneJobOutcome> {
     let exec = forge::run_ci_command_for_head_with_heartbeat(
         forge_repo,
@@ -239,6 +275,9 @@ fn execute_branch_job(
             } else {
                 outcome.failed += 1;
             }
+            if let Some(live_updates) = live_updates.as_ref() {
+                live_updates.branch_changed(job.branch_id, "lane_finished");
+            }
         }
         Err(err) if is_lease_lost(&err) => return Ok(outcome),
         Err(err) => {
@@ -254,6 +293,9 @@ fn execute_branch_job(
                 }
             }
             outcome.failed += 1;
+            if let Some(live_updates) = live_updates.as_ref() {
+                live_updates.branch_changed(job.branch_id, "lane_finished");
+            }
         }
     }
     Ok(outcome)
@@ -265,6 +307,7 @@ fn execute_nightly_job(
     job: PendingNightlyLaneJob,
     heartbeat_interval: Duration,
     lease_secs: u64,
+    live_updates: Option<CiLiveUpdates>,
 ) -> anyhow::Result<LaneJobOutcome> {
     let exec = forge::run_ci_command_for_head_with_heartbeat(
         forge_repo,
@@ -298,6 +341,9 @@ fn execute_nightly_job(
             } else {
                 outcome.failed += 1;
             }
+            if let Some(live_updates) = live_updates.as_ref() {
+                live_updates.nightly_changed(job.nightly_run_id, "lane_finished");
+            }
         }
         Err(err) if is_lease_lost(&err) => return Ok(outcome),
         Err(err) => {
@@ -312,6 +358,9 @@ fn execute_nightly_job(
                 }
             }
             outcome.failed += 1;
+            if let Some(live_updates) = live_updates.as_ref() {
+                live_updates.nightly_changed(job.nightly_run_id, "lane_finished");
+            }
         }
     }
     Ok(outcome)
@@ -1278,8 +1327,14 @@ nightly_schedule_utc = "08:00"
         let runner_store = store.clone();
         let runner_config = config.clone();
         let handle = thread::spawn(move || {
-            run_ci_pass_with_timing(&runner_store, &runner_config, Duration::from_secs(1), 2)
-                .expect("run ci pass with heartbeat")
+            run_ci_pass_with_timing(
+                &runner_store,
+                &runner_config,
+                Duration::from_secs(1),
+                2,
+                None,
+            )
+            .expect("run ci pass with heartbeat")
         });
 
         thread::sleep(Duration::from_millis(2600));
@@ -1426,8 +1481,9 @@ command = ["./nightly.sh"]
             .with_ymd_and_hms(2026, 3, 17, 9, 30, 0)
             .single()
             .expect("fixed timestamp");
-        let result = run_ci_pass_with_timing_at(&store, &config, Duration::from_secs(1), 2, now)
-            .expect("run ci pass");
+        let result =
+            run_ci_pass_with_timing_at(&store, &config, Duration::from_secs(1), 2, now, None)
+                .expect("run ci pass");
         assert_eq!(result.nightlies_scheduled, 1);
 
         let nightly_manifest = load_manifest_from_default_branch(&forge_repo).expect("manifest");

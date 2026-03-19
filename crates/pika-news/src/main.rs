@@ -6,6 +6,7 @@ mod cli;
 mod config;
 mod forge;
 mod github;
+mod live;
 mod local;
 mod mirror;
 mod model;

@@ -6018,6 +6018,7 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "futures",
  "globset",
  "hex",
  "hmac",

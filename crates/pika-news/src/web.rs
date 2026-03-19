@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::convert::Infallible;
 use std::env;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -8,14 +9,16 @@ use askama::Template;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Json, Redirect};
 use axum::routing::{get, post};
 use axum::Router;
 use chrono::{SecondsFormat, Utc};
+use futures::stream;
 use hmac::{Hmac, Mac};
 use pulldown_cmark::{html, Options, Parser};
 use sha2::Sha256;
-use tokio::sync::Notify;
+use tokio::sync::{broadcast::error::RecvError, Notify};
 
 use crate::auth::{normalize_npub, AuthState};
 use crate::branch_store::{
@@ -25,6 +28,7 @@ use crate::branch_store::{
 use crate::ci;
 use crate::config::Config;
 use crate::forge;
+use crate::live::{CiLiveUpdate, CiLiveUpdates};
 use crate::mirror;
 use crate::model;
 use crate::poller;
@@ -40,6 +44,7 @@ struct AppState {
     max_prs: usize,
     auth: Arc<AuthState>,
     poll_notify: Arc<Notify>,
+    live_updates: CiLiveUpdates,
     webhook_secret: Option<String>,
     forge_health: Arc<Mutex<ForgeHealthState>>,
 }
@@ -196,17 +201,14 @@ struct DetailTemplate {
     target_branch: String,
     updated_at: String,
     branch_state: String,
-    tutorial_status: String,
-    ci_status: String,
     merge_commit_sha: Option<String>,
     executive_html: Option<String>,
     media_links: Vec<MediaLinkView>,
     error_message: Option<String>,
     steps: Vec<StepView>,
     diff_json: Option<String>,
-    ci_runs: Vec<CiRunView>,
-    page_notices: Vec<PageNoticeView>,
-    latest_failed_lane_count: usize,
+    branch_ci_live_html: String,
+    branch_ci_live_enabled: bool,
     review_mode: bool,
 }
 
@@ -216,18 +218,11 @@ struct NightlyTemplate {
     page_title: String,
     repo: String,
     nightly_run_id: i64,
-    status: String,
     summary: Option<String>,
-    source_ref: String,
-    source_head_sha: String,
     scheduled_for: String,
-    rerun_of_run_id: Option<i64>,
     created_at: String,
-    started_at: Option<String>,
-    finished_at: Option<String>,
-    lanes: Vec<NightlyLaneView>,
-    page_notices: Vec<PageNoticeView>,
-    failed_lane_count: usize,
+    nightly_live_html: String,
+    nightly_live_enabled: bool,
 }
 
 #[derive(Template)]
@@ -323,6 +318,38 @@ struct NightlyLaneView {
     created_at: String,
     started_at: Option<String>,
     finished_at: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "branch_ci_live.html")]
+struct BranchCiLiveTemplate {
+    branch_state: String,
+    tutorial_status: String,
+    ci_status: String,
+    live_active: bool,
+    ci_runs: Vec<CiRunView>,
+    page_notices: Vec<PageNoticeView>,
+    latest_failed_lane_count: usize,
+}
+
+#[derive(Template)]
+#[template(path = "nightly_live.html")]
+struct NightlyLiveTemplate {
+    status: String,
+    live_active: bool,
+    source_ref: String,
+    source_head_sha: String,
+    rerun_of_run_id: Option<i64>,
+    started_at: Option<String>,
+    finished_at: Option<String>,
+    lanes: Vec<NightlyLaneView>,
+    page_notices: Vec<PageNoticeView>,
+    failed_lane_count: usize,
+}
+
+#[derive(serde::Serialize)]
+struct LiveHtmlPayload {
+    html: String,
 }
 
 fn now_string() -> String {
@@ -643,6 +670,7 @@ pub async fn serve(
     }
 
     let poll_notify = Arc::new(Notify::new());
+    let live_updates = CiLiveUpdates::new(256);
     let webhook_secret = env::var(&config.webhook_secret_env).ok();
     let forge_mode = config.effective_forge_repo().is_some();
     let forge_health = Arc::new(Mutex::new(ForgeHealthState::new(forge_mode)));
@@ -681,6 +709,7 @@ pub async fn serve(
         max_prs,
         auth,
         poll_notify: Arc::clone(&poll_notify),
+        live_updates: live_updates.clone(),
         webhook_secret,
         forge_health: Arc::clone(&forge_health),
     });
@@ -693,9 +722,18 @@ pub async fn serve(
             match tokio::task::spawn_blocking(move || {
                 (
                     current_forge_runtime_issues(&state.config, state.webhook_secret.as_deref()),
-                    poller::poll_once_limited(&state.store, &state.config, state.max_prs),
+                    poller::poll_once_limited_with_updates(
+                        &state.store,
+                        &state.config,
+                        state.max_prs,
+                        Some(&state.live_updates),
+                    ),
                     worker::run_generation_pass(&state.store, &state.config),
-                    ci::run_ci_pass(&state.store, &state.config),
+                    ci::run_ci_pass_with_updates(
+                        &state.store,
+                        &state.config,
+                        Some(&state.live_updates),
+                    ),
                     mirror::run_background_mirror_pass(&state.store, &state.config),
                 )
             })
@@ -827,6 +865,14 @@ pub async fn serve(
         .route("/news", get(feed_handler))
         .route("/news/branch/:pr_id", get(detail_handler))
         .route("/news/nightly/:nightly_run_id", get(nightly_handler))
+        .route(
+            "/news/branch/:branch_id/ci/stream",
+            get(branch_ci_stream_handler),
+        )
+        .route(
+            "/news/nightly/:nightly_run_id/stream",
+            get(nightly_stream_handler),
+        )
         .route("/news/pr/:pr_id", get(detail_handler))
         .route("/news/branch/:pr_id/merge", post(merge_handler))
         .route("/news/branch/:pr_id/close", post(close_handler))
@@ -1116,6 +1162,226 @@ async fn detail_page(
     }
 }
 
+struct BranchCiLiveSnapshot {
+    html: String,
+    active: bool,
+}
+
+struct NightlyLiveSnapshot {
+    html: String,
+    active: bool,
+}
+
+async fn load_branch_ci_live_snapshot(
+    state: Arc<AppState>,
+    branch_id: i64,
+) -> Result<Option<BranchCiLiveSnapshot>, (StatusCode, String)> {
+    let detail_store = state.store.clone();
+    let runs_store = state.store.clone();
+    let detail = match tokio::task::spawn_blocking(move || {
+        detail_store.get_branch_detail(branch_id)
+    })
+    .await
+    {
+        Ok(Ok(Some(record))) => record,
+        Ok(Ok(None)) => return Ok(None),
+        Ok(Err(err)) => return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
+        Err(err) => return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
+    };
+    let ci_runs =
+        match tokio::task::spawn_blocking(move || runs_store.list_branch_ci_runs(branch_id, 8))
+            .await
+        {
+            Ok(Ok(runs)) => runs,
+            Ok(Err(err)) => return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
+            Err(err) => return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
+        };
+    let html = render_branch_ci_live_html(&detail, &ci_runs, &branch_page_notices(&state))
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let active = branch_ci_runs_are_active(&ci_runs);
+    Ok(Some(BranchCiLiveSnapshot { html, active }))
+}
+
+async fn load_nightly_live_snapshot(
+    state: Arc<AppState>,
+    nightly_run_id: i64,
+) -> Result<Option<NightlyLiveSnapshot>, (StatusCode, String)> {
+    let store = state.store.clone();
+    let nightly =
+        match tokio::task::spawn_blocking(move || store.get_nightly_run(nightly_run_id)).await {
+            Ok(Ok(Some(run))) => run,
+            Ok(Ok(None)) => return Ok(None),
+            Ok(Err(err)) => return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
+            Err(err) => return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
+        };
+    let html = render_nightly_live_html(&nightly, &nightly_page_notices(&state))
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let active = nightly_run_is_active(&nightly);
+    Ok(Some(NightlyLiveSnapshot { html, active }))
+}
+
+fn live_html_event(html: String) -> Result<Event, Infallible> {
+    let payload = serde_json::to_string(&LiveHtmlPayload { html }).unwrap_or_else(|_| {
+        serde_json::json!({"html": "<p class=\"muted\">Failed to encode live update.</p>"})
+            .to_string()
+    });
+    Ok(Event::default().event("ci-update").data(payload))
+}
+
+async fn branch_ci_stream_handler(
+    State(state): State<Arc<AppState>>,
+    Path(branch_id): Path<i64>,
+) -> impl IntoResponse {
+    let initial = match load_branch_ci_live_snapshot(Arc::clone(&state), branch_id).await {
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                format!("branch {} not found", branch_id),
+            )
+                .into_response();
+        }
+        Err((status, message)) => return (status, message).into_response(),
+    };
+    let receiver = state.live_updates.subscribe();
+    let stream = stream::unfold(
+        Some((Some(initial), receiver, state, branch_id)),
+        |state| async move {
+            let (pending, mut receiver, state, branch_id) = match state {
+                Some(state) => state,
+                None => return None,
+            };
+            if let Some(snapshot) = pending {
+                let next_state = if snapshot.active {
+                    Some((None, receiver, state, branch_id))
+                } else {
+                    None
+                };
+                return Some((live_html_event(snapshot.html), next_state));
+            }
+            loop {
+                match receiver.recv().await {
+                    Ok(CiLiveUpdate::BranchChanged {
+                        branch_id: updated_branch_id,
+                        ..
+                    }) if updated_branch_id == branch_id => {
+                        let snapshot = match load_branch_ci_live_snapshot(
+                            Arc::clone(&state),
+                            branch_id,
+                        )
+                        .await
+                        {
+                            Ok(Some(snapshot)) => snapshot,
+                            Ok(None) => return None,
+                            Err((status, message)) => {
+                                let html = format!(
+                                        "<section class=\"panel\"><h2>CI</h2><p class=\"muted\">Live update failed: {} {}</p></section>",
+                                        status.as_u16(),
+                                        message
+                                    );
+                                return Some((live_html_event(html), None));
+                            }
+                        };
+                        let next_state = if snapshot.active {
+                            Some((None, receiver, state, branch_id))
+                        } else {
+                            None
+                        };
+                        return Some((live_html_event(snapshot.html), next_state));
+                    }
+                    Ok(_) => continue,
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => return None,
+                }
+            }
+        },
+    );
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keep-alive"),
+        )
+        .into_response()
+}
+
+async fn nightly_stream_handler(
+    State(state): State<Arc<AppState>>,
+    Path(nightly_run_id): Path<i64>,
+) -> impl IntoResponse {
+    let initial = match load_nightly_live_snapshot(Arc::clone(&state), nightly_run_id).await {
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                format!("nightly run {} not found", nightly_run_id),
+            )
+                .into_response();
+        }
+        Err((status, message)) => return (status, message).into_response(),
+    };
+    let receiver = state.live_updates.subscribe();
+    let stream = stream::unfold(
+        Some((Some(initial), receiver, state, nightly_run_id)),
+        |state| async move {
+            let (pending, mut receiver, state, nightly_run_id) = match state {
+                Some(state) => state,
+                None => return None,
+            };
+            if let Some(snapshot) = pending {
+                let next_state = if snapshot.active {
+                    Some((None, receiver, state, nightly_run_id))
+                } else {
+                    None
+                };
+                return Some((live_html_event(snapshot.html), next_state));
+            }
+            loop {
+                match receiver.recv().await {
+                    Ok(CiLiveUpdate::NightlyChanged {
+                        nightly_run_id: updated_nightly_run_id,
+                        ..
+                    }) if updated_nightly_run_id == nightly_run_id => {
+                        let snapshot = match load_nightly_live_snapshot(
+                            Arc::clone(&state),
+                            nightly_run_id,
+                        )
+                        .await
+                        {
+                            Ok(Some(snapshot)) => snapshot,
+                            Ok(None) => return None,
+                            Err((status, message)) => {
+                                let html = format!(
+                                    "<section class=\"panel\"><h2>Lanes</h2><p class=\"muted\">Live update failed: {} {}</p></section>",
+                                    status.as_u16(),
+                                    message
+                                );
+                                return Some((live_html_event(html), None));
+                            }
+                        };
+                        let next_state = if snapshot.active {
+                            Some((None, receiver, state, nightly_run_id))
+                        } else {
+                            None
+                        };
+                        return Some((live_html_event(snapshot.html), next_state));
+                    }
+                    Ok(_) => continue,
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => return None,
+                }
+            }
+        },
+    );
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keep-alive"),
+        )
+        .into_response()
+}
+
 fn map_feed_item(item: BranchFeedItem) -> FeedItemView {
     FeedItemView {
         branch_id: item.branch_id,
@@ -1159,16 +1425,6 @@ fn render_detail_template_with_notices(
     let mut steps = Vec::new();
     let mut executive_html = None;
     let mut media_links = Vec::new();
-    let latest_failed_lane_count = ci_runs
-        .first()
-        .map(|run| {
-            run.lanes
-                .iter()
-                .filter(|lane| lane.status == "failed")
-                .count()
-        })
-        .unwrap_or(0);
-
     if let Some(tutorial_json) = &record.tutorial_json {
         let tutorial: TutorialDoc = serde_json::from_str(tutorial_json)
             .context("parse stored tutorial JSON for detail page")?;
@@ -1197,6 +1453,9 @@ fn render_detail_template_with_notices(
         }
     }
 
+    let branch_ci_live_html = render_branch_ci_live_html(&record, &ci_runs, &page_notices)?;
+    let branch_ci_live_enabled = branch_ci_runs_are_active(&ci_runs);
+
     Ok(DetailTemplate {
         page_title: format!(
             "{} #{}: {}",
@@ -1207,9 +1466,7 @@ fn render_detail_template_with_notices(
         branch_name: record.branch_name,
         target_branch: record.target_branch,
         updated_at: record.updated_at,
-        branch_state: record.branch_state,
-        tutorial_status: record.tutorial_status,
-        ci_status: record.ci_status,
+        branch_state: record.branch_state.clone(),
         merge_commit_sha: record.merge_commit_sha,
         executive_html,
         media_links,
@@ -1224,22 +1481,8 @@ fn render_detail_template_with_notices(
                 .unwrap_or_default()
                 .replace("</", r"<\/")
         }),
-        ci_runs: ci_runs
-            .into_iter()
-            .map(|run| CiRunView {
-                id: run.id,
-                source_head_sha: run.source_head_sha,
-                status: run.status,
-                lane_count: run.lane_count,
-                rerun_of_run_id: run.rerun_of_run_id,
-                created_at: run.created_at,
-                started_at: run.started_at,
-                finished_at: run.finished_at,
-                lanes: run.lanes.into_iter().map(map_ci_lane_view).collect(),
-            })
-            .collect(),
-        page_notices,
-        latest_failed_lane_count,
+        branch_ci_live_html,
+        branch_ci_live_enabled,
         review_mode,
     })
 }
@@ -1253,28 +1496,108 @@ fn render_nightly_template_with_notices(
     run: NightlyRunRecord,
     page_notices: Vec<PageNoticeView>,
 ) -> NightlyTemplate {
+    let nightly_live_html = render_nightly_live_html(&run, &page_notices)
+        .unwrap_or_else(|_| "<section class=\"panel\"><h2>Lanes</h2><p class=\"muted\">Failed to render nightly lane state.</p></section>".to_string());
+    let nightly_live_enabled = nightly_run_is_active(&run);
+    NightlyTemplate {
+        page_title: format!("{} nightly #{}", run.repo, run.nightly_run_id),
+        repo: run.repo,
+        nightly_run_id: run.nightly_run_id,
+        summary: run.summary,
+        scheduled_for: run.scheduled_for,
+        created_at: run.created_at,
+        nightly_live_html,
+        nightly_live_enabled,
+    }
+}
+
+fn branch_ci_runs_are_active(ci_runs: &[BranchCiRunRecord]) -> bool {
+    ci_runs.iter().any(|run| {
+        matches!(run.status.as_str(), "queued" | "running")
+            || run
+                .lanes
+                .iter()
+                .any(|lane| matches!(lane.status.as_str(), "queued" | "running"))
+    })
+}
+
+fn nightly_run_is_active(run: &NightlyRunRecord) -> bool {
+    matches!(run.status.as_str(), "queued" | "running")
+        || run
+            .lanes
+            .iter()
+            .any(|lane| matches!(lane.status.as_str(), "queued" | "running"))
+}
+
+fn render_branch_ci_live_html(
+    record: &BranchDetailRecord,
+    ci_runs: &[BranchCiRunRecord],
+    page_notices: &[PageNoticeView],
+) -> anyhow::Result<String> {
+    let latest_failed_lane_count = ci_runs
+        .first()
+        .map(|run| {
+            run.lanes
+                .iter()
+                .filter(|lane| lane.status == "failed")
+                .count()
+        })
+        .unwrap_or(0);
+    BranchCiLiveTemplate {
+        branch_state: record.branch_state.clone(),
+        tutorial_status: record.tutorial_status.clone(),
+        ci_status: record.ci_status.clone(),
+        live_active: branch_ci_runs_are_active(ci_runs),
+        ci_runs: ci_runs
+            .iter()
+            .cloned()
+            .map(|run| CiRunView {
+                id: run.id,
+                source_head_sha: run.source_head_sha,
+                status: run.status,
+                lane_count: run.lane_count,
+                rerun_of_run_id: run.rerun_of_run_id,
+                created_at: run.created_at,
+                started_at: run.started_at,
+                finished_at: run.finished_at,
+                lanes: run.lanes.into_iter().map(map_ci_lane_view).collect(),
+            })
+            .collect(),
+        page_notices: page_notices.to_vec(),
+        latest_failed_lane_count,
+    }
+    .render()
+    .context("render branch ci live template")
+}
+
+fn render_nightly_live_html(
+    run: &NightlyRunRecord,
+    page_notices: &[PageNoticeView],
+) -> anyhow::Result<String> {
     let failed_lane_count = run
         .lanes
         .iter()
         .filter(|lane| lane.status == "failed")
         .count();
-    NightlyTemplate {
-        page_title: format!("{} nightly #{}", run.repo, run.nightly_run_id),
-        repo: run.repo,
-        nightly_run_id: run.nightly_run_id,
-        status: run.status,
-        summary: run.summary,
-        source_ref: run.source_ref,
-        source_head_sha: run.source_head_sha,
-        scheduled_for: run.scheduled_for,
+    NightlyLiveTemplate {
+        status: run.status.clone(),
+        live_active: nightly_run_is_active(run),
+        source_ref: run.source_ref.clone(),
+        source_head_sha: run.source_head_sha.clone(),
         rerun_of_run_id: run.rerun_of_run_id,
-        created_at: run.created_at,
-        started_at: run.started_at,
-        finished_at: run.finished_at,
-        lanes: run.lanes.into_iter().map(map_nightly_lane_view).collect(),
-        page_notices,
+        started_at: run.started_at.clone(),
+        finished_at: run.finished_at.clone(),
+        lanes: run
+            .lanes
+            .iter()
+            .cloned()
+            .map(map_nightly_lane_view)
+            .collect(),
+        page_notices: page_notices.to_vec(),
         failed_lane_count,
     }
+    .render()
+    .context("render nightly live template")
 }
 
 fn map_ci_lane_view(lane: BranchCiLaneRecord) -> CiLaneView {
@@ -1583,6 +1906,7 @@ async fn rerun_branch_ci_lane_handler(
         .await
     {
         Ok(Ok(Some(rerun_suite_id))) => {
+            state.live_updates.branch_changed(branch_id, "rerun_queued");
             state.poll_notify.notify_one();
             Json(serde_json::json!({
                 "status": "ok",
@@ -1622,6 +1946,9 @@ async fn rerun_nightly_lane_handler(
         .await
     {
         Ok(Ok(Some(rerun_run_id))) => {
+            state
+                .live_updates
+                .nightly_changed(nightly_run_id, "rerun_queued");
             state.poll_notify.notify_one();
             Json(serde_json::json!({
                 "status": "ok",
@@ -2777,16 +3104,19 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use askama::Template;
+    use axum::body::to_bytes;
     use axum::extract::{Path, State};
     use axum::http::{header::AUTHORIZATION, HeaderMap, HeaderValue, StatusCode};
     use axum::response::IntoResponse;
     use tokio::sync::Notify;
 
     use super::{
-        build_mirror_health_status, collect_forge_startup_issues, current_forge_runtime_issues,
-        inbox_review_handler, markdown_to_safe_html, render_detail_template,
-        render_nightly_template, rerun_branch_ci_lane_handler, rerun_nightly_lane_handler,
-        should_backfill_managed_allowlist_entry, verify_signature, AppState, ForgeHealthState,
+        branch_ci_stream_handler, build_mirror_health_status, collect_forge_startup_issues,
+        current_forge_runtime_issues, inbox_review_handler, load_branch_ci_live_snapshot,
+        load_nightly_live_snapshot, markdown_to_safe_html, nightly_stream_handler,
+        render_detail_template, render_nightly_template, rerun_branch_ci_lane_handler,
+        rerun_nightly_lane_handler, should_backfill_managed_allowlist_entry, verify_signature,
+        AppState, CiLiveUpdates, ForgeHealthState,
     };
     use crate::auth::AuthState;
     use crate::branch_store::{BranchUpsertInput, MirrorStatusRecord, MirrorSyncRunRecord};
@@ -2844,6 +3174,7 @@ mod tests {
             config,
             max_prs: 10,
             poll_notify: Arc::new(Notify::new()),
+            live_updates: CiLiveUpdates::new(64),
             webhook_secret: None,
             forge_health: Arc::new(Mutex::new(ForgeHealthState::new(forge_mode))),
         })
@@ -3383,6 +3714,348 @@ mod tests {
         .into_response();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
+
+    #[tokio::test]
+    async fn completed_branch_ci_stream_returns_initial_snapshot_and_closes() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let branch = store
+            .upsert_branch_record(&branch_upsert_input("feature/live-branch", "head-live"))
+            .expect("insert branch");
+        store
+            .queue_branch_ci_run_for_head(
+                branch.branch_id,
+                "head-live",
+                &[crate::ci_manifest::ForgeLane {
+                    id: "pika".to_string(),
+                    title: "check-pika".to_string(),
+                    entrypoint: "just checks::pre-merge-pika".to_string(),
+                    command: vec!["just".to_string(), "checks::pre-merge-pika".to_string()],
+                    paths: vec![],
+                    concurrency_group: None,
+                    staged_linux_target: None,
+                }],
+            )
+            .expect("queue branch ci");
+        let lane = store
+            .claim_pending_branch_ci_lane_runs(1, 120)
+            .expect("claim branch lane")
+            .into_iter()
+            .next()
+            .expect("branch lane");
+        store
+            .finish_branch_ci_lane_run(lane.lane_run_id, lane.claim_token, "success", "ok")
+            .expect("finish branch lane");
+
+        let config = Config {
+            repos: vec!["sledtools/pika".to_string()],
+            forge_repo: Some(ForgeRepoConfig {
+                repo: "sledtools/pika".to_string(),
+                canonical_git_dir: "/tmp/pika.git".to_string(),
+                default_branch: "master".to_string(),
+                ci_concurrency: None,
+                mirror_remote: None,
+                mirror_poll_interval_secs: None,
+                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
+                hook_url: None,
+            }),
+            poll_interval_secs: 60,
+            model: "test-model".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            github_token_env: "GITHUB_TOKEN".to_string(),
+            merged_lookback_hours: 72,
+            worker_concurrency: 1,
+            retry_backoff_secs: 120,
+            webhook_secret_env: "PIKA_NEWS_WEBHOOK_SECRET".to_string(),
+            bind_address: "127.0.0.1".to_string(),
+            bind_port: 8787,
+            allowed_npubs: vec![],
+            bootstrap_admin_npubs: vec![],
+        };
+        let state = test_state(store, config);
+        let response = branch_ci_stream_handler(State(state), Path(branch.branch_id))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/event-stream")
+        );
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read branch stream body");
+        let text = String::from_utf8(body.to_vec()).expect("decode branch stream");
+        assert!(text.contains("event: ci-update"));
+        assert!(text.contains("\"html\":"));
+        assert!(text.contains("check-pika"));
+        assert!(text.contains("ci: success"));
+    }
+
+    #[tokio::test]
+    async fn completed_nightly_stream_returns_initial_snapshot_and_closes() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let repo_id = store
+            .ensure_forge_repo_metadata(
+                "sledtools/pika",
+                "/tmp/pika.git",
+                "master",
+                "ci/forge-lanes.toml",
+            )
+            .expect("ensure repo metadata");
+        let lane = crate::ci_manifest::ForgeLane {
+            id: "nightly_pika".to_string(),
+            title: "nightly-pika".to_string(),
+            entrypoint: "just checks::nightly-pika-e2e".to_string(),
+            command: vec!["just".to_string(), "checks::nightly-pika-e2e".to_string()],
+            paths: vec![],
+            concurrency_group: None,
+            staged_linux_target: None,
+        };
+        store
+            .queue_nightly_run(
+                repo_id,
+                "refs/heads/master",
+                "nightly-head",
+                "2026-03-19T08:00:00Z",
+                std::slice::from_ref(&lane),
+            )
+            .expect("queue nightly");
+        let claimed = store
+            .claim_pending_nightly_lane_runs(1, 120)
+            .expect("claim nightly lane")
+            .into_iter()
+            .next()
+            .expect("nightly lane");
+        store
+            .finish_nightly_lane_run(claimed.lane_run_id, claimed.claim_token, "failed", "boom")
+            .expect("finish nightly lane");
+
+        let config = Config {
+            repos: vec!["sledtools/pika".to_string()],
+            forge_repo: Some(ForgeRepoConfig {
+                repo: "sledtools/pika".to_string(),
+                canonical_git_dir: "/tmp/pika.git".to_string(),
+                default_branch: "master".to_string(),
+                ci_concurrency: None,
+                mirror_remote: None,
+                mirror_poll_interval_secs: None,
+                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
+                hook_url: None,
+            }),
+            poll_interval_secs: 60,
+            model: "test-model".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            github_token_env: "GITHUB_TOKEN".to_string(),
+            merged_lookback_hours: 72,
+            worker_concurrency: 1,
+            retry_backoff_secs: 120,
+            webhook_secret_env: "PIKA_NEWS_WEBHOOK_SECRET".to_string(),
+            bind_address: "127.0.0.1".to_string(),
+            bind_port: 8787,
+            allowed_npubs: vec![],
+            bootstrap_admin_npubs: vec![],
+        };
+        let nightly_run_id = claimed.nightly_run_id;
+        let state = test_state(store, config);
+        let response = nightly_stream_handler(State(state), Path(nightly_run_id))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read nightly stream body");
+        let text = String::from_utf8(body.to_vec()).expect("decode nightly stream");
+        assert!(text.contains("event: ci-update"));
+        assert!(text.contains("nightly-pika"));
+        assert!(text.contains("nightly: failed"));
+    }
+
+    #[tokio::test]
+    async fn branch_live_snapshot_html_updates_across_lane_transitions() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let branch = store
+            .upsert_branch_record(&branch_upsert_input(
+                "feature/live-progress",
+                "head-progress",
+            ))
+            .expect("insert branch");
+        store
+            .queue_branch_ci_run_for_head(
+                branch.branch_id,
+                "head-progress",
+                &[crate::ci_manifest::ForgeLane {
+                    id: "pika".to_string(),
+                    title: "check-pika".to_string(),
+                    entrypoint: "just checks::pre-merge-pika".to_string(),
+                    command: vec!["just".to_string(), "checks::pre-merge-pika".to_string()],
+                    paths: vec![],
+                    concurrency_group: None,
+                    staged_linux_target: None,
+                }],
+            )
+            .expect("queue ci");
+        let config = Config {
+            repos: vec!["sledtools/pika".to_string()],
+            forge_repo: Some(ForgeRepoConfig {
+                repo: "sledtools/pika".to_string(),
+                canonical_git_dir: "/tmp/pika.git".to_string(),
+                default_branch: "master".to_string(),
+                ci_concurrency: None,
+                mirror_remote: None,
+                mirror_poll_interval_secs: None,
+                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
+                hook_url: None,
+            }),
+            poll_interval_secs: 60,
+            model: "test-model".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            github_token_env: "GITHUB_TOKEN".to_string(),
+            merged_lookback_hours: 72,
+            worker_concurrency: 1,
+            retry_backoff_secs: 120,
+            webhook_secret_env: "PIKA_NEWS_WEBHOOK_SECRET".to_string(),
+            bind_address: "127.0.0.1".to_string(),
+            bind_port: 8787,
+            allowed_npubs: vec![],
+            bootstrap_admin_npubs: vec![],
+        };
+        let state = test_state(store.clone(), config);
+
+        let queued = load_branch_ci_live_snapshot(Arc::clone(&state), branch.branch_id)
+            .await
+            .expect("load queued snapshot")
+            .expect("queued snapshot exists");
+        assert!(queued.html.contains("ci: queued"));
+        assert!(queued.html.contains("data-branch-ci-active=\"true\""));
+
+        let claimed = store
+            .claim_pending_branch_ci_lane_runs(1, 120)
+            .expect("claim branch lane")
+            .into_iter()
+            .next()
+            .expect("lane");
+        let running = load_branch_ci_live_snapshot(Arc::clone(&state), branch.branch_id)
+            .await
+            .expect("load running snapshot")
+            .expect("running snapshot exists");
+        assert!(running.html.contains("running"));
+        assert!(running.html.contains("data-branch-ci-active=\"true\""));
+
+        store
+            .finish_branch_ci_lane_run(claimed.lane_run_id, claimed.claim_token, "success", "ok")
+            .expect("finish lane");
+        let finished = load_branch_ci_live_snapshot(state, branch.branch_id)
+            .await
+            .expect("load finished snapshot")
+            .expect("finished snapshot exists");
+        assert!(finished.html.contains("ci: success"));
+        assert!(finished.html.contains("data-branch-ci-active=\"false\""));
+    }
+
+    #[tokio::test]
+    async fn nightly_live_snapshot_html_updates_across_lane_transitions() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let repo_id = store
+            .ensure_forge_repo_metadata(
+                "sledtools/pika",
+                "/tmp/pika.git",
+                "master",
+                "ci/forge-lanes.toml",
+            )
+            .expect("ensure repo metadata");
+        let lane = crate::ci_manifest::ForgeLane {
+            id: "nightly_pika".to_string(),
+            title: "nightly-pika".to_string(),
+            entrypoint: "just checks::nightly-pika-e2e".to_string(),
+            command: vec!["just".to_string(), "checks::nightly-pika-e2e".to_string()],
+            paths: vec![],
+            concurrency_group: None,
+            staged_linux_target: None,
+        };
+        store
+            .queue_nightly_run(
+                repo_id,
+                "refs/heads/master",
+                "nightly-live-head",
+                "2026-03-19T08:00:00Z",
+                std::slice::from_ref(&lane),
+            )
+            .expect("queue nightly");
+        let nightly_run_id = store
+            .list_recent_nightly_runs(1)
+            .expect("nightly feed")
+            .into_iter()
+            .next()
+            .expect("nightly run")
+            .nightly_run_id;
+        let config = Config {
+            repos: vec!["sledtools/pika".to_string()],
+            forge_repo: Some(ForgeRepoConfig {
+                repo: "sledtools/pika".to_string(),
+                canonical_git_dir: "/tmp/pika.git".to_string(),
+                default_branch: "master".to_string(),
+                ci_concurrency: None,
+                mirror_remote: None,
+                mirror_poll_interval_secs: None,
+                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
+                hook_url: None,
+            }),
+            poll_interval_secs: 60,
+            model: "test-model".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            github_token_env: "GITHUB_TOKEN".to_string(),
+            merged_lookback_hours: 72,
+            worker_concurrency: 1,
+            retry_backoff_secs: 120,
+            webhook_secret_env: "PIKA_NEWS_WEBHOOK_SECRET".to_string(),
+            bind_address: "127.0.0.1".to_string(),
+            bind_port: 8787,
+            allowed_npubs: vec![],
+            bootstrap_admin_npubs: vec![],
+        };
+        let state = test_state(store.clone(), config);
+
+        let queued = load_nightly_live_snapshot(Arc::clone(&state), nightly_run_id)
+            .await
+            .expect("load queued nightly")
+            .expect("nightly exists");
+        assert!(queued.html.contains("nightly: queued"));
+        assert!(queued.html.contains("data-nightly-active=\"true\""));
+
+        let claimed = store
+            .claim_pending_nightly_lane_runs(1, 120)
+            .expect("claim nightly")
+            .into_iter()
+            .next()
+            .expect("nightly lane");
+        let running = load_nightly_live_snapshot(Arc::clone(&state), nightly_run_id)
+            .await
+            .expect("load running nightly")
+            .expect("nightly exists");
+        assert!(running.html.contains("running"));
+        assert!(running.html.contains("data-nightly-active=\"true\""));
+
+        store
+            .finish_nightly_lane_run(claimed.lane_run_id, claimed.claim_token, "failed", "boom")
+            .expect("finish nightly");
+        let finished = load_nightly_live_snapshot(state, nightly_run_id)
+            .await
+            .expect("load finished nightly")
+            .expect("nightly exists");
+        assert!(finished.html.contains("nightly: failed"));
+        assert!(finished.html.contains("data-nightly-active=\"false\""));
+    }
+
     #[test]
     fn merged_branch_page_renders_after_source_branch_deletion() {
         let root = tempfile::tempdir().expect("create temp root");

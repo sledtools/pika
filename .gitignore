@@ -7,6 +7,8 @@ pikachat-openclaw/.state/
 pikachat-openclaw/node_modules/
 pikachat-openclaw/**/node_modules/
 pikachat-openclaw/**/package-lock.json
+pikachat-claude/node_modules/
+pikachat-claude/package-lock.json
 pikachat-openclaw/.env
 pikachat-openclaw/.env.*
 
@@ -91,4 +93,3 @@ cmd/pika-relay/pika-relay
 .pika-fixture/
 .pikaci/
 .pikahut-agent-platform-local/
-

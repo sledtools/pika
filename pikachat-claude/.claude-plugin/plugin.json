@@ -1,0 +1,6 @@
+{
+  "name": "pikachat-claude",
+  "version": "0.1.0",
+  "description": "Claude Code channel plugin backed by pikachat daemon",
+  "mcpServers": "./.mcp.json"
+}

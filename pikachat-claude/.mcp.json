@@ -1,0 +1,10 @@
+{
+  "pikachat": {
+    "command": "node",
+    "args": ["${CLAUDE_PLUGIN_ROOT}/dist/server.js"],
+    "startupTimeout": 30000,
+    "env": {
+      "PIKACHAT_CHANNEL_SOURCE": "pikachat"
+    }
+  }
+}

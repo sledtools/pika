@@ -21,8 +21,11 @@ npm run build
 Then run Claude with the plugin directory:
 
 ```sh
-claude --plugin-dir ./pikachat-claude --dangerously-load-development-channels
+claude --plugin-dir ./pikachat-claude \
+  --dangerously-load-development-channels plugin:pikachat-claude
 ```
+
+Channels require Claude Code `v2.1.80+`.
 
 If you are not using a preinstalled `pikachat` binary, the plugin will try to resolve one from GitHub releases using the same logic as `pikachat-openclaw`.
 
@@ -51,4 +54,3 @@ npm run test:e2e-local-relay
 ```
 
 The local relay e2e requires working `cargo` and `go` toolchains.
-

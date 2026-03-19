@@ -167,6 +167,7 @@ pub(crate) struct AgentStateResponse {
     agent_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     vm_id: Option<String>,
+    provider: ProviderKind,
     state: AgentAppState,
     startup_phase: AgentStartupPhase,
 }
@@ -2822,9 +2823,12 @@ fn map_row_to_response(
     let Some(state) = phase_to_state(&row.phase) else {
         return Err(AgentApiError::from_code(AgentApiErrorCode::Internal));
     };
+    let provider = provider_kind_from_db_value(&row.provider)
+        .map_err(|_| AgentApiError::from_code(AgentApiErrorCode::Internal))?;
     Ok(AgentStateResponse {
         agent_id: row.agent_id,
         vm_id: row.vm_id,
+        provider,
         state,
         startup_phase,
     })
@@ -5080,6 +5084,26 @@ GFs2pW5hEhS7cCO0qXaa5g==
             let provider = resolve_requested_provider_kind(None).expect("default provider");
             assert_eq!(provider, ProviderKind::Microvm);
         });
+    }
+
+    #[test]
+    fn map_row_to_response_includes_provider_identity() {
+        let now = chrono::Utc::now().naive_utc();
+        let row = AgentInstance {
+            agent_id: "agent-provider-response".to_string(),
+            owner_npub: "npub1providerresponse".to_string(),
+            vm_id: Some("vm-provider-response".to_string()),
+            provider: "incus".to_string(),
+            provider_config: None,
+            phase: AGENT_PHASE_READY.to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+
+        let response = map_row_to_response(row, AgentStartupPhase::Ready).expect("map response");
+        assert_eq!(response.provider, ProviderKind::Incus);
+        assert_eq!(response.agent_id, "agent-provider-response");
+        assert_eq!(response.vm_id.as_deref(), Some("vm-provider-response"));
     }
 
     #[test]

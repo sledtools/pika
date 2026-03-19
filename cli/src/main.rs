@@ -1841,7 +1841,13 @@ fn agent_provision_request(microvm: &AgentMicrovmArgs) -> Option<AgentProvisionR
 }
 
 async fn cmd_agent_new(http: &AgentHttpArgs, microvm: &AgentMicrovmArgs) -> anyhow::Result<()> {
-    let ensured = ensure_agent_idempotent(http, agent_provision_request(microvm).as_ref()).await?;
+    let body = agent_provision_request(microvm);
+    let ensured = ensure_agent_idempotent(http, body.as_ref()).await?;
+    ensure_agent_matches_requested_provider(
+        &ensured.agent,
+        body.as_ref().and_then(|request| request.provider),
+        "agent ensure response",
+    )?;
     print(json!({
         "operation": "ensure",
         "created": ensured.created,
@@ -1868,6 +1874,11 @@ async fn cmd_agent_recover(http: &AgentHttpArgs, microvm: &AgentMicrovmArgs) -> 
         body.as_ref(),
     )
     .await?;
+    ensure_agent_matches_requested_provider(
+        &agent,
+        body.as_ref().and_then(|request| request.provider),
+        "agent recover response",
+    )?;
     print(json!({
         "operation": "recover",
         "agent": agent,
@@ -1964,6 +1975,43 @@ fn parse_agent_startup_phase(agent: &serde_json::Value) -> anyhow::Result<AgentS
         "error" => AgentStartupPhase::Failed,
         _ => AgentStartupPhase::ProvisioningVm,
     })
+}
+
+fn parse_agent_provider(agent: &serde_json::Value) -> anyhow::Result<Option<ProviderKind>> {
+    let Some(raw) = agent.get("provider") else {
+        return Ok(None);
+    };
+    let Some(raw) = raw.as_str() else {
+        anyhow::bail!("agent response provider was not a string");
+    };
+    match raw.trim() {
+        "microvm" => Ok(Some(ProviderKind::Microvm)),
+        "incus" => Ok(Some(ProviderKind::Incus)),
+        other => anyhow::bail!("agent response provider was invalid: {other}"),
+    }
+}
+
+fn ensure_agent_matches_requested_provider(
+    agent: &serde_json::Value,
+    requested_provider: Option<ProviderKind>,
+    context: &str,
+) -> anyhow::Result<()> {
+    let Some(requested_provider) = requested_provider else {
+        return Ok(());
+    };
+    let actual_provider = parse_agent_provider(agent)?.with_context(|| {
+        format!(
+            "{context} did not include provider identity; cannot verify requested provider {:?}",
+            requested_provider
+        )
+    })?;
+    anyhow::ensure!(
+        actual_provider == requested_provider,
+        "{context} resolved to provider {:?}, expected {:?}",
+        actual_provider,
+        requested_provider
+    );
+    Ok(())
 }
 
 fn agent_startup_status_message(
@@ -2121,7 +2169,13 @@ async fn cmd_agent_chat(
         .as_ref()
         .and_then(|req| req.microvm.as_ref())
         .and_then(|microvm| microvm.kind);
-    let _ = ensure_agent_idempotent(http, body.as_ref()).await?;
+    let requested_provider = body.as_ref().and_then(|request| request.provider);
+    let ensured = ensure_agent_idempotent(http, body.as_ref()).await?;
+    ensure_agent_matches_requested_provider(
+        &ensured.agent,
+        requested_provider,
+        "agent ensure response",
+    )?;
     let poll_delay = Duration::from_secs(options.poll_delay_sec);
     let mut last_state = String::new();
     let mut last_phase = Some(AgentStartupPhase::Requested);
@@ -2132,6 +2186,7 @@ async fn cmd_agent_chat(
 
     for attempt in 1..=options.poll_attempts {
         let me = call_agent_api(http, reqwest::Method::GET, AGENT_API_ME_PATH, None).await?;
+        ensure_agent_matches_requested_provider(&me, requested_provider, "agent status response")?;
         let (agent_npub, state) = parse_agent_fields(&me)?;
         let startup_phase = parse_agent_startup_phase(&me)?;
         last_state = state.clone();
@@ -2900,6 +2955,39 @@ mod tests {
             )
             .contains("Publishing key package")
         );
+    }
+
+    #[test]
+    fn ensure_agent_matches_requested_provider_accepts_matching_response() {
+        let agent = json!({
+            "agent_id": "npub1test",
+            "provider": "incus",
+            "state": "ready",
+            "startup_phase": "ready"
+        });
+        ensure_agent_matches_requested_provider(
+            &agent,
+            Some(ProviderKind::Incus),
+            "agent ensure response",
+        )
+        .expect("provider should match");
+    }
+
+    #[test]
+    fn ensure_agent_matches_requested_provider_rejects_mismatch() {
+        let agent = json!({
+            "agent_id": "npub1test",
+            "provider": "microvm",
+            "state": "ready",
+            "startup_phase": "ready"
+        });
+        let err = ensure_agent_matches_requested_provider(
+            &agent,
+            Some(ProviderKind::Incus),
+            "agent ensure response",
+        )
+        .expect_err("provider mismatch should fail");
+        assert!(err.to_string().contains("expected Incus"));
     }
 
     #[test]

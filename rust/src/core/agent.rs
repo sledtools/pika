@@ -29,6 +29,8 @@ struct AgentStateResponse {
     state: AgentAppState,
     #[serde(default = "default_agent_startup_phase")]
     startup_phase: AgentStartupPhase,
+    #[serde(default, rename = "provider")]
+    _provider: Option<ProviderKind>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -75,6 +77,28 @@ fn endpoint(base: &str, path: &str) -> String {
 
 fn default_agent_startup_phase() -> AgentStartupPhase {
     AgentStartupPhase::ProvisioningVm
+}
+
+fn internal_managed_agent_provider(base_url: &str) -> Option<ProviderKind> {
+    if let Ok(raw) = std::env::var("PIKA_AGENT_VM_PROVIDER") {
+        match raw.trim() {
+            "incus" => return Some(ProviderKind::Incus),
+            "microvm" => return Some(ProviderKind::Microvm),
+            _ => {}
+        }
+    }
+
+    let default_host = reqwest::Url::parse(DEFAULT_AGENT_API_URL)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string));
+    let current_host = reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string));
+    if current_host.is_some() && current_host == default_host {
+        Some(ProviderKind::Incus)
+    } else {
+        None
+    }
 }
 
 fn resolve_agent_api_url(
@@ -152,7 +176,7 @@ async fn ensure_agent(
     base_url: &str,
     agent_kind: crate::state::AgentKind,
 ) -> Result<(), AgentFlowError> {
-    let body = serde_json::to_value(internal_managed_agent_request(agent_kind))
+    let body = serde_json::to_value(internal_managed_agent_request(base_url, agent_kind))
         .map_err(|_| AgentFlowError::InvalidResponse)?;
     let response = send_agent_request(
         client,
@@ -236,7 +260,7 @@ async fn recover_my_agent(
     base_url: &str,
     agent_kind: crate::state::AgentKind,
 ) -> Result<AgentStateResponse, AgentFlowError> {
-    let body = serde_json::to_value(internal_managed_agent_request(agent_kind))
+    let body = serde_json::to_value(internal_managed_agent_request(base_url, agent_kind))
         .map_err(|_| AgentFlowError::InvalidResponse)?;
     let response = send_agent_request(
         client,
@@ -310,9 +334,13 @@ fn send_progress(
     )));
 }
 
-fn internal_managed_agent_request(agent_kind: crate::state::AgentKind) -> AgentProvisionRequest {
+fn internal_managed_agent_request(
+    base_url: &str,
+    agent_kind: crate::state::AgentKind,
+) -> AgentProvisionRequest {
+    let provider = internal_managed_agent_provider(base_url);
     AgentProvisionRequest {
-        provider: Some(ProviderKind::Incus),
+        provider,
         microvm: Some(MicrovmProvisionParams {
             spawner_url: None,
             kind: Some(match agent_kind {
@@ -322,8 +350,11 @@ fn internal_managed_agent_request(agent_kind: crate::state::AgentKind) -> AgentP
             backend: None,
         }),
         // Keep the transitional runtime-selection payload explicit while making
-        // the VM substrate choice unambiguous for the shared internal flow.
-        incus: Some(IncusProvisionParams::default()),
+        // the hosted internal flow target Incus deliberately. Custom app-server
+        // targets still fall back to server-default substrate policy unless the
+        // client overrides PIKA_AGENT_VM_PROVIDER explicitly.
+        incus: matches!(provider, Some(ProviderKind::Incus))
+            .then_some(IncusProvisionParams::default()),
     }
 }
 
@@ -912,6 +943,54 @@ mod tests {
     }
 
     #[test]
+    fn internal_managed_agent_request_targets_incus_for_hosted_api() {
+        let request =
+            internal_managed_agent_request("https://api.pikachat.org", crate::state::AgentKind::Pi);
+        match std::env::var("PIKA_AGENT_VM_PROVIDER").ok().as_deref() {
+            Some("microvm") => {
+                assert_eq!(request.provider, Some(ProviderKind::Microvm));
+                assert_eq!(request.incus, None);
+            }
+            Some("incus") => {
+                assert_eq!(request.provider, Some(ProviderKind::Incus));
+                assert_eq!(request.incus, Some(IncusProvisionParams::default()));
+            }
+            _ => {
+                assert_eq!(request.provider, Some(ProviderKind::Incus));
+                assert_eq!(request.incus, Some(IncusProvisionParams::default()));
+            }
+        }
+        assert_eq!(
+            request.microvm.as_ref().and_then(|params| params.kind),
+            Some(MicrovmAgentKind::Pi)
+        );
+    }
+
+    #[test]
+    fn internal_managed_agent_request_leaves_provider_unset_for_custom_server() {
+        let request =
+            internal_managed_agent_request("http://127.0.0.1:8080", crate::state::AgentKind::Pi);
+        match std::env::var("PIKA_AGENT_VM_PROVIDER").ok().as_deref() {
+            Some("microvm") => {
+                assert_eq!(request.provider, Some(ProviderKind::Microvm));
+                assert_eq!(request.incus, None);
+            }
+            Some("incus") => {
+                assert_eq!(request.provider, Some(ProviderKind::Incus));
+                assert_eq!(request.incus, Some(IncusProvisionParams::default()));
+            }
+            _ => {
+                assert_eq!(request.provider, None);
+                assert_eq!(request.incus, None);
+            }
+        }
+        assert_eq!(
+            request.microvm.as_ref().and_then(|params| params.kind),
+            Some(MicrovmAgentKind::Pi)
+        );
+    }
+
+    #[test]
     fn agent_flow_error_maps_to_human_messages() {
         let msg = AgentFlowError::NotWhitelisted.to_user_message();
         assert!(msg.contains("allowlisted"));
@@ -978,8 +1057,6 @@ mod tests {
         assert!(captured[1].0.starts_with("GET /v1/agents/me "));
         assert!(captured[0].1.starts_with("Nostr "));
         assert!(captured[1].1.starts_with("Nostr "));
-        assert!(captured[0].2.contains("\"provider\":\"incus\""));
-        assert!(captured[0].2.contains("\"incus\":{}"));
         assert!(captured[0].2.contains("\"kind\":\"openclaw\""));
     }
 
@@ -1070,8 +1147,35 @@ mod tests {
             .iter()
             .find(|(request_line, _, _)| request_line.starts_with("POST /v1/agents/me/recover "))
             .expect("recover request");
-        assert!(recover.2.contains("\"provider\":\"incus\""));
-        assert!(recover.2.contains("\"incus\":{}"));
         assert!(recover.2.contains("\"kind\":\"pi\""));
+    }
+
+    #[tokio::test]
+    async fn run_agent_flow_leaves_provider_unset_for_custom_server() {
+        let (base_url, handle) = spawn_agent_flow_mock_server().expect("start mock server");
+        let client = reqwest::Client::new();
+        let keys = Keys::generate();
+
+        let (tx, _rx) = flume::unbounded();
+        let agent_id = run_agent_flow(
+            client,
+            keys,
+            base_url,
+            crate::state::AgentKind::Openclaw,
+            tx,
+            1,
+        )
+        .await
+        .expect("run agent flow");
+        assert_eq!(agent_id, "npub1testagent");
+
+        let captured = handle
+            .join()
+            .map_err(|_| anyhow!("mock server thread panicked"))
+            .and_then(|result| result)
+            .expect("collect captured requests");
+        assert!(!captured[0].2.contains("\"provider\":\"incus\""));
+        assert!(!captured[0].2.contains("\"incus\":{}"));
+        assert!(captured[0].2.contains("\"kind\":\"openclaw\""));
     }
 }

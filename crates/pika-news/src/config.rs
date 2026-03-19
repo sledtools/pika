@@ -17,6 +17,7 @@ pub const DEFAULT_BIND_PORT: u16 = 8787;
 pub const DEFAULT_FORGE_REPO: &str = "sledtools/pika";
 pub const DEFAULT_DEFAULT_BRANCH: &str = "master";
 pub const DEFAULT_MIRROR_POLL_INTERVAL_SECS: u64 = 300;
+pub const DEFAULT_FORGE_CI_CONCURRENCY: usize = 2;
 
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
@@ -58,6 +59,8 @@ pub struct ForgeRepoConfig {
     #[serde(default = "default_default_branch")]
     pub default_branch: String,
     #[serde(default)]
+    pub ci_concurrency: Option<usize>,
+    #[serde(default)]
     pub mirror_remote: Option<String>,
     #[serde(default)]
     pub mirror_poll_interval_secs: Option<u64>,
@@ -79,6 +82,9 @@ impl Config {
             }
             if forge.default_branch.trim().is_empty() {
                 forge.default_branch = DEFAULT_DEFAULT_BRANCH.to_string();
+            }
+            if forge.ci_concurrency.unwrap_or(0) == 0 {
+                forge.ci_concurrency = Some(DEFAULT_FORGE_CI_CONCURRENCY);
             }
             if forge.ci_command.is_empty() {
                 forge.ci_command = default_ci_command();

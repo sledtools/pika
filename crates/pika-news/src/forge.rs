@@ -802,6 +802,7 @@ mod tests {
             repo: "sledtools/pika".to_string(),
             canonical_git_dir: bare.to_str().expect("bare path").to_string(),
             default_branch: "master".to_string(),
+            ci_concurrency: Some(2),
             mirror_remote: None,
             mirror_poll_interval_secs: None,
             ci_command: vec!["./ci.sh".to_string()],

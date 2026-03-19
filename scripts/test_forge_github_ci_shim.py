@@ -273,6 +273,135 @@ command = ["python3", "-c", "print('nightly')"]
             self.assertEqual(payload["changed_paths"], ["foo.rs"])
             self.assertEqual([lane["id"] for lane in payload["include"]], ["root_rust"])
 
+    def test_staged_linux_target_resolves_to_remote_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            git(repo, "init")
+            git(repo, "config", "user.name", "Test User")
+            git(repo, "config", "user.email", "test@example.com")
+            (repo / "ci").mkdir()
+            (repo / "docs").mkdir()
+            (repo / "docs" / "guide.md").write_text("docs\n", encoding="utf-8")
+            (repo / "ci" / "forge-lanes.toml").write_text(
+                """
+version = 1
+nightly_schedule_utc = "08:00"
+
+[[branch.lanes]]
+id = "linux"
+title = "linux"
+staged_linux_target = "pre-merge-pika-rust"
+paths = ["docs/**"]
+
+[[nightly.lanes]]
+id = "nightly"
+title = "nightly"
+entrypoint = "./nightly.sh"
+command = ["./nightly.sh"]
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            git(repo, "add", "docs/guide.md", "ci/forge-lanes.toml")
+            git(repo, "commit", "-m", "base")
+            base = git(repo, "rev-parse", "HEAD")
+
+            (repo / "docs" / "guide.md").write_text("changed\n", encoding="utf-8")
+            git(repo, "add", "docs/guide.md")
+            git(repo, "commit", "-m", "docs change")
+            head = git(repo, "rev-parse", "HEAD")
+
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    "select",
+                    "--mode",
+                    "branch",
+                    "--base",
+                    base,
+                    "--head",
+                    head,
+                    "--compare-repo-root",
+                    str(repo),
+                    "--head-repo-root",
+                    str(repo),
+                ],
+                cwd=REPO_ROOT,
+                env={**os.environ, "FORGE_GITHUB_CI_REPO_ROOT": str(repo)},
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            payload = json.loads(completed.stdout)
+            self.assertEqual([lane["id"] for lane in payload["include"]], ["linux"])
+            self.assertEqual(
+                payload["include"][0]["command"],
+                ["./scripts/pikaci-staged-linux-remote.sh", "run", "pre-merge-pika-rust"],
+            )
+
+    def test_run_supports_staged_linux_target_only_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            git(repo, "init")
+            git(repo, "config", "user.name", "Test User")
+            git(repo, "config", "user.email", "test@example.com")
+            (repo / "ci").mkdir()
+            (repo / "scripts").mkdir()
+            marker = repo / "ran.txt"
+            (repo / "scripts" / "pikaci-staged-linux-remote.sh").write_text(
+                f"""#!/usr/bin/env bash
+set -euo pipefail
+printf "%s %s\\n" "$1" "$2" > "{marker}"
+""",
+                encoding="utf-8",
+            )
+            (repo / "ci" / "forge-lanes.toml").write_text(
+                """
+version = 1
+nightly_schedule_utc = "08:00"
+
+[[branch.lanes]]
+id = "x"
+title = "x"
+staged_linux_target = "pre-merge-pika-rust"
+
+[[nightly.lanes]]
+id = "nightly"
+title = "nightly"
+entrypoint = "./nightly.sh"
+command = ["./nightly.sh"]
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["chmod", "+x", str(repo / "scripts" / "pikaci-staged-linux-remote.sh")],
+                check=True,
+            )
+
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    "run",
+                    "--mode",
+                    "branch",
+                    "--lane-id",
+                    "x",
+                ],
+                cwd=REPO_ROOT,
+                env={**os.environ, "FORGE_GITHUB_CI_REPO_ROOT": str(repo)},
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            self.assertIn(
+                "./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-rust",
+                completed.stdout,
+            )
+            self.assertEqual(marker.read_text(encoding="utf-8"), "run pre-merge-pika-rust\n")
+
     def test_branch_selection_uses_branch_head_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

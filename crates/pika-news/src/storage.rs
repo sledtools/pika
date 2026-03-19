@@ -2469,6 +2469,11 @@ fn migrations() -> Vec<Migration> {
             name: "0016_ci_rerun_provenance",
             sql: include_str!("../migrations/0016_ci_rerun_provenance.sql"),
         },
+        Migration {
+            version: 17,
+            name: "0017_ci_lane_concurrency_groups",
+            sql: include_str!("../migrations/0017_ci_lane_concurrency_groups.sql"),
+        },
     ]
 }
 

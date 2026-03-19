@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use anyhow::{bail, Context};
 use chrono::{SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
@@ -117,6 +119,7 @@ pub struct PendingBranchCiLaneJob {
     pub title: String,
     pub entrypoint: String,
     pub command: Vec<String>,
+    pub concurrency_group: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -169,6 +172,7 @@ pub struct PendingNightlyLaneJob {
     pub source_head_sha: String,
     pub lane_id: String,
     pub command: Vec<String>,
+    pub concurrency_group: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -222,6 +226,7 @@ struct BranchLaneRerunSource {
     title: String,
     entrypoint: String,
     command_json: String,
+    concurrency_group: Option<String>,
     status: String,
 }
 
@@ -235,6 +240,7 @@ struct NightlyLaneRerunSource {
     title: String,
     entrypoint: String,
     command_json: String,
+    concurrency_group: Option<String>,
     status: String,
 }
 
@@ -679,9 +685,17 @@ impl Store {
                         title,
                         entrypoint,
                         command_json,
+                        concurrency_group,
                         status
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, 'queued')",
-                    params![suite_id, lane.id, lane.title, lane.entrypoint, command_json],
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'queued')",
+                    params![
+                        suite_id,
+                        lane.id,
+                        lane.title,
+                        lane.entrypoint,
+                        command_json,
+                        lane.concurrency_group
+                    ],
                 )
                 .with_context(|| format!("insert branch ci lane for suite {}", suite_id))?;
             }
@@ -866,9 +880,17 @@ impl Store {
                         title,
                         entrypoint,
                         command_json,
+                        concurrency_group,
                         status
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, 'queued')",
-                    params![nightly_run_id, lane.id, lane.title, lane.entrypoint, command_json],
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'queued')",
+                    params![
+                        nightly_run_id,
+                        lane.id,
+                        lane.title,
+                        lane.entrypoint,
+                        command_json,
+                        lane.concurrency_group
+                    ],
                 )
                 .with_context(|| format!("insert nightly lane for run {}", nightly_run_id))?;
             }
@@ -895,6 +917,7 @@ impl Store {
                             lane.title,
                             lane.entrypoint,
                             lane.command_json,
+                            lane.concurrency_group,
                             lane.status
                      FROM branch_ci_run_lanes lane
                      JOIN branch_ci_runs suite ON suite.id = lane.branch_ci_run_id
@@ -909,7 +932,8 @@ impl Store {
                             title: row.get(4)?,
                             entrypoint: row.get(5)?,
                             command_json: row.get(6)?,
-                            status: row.get(7)?,
+                            concurrency_group: row.get(7)?,
+                            status: row.get(8)?,
                         })
                     },
                 )
@@ -954,15 +978,17 @@ impl Store {
                     title,
                     entrypoint,
                     command_json,
+                    concurrency_group,
                     status,
                     rerun_of_lane_run_id
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'queued', ?7)",
                 params![
                     rerun_suite_id,
                     row.lane_id,
                     row.title,
                     row.entrypoint,
                     row.command_json,
+                    row.concurrency_group,
                     lane_run_id
                 ],
             )
@@ -992,6 +1018,7 @@ impl Store {
                             lane.title,
                             lane.entrypoint,
                             lane.command_json,
+                            lane.concurrency_group,
                             lane.status
                      FROM nightly_run_lanes lane
                      JOIN nightly_runs nightly ON nightly.id = lane.nightly_run_id
@@ -1007,7 +1034,8 @@ impl Store {
                             title: row.get(5)?,
                             entrypoint: row.get(6)?,
                             command_json: row.get(7)?,
-                            status: row.get(8)?,
+                            concurrency_group: row.get(8)?,
+                            status: row.get(9)?,
                         })
                     },
                 )
@@ -1051,15 +1079,17 @@ impl Store {
                     title,
                     entrypoint,
                     command_json,
+                    concurrency_group,
                     status,
                     rerun_of_lane_run_id
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'queued', ?7)",
                 params![
                     rerun_run_id,
                     row.lane_id,
                     row.title,
                     row.entrypoint,
                     row.command_json,
+                    row.concurrency_group,
                     lane_run_id
                 ],
             )
@@ -1578,25 +1608,29 @@ impl Store {
         limit: usize,
         lease_secs: u64,
     ) -> anyhow::Result<Vec<PendingBranchCiLaneJob>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         self.with_connection(|conn| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .context("start branch ci lane claim transaction")?;
             let lease_window = format!("+{} seconds", lease_secs);
+            let mut running_groups =
+                running_concurrency_groups(&tx).context("load running ci concurrency groups")?;
             let mut jobs = Vec::new();
             {
                 let mut stmt = tx
                     .prepare(
-                        "SELECT lane.id, lane.claim_token, lane.branch_ci_run_id, suite.branch_id, suite.source_head_sha, lane.lane_id, lane.title, lane.entrypoint, lane.command_json
+                        "SELECT lane.id, lane.claim_token, lane.branch_ci_run_id, suite.branch_id, suite.source_head_sha, lane.lane_id, lane.title, lane.entrypoint, lane.command_json, lane.concurrency_group
                          FROM branch_ci_run_lanes lane
                          JOIN branch_ci_runs suite ON suite.id = lane.branch_ci_run_id
                          WHERE lane.status = 'queued'
-                         ORDER BY lane.id ASC
-                         LIMIT ?1",
+                         ORDER BY lane.id ASC",
                     )
                     .context("prepare branch ci lane claim query")?;
                 let rows = stmt
-                    .query_map(params![limit as i64], |row| {
+                    .query_map([], |row| {
                         let command_json: String = row.get(8)?;
                         let command: Vec<String> =
                             serde_json::from_str(&command_json).unwrap_or_default();
@@ -1610,11 +1644,20 @@ impl Store {
                             title: row.get(6)?,
                             entrypoint: row.get(7)?,
                             command,
+                            concurrency_group: row.get(9)?,
                         })
                     })
                     .context("query queued branch ci lanes")?;
+                let mut candidates = Vec::new();
                 for row in rows {
-                    let job = row.context("read queued branch ci lane row")?;
+                    candidates.push(row.context("read queued branch ci lane row")?);
+                }
+                for job in candidates {
+                    if let Some(group) = job.concurrency_group.as_deref() {
+                        if running_groups.contains(group) {
+                            continue;
+                        }
+                    }
                     let updated = tx
                         .execute(
                         "UPDATE branch_ci_run_lanes
@@ -1635,6 +1678,9 @@ impl Store {
                     if updated == 0 {
                         continue;
                     }
+                    if let Some(group) = job.concurrency_group.as_ref() {
+                        running_groups.insert(group.clone());
+                    }
                     tx.execute(
                         "UPDATE branch_ci_runs
                          SET status = 'running',
@@ -1645,6 +1691,9 @@ impl Store {
                     )
                     .with_context(|| format!("mark branch ci suite {} running", job.suite_id))?;
                     jobs.push(job);
+                    if jobs.len() == limit {
+                        break;
+                    }
                 }
             }
             tx.commit()
@@ -1722,25 +1771,29 @@ impl Store {
         limit: usize,
         lease_secs: u64,
     ) -> anyhow::Result<Vec<PendingNightlyLaneJob>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         self.with_connection(|conn| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .context("start nightly lane claim transaction")?;
             let lease_window = format!("+{} seconds", lease_secs);
+            let mut running_groups =
+                running_concurrency_groups(&tx).context("load running ci concurrency groups")?;
             let mut jobs = Vec::new();
             {
                 let mut stmt = tx
                     .prepare(
-                        "SELECT lane.id, lane.claim_token, lane.nightly_run_id, nightly.source_head_sha, lane.lane_id, lane.command_json
+                        "SELECT lane.id, lane.claim_token, lane.nightly_run_id, nightly.source_head_sha, lane.lane_id, lane.command_json, lane.concurrency_group
                          FROM nightly_run_lanes lane
                          JOIN nightly_runs nightly ON nightly.id = lane.nightly_run_id
                          WHERE lane.status = 'queued'
-                         ORDER BY lane.id ASC
-                         LIMIT ?1",
+                         ORDER BY lane.id ASC",
                     )
                     .context("prepare nightly lane claim query")?;
                 let rows = stmt
-                    .query_map(params![limit as i64], |row| {
+                    .query_map([], |row| {
                         let command_json: String = row.get(5)?;
                         let command: Vec<String> =
                             serde_json::from_str(&command_json).unwrap_or_default();
@@ -1751,11 +1804,20 @@ impl Store {
                             source_head_sha: row.get(3)?,
                             lane_id: row.get(4)?,
                             command,
+                            concurrency_group: row.get(6)?,
                         })
                     })
                     .context("query queued nightly lanes")?;
+                let mut candidates = Vec::new();
                 for row in rows {
-                    let job = row.context("read queued nightly lane row")?;
+                    candidates.push(row.context("read queued nightly lane row")?);
+                }
+                for job in candidates {
+                    if let Some(group) = job.concurrency_group.as_deref() {
+                        if running_groups.contains(group) {
+                            continue;
+                        }
+                    }
                     let updated = tx
                         .execute(
                         "UPDATE nightly_run_lanes
@@ -1776,6 +1838,9 @@ impl Store {
                     if updated == 0 {
                         continue;
                     }
+                    if let Some(group) = job.concurrency_group.as_ref() {
+                        running_groups.insert(group.clone());
+                    }
                     tx.execute(
                         "UPDATE nightly_runs
                          SET status = 'running',
@@ -1786,6 +1851,9 @@ impl Store {
                     )
                     .with_context(|| format!("mark nightly run {} running", job.nightly_run_id))?;
                     jobs.push(job);
+                    if jobs.len() == limit {
+                        break;
+                    }
                 }
             }
             tx.commit()
@@ -2099,16 +2167,41 @@ fn aggregate_lane_status(
     let total = failed + running + queued + success + skipped;
     let status = if total == 0 || success + skipped == total {
         "success"
-    } else if failed > 0 {
-        "failed"
-    } else if running > 0 {
+    } else if running > 0 || (queued > 0 && (failed > 0 || success > 0 || skipped > 0)) {
         "running"
     } else if queued > 0 {
         "queued"
+    } else if failed > 0 {
+        "failed"
     } else {
         "success"
     };
     Ok(status.to_string())
+}
+
+fn running_concurrency_groups(conn: &Connection) -> anyhow::Result<HashSet<String>> {
+    let mut groups = HashSet::new();
+    for table in ["branch_ci_run_lanes", "nightly_run_lanes"] {
+        let sql = format!(
+            "SELECT concurrency_group
+             FROM {table}
+             WHERE status = 'running'
+               AND concurrency_group IS NOT NULL
+               AND concurrency_group <> ''"
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .with_context(|| format!("prepare running concurrency group query for {table}"))?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .with_context(|| format!("query running concurrency groups from {table}"))?;
+        for row in rows {
+            groups.insert(
+                row.with_context(|| format!("read running concurrency group from {table}"))?,
+            );
+        }
+    }
+    Ok(groups)
 }
 
 fn stale_parent_ids(conn: &Connection, table: &str, foreign_key: &str) -> anyhow::Result<Vec<i64>> {
@@ -2228,7 +2321,15 @@ mod tests {
             entrypoint: format!("just checks::{id}"),
             command: vec!["just".to_string(), format!("checks::{id}")],
             paths: vec![],
+            concurrency_group: None,
+            staged_linux_target: None,
         }
+    }
+
+    fn sample_lane_with_group(id: &str, concurrency_group: &str) -> ForgeLane {
+        let mut lane = sample_lane(id);
+        lane.concurrency_group = Some(concurrency_group.to_string());
+        lane
     }
 
     #[test]
@@ -2487,6 +2588,153 @@ mod tests {
             .rerun_nightly_lane(wrong_nightly.nightly_run_id, job.lane_run_id)
             .expect("rerun mismatch");
         assert!(rerun.is_none());
+    }
+
+    #[test]
+    fn failed_lane_does_not_finish_suite_while_another_lane_is_running() {
+        let store = open_store();
+        let branch = store
+            .upsert_branch_record(&upsert_input("feature/parallel-status", "head-status"))
+            .expect("insert branch");
+        store
+            .queue_branch_ci_run_for_head(
+                branch.branch_id,
+                "head-status",
+                &[sample_lane("first"), sample_lane("second")],
+            )
+            .expect("queue ci suite");
+        let jobs = store
+            .claim_pending_branch_ci_lane_runs(2, 120)
+            .expect("claim ci jobs");
+        assert_eq!(jobs.len(), 2);
+
+        store
+            .finish_branch_ci_lane_run(jobs[0].lane_run_id, jobs[0].claim_token, "failed", "boom")
+            .expect("finish first lane");
+
+        let runs = store
+            .list_branch_ci_runs(branch.branch_id, 4)
+            .expect("list branch runs");
+        assert_eq!(runs[0].status, "running");
+        assert!(runs[0].finished_at.is_none());
+        assert_eq!(runs[0].lanes[0].status, "failed");
+        assert_eq!(runs[0].lanes[1].status, "running");
+
+        store
+            .finish_branch_ci_lane_run(jobs[1].lane_run_id, jobs[1].claim_token, "success", "ok")
+            .expect("finish second lane");
+        let runs = store
+            .list_branch_ci_runs(branch.branch_id, 4)
+            .expect("list branch runs");
+        assert_eq!(runs[0].status, "failed");
+        assert!(runs[0].finished_at.is_some());
+    }
+
+    #[test]
+    fn same_concurrency_group_is_claimed_serially() {
+        let store = open_store();
+        let first = store
+            .upsert_branch_record(&upsert_input("feature/one", "head-one"))
+            .expect("insert first branch");
+        let second = store
+            .upsert_branch_record(&upsert_input("feature/two", "head-two"))
+            .expect("insert second branch");
+        let third = store
+            .upsert_branch_record(&upsert_input("feature/three", "head-three"))
+            .expect("insert third branch");
+        store
+            .queue_branch_ci_run_for_head(
+                first.branch_id,
+                "head-one",
+                &[sample_lane_with_group("linux_one", "staged-linux:shared")],
+            )
+            .expect("queue first");
+        store
+            .queue_branch_ci_run_for_head(
+                second.branch_id,
+                "head-two",
+                &[sample_lane_with_group("linux_two", "staged-linux:shared")],
+            )
+            .expect("queue second");
+        store
+            .queue_branch_ci_run_for_head(
+                third.branch_id,
+                "head-three",
+                &[sample_lane_with_group("linux_other", "staged-linux:other")],
+            )
+            .expect("queue third");
+
+        let jobs = store
+            .claim_pending_branch_ci_lane_runs(3, 120)
+            .expect("claim jobs");
+        assert_eq!(jobs.len(), 2);
+        assert!(jobs.iter().any(|job| job.lane_id == "linux_one"));
+        assert!(jobs.iter().any(|job| job.lane_id == "linux_other"));
+        assert!(!jobs.iter().any(|job| job.lane_id == "linux_two"));
+
+        let first_job = jobs
+            .iter()
+            .find(|job| job.lane_id == "linux_one")
+            .expect("first shared job");
+        store
+            .finish_branch_ci_lane_run(
+                first_job.lane_run_id,
+                first_job.claim_token,
+                "success",
+                "ok",
+            )
+            .expect("finish first shared job");
+
+        let next_jobs = store
+            .claim_pending_branch_ci_lane_runs(3, 120)
+            .expect("claim remaining jobs");
+        assert_eq!(next_jobs.len(), 1);
+        assert_eq!(next_jobs[0].lane_id, "linux_two");
+    }
+
+    #[test]
+    fn duplicate_claims_are_prevented_across_parallel_workers() {
+        let store = open_store();
+        let branch = store
+            .upsert_branch_record(&upsert_input("feature/claim-race", "head-race"))
+            .expect("insert branch");
+        store
+            .queue_branch_ci_run_for_head(
+                branch.branch_id,
+                "head-race",
+                &[sample_lane("one"), sample_lane("two")],
+            )
+            .expect("queue ci suite");
+
+        let first_store = store.clone();
+        let second_store = store.clone();
+        let first = std::thread::spawn(move || {
+            first_store
+                .claim_pending_branch_ci_lane_runs(1, 120)
+                .expect("first claim")
+        });
+        let second = std::thread::spawn(move || {
+            second_store
+                .claim_pending_branch_ci_lane_runs(1, 120)
+                .expect("second claim")
+        });
+
+        let mut lane_ids = first
+            .join()
+            .expect("join first claim")
+            .into_iter()
+            .map(|job| job.lane_run_id)
+            .collect::<Vec<_>>();
+        lane_ids.extend(
+            second
+                .join()
+                .expect("join second claim")
+                .into_iter()
+                .map(|job| job.lane_run_id),
+        );
+        lane_ids.sort_unstable();
+        lane_ids.dedup();
+        assert_eq!(lane_ids.len(), 2);
     }
 
     #[test]

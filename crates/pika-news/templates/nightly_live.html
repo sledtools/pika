@@ -21,6 +21,24 @@
 
   <section class="panel">
     <h2>Lanes</h2>
+    <div class="lane-action-row">
+      <button
+        type="button"
+        class="secondary-btn lane-btn ci-wake-btn"
+        data-action-path="/news/api/forge/ci/wake"
+        data-busy-label="Waking CI..."
+        data-done-label="Scheduler wake requested."
+        style="display:none;"
+      >Wake CI Scheduler</button>
+      <button
+        type="button"
+        class="secondary-btn lane-btn lane-recover-run-btn"
+        data-action-path="/news/nightly/{{ nightly_run_id }}/recover"
+        data-busy-label="Recovering nightly..."
+        data-done-label="Nightly recovery queued."
+        style="display:none;"
+      >Recover Stuck Nightly</button>
+    </div>
     {% if failed_lane_count > 0 %}
     <div class="lane-summary">
       This nightly has {{ failed_lane_count }} failed lane(s). Failed lanes are highlighted below with logs and rerun controls.
@@ -31,9 +49,21 @@
     {% else %}
     {% for lane in lanes %}
     <article class="lane {% if lane.status == "failed" %}failed{% endif %}">
-      <p><strong>{{ lane.title }}</strong> · {{ lane.status }} · <code>{{ lane.entrypoint }}</code></p>
+      <p><strong>{{ lane.title }}</strong> · <span class="lane-status-badge {{ lane.status_badge_class }}">{{ lane.status }}</span> · <code>{{ lane.entrypoint }}</code></p>
       <p class="muted">lane id <code>{{ lane.lane_id }}</code> · retries {{ lane.retry_count }} · queued {{ lane.created_at }}</p>
-      {% if lane.status == "failed" %}
+      {% match lane.operator_hint %}
+      {% when Some with (operator_hint) %}
+      <p class="muted">{{ operator_hint }}</p>
+      {% when None %}{% endmatch %}
+      {% match lane.last_heartbeat_at %}
+      {% when Some with (last_heartbeat_at) %}
+      <p class="muted">last heartbeat {{ last_heartbeat_at }}</p>
+      {% when None %}{% endmatch %}
+      {% match lane.lease_expires_at %}
+      {% when Some with (lease_expires_at) %}
+      <p class="muted">lease expires {{ lease_expires_at }}</p>
+      {% when None %}{% endmatch %}
+      {% if lane.is_failed %}
       <p class="failure-hint">This lane failed. Check the log output below before rerunning.</p>
       {% endif %}
       {% match lane.rerun_of_lane_run_id %}
@@ -65,6 +95,28 @@
       {% when None %}
       <p class="muted">No logs yet.</p>
       {% endmatch %}
+      {% if lane.status == "queued" || lane.status == "running" || lane.status == "failed" %}
+      <div class="lane-action-row">
+        {% if lane.status == "queued" || lane.status == "running" %}
+        <button
+          type="button"
+          class="secondary-btn lane-btn lane-fail-btn"
+          data-action-path="/news/nightly/{{ nightly_run_id }}/fail/{{ lane.id }}"
+          data-busy-label="Failing lane..."
+          data-done-label="Lane marked failed."
+          style="display:none;"
+        >Mark Lane Failed</button>
+        {% endif %}
+        <button
+          type="button"
+          class="secondary-btn lane-btn lane-requeue-btn"
+          data-action-path="/news/nightly/{{ nightly_run_id }}/requeue/{{ lane.id }}"
+          data-busy-label="Requeueing lane..."
+          data-done-label="Lane requeued."
+          style="display:none;"
+        >Requeue Lane</button>
+      </div>
+      {% endif %}
       {% if lane.status != "queued" && lane.status != "running" %}
       <button
         type="button"

@@ -15,9 +15,17 @@
       .lane:first-child { border-top: none; padding-top: 0; margin-top: 0; }
       .lane.failed { border-top-color: #b8475b; background: rgba(184, 71, 91, 0.09); border-radius: 10px; padding: 0.85rem; }
       .lane pre { overflow-x: auto; background: var(--badge-bg); border-radius: 8px; padding: 0.75rem; font-size: 0.82rem; }
+      .lane-status-badge { display: inline-flex; align-items: center; border-radius: 999px; border: 1px solid transparent; padding: 0.12rem 0.55rem; font-size: 0.76rem; font-weight: 600; line-height: 1.2; text-transform: uppercase; letter-spacing: 0.03em; }
+      .lane-status-badge.status-success { background: rgba(40, 167, 69, 0.12); border-color: rgba(40, 167, 69, 0.35); color: #1f7a3d; }
+      .lane-status-badge.status-failed { background: rgba(184, 71, 91, 0.14); border-color: rgba(184, 71, 91, 0.38); color: #8b1e3f; }
+      .lane-status-badge.status-running { background: rgba(15, 76, 129, 0.12); border-color: rgba(15, 76, 129, 0.34); color: #0f4c81; }
+      .lane-status-badge.status-queued { background: var(--badge-bg); border-color: var(--border-light); color: var(--text-secondary); }
+      .lane-status-badge.status-skipped { background: rgba(217, 164, 65, 0.14); border-color: rgba(217, 164, 65, 0.36); color: #8c6112; }
+      .lane-status-badge.status-neutral { background: var(--badge-bg); border-color: var(--border-light); color: var(--text-secondary); }
       .failure-hint { color: #8b1e3f; font-weight: 600; }
       .muted { color: var(--text-muted); }
       .lane-btn { margin-top: 0.5rem; }
+      .lane-action-row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-top: 0.6rem; }
 {% endblock %}
 
 {% block body %}
@@ -47,6 +55,10 @@
           return Array.from(document.querySelectorAll('.lane-rerun-btn'));
         }
 
+        function recoveryButtons() {
+          return Array.from(document.querySelectorAll('.ci-wake-btn, .lane-fail-btn, .lane-requeue-btn, .lane-recover-run-btn'));
+        }
+
         function authToken() {
           return window.pikaAuth && window.pikaAuth.getToken ? window.pikaAuth.getToken() : null;
         }
@@ -54,6 +66,9 @@
         function showRerunButtons() {
           const canForgeWrite = window.pikaAuth && window.pikaAuth.canForgeWrite ? window.pikaAuth.canForgeWrite() : false;
           rerunButtons().forEach((button) => {
+            button.style.display = canForgeWrite ? '' : 'none';
+          });
+          recoveryButtons().forEach((button) => {
             button.style.display = canForgeWrite ? '' : 'none';
           });
         }
@@ -86,10 +101,38 @@
           });
         }
 
+        function wireRecoveryButtons() {
+          recoveryButtons().forEach((button) => {
+            if (button.dataset.bound === 'true') return;
+            button.dataset.bound = 'true';
+            button.addEventListener('click', async () => {
+              const token = authToken();
+              if (!token) return;
+              const originalLabel = button.textContent;
+              button.disabled = true;
+              button.textContent = button.dataset.busyLabel || 'Working...';
+              try {
+                const res = await fetch(button.dataset.actionPath, {
+                  method: 'POST',
+                  headers: { 'Authorization': 'Bearer ' + token }
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.error || 'request failed');
+                button.textContent = button.dataset.doneLabel || 'Done.';
+                window.location.reload();
+              } catch (err) {
+                button.disabled = false;
+                button.textContent = err.message || originalLabel;
+              }
+            });
+          });
+        }
+
         function applyNightlyLive(payload) {
           if (!nightlyLive || !payload || typeof payload.html !== 'string') return;
           nightlyLive.innerHTML = payload.html;
           wireRerunButtons();
+          wireRecoveryButtons();
           showRerunButtons();
         }
 
@@ -113,6 +156,7 @@
 
         window.addEventListener('pika-auth', showRerunButtons);
         wireRerunButtons();
+        wireRecoveryButtons();
         showRerunButtons();
         startNightlyStream();
       })();

@@ -58,6 +58,7 @@
       .failure-hint { color: #8b1e3f; font-weight: 600; }
       .muted { color: var(--text-muted); }
       .lane-btn { margin-top: 0.5rem; }
+      .lane-action-row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-top: 0.6rem; }
       button:disabled { opacity: 0.55; cursor: default; }
       .review-nav-center { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
       .review-nav-pos { font-size: 0.82rem; color: var(--text-muted); }
@@ -228,17 +229,25 @@
           return Array.from(document.querySelectorAll('.lane-rerun-btn'));
         }
 
+        function recoveryButtons() {
+          return Array.from(document.querySelectorAll('.ci-wake-btn, .lane-fail-btn, .lane-requeue-btn, .lane-recover-run-btn'));
+        }
+
         function authToken() {
           return window.pikaAuth && window.pikaAuth.getToken ? window.pikaAuth.getToken() : null;
         }
 
         function showActions() {
           const canForgeWrite = window.pikaAuth && window.pikaAuth.canForgeWrite ? window.pikaAuth.canForgeWrite() : false;
+          const showRecovery = canForgeWrite && !reviewMode;
           if (actionWrap) {
             actionWrap.style.display = canForgeWrite ? 'flex' : 'none';
           }
           rerunButtons().forEach((button) => {
-            button.style.display = canForgeWrite ? '' : 'none';
+            button.style.display = showRecovery ? '' : 'none';
+          });
+          recoveryButtons().forEach((button) => {
+            button.style.display = showRecovery ? '' : 'none';
           });
         }
 
@@ -247,7 +256,7 @@
           if (!token) return;
           const originalLabel = button.textContent;
           button.disabled = true;
-          statusEl.textContent = busyLabel;
+          if (statusEl) statusEl.textContent = busyLabel;
           try {
             const res = await fetch(path, {
               method: 'POST',
@@ -255,10 +264,10 @@
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'request failed');
-            statusEl.textContent = doneLabel;
+            if (statusEl) statusEl.textContent = doneLabel;
             window.location.reload();
           } catch (err) {
-            statusEl.textContent = err.message || String(err);
+            if (statusEl) statusEl.textContent = err.message || String(err);
             button.disabled = false;
             button.textContent = originalLabel;
           }
@@ -289,10 +298,39 @@
           });
         }
 
+        function wireRecoveryButtons() {
+          recoveryButtons().forEach((button) => {
+            if (button.dataset.bound === 'true') return;
+            button.dataset.bound = 'true';
+            button.addEventListener('click', async () => {
+              const token = authToken();
+              if (!token) return;
+              const originalLabel = button.textContent;
+              button.disabled = true;
+              button.textContent = button.dataset.busyLabel || 'Working...';
+              try {
+                const res = await fetch(button.dataset.actionPath, {
+                  method: 'POST',
+                  headers: { 'Authorization': 'Bearer ' + token }
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.error || 'request failed');
+                button.textContent = button.dataset.doneLabel || 'Done.';
+                window.location.reload();
+              } catch (err) {
+                button.disabled = false;
+                button.textContent = originalLabel;
+                if (statusEl) statusEl.textContent = err.message || String(err);
+              }
+            });
+          });
+        }
+
         function applyBranchCiLive(payload) {
           if (!branchCiLive || !payload || typeof payload.html !== 'string') return;
           branchCiLive.innerHTML = payload.html;
           wireRerunButtons();
+          wireRecoveryButtons();
           showActions();
         }
 
@@ -419,6 +457,7 @@
         window.addEventListener('pika-auth', showActions);
         window.addEventListener('pika-auth', refreshReviewControls);
         wireRerunButtons();
+        wireRecoveryButtons();
         showActions();
         startBranchCiStream();
       })();

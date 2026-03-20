@@ -35,6 +35,10 @@ pub fn run() -> anyhow::Result<()> {
         PhCommand::Merge { branch_or_id } => cmd_merge(&cli, branch_or_id.as_deref()),
         PhCommand::Close { branch_or_id } => cmd_close(&cli, branch_or_id.as_deref()),
         PhCommand::Url { branch_or_id } => cmd_url(&cli, branch_or_id.as_deref()),
+        PhCommand::FailLane(args) => cmd_fail_lane(&cli, args),
+        PhCommand::RequeueLane(args) => cmd_requeue_lane(&cli, args),
+        PhCommand::RecoverRun(args) => cmd_recover_run(&cli, args),
+        PhCommand::WakeCi => cmd_wake_ci(&cli),
     }
 }
 
@@ -82,6 +86,10 @@ enum PhCommand {
     Url {
         branch_or_id: Option<String>,
     },
+    FailLane(LaneActionArgs),
+    RequeueLane(LaneActionArgs),
+    RecoverRun(RecoverRunArgs),
+    WakeCi,
 }
 
 #[derive(Debug, Clone, clap::Args)]
@@ -90,6 +98,30 @@ struct LoginArgs {
     nsec: Option<String>,
     #[arg(long, conflicts_with = "nsec")]
     nsec_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, clap::Args)]
+struct LaneActionArgs {
+    branch_or_id: Option<String>,
+    #[arg(long, conflicts_with = "branch_or_id")]
+    nightly_run_id: Option<i64>,
+    #[arg(
+        long,
+        conflicts_with = "lane_run_id",
+        required_unless_present = "lane_run_id"
+    )]
+    lane: Option<String>,
+    #[arg(long, conflicts_with = "lane", required_unless_present = "lane")]
+    lane_run_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, clap::Args)]
+struct RecoverRunArgs {
+    branch_or_id: Option<String>,
+    #[arg(long, conflicts_with = "branch_or_id")]
+    nightly_run_id: Option<i64>,
+    #[arg(long, conflicts_with = "nightly_run_id")]
+    run_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -189,6 +221,46 @@ struct BranchLogsResponse {
     branch_name: String,
     run_id: i64,
     lane: CiLane,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct NightlyDetailResponse {
+    nightly_run_id: i64,
+    repo: String,
+    scheduled_for: String,
+    created_at: String,
+    source_ref: String,
+    source_head_sha: String,
+    status: String,
+    summary: Option<String>,
+    rerun_of_run_id: Option<i64>,
+    started_at: Option<String>,
+    finished_at: Option<String>,
+    lanes: Vec<CiLane>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct LaneMutationResponse {
+    status: String,
+    branch_id: Option<i64>,
+    nightly_run_id: Option<i64>,
+    lane_run_id: i64,
+    lane_status: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct RecoverRunResponse {
+    status: String,
+    branch_id: Option<i64>,
+    run_id: Option<i64>,
+    nightly_run_id: Option<i64>,
+    recovered_lane_count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct WakeCiResponse {
+    status: String,
+    message: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -366,6 +438,53 @@ fn cmd_url(cli: &Cli, branch_or_id: Option<&str>) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn cmd_fail_lane(cli: &Cli, args: &LaneActionArgs) -> anyhow::Result<()> {
+    let session = load_session(&cli.state_dir)?;
+    let base_url = resolve_authenticated_base_url(cli.base_url.as_deref(), &session)?;
+    let api = ApiClient::new(base_url, Some(session.token))?;
+    execute_lane_action(&api, args, LaneActionKind::Fail)
+}
+
+fn cmd_requeue_lane(cli: &Cli, args: &LaneActionArgs) -> anyhow::Result<()> {
+    let session = load_session(&cli.state_dir)?;
+    let base_url = resolve_authenticated_base_url(cli.base_url.as_deref(), &session)?;
+    let api = ApiClient::new(base_url, Some(session.token))?;
+    execute_lane_action(&api, args, LaneActionKind::Requeue)
+}
+
+fn cmd_recover_run(cli: &Cli, args: &RecoverRunArgs) -> anyhow::Result<()> {
+    let session = load_session(&cli.state_dir)?;
+    let base_url = resolve_authenticated_base_url(cli.base_url.as_deref(), &session)?;
+    let api = ApiClient::new(base_url, Some(session.token))?;
+    if let Some(nightly_run_id) = args.nightly_run_id {
+        let response = api.recover_nightly_run(nightly_run_id)?;
+        println!(
+            "recovered nightly #{} lanes={}",
+            nightly_run_id, response.recovered_lane_count
+        );
+        return Ok(());
+    }
+
+    let resolved = resolve_branch_ref(&api, args.branch_or_id.as_deref())?;
+    let branch = api.branch_detail(resolved.branch_id)?;
+    let run_id = resolve_branch_run_id(&branch, args.run_id)?;
+    let response = api.recover_branch_ci_run(resolved.branch_id, run_id)?;
+    println!(
+        "recovered branch #{} run #{} lanes={}",
+        resolved.branch_id, run_id, response.recovered_lane_count
+    );
+    Ok(())
+}
+
+fn cmd_wake_ci(cli: &Cli) -> anyhow::Result<()> {
+    let session = load_session(&cli.state_dir)?;
+    let base_url = resolve_authenticated_base_url(cli.base_url.as_deref(), &session)?;
+    let api = ApiClient::new(base_url, Some(session.token))?;
+    let response = api.wake_ci()?;
+    println!("{}", response.message);
+    Ok(())
+}
+
 fn load_branch_detail(
     cli: &Cli,
     branch_or_id: Option<&str>,
@@ -381,6 +500,21 @@ fn load_branch_detail(
 struct BranchRef {
     branch_id: i64,
     branch_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LaneActionKind {
+    Fail,
+    Requeue,
+}
+
+impl LaneActionKind {
+    fn verb(self) -> &'static str {
+        match self {
+            Self::Fail => "failed",
+            Self::Requeue => "requeued",
+        }
+    }
 }
 
 fn resolve_branch_ref(api: &ApiClient, branch_or_id: Option<&str>) -> anyhow::Result<BranchRef> {
@@ -429,6 +563,112 @@ fn infer_current_branch() -> anyhow::Result<String> {
         bail!("current Git branch is detached; pass a branch name or id explicitly");
     }
     Ok(branch)
+}
+
+fn execute_lane_action(
+    api: &ApiClient,
+    args: &LaneActionArgs,
+    action: LaneActionKind,
+) -> anyhow::Result<()> {
+    if let Some(nightly_run_id) = args.nightly_run_id {
+        let nightly = api.nightly_detail(nightly_run_id)?;
+        let lane = resolve_lane_selector(&nightly.lanes, args.lane.as_deref(), args.lane_run_id)?;
+        let response = match action {
+            LaneActionKind::Fail => api.fail_nightly_lane(nightly_run_id, lane.id)?,
+            LaneActionKind::Requeue => api.requeue_nightly_lane(nightly_run_id, lane.id)?,
+        };
+        println!(
+            "{} nightly #{} lane #{} {}",
+            action.verb(),
+            nightly_run_id,
+            response.lane_run_id,
+            lane.lane_id
+        );
+        return Ok(());
+    }
+
+    let resolved = resolve_branch_ref(api, args.branch_or_id.as_deref())?;
+    let branch = api.branch_detail(resolved.branch_id)?;
+    let lane = resolve_branch_lane(&branch, args.lane.as_deref(), args.lane_run_id)?;
+    let response = match action {
+        LaneActionKind::Fail => api.fail_branch_ci_lane(resolved.branch_id, lane.id)?,
+        LaneActionKind::Requeue => api.requeue_branch_ci_lane(resolved.branch_id, lane.id)?,
+    };
+    println!(
+        "{} branch #{} lane #{} {}",
+        action.verb(),
+        resolved.branch_id,
+        response.lane_run_id,
+        lane.lane_id
+    );
+    Ok(())
+}
+
+fn resolve_branch_run_id(
+    branch: &BranchDetailResponse,
+    requested: Option<i64>,
+) -> anyhow::Result<i64> {
+    if let Some(run_id) = requested {
+        if branch.ci_runs.iter().any(|run| run.id == run_id) {
+            return Ok(run_id);
+        }
+        bail!("run #{run_id} was not found on this branch");
+    }
+    branch
+        .ci_runs
+        .first()
+        .map(|run| run.id)
+        .ok_or_else(|| anyhow!("branch has no recorded ci runs"))
+}
+
+fn resolve_branch_lane<'a>(
+    branch: &'a BranchDetailResponse,
+    lane: Option<&str>,
+    lane_run_id: Option<i64>,
+) -> anyhow::Result<&'a CiLane> {
+    let selector = lane_selector(lane, lane_run_id)?;
+    for run in &branch.ci_runs {
+        if let Ok(found) = resolve_lane_selector(&run.lanes, selector.0, selector.1) {
+            return Ok(found);
+        }
+    }
+    match selector {
+        (Some(lane), None) => bail!("lane `{lane}` was not found on this branch"),
+        (None, Some(lane_run_id)) => bail!("lane run #{lane_run_id} was not found on this branch"),
+        _ => unreachable!("lane selector is validated"),
+    }
+}
+
+fn lane_selector(
+    lane: Option<&str>,
+    lane_run_id: Option<i64>,
+) -> anyhow::Result<(Option<&str>, Option<i64>)> {
+    match (
+        lane.map(str::trim).filter(|value| !value.is_empty()),
+        lane_run_id,
+    ) {
+        (Some(lane), None) => Ok((Some(lane), None)),
+        (None, Some(lane_run_id)) => Ok((None, Some(lane_run_id))),
+        _ => bail!("pass exactly one of --lane or --lane-run-id"),
+    }
+}
+
+fn resolve_lane_selector<'a>(
+    lanes: &'a [CiLane],
+    lane: Option<&str>,
+    lane_run_id: Option<i64>,
+) -> anyhow::Result<&'a CiLane> {
+    match lane_selector(lane, lane_run_id)? {
+        (Some(lane_id), None) => lanes
+            .iter()
+            .find(|lane| lane.lane_id == lane_id)
+            .ok_or_else(|| anyhow!("lane `{lane_id}` was not found")),
+        (None, Some(lane_run_id)) => lanes
+            .iter()
+            .find(|lane| lane.id == lane_run_id)
+            .ok_or_else(|| anyhow!("lane run #{lane_run_id} was not found")),
+        _ => unreachable!("lane selector is validated"),
+    }
 }
 
 fn branch_wait_snapshot(branch: &BranchDetailResponse) -> String {
@@ -710,6 +950,15 @@ impl ApiClient {
         )
     }
 
+    fn nightly_detail(&self, nightly_run_id: i64) -> anyhow::Result<NightlyDetailResponse> {
+        self.send(
+            Method::GET,
+            &format!("/news/api/forge/nightly/{nightly_run_id}"),
+            None::<&()>,
+            true,
+        )
+    }
+
     fn merge_branch(&self, branch_id: i64) -> anyhow::Result<BranchActionResponse> {
         self.send(
             Method::POST,
@@ -723,6 +972,89 @@ impl ApiClient {
         self.send(
             Method::POST,
             &format!("/news/api/forge/branch/{branch_id}/close"),
+            Some(&serde_json::json!({})),
+            true,
+        )
+    }
+
+    fn fail_branch_ci_lane(
+        &self,
+        branch_id: i64,
+        lane_run_id: i64,
+    ) -> anyhow::Result<LaneMutationResponse> {
+        self.send(
+            Method::POST,
+            &format!("/news/branch/{branch_id}/ci/fail/{lane_run_id}"),
+            Some(&serde_json::json!({})),
+            true,
+        )
+    }
+
+    fn requeue_branch_ci_lane(
+        &self,
+        branch_id: i64,
+        lane_run_id: i64,
+    ) -> anyhow::Result<LaneMutationResponse> {
+        self.send(
+            Method::POST,
+            &format!("/news/branch/{branch_id}/ci/requeue/{lane_run_id}"),
+            Some(&serde_json::json!({})),
+            true,
+        )
+    }
+
+    fn recover_branch_ci_run(
+        &self,
+        branch_id: i64,
+        run_id: i64,
+    ) -> anyhow::Result<RecoverRunResponse> {
+        self.send(
+            Method::POST,
+            &format!("/news/branch/{branch_id}/ci/recover/{run_id}"),
+            Some(&serde_json::json!({})),
+            true,
+        )
+    }
+
+    fn fail_nightly_lane(
+        &self,
+        nightly_run_id: i64,
+        lane_run_id: i64,
+    ) -> anyhow::Result<LaneMutationResponse> {
+        self.send(
+            Method::POST,
+            &format!("/news/nightly/{nightly_run_id}/fail/{lane_run_id}"),
+            Some(&serde_json::json!({})),
+            true,
+        )
+    }
+
+    fn requeue_nightly_lane(
+        &self,
+        nightly_run_id: i64,
+        lane_run_id: i64,
+    ) -> anyhow::Result<LaneMutationResponse> {
+        self.send(
+            Method::POST,
+            &format!("/news/nightly/{nightly_run_id}/requeue/{lane_run_id}"),
+            Some(&serde_json::json!({})),
+            true,
+        )
+    }
+
+    fn recover_nightly_run(&self, nightly_run_id: i64) -> anyhow::Result<RecoverRunResponse> {
+        self.send(
+            Method::POST,
+            &format!("/news/nightly/{nightly_run_id}/recover"),
+            Some(&serde_json::json!({})),
+            true,
+        )
+    }
+
+    fn wake_ci(&self) -> anyhow::Result<WakeCiResponse> {
+        self.send(
+            Method::POST,
+            "/news/api/forge/ci/wake",
             Some(&serde_json::json!({})),
             true,
         )
@@ -1156,6 +1488,301 @@ mod tests {
         cmd_close(&cli, Some("feature/merge")).expect("close");
         assert_eq!(merge_auth.load(Ordering::SeqCst), 1);
         assert_eq!(close_auth.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn fail_lane_resolves_branch_lane_name_against_latest_run() {
+        let state_dir = tempdir().expect("state dir");
+        save_session(
+            state_dir.path(),
+            &Session {
+                base_url: "http://placeholder".to_string(),
+                token: "token-123".to_string(),
+                npub: "npub1test".to_string(),
+                is_admin: false,
+                can_forge_write: true,
+            },
+        )
+        .expect("save session");
+        let fail_auth = Arc::new(AtomicUsize::new(0));
+        let base_url = spawn_test_server({
+            let fail_auth = Arc::clone(&fail_auth);
+            Router::new()
+                .route(
+                    "/news/api/forge/branch/resolve",
+                    get(|| async {
+                        Json(serde_json::json!({
+                            "branch_id": 7,
+                            "repo": "sledtools/pika",
+                            "branch_name": "feature/recover",
+                            "branch_state": "open"
+                        }))
+                    }),
+                )
+                .route(
+                    "/news/api/forge/branch/7",
+                    get(|| async {
+                        Json(serde_json::json!({
+                            "branch": {
+                                "branch_id": 7,
+                                "repo": "sledtools/pika",
+                                "branch_name": "feature/recover",
+                                "title": "recover",
+                                "branch_state": "open",
+                                "updated_at": "2026-03-19T00:00:00Z",
+                                "target_branch": "master",
+                                "head_sha": "deadbeef",
+                                "merge_base_sha": "base",
+                                "merge_commit_sha": null,
+                                "tutorial_status": "ready",
+                                "ci_status": "running",
+                                "error_message": null
+                            },
+                            "ci_runs": [
+                                {
+                                    "id": 5,
+                                    "source_head_sha": "deadbeef",
+                                    "status": "running",
+                                    "lane_count": 1,
+                                    "rerun_of_run_id": null,
+                                    "created_at": "2026-03-19T00:00:00Z",
+                                    "started_at": "2026-03-19T00:00:01Z",
+                                    "finished_at": null,
+                                    "lanes": [{
+                                        "id": 91,
+                                        "lane_id": "check-pika",
+                                        "title": "check-pika",
+                                        "entrypoint": "just checks::pre-merge-pika",
+                                        "status": "running",
+                                        "pikaci_run_id": null,
+                                        "pikaci_target_id": null,
+                                        "log_text": null,
+                                        "retry_count": 0,
+                                        "rerun_of_lane_run_id": null,
+                                        "created_at": "2026-03-19T00:00:00Z",
+                                        "started_at": "2026-03-19T00:00:01Z",
+                                        "finished_at": null
+                                    }]
+                                },
+                                {
+                                    "id": 4,
+                                    "source_head_sha": "cafebabe",
+                                    "status": "failed",
+                                    "lane_count": 1,
+                                    "rerun_of_run_id": null,
+                                    "created_at": "2026-03-18T00:00:00Z",
+                                    "started_at": "2026-03-18T00:00:01Z",
+                                    "finished_at": "2026-03-18T00:00:10Z",
+                                    "lanes": [{
+                                        "id": 90,
+                                        "lane_id": "check-pika",
+                                        "title": "check-pika",
+                                        "entrypoint": "just checks::pre-merge-pika",
+                                        "status": "failed",
+                                        "pikaci_run_id": null,
+                                        "pikaci_target_id": null,
+                                        "log_text": "boom",
+                                        "retry_count": 0,
+                                        "rerun_of_lane_run_id": null,
+                                        "created_at": "2026-03-18T00:00:00Z",
+                                        "started_at": "2026-03-18T00:00:01Z",
+                                        "finished_at": "2026-03-18T00:00:10Z"
+                                    }]
+                                }
+                            ]
+                        }))
+                    }),
+                )
+                .route(
+                    "/news/branch/7/ci/fail/91",
+                    post(move |headers: axum::http::HeaderMap| {
+                        let fail_auth = Arc::clone(&fail_auth);
+                        async move {
+                            if headers.get("authorization").and_then(|v| v.to_str().ok())
+                                == Some("Bearer token-123")
+                            {
+                                fail_auth.fetch_add(1, Ordering::SeqCst);
+                            }
+                            Json(serde_json::json!({
+                                "status": "ok",
+                                "branch_id": 7,
+                                "lane_run_id": 91,
+                                "lane_status": "failed"
+                            }))
+                        }
+                    }),
+                )
+        });
+        let mut session = load_session(state_dir.path()).expect("session");
+        session.base_url = base_url;
+        save_session(state_dir.path(), &session).expect("save session");
+        let cli = Cli::parse_from([
+            "ph",
+            "--state-dir",
+            state_dir.path().to_str().expect("state dir path"),
+            "fail-lane",
+            "feature/recover",
+            "--lane",
+            "check-pika",
+        ]);
+
+        cmd_fail_lane(
+            &cli,
+            match &cli.command {
+                PhCommand::FailLane(args) => args,
+                _ => unreachable!(),
+            },
+        )
+        .expect("fail lane");
+
+        assert_eq!(fail_auth.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn requeue_lane_resolves_nightly_lane_name() {
+        let state_dir = tempdir().expect("state dir");
+        save_session(
+            state_dir.path(),
+            &Session {
+                base_url: "http://placeholder".to_string(),
+                token: "token-123".to_string(),
+                npub: "npub1test".to_string(),
+                is_admin: false,
+                can_forge_write: true,
+            },
+        )
+        .expect("save session");
+        let requeue_auth = Arc::new(AtomicUsize::new(0));
+        let base_url = spawn_test_server({
+            let requeue_auth = Arc::clone(&requeue_auth);
+            Router::new()
+                .route(
+                    "/news/api/forge/nightly/12",
+                    get(|| async {
+                        Json(serde_json::json!({
+                            "nightly_run_id": 12,
+                            "repo": "sledtools/pika",
+                            "scheduled_for": "2026-03-19T00:00:00Z",
+                            "created_at": "2026-03-19T00:00:00Z",
+                            "source_ref": "refs/heads/master",
+                            "source_head_sha": "deadbeef",
+                            "status": "running",
+                            "summary": null,
+                            "rerun_of_run_id": null,
+                            "started_at": "2026-03-19T00:00:01Z",
+                            "finished_at": null,
+                            "lanes": [{
+                                "id": 44,
+                                "lane_id": "nightly_pika",
+                                "title": "nightly-pika",
+                                "entrypoint": "just checks::nightly-pika-e2e",
+                                "status": "running",
+                                "pikaci_run_id": null,
+                                "pikaci_target_id": null,
+                                "log_text": null,
+                                "retry_count": 0,
+                                "rerun_of_lane_run_id": null,
+                                "created_at": "2026-03-19T00:00:00Z",
+                                "started_at": "2026-03-19T00:00:01Z",
+                                "finished_at": null
+                            }]
+                        }))
+                    }),
+                )
+                .route(
+                    "/news/nightly/12/requeue/44",
+                    post(move |headers: axum::http::HeaderMap| {
+                        let requeue_auth = Arc::clone(&requeue_auth);
+                        async move {
+                            if headers.get("authorization").and_then(|v| v.to_str().ok())
+                                == Some("Bearer token-123")
+                            {
+                                requeue_auth.fetch_add(1, Ordering::SeqCst);
+                            }
+                            Json(serde_json::json!({
+                                "status": "ok",
+                                "nightly_run_id": 12,
+                                "lane_run_id": 44,
+                                "lane_status": "queued"
+                            }))
+                        }
+                    }),
+                )
+        });
+        let mut session = load_session(state_dir.path()).expect("session");
+        session.base_url = base_url;
+        save_session(state_dir.path(), &session).expect("save session");
+        let cli = Cli::parse_from([
+            "ph",
+            "--state-dir",
+            state_dir.path().to_str().expect("state dir path"),
+            "requeue-lane",
+            "--nightly-run-id",
+            "12",
+            "--lane",
+            "nightly_pika",
+        ]);
+
+        cmd_requeue_lane(
+            &cli,
+            match &cli.command {
+                PhCommand::RequeueLane(args) => args,
+                _ => unreachable!(),
+            },
+        )
+        .expect("requeue lane");
+
+        assert_eq!(requeue_auth.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn wake_ci_hits_scheduler_wake_endpoint() {
+        let state_dir = tempdir().expect("state dir");
+        save_session(
+            state_dir.path(),
+            &Session {
+                base_url: "http://placeholder".to_string(),
+                token: "token-123".to_string(),
+                npub: "npub1test".to_string(),
+                is_admin: false,
+                can_forge_write: true,
+            },
+        )
+        .expect("save session");
+        let wake_auth = Arc::new(AtomicUsize::new(0));
+        let base_url = spawn_test_server({
+            let wake_auth = Arc::clone(&wake_auth);
+            Router::new().route(
+                "/news/api/forge/ci/wake",
+                post(move |headers: axum::http::HeaderMap| {
+                    let wake_auth = Arc::clone(&wake_auth);
+                    async move {
+                        if headers.get("authorization").and_then(|v| v.to_str().ok())
+                            == Some("Bearer token-123")
+                        {
+                            wake_auth.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Json(serde_json::json!({
+                            "status": "ok",
+                            "message": "scheduler wake requested"
+                        }))
+                    }
+                }),
+            )
+        });
+        let mut session = load_session(state_dir.path()).expect("session");
+        session.base_url = base_url;
+        save_session(state_dir.path(), &session).expect("save session");
+        let cli = Cli::parse_from([
+            "ph",
+            "--state-dir",
+            state_dir.path().to_str().expect("state dir path"),
+            "wake-ci",
+        ]);
+
+        cmd_wake_ci(&cli).expect("wake ci");
+
+        assert_eq!(wake_auth.load(Ordering::SeqCst), 1);
     }
 
     fn git<P: AsRef<Path>>(cwd: P, args: &[&str]) {

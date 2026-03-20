@@ -115,6 +115,8 @@ pub struct BranchCiLaneRecord {
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
+    pub last_heartbeat_at: Option<String>,
+    pub lease_expires_at: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -174,6 +176,8 @@ pub struct NightlyLaneRecord {
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
+    pub last_heartbeat_at: Option<String>,
+    pub lease_expires_at: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -243,6 +247,15 @@ struct BranchLaneRerunSource {
 }
 
 #[derive(Debug, Clone)]
+struct BranchLaneRecoverySource {
+    run_id: i64,
+    lane_id: String,
+    status: String,
+    claim_token: i64,
+    log_text: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 struct NightlyLaneRerunSource {
     original_run_id: i64,
     repo_id: i64,
@@ -254,6 +267,15 @@ struct NightlyLaneRerunSource {
     command_json: String,
     concurrency_group: Option<String>,
     status: String,
+}
+
+#[derive(Debug, Clone)]
+struct NightlyLaneRecoverySource {
+    nightly_run_id: i64,
+    lane_id: String,
+    status: String,
+    claim_token: i64,
+    log_text: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1138,6 +1160,344 @@ impl Store {
             tx.commit()
                 .context("commit rerun nightly lane transaction")?;
             Ok(Some(rerun_run_id))
+        })
+    }
+
+    pub fn fail_branch_ci_lane(
+        &self,
+        branch_id: i64,
+        lane_run_id: i64,
+        actor_npub: &str,
+    ) -> anyhow::Result<Option<()>> {
+        self.with_connection(|conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .context("start fail branch ci lane transaction")?;
+            let row: Option<BranchLaneRecoverySource> = tx
+                .query_row(
+                    "SELECT lane.branch_ci_run_id,
+                            lane.lane_id,
+                            lane.status,
+                            lane.claim_token,
+                            lane.log_text
+                     FROM branch_ci_run_lanes lane
+                     JOIN branch_ci_runs suite ON suite.id = lane.branch_ci_run_id
+                     WHERE lane.id = ?1 AND suite.branch_id = ?2",
+                    params![lane_run_id, branch_id],
+                    |row| {
+                        Ok(BranchLaneRecoverySource {
+                            run_id: row.get(0)?,
+                            lane_id: row.get(1)?,
+                            status: row.get(2)?,
+                            claim_token: row.get(3)?,
+                            log_text: row.get(4)?,
+                        })
+                    },
+                )
+                .optional()
+                .context("lookup branch ci lane for manual fail")?;
+            let Some(row) = row else {
+                return Ok(None);
+            };
+            if !matches!(row.status.as_str(), "queued" | "running") {
+                bail!("lane {} is already {}", row.lane_id, row.status);
+            }
+            let manual_note = manual_lane_failure_note(actor_npub, &row.lane_id);
+            let next_log = append_log_note(row.log_text, &manual_note);
+            tx.execute(
+                "UPDATE branch_ci_run_lanes
+                 SET status = 'failed',
+                     log_text = ?1,
+                     finished_at = CURRENT_TIMESTAMP,
+                     lease_expires_at = NULL,
+                     claim_token = ?2
+                 WHERE id = ?3",
+                params![next_log, row.claim_token + 1, lane_run_id],
+            )
+            .with_context(|| format!("mark branch ci lane {} failed", lane_run_id))?;
+            update_branch_ci_suite_status(&tx, row.run_id)?;
+            tx.commit()
+                .context("commit fail branch ci lane transaction")?;
+            Ok(Some(()))
+        })
+    }
+
+    pub fn requeue_branch_ci_lane(
+        &self,
+        branch_id: i64,
+        lane_run_id: i64,
+    ) -> anyhow::Result<Option<()>> {
+        self.with_connection(|conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .context("start requeue branch ci lane transaction")?;
+            let row: Option<BranchLaneRecoverySource> = tx
+                .query_row(
+                    "SELECT lane.branch_ci_run_id,
+                            lane.lane_id,
+                            lane.status,
+                            lane.claim_token,
+                            lane.log_text
+                     FROM branch_ci_run_lanes lane
+                     JOIN branch_ci_runs suite ON suite.id = lane.branch_ci_run_id
+                     WHERE lane.id = ?1 AND suite.branch_id = ?2",
+                    params![lane_run_id, branch_id],
+                    |row| {
+                        Ok(BranchLaneRecoverySource {
+                            run_id: row.get(0)?,
+                            lane_id: row.get(1)?,
+                            status: row.get(2)?,
+                            claim_token: row.get(3)?,
+                            log_text: row.get(4)?,
+                        })
+                    },
+                )
+                .optional()
+                .context("lookup branch ci lane for manual requeue")?;
+            let Some(row) = row else {
+                return Ok(None);
+            };
+            if !matches!(row.status.as_str(), "queued" | "running" | "failed") {
+                bail!(
+                    "lane {} cannot be requeued from {}",
+                    row.lane_id,
+                    row.status
+                );
+            }
+            tx.execute(
+                "UPDATE branch_ci_run_lanes
+                 SET status = 'queued',
+                     log_text = NULL,
+                     pikaci_run_id = NULL,
+                     pikaci_target_id = NULL,
+                     retry_count = retry_count + 1,
+                     created_at = CURRENT_TIMESTAMP,
+                     started_at = NULL,
+                     finished_at = NULL,
+                     last_heartbeat_at = NULL,
+                     lease_expires_at = NULL,
+                     claim_token = ?1
+                 WHERE id = ?2",
+                params![row.claim_token + 1, lane_run_id],
+            )
+            .with_context(|| format!("requeue branch ci lane {}", lane_run_id))?;
+            update_branch_ci_suite_status(&tx, row.run_id)?;
+            tx.commit()
+                .context("commit requeue branch ci lane transaction")?;
+            Ok(Some(()))
+        })
+    }
+
+    pub fn recover_branch_ci_run(
+        &self,
+        branch_id: i64,
+        run_id: i64,
+    ) -> anyhow::Result<Option<usize>> {
+        self.with_connection(|conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .context("start recover branch ci run transaction")?;
+            let exists: Option<i64> = tx
+                .query_row(
+                    "SELECT id FROM branch_ci_runs WHERE id = ?1 AND branch_id = ?2",
+                    params![run_id, branch_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .context("lookup branch ci run for recovery")?;
+            let Some(_) = exists else {
+                return Ok(None);
+            };
+            let recovered = tx
+                .execute(
+                    "UPDATE branch_ci_run_lanes
+                     SET status = 'queued',
+                         log_text = NULL,
+                         pikaci_run_id = NULL,
+                         pikaci_target_id = NULL,
+                         retry_count = retry_count + 1,
+                         created_at = CURRENT_TIMESTAMP,
+                         started_at = NULL,
+                         finished_at = NULL,
+                         last_heartbeat_at = NULL,
+                         lease_expires_at = NULL,
+                         claim_token = claim_token + 1
+                     WHERE branch_ci_run_id = ?1
+                       AND status IN ('queued', 'running', 'failed')",
+                    params![run_id],
+                )
+                .with_context(|| format!("recover branch ci run {}", run_id))?;
+            update_branch_ci_suite_status(&tx, run_id)?;
+            tx.commit()
+                .context("commit recover branch ci run transaction")?;
+            Ok(Some(recovered))
+        })
+    }
+
+    pub fn fail_nightly_lane(
+        &self,
+        nightly_run_id: i64,
+        lane_run_id: i64,
+        actor_npub: &str,
+    ) -> anyhow::Result<Option<()>> {
+        self.with_connection(|conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .context("start fail nightly lane transaction")?;
+            let row: Option<NightlyLaneRecoverySource> = tx
+                .query_row(
+                    "SELECT lane.nightly_run_id,
+                            lane.lane_id,
+                            lane.status,
+                            lane.claim_token,
+                            lane.log_text
+                     FROM nightly_run_lanes lane
+                     JOIN nightly_runs nightly ON nightly.id = lane.nightly_run_id
+                     WHERE lane.id = ?1 AND nightly.id = ?2",
+                    params![lane_run_id, nightly_run_id],
+                    |row| {
+                        Ok(NightlyLaneRecoverySource {
+                            nightly_run_id: row.get(0)?,
+                            lane_id: row.get(1)?,
+                            status: row.get(2)?,
+                            claim_token: row.get(3)?,
+                            log_text: row.get(4)?,
+                        })
+                    },
+                )
+                .optional()
+                .context("lookup nightly lane for manual fail")?;
+            let Some(row) = row else {
+                return Ok(None);
+            };
+            if !matches!(row.status.as_str(), "queued" | "running") {
+                bail!("lane {} is already {}", row.lane_id, row.status);
+            }
+            let manual_note = manual_lane_failure_note(actor_npub, &row.lane_id);
+            let next_log = append_log_note(row.log_text, &manual_note);
+            tx.execute(
+                "UPDATE nightly_run_lanes
+                 SET status = 'failed',
+                     log_text = ?1,
+                     finished_at = CURRENT_TIMESTAMP,
+                     lease_expires_at = NULL,
+                     claim_token = ?2
+                 WHERE id = ?3",
+                params![next_log, row.claim_token + 1, lane_run_id],
+            )
+            .with_context(|| format!("mark nightly lane {} failed", lane_run_id))?;
+            update_nightly_run_status(&tx, row.nightly_run_id)?;
+            tx.commit()
+                .context("commit fail nightly lane transaction")?;
+            Ok(Some(()))
+        })
+    }
+
+    pub fn requeue_nightly_lane(
+        &self,
+        nightly_run_id: i64,
+        lane_run_id: i64,
+    ) -> anyhow::Result<Option<()>> {
+        self.with_connection(|conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .context("start requeue nightly lane transaction")?;
+            let row: Option<NightlyLaneRecoverySource> = tx
+                .query_row(
+                    "SELECT lane.nightly_run_id,
+                            lane.lane_id,
+                            lane.status,
+                            lane.claim_token,
+                            lane.log_text
+                     FROM nightly_run_lanes lane
+                     JOIN nightly_runs nightly ON nightly.id = lane.nightly_run_id
+                     WHERE lane.id = ?1 AND nightly.id = ?2",
+                    params![lane_run_id, nightly_run_id],
+                    |row| {
+                        Ok(NightlyLaneRecoverySource {
+                            nightly_run_id: row.get(0)?,
+                            lane_id: row.get(1)?,
+                            status: row.get(2)?,
+                            claim_token: row.get(3)?,
+                            log_text: row.get(4)?,
+                        })
+                    },
+                )
+                .optional()
+                .context("lookup nightly lane for manual requeue")?;
+            let Some(row) = row else {
+                return Ok(None);
+            };
+            if !matches!(row.status.as_str(), "queued" | "running" | "failed") {
+                bail!(
+                    "lane {} cannot be requeued from {}",
+                    row.lane_id,
+                    row.status
+                );
+            }
+            tx.execute(
+                "UPDATE nightly_run_lanes
+                 SET status = 'queued',
+                     log_text = NULL,
+                     pikaci_run_id = NULL,
+                     pikaci_target_id = NULL,
+                     retry_count = retry_count + 1,
+                     created_at = CURRENT_TIMESTAMP,
+                     started_at = NULL,
+                     finished_at = NULL,
+                     last_heartbeat_at = NULL,
+                     lease_expires_at = NULL,
+                     claim_token = ?1
+                 WHERE id = ?2",
+                params![row.claim_token + 1, lane_run_id],
+            )
+            .with_context(|| format!("requeue nightly lane {}", lane_run_id))?;
+            update_nightly_run_status(&tx, row.nightly_run_id)?;
+            tx.commit()
+                .context("commit requeue nightly lane transaction")?;
+            Ok(Some(()))
+        })
+    }
+
+    pub fn recover_nightly_run(&self, nightly_run_id: i64) -> anyhow::Result<Option<usize>> {
+        self.with_connection(|conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .context("start recover nightly run transaction")?;
+            let exists: Option<i64> = tx
+                .query_row(
+                    "SELECT id FROM nightly_runs WHERE id = ?1",
+                    params![nightly_run_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .context("lookup nightly run for recovery")?;
+            let Some(_) = exists else {
+                return Ok(None);
+            };
+            let recovered = tx
+                .execute(
+                    "UPDATE nightly_run_lanes
+                     SET status = 'queued',
+                         log_text = NULL,
+                         pikaci_run_id = NULL,
+                         pikaci_target_id = NULL,
+                         retry_count = retry_count + 1,
+                         created_at = CURRENT_TIMESTAMP,
+                         started_at = NULL,
+                         finished_at = NULL,
+                         last_heartbeat_at = NULL,
+                         lease_expires_at = NULL,
+                         claim_token = claim_token + 1
+                     WHERE nightly_run_id = ?1
+                       AND status IN ('queued', 'running', 'failed')",
+                    params![nightly_run_id],
+                )
+                .with_context(|| format!("recover nightly run {}", nightly_run_id))?;
+            update_nightly_run_status(&tx, nightly_run_id)?;
+            tx.commit()
+                .context("commit recover nightly run transaction")?;
+            Ok(Some(recovered))
         })
     }
 
@@ -2169,7 +2529,7 @@ fn list_branch_ci_run_lanes(
 ) -> anyhow::Result<Vec<BranchCiLaneRecord>> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, lane_id, title, entrypoint, status, pikaci_run_id, pikaci_target_id, log_text, retry_count, rerun_of_lane_run_id, created_at, started_at, finished_at
+            "SELECT id, lane_id, title, entrypoint, status, pikaci_run_id, pikaci_target_id, log_text, retry_count, rerun_of_lane_run_id, created_at, started_at, finished_at, last_heartbeat_at, lease_expires_at
              FROM branch_ci_run_lanes
              WHERE branch_ci_run_id = ?1
              ORDER BY id ASC",
@@ -2191,6 +2551,8 @@ fn list_branch_ci_run_lanes(
                 created_at: row.get(10)?,
                 started_at: row.get(11)?,
                 finished_at: row.get(12)?,
+                last_heartbeat_at: row.get(13)?,
+                lease_expires_at: row.get(14)?,
             })
         })
         .context("query branch ci lane rows")?;
@@ -2207,7 +2569,7 @@ fn list_nightly_run_lanes(
 ) -> anyhow::Result<Vec<NightlyLaneRecord>> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, lane_id, title, entrypoint, status, pikaci_run_id, pikaci_target_id, log_text, retry_count, rerun_of_lane_run_id, created_at, started_at, finished_at
+            "SELECT id, lane_id, title, entrypoint, status, pikaci_run_id, pikaci_target_id, log_text, retry_count, rerun_of_lane_run_id, created_at, started_at, finished_at, last_heartbeat_at, lease_expires_at
              FROM nightly_run_lanes
              WHERE nightly_run_id = ?1
              ORDER BY id ASC",
@@ -2229,6 +2591,8 @@ fn list_nightly_run_lanes(
                 created_at: row.get(10)?,
                 started_at: row.get(11)?,
                 finished_at: row.get(12)?,
+                last_heartbeat_at: row.get(13)?,
+                lease_expires_at: row.get(14)?,
             })
         })
         .context("query nightly lane rows")?;
@@ -2369,6 +2733,17 @@ fn stale_parent_ids(conn: &Connection, table: &str, foreign_key: &str) -> anyhow
         ids.push(row.with_context(|| format!("read stale parent id from {table}"))?);
     }
     Ok(ids)
+}
+
+fn manual_lane_failure_note(actor_npub: &str, lane_id: &str) -> String {
+    format!("Manual fail by {actor_npub}: marked {lane_id} failed for CI recovery.")
+}
+
+fn append_log_note(existing: Option<String>, note: &str) -> String {
+    match existing {
+        Some(existing) if !existing.trim().is_empty() => format!("{existing}\n{note}"),
+        _ => note.to_string(),
+    }
 }
 
 fn update_branch_ci_suite_status(conn: &Connection, suite_id: i64) -> anyhow::Result<()> {
@@ -3366,5 +3741,182 @@ mod tests {
                 "current nightly worker",
             )
             .expect("current nightly finish");
+    }
+
+    #[test]
+    fn manual_requeue_rejects_old_workers_for_branch_and_nightly_lanes() {
+        let store = open_store();
+        let branch = store
+            .upsert_branch_record(&upsert_input("feature/manual-requeue", "head777"))
+            .expect("insert branch");
+        store
+            .queue_branch_ci_run_for_head(branch.branch_id, "head777", &[sample_lane("pika")])
+            .expect("queue branch suite");
+        let first_branch = store
+            .claim_pending_branch_ci_lane_runs(1, 120)
+            .expect("claim branch worker")
+            .pop()
+            .expect("branch worker");
+        store
+            .requeue_branch_ci_lane(branch.branch_id, first_branch.lane_run_id)
+            .expect("requeue branch lane")
+            .expect("branch lane exists");
+        assert!(store
+            .heartbeat_branch_ci_lane_run(first_branch.lane_run_id, first_branch.claim_token, 120)
+            .expect_err("stale branch heartbeat should fail")
+            .to_string()
+            .contains(CI_LANE_LEASE_LOST));
+        assert!(store
+            .finish_branch_ci_lane_run(
+                first_branch.lane_run_id,
+                first_branch.claim_token,
+                "success",
+                "stale branch worker",
+            )
+            .expect_err("stale branch finish should fail")
+            .to_string()
+            .contains(CI_LANE_LEASE_LOST));
+        let second_branch = store
+            .claim_pending_branch_ci_lane_runs(1, 120)
+            .expect("claim requeued branch worker")
+            .pop()
+            .expect("second branch worker");
+        assert!(second_branch.claim_token > first_branch.claim_token);
+
+        let repo_id = store
+            .ensure_forge_repo_metadata(
+                "sledtools/pika",
+                "/tmp/pika.git",
+                "master",
+                "ci/forge-lanes.toml",
+            )
+            .expect("ensure repo metadata");
+        store
+            .queue_nightly_run(
+                repo_id,
+                "refs/heads/master",
+                "nightly-manual-requeue",
+                "2026-03-17T08:00:00Z",
+                &[sample_lane("nightly_pika")],
+            )
+            .expect("queue nightly");
+        let first_nightly = store
+            .claim_pending_nightly_lane_runs(1, 120)
+            .expect("claim nightly worker")
+            .pop()
+            .expect("nightly worker");
+        store
+            .requeue_nightly_lane(first_nightly.nightly_run_id, first_nightly.lane_run_id)
+            .expect("requeue nightly lane")
+            .expect("nightly lane exists");
+        assert!(store
+            .heartbeat_nightly_lane_run(first_nightly.lane_run_id, first_nightly.claim_token, 120)
+            .expect_err("stale nightly heartbeat should fail")
+            .to_string()
+            .contains(CI_LANE_LEASE_LOST));
+        assert!(store
+            .finish_nightly_lane_run(
+                first_nightly.lane_run_id,
+                first_nightly.claim_token,
+                "success",
+                "stale nightly worker",
+            )
+            .expect_err("stale nightly finish should fail")
+            .to_string()
+            .contains(CI_LANE_LEASE_LOST));
+        let second_nightly = store
+            .claim_pending_nightly_lane_runs(1, 120)
+            .expect("claim requeued nightly worker")
+            .pop()
+            .expect("second nightly worker");
+        assert!(second_nightly.claim_token > first_nightly.claim_token);
+    }
+
+    #[test]
+    fn recover_run_requeues_only_nonterminal_lanes() {
+        let store = open_store();
+        let branch = store
+            .upsert_branch_record(&upsert_input("feature/recover-run", "head888"))
+            .expect("insert branch");
+        store
+            .queue_branch_ci_run_for_head(
+                branch.branch_id,
+                "head888",
+                &[
+                    sample_lane("first"),
+                    sample_lane("second"),
+                    sample_lane("third"),
+                ],
+            )
+            .expect("queue branch suite");
+        let mut jobs = store
+            .claim_pending_branch_ci_lane_runs(3, 120)
+            .expect("claim branch jobs");
+        jobs.sort_by_key(|job| job.lane_run_id);
+        store
+            .finish_branch_ci_lane_run(jobs[0].lane_run_id, jobs[0].claim_token, "success", "ok")
+            .expect("finish success lane");
+        store
+            .finish_branch_ci_lane_run(jobs[1].lane_run_id, jobs[1].claim_token, "failed", "boom")
+            .expect("finish failed lane");
+        let recovered = store
+            .recover_branch_ci_run(branch.branch_id, jobs[2].suite_id)
+            .expect("recover branch run")
+            .expect("run exists");
+        assert_eq!(recovered, 2);
+        let lanes = store
+            .list_branch_ci_runs(branch.branch_id, 1)
+            .expect("list branch runs")[0]
+            .lanes
+            .clone();
+        assert_eq!(lanes[0].status, "success");
+        assert_eq!(lanes[1].status, "queued");
+        assert_eq!(lanes[1].retry_count, 1);
+        assert_eq!(lanes[2].status, "queued");
+        assert_eq!(lanes[2].retry_count, 1);
+
+        let repo_id = store
+            .ensure_forge_repo_metadata(
+                "sledtools/pika",
+                "/tmp/pika.git",
+                "master",
+                "ci/forge-lanes.toml",
+            )
+            .expect("ensure repo metadata");
+        store
+            .queue_nightly_run(
+                repo_id,
+                "refs/heads/master",
+                "nightly-recover-run",
+                "2026-03-18T08:00:00Z",
+                &[sample_lane("nightly_first"), sample_lane("nightly_second")],
+            )
+            .expect("queue nightly");
+        let nightly_run_id =
+            store.list_recent_nightly_runs(1).expect("nightly feed")[0].nightly_run_id;
+        let mut nightly_jobs = store
+            .claim_pending_nightly_lane_runs(2, 120)
+            .expect("claim nightly jobs");
+        nightly_jobs.sort_by_key(|job| job.lane_run_id);
+        store
+            .finish_nightly_lane_run(
+                nightly_jobs[0].lane_run_id,
+                nightly_jobs[0].claim_token,
+                "success",
+                "ok",
+            )
+            .expect("finish nightly success lane");
+        let recovered = store
+            .recover_nightly_run(nightly_run_id)
+            .expect("recover nightly run")
+            .expect("nightly exists");
+        assert_eq!(recovered, 1);
+        let nightly = store
+            .get_nightly_run(nightly_run_id)
+            .expect("nightly detail")
+            .expect("nightly run");
+        assert_eq!(nightly.lanes[0].status, "success");
+        assert_eq!(nightly.lanes[1].status, "queued");
+        assert_eq!(nightly.lanes[1].retry_count, 1);
     }
 }

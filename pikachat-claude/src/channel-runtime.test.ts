@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -130,6 +130,60 @@ describe("PikachatClaudeChannel", () => {
       assert.equal(notifications.length, 0);
       assert.equal(daemon.sentMessages.length, 1);
       assert.match(daemon.sentMessages[0].content, /Pairing code:/);
+    } finally {
+      await channel.stop();
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves concurrent pending pairings", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "pikachat-claude-"));
+    const accessFile = path.join(tempDir, "access.json");
+    const daemon = new FakeDaemon();
+    daemon.memberCountByGroup.set("dm1", 2);
+    daemon.memberCountByGroup.set("dm2", 2);
+    const channel = createInMemoryChannelForTests({
+      daemon,
+      config: {
+        channelHome: tempDir,
+        accessFile,
+        inboxDir: path.join(tempDir, "inbox"),
+      },
+    });
+    try {
+      await channel.start();
+      await Promise.all([
+        daemon.emit({
+          type: "message_received",
+          nostr_group_id: "dm1",
+          from_pubkey: "sender1",
+          content: "hello one",
+          kind: 9,
+          created_at: 1,
+          event_id: "ev1",
+          message_id: "msg1",
+        }),
+        daemon.emit({
+          type: "message_received",
+          nostr_group_id: "dm2",
+          from_pubkey: "sender2",
+          content: "hello two",
+          kind: 9,
+          created_at: 2,
+          event_id: "ev2",
+          message_id: "msg2",
+        }),
+      ]);
+
+      const persisted = JSON.parse(await readFile(accessFile, "utf8")) as {
+        pendingPairings: Record<string, { senderId: string }>;
+      };
+      const senderIds = Object.values(persisted.pendingPairings)
+        .map((pending) => pending.senderId)
+        .sort();
+
+      assert.deepEqual(senderIds, ["sender1", "sender2"]);
+      assert.equal(daemon.sentMessages.length, 2);
     } finally {
       await channel.stop();
       await rm(tempDir, { recursive: true, force: true });

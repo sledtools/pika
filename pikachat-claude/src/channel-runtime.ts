@@ -1,4 +1,5 @@
 import { access, mkdir, realpath } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 import {
@@ -59,6 +60,10 @@ export type ChannelRuntimeDeps = {
   now?: () => number;
 };
 
+type DirectAccessResult =
+  | { decision: "allowed" | "blocked"; pairingCode?: never }
+  | { decision: "pairing"; pairingCode: string };
+
 export class PikachatClaudeChannel {
   #config: PikachatClaudeConfig;
   #logger: PikachatLogger | undefined;
@@ -69,6 +74,7 @@ export class PikachatClaudeChannel {
   #botPubkey: string | null = null;
   #botNpub: string | null = null;
   #memberCounts = new Map<string, number>();
+  #accessLock: Promise<void> = Promise.resolve();
 
   constructor(params: {
     config: PikachatClaudeConfig;
@@ -204,56 +210,62 @@ export class PikachatClaudeChannel {
   }
 
   async accessStatus(): Promise<AccessState> {
-    return pruneExpiredPairings(await loadAccessState(this.#config.accessFile), this.#deps.now());
+    return await this.#withAccessLock(async () => await this.#loadAccessState());
   }
 
   async approvePairing(code: string): Promise<{ senderId: string | null }> {
-    const state = await this.accessStatus();
-    const approved = approvePairing(state, code);
-    await saveAccessState(this.#config.accessFile, approved.state);
-    return { senderId: approved.pairing?.senderId ?? null };
+    return await this.#withAccessState(async (state) => {
+      const approved = approvePairing(state, code);
+      return {
+        state: approved.state,
+        result: { senderId: approved.pairing?.senderId ?? null },
+      };
+    });
   }
 
   async denyPairing(code: string): Promise<{ senderId: string | null }> {
-    const state = await this.accessStatus();
-    const denied = denyPairing(state, code);
-    await saveAccessState(this.#config.accessFile, denied.state);
-    return { senderId: denied.pairing?.senderId ?? null };
+    return await this.#withAccessState(async (state) => {
+      const denied = denyPairing(state, code);
+      return {
+        state: denied.state,
+        result: { senderId: denied.pairing?.senderId ?? null },
+      };
+    });
   }
 
   async setDmPolicy(dmPolicy: DmPolicy): Promise<AccessState> {
-    const state = await this.accessStatus();
-    const next = setDmPolicy(state, dmPolicy);
-    await saveAccessState(this.#config.accessFile, next);
-    return next;
+    return await this.#withAccessState(async (state) => {
+      const next = setDmPolicy(state, dmPolicy);
+      return { state: next, result: next };
+    });
   }
 
   async allowSender(senderId: string): Promise<AccessState> {
-    const state = await this.accessStatus();
-    const next = allowSender(state, senderId);
-    await saveAccessState(this.#config.accessFile, next);
-    return next;
+    return await this.#withAccessState(async (state) => {
+      const next = allowSender(state, senderId);
+      return { state: next, result: next };
+    });
   }
 
   async removeSender(senderId: string): Promise<AccessState> {
-    const state = await this.accessStatus();
-    const next = removeSender(state, senderId);
-    await saveAccessState(this.#config.accessFile, next);
-    return next;
+    return await this.#withAccessState(async (state) => {
+      const next = removeSender(state, senderId);
+      return { state: next, result: next };
+    });
   }
 
   async enableGroup(groupId: string, requireMention = true, allowFrom: string[] = []): Promise<AccessState> {
-    const state = await this.accessStatus();
-    const next = enableGroup(state, groupId, { requireMention, allowFrom });
-    await saveAccessState(this.#config.accessFile, next);
-    return next;
+    return await this.#withAccessState(async (state) => {
+      const next = enableGroup(state, groupId, { requireMention, allowFrom });
+      return { state: next, result: next };
+    });
   }
 
   async disableGroup(groupId: string): Promise<AccessState> {
-    const state = await this.accessStatus();
-    const next = disableGroup(state, groupId);
-    await saveAccessState(this.#config.accessFile, next);
-    return next;
+    return await this.#withAccessState(async (state) => {
+      const next = disableGroup(state, groupId);
+      return { state: next, result: next };
+    });
   }
 
   async #resolveOutboundFiles(files: string[]): Promise<string[]> {
@@ -349,11 +361,20 @@ export class PikachatClaudeChannel {
     const chatId = event.nostr_group_id.trim().toLowerCase();
     const chatType = await this.#resolveChatType(chatId);
     const messageText = augmentMessageText(event.content, event.media ?? []);
-    const state = pruneExpiredPairings(await loadAccessState(this.#config.accessFile), this.#deps.now());
 
     if (chatType === "direct") {
-      const decision = evaluateDmAccess(state, senderId);
-      if (decision === "allowed") {
+      const directAccess = await this.#withAccessState<DirectAccessResult>(async (state) => {
+        const decision = evaluateDmAccess(state, senderId);
+        if (decision !== "pairing") {
+          return { state, result: { decision } };
+        }
+        const ensured = ensurePendingPairing(state, senderId, chatId, this.#deps.now());
+        return {
+          state: ensured.state,
+          result: { decision, pairingCode: ensured.pairing.code },
+        };
+      });
+      if (directAccess.decision === "allowed") {
         await this.#emitNotification({
           content: messageText,
           meta: sanitizeMeta({
@@ -369,17 +390,16 @@ export class PikachatClaudeChannel {
         });
         return;
       }
-      if (decision === "pairing") {
-        const ensured = ensurePendingPairing(state, senderId, chatId, this.#deps.now());
-        await saveAccessState(this.#config.accessFile, ensured.state);
+      if (directAccess.decision === "pairing" && directAccess.pairingCode) {
         await this.#daemon!.sendMessage(
           chatId,
-          `Pairing code: ${ensured.pairing.code}\nApprove it from Claude with the approve_pairing tool.`,
+          `Pairing code: ${directAccess.pairingCode}\nApprove it from Claude with the approve_pairing tool.`,
         );
       }
       return;
     }
 
+    const state = await this.accessStatus();
     const groupDecision = evaluateGroupAccess(state, chatId, senderId);
     if (!groupDecision.enabled || !groupDecision.senderAllowed) {
       return;
@@ -433,6 +453,37 @@ export class PikachatClaudeChannel {
     await this.#onNotification(notification);
   }
 
+  async #withAccessState<T>(
+    fn: (state: AccessState) => Promise<{ state: AccessState; result: T }> | { state: AccessState; result: T },
+  ): Promise<T> {
+    return await this.#withAccessLock(async () => {
+      const state = await this.#loadAccessState();
+      const { state: nextState, result } = await fn(state);
+      if (nextState !== state) {
+        await saveAccessState(this.#config.accessFile, nextState);
+      }
+      return result;
+    });
+  }
+
+  async #withAccessLock<T>(fn: () => Promise<T>): Promise<T> {
+    const previous = this.#accessLock;
+    let release!: () => void;
+    this.#accessLock = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
+  async #loadAccessState(): Promise<AccessState> {
+    return pruneExpiredPairings(await loadAccessState(this.#config.accessFile), this.#deps.now());
+  }
+
   #requireDaemon(): PikachatDaemonLike {
     if (!this.#daemon) {
       throw new Error("pikachat daemon is not running");
@@ -447,6 +498,7 @@ export function createInMemoryChannelForTests(params: {
   onNotification?: (notification: ChannelNotification) => void | Promise<void>;
   now?: () => number;
 }): PikachatClaudeChannel {
+  const baseDir = path.join(os.tmpdir(), "pikachat-claude-test");
   const config: PikachatClaudeConfig = {
     relays: ["ws://127.0.0.1:18080"],
     daemonBackend: "native",
@@ -454,9 +506,9 @@ export function createInMemoryChannelForTests(params: {
     daemonArgs: ["daemon"],
     autoAcceptWelcomes: true,
     channelSource: "pikachat",
-    channelHome: "/tmp/pikachat-claude-test",
-    accessFile: "/tmp/pikachat-claude-test/access.json",
-    inboxDir: "/tmp/pikachat-claude-test/inbox",
+    channelHome: baseDir,
+    accessFile: path.join(baseDir, "access.json"),
+    inboxDir: path.join(baseDir, "inbox"),
     ...params.config,
   };
   return new PikachatClaudeChannel({

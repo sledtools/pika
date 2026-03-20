@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export type DmPolicy = "pairing" | "allowlist" | "disabled";
@@ -94,8 +94,11 @@ export async function loadAccessState(filePath: string): Promise<AccessState> {
 }
 
 export async function saveAccessState(filePath: string, state: AccessState): Promise<void> {
-  await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(filePath, JSON.stringify(state, null, 2) + "\n", "utf8");
+  const directory = path.dirname(filePath);
+  const tempPath = path.join(directory, `.access.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`);
+  await mkdir(directory, { recursive: true });
+  await writeFile(tempPath, JSON.stringify(state, null, 2) + "\n", "utf8");
+  await rename(tempPath, filePath);
 }
 
 export function pruneExpiredPairings(state: AccessState, now: number = Date.now()): AccessState {

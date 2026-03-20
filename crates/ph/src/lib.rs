@@ -228,7 +228,7 @@ fn cmd_login(cli: &Cli, args: LoginArgs) -> anyhow::Result<()> {
 
 fn cmd_whoami(cli: &Cli) -> anyhow::Result<()> {
     let session = load_session(&cli.state_dir)?;
-    let base_url = resolve_base_url(cli.base_url.as_deref(), Some(&session))?;
+    let base_url = resolve_authenticated_base_url(cli.base_url.as_deref(), &session)?;
     let api = ApiClient::new(base_url, Some(session.token))?;
     let me = api.me()?;
     println!(
@@ -257,7 +257,7 @@ fn cmd_status(cli: &Cli, branch_or_id: Option<&str>) -> anyhow::Result<()> {
 
 fn cmd_wait(cli: &Cli, branch_or_id: Option<&str>, poll_secs: u64) -> anyhow::Result<()> {
     let session = load_session(&cli.state_dir)?;
-    let base_url = resolve_base_url(cli.base_url.as_deref(), Some(&session))?;
+    let base_url = resolve_authenticated_base_url(cli.base_url.as_deref(), &session)?;
     let api = ApiClient::new(base_url, Some(session.token))?;
     let resolved = resolve_branch_ref(&api, branch_or_id)?;
     let mut last_snapshot = None;
@@ -289,7 +289,7 @@ fn cmd_logs(
     lane_run_id: Option<i64>,
 ) -> anyhow::Result<()> {
     let session = load_session(&cli.state_dir)?;
-    let base_url = resolve_base_url(cli.base_url.as_deref(), Some(&session))?;
+    let base_url = resolve_authenticated_base_url(cli.base_url.as_deref(), &session)?;
     let api = ApiClient::new(base_url, Some(session.token))?;
     let resolved = resolve_branch_ref(&api, branch_or_id)?;
     let logs = api.branch_logs(resolved.branch_id, lane, lane_run_id)?;
@@ -323,7 +323,7 @@ fn cmd_logs(
 
 fn cmd_merge(cli: &Cli, branch_or_id: Option<&str>) -> anyhow::Result<()> {
     let session = load_session(&cli.state_dir)?;
-    let base_url = resolve_base_url(cli.base_url.as_deref(), Some(&session))?;
+    let base_url = resolve_authenticated_base_url(cli.base_url.as_deref(), &session)?;
     let api = ApiClient::new(base_url, Some(session.token))?;
     let resolved = resolve_branch_ref(&api, branch_or_id)?;
     let response = api.merge_branch(resolved.branch_id)?;
@@ -341,7 +341,7 @@ fn cmd_merge(cli: &Cli, branch_or_id: Option<&str>) -> anyhow::Result<()> {
 
 fn cmd_close(cli: &Cli, branch_or_id: Option<&str>) -> anyhow::Result<()> {
     let session = load_session(&cli.state_dir)?;
-    let base_url = resolve_base_url(cli.base_url.as_deref(), Some(&session))?;
+    let base_url = resolve_authenticated_base_url(cli.base_url.as_deref(), &session)?;
     let api = ApiClient::new(base_url, Some(session.token))?;
     let resolved = resolve_branch_ref(&api, branch_or_id)?;
     let response = api.close_branch(resolved.branch_id)?;
@@ -355,7 +355,7 @@ fn cmd_close(cli: &Cli, branch_or_id: Option<&str>) -> anyhow::Result<()> {
 
 fn cmd_url(cli: &Cli, branch_or_id: Option<&str>) -> anyhow::Result<()> {
     let session = load_session(&cli.state_dir)?;
-    let base_url = resolve_base_url(cli.base_url.as_deref(), Some(&session))?;
+    let base_url = resolve_authenticated_base_url(cli.base_url.as_deref(), &session)?;
     let api = ApiClient::new(base_url.clone(), Some(session.token))?;
     let resolved = resolve_branch_ref(&api, branch_or_id)?;
     println!(
@@ -371,7 +371,7 @@ fn load_branch_detail(
     branch_or_id: Option<&str>,
 ) -> anyhow::Result<BranchDetailResponse> {
     let session = load_session(&cli.state_dir)?;
-    let base_url = resolve_base_url(cli.base_url.as_deref(), Some(&session))?;
+    let base_url = resolve_authenticated_base_url(cli.base_url.as_deref(), &session)?;
     let api = ApiClient::new(base_url, Some(session.token))?;
     let resolved = resolve_branch_ref(&api, branch_or_id)?;
     api.branch_detail(resolved.branch_id)
@@ -403,7 +403,7 @@ fn resolve_branch_value(api: &ApiClient, value: &str) -> anyhow::Result<BranchRe
             branch_name: None,
         });
     }
-    let resolved = api.resolve_open_branch(value)?;
+    let resolved = api.resolve_branch(value)?;
     Ok(BranchRef {
         branch_id: resolved.branch_id,
         branch_name: Some(resolved.branch_name),
@@ -607,6 +607,25 @@ fn resolve_base_url(explicit: Option<&str>, session: Option<&Session>) -> anyhow
     Ok(url.to_string().trim_end_matches('/').to_string())
 }
 
+fn resolve_authenticated_base_url(
+    explicit: Option<&str>,
+    session: &Session,
+) -> anyhow::Result<String> {
+    let session_base_url = resolve_base_url(None, Some(session))?;
+    let explicit_base_url = resolve_base_url(explicit, None)?;
+    if let Some(explicit) = explicit
+        && !explicit.trim().is_empty()
+        && explicit_base_url != session_base_url
+    {
+        bail!(
+            "saved session belongs to {}; refusing to reuse its token for {}",
+            session_base_url,
+            explicit_base_url
+        );
+    }
+    Ok(session_base_url)
+}
+
 fn encode_query_component(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
@@ -648,7 +667,7 @@ impl ApiClient {
         self.send(Method::GET, "/news/api/me", None::<&()>, true)
     }
 
-    fn resolve_open_branch(&self, branch_name: &str) -> anyhow::Result<BranchResolveResponse> {
+    fn resolve_branch(&self, branch_name: &str) -> anyhow::Result<BranchResolveResponse> {
         let path = format!(
             "/news/api/forge/branch/resolve?branch_name={}",
             encode_query_component(branch_name)
@@ -977,6 +996,75 @@ mod tests {
             0,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn authenticated_commands_refuse_cross_host_token_reuse() {
+        let state_dir = tempdir().expect("state dir");
+        save_session(
+            state_dir.path(),
+            &Session {
+                base_url: "https://news.pikachat.org".to_string(),
+                token: "token".to_string(),
+                npub: "npub1test".to_string(),
+                is_admin: false,
+                can_forge_write: true,
+            },
+        )
+        .expect("save session");
+
+        let cli = Cli::parse_from([
+            "ph",
+            "--state-dir",
+            state_dir.path().to_str().expect("state dir path"),
+            "--base-url",
+            "https://other-host.example",
+            "whoami",
+        ]);
+        let err = cmd_whoami(&cli).expect_err("cross-host token reuse should fail");
+        assert!(err.to_string().contains("refusing to reuse its token"));
+    }
+
+    #[test]
+    fn resolve_branch_ref_accepts_closed_branch_name() {
+        let state_dir = tempdir().expect("state dir");
+        save_session(
+            state_dir.path(),
+            &Session {
+                base_url: "http://placeholder".to_string(),
+                token: "token".to_string(),
+                npub: "npub1test".to_string(),
+                is_admin: false,
+                can_forge_write: true,
+            },
+        )
+        .expect("save session");
+
+        let base_url = spawn_test_server(Router::new().route(
+            "/news/api/forge/branch/resolve",
+            get(|| async {
+                Json(serde_json::json!({
+                    "branch_id": 19,
+                    "repo": "sledtools/pika",
+                    "branch_name": "feature/history",
+                    "branch_state": "merged"
+                }))
+            }),
+        ));
+        let mut session = load_session(state_dir.path()).expect("session");
+        session.base_url = base_url.clone();
+        save_session(state_dir.path(), &session).expect("save session");
+        let api = ApiClient::new(base_url, Some(session.token)).expect("api");
+
+        let resolved = resolve_branch_ref(&api, Some("feature/history")).expect("resolve branch");
+
+        assert_eq!(
+            resolved,
+            BranchRef {
+                branch_id: 19,
+                branch_name: Some("feature/history".to_string()),
+            }
+        );
     }
 
     #[test]

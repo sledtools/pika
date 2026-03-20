@@ -96,8 +96,8 @@ impl AuthState {
             .to_lowercase();
 
         let access = self.access_for_npub(&npub);
-        if !access.can_chat {
-            return Err("pubkey not in allowed list".to_string());
+        if !(access.can_chat || access.can_forge_write) {
+            return Err("pubkey not authorized".to_string());
         }
 
         self.store
@@ -185,6 +185,15 @@ impl AuthState {
                 .ok()
                 .unwrap_or(false)
     }
+
+    pub fn auth_enabled(&self) -> bool {
+        self.chat_enabled()
+            || self
+                .store
+                .has_chat_allowlist_forge_writers()
+                .ok()
+                .unwrap_or(false)
+    }
 }
 
 pub fn normalize_npub(input: &str) -> Result<String, String> {
@@ -197,7 +206,8 @@ pub fn normalize_npub(input: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use nostr::key::PublicKey;
+    use nostr::key::{Keys, PublicKey};
+    use nostr::{EventBuilder, Kind, Tag, TagKind, ToBech32};
 
     use super::AuthState;
     use crate::storage::Store;
@@ -285,5 +295,56 @@ mod tests {
         assert!(access.can_chat);
         assert!(!access.is_admin);
         assert!(access.can_forge_write);
+    }
+
+    #[test]
+    fn inactive_forge_writer_can_auth_without_chat_access() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        store
+            .upsert_chat_allowlist_entry(SAMPLE_NPUB, false, true, Some("forge-only"), "npub1admin")
+            .expect("insert forge-only allowlist entry");
+        let auth = AuthState::new(&[], &[], store);
+
+        let access = auth.access_for_npub(SAMPLE_NPUB);
+        assert!(!access.can_chat);
+        assert!(access.can_forge_write);
+        assert!(auth.auth_enabled());
+    }
+
+    #[test]
+    fn verify_event_issues_token_for_forge_only_principal() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let keys = Keys::generate();
+        let npub = keys.public_key().to_bech32().expect("encode npub");
+        store
+            .upsert_chat_allowlist_entry(&npub, false, true, Some("forge-only"), "npub1admin")
+            .expect("insert forge-only allowlist entry");
+        let auth = AuthState::new(&[], &[], store.clone());
+        let challenge = auth.create_challenge();
+        let verify_url = "https://news.pikachat.org/news/auth/verify";
+        let event = EventBuilder::new(Kind::Custom(27235), challenge.clone())
+            .tags([
+                Tag::custom(TagKind::custom("u"), [verify_url]),
+                Tag::custom(TagKind::custom("method"), ["POST"]),
+            ])
+            .sign_with_keys(&keys)
+            .expect("sign event");
+        let event_json = serde_json::to_string(&event).expect("serialize event");
+
+        let (token, verified_npub, is_admin) = auth.verify_event(&event_json).expect("verify");
+
+        assert!(!token.is_empty());
+        assert_eq!(verified_npub, npub.to_lowercase());
+        assert!(!is_admin);
+        assert_eq!(
+            store
+                .validate_auth_token(&token, super::TOKEN_TTL_DAYS)
+                .expect("validate token"),
+            Some(npub.to_lowercase())
+        );
     }
 }

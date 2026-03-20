@@ -80,7 +80,7 @@ pub struct BranchDetailRecord {
 }
 
 #[derive(Debug, Clone)]
-pub struct OpenBranchLookupRecord {
+pub struct BranchLookupRecord {
     pub branch_id: i64,
     pub repo: String,
     pub branch_name: String,
@@ -570,11 +570,11 @@ impl Store {
         })
     }
 
-    pub fn find_open_branch_by_name(
+    pub fn find_branch_by_name(
         &self,
         repo: &str,
         branch_name: &str,
-    ) -> anyhow::Result<Option<OpenBranchLookupRecord>> {
+    ) -> anyhow::Result<Option<BranchLookupRecord>> {
         self.with_connection(|conn| {
             conn.query_row(
                 "SELECT br.id, r.repo, br.branch_name, br.state
@@ -582,12 +582,11 @@ impl Store {
                  JOIN repos r ON r.id = br.repo_id
                  WHERE r.repo = ?1
                    AND br.branch_name = ?2
-                   AND br.state = 'open'
                  ORDER BY br.id DESC
                  LIMIT 1",
                 params![repo, branch_name],
                 |row| {
-                    Ok(OpenBranchLookupRecord {
+                    Ok(BranchLookupRecord {
                         branch_id: row.get(0)?,
                         repo: row.get(1)?,
                         branch_name: row.get(2)?,
@@ -596,7 +595,7 @@ impl Store {
                 },
             )
             .optional()
-            .context("query open branch by name")
+            .context("query branch by name")
         })
     }
 
@@ -2481,6 +2480,26 @@ mod tests {
         assert!(items
             .iter()
             .any(|item| item.branch_id == second.branch_id && item.state == "open"));
+    }
+
+    #[test]
+    fn find_branch_by_name_returns_latest_closed_lifecycle() {
+        let store = open_store();
+        let first = store
+            .upsert_branch_record(&upsert_input("feature/history", "head111"))
+            .expect("insert first branch lifecycle");
+        store
+            .mark_branch_closed(first.branch_id, "npub1trusted")
+            .expect("close first branch lifecycle");
+
+        let resolved = store
+            .find_branch_by_name("sledtools/pika", "feature/history")
+            .expect("resolve branch by name")
+            .expect("branch exists");
+
+        assert_eq!(resolved.branch_id, first.branch_id);
+        assert_eq!(resolved.branch_state, "closed");
+        assert_eq!(resolved.branch_name, "feature/history");
     }
 
     #[test]

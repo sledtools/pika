@@ -2200,8 +2200,7 @@ async fn api_forge_branch_resolve_handler(
         .map(|repo| repo.repo)
         .unwrap_or_else(|| "sledtools/pika".to_string());
     let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || store.find_open_branch_by_name(&repo, &branch_name))
-        .await
+    match tokio::task::spawn_blocking(move || store.find_branch_by_name(&repo, &branch_name)).await
     {
         Ok(Ok(Some(branch))) => Json(ForgeBranchResolveResponse {
             branch_id: branch.branch_id,
@@ -2212,7 +2211,7 @@ async fn api_forge_branch_resolve_handler(
         .into_response(),
         Ok(Ok(None)) => (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "open branch not found"})),
+            Json(serde_json::json!({"error": "branch not found"})),
         )
             .into_response(),
         Ok(Err(err)) => (
@@ -2295,10 +2294,10 @@ async fn api_forge_branch_logs_handler(
 // --- Auth handlers ---
 
 async fn auth_challenge_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    if !state.auth.chat_enabled() {
+    if !state.auth.auth_enabled() {
         return (
             StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "chat not enabled"})),
+            Json(serde_json::json!({"error": "auth not enabled"})),
         )
             .into_response();
     }
@@ -2315,10 +2314,10 @@ async fn auth_verify_handler(
     State(state): State<Arc<AppState>>,
     Json(body): Json<VerifyRequest>,
 ) -> impl IntoResponse {
-    if !state.auth.chat_enabled() {
+    if !state.auth.auth_enabled() {
         return (
             StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "chat not enabled"})),
+            Json(serde_json::json!({"error": "auth not enabled"})),
         )
             .into_response();
     }
@@ -3429,13 +3428,14 @@ mod tests {
 
     use super::{
         api_forge_branch_detail_handler, api_forge_branch_logs_handler,
-        api_forge_branch_resolve_handler, branch_ci_stream_handler, build_mirror_health_status,
-        collect_forge_startup_issues, current_forge_runtime_issues, inbox_review_handler,
-        load_branch_ci_live_snapshot, load_nightly_live_snapshot, markdown_to_safe_html,
-        next_branch_ci_live_snapshot, next_nightly_live_snapshot, nightly_stream_handler,
-        render_detail_template, render_nightly_template, rerun_branch_ci_lane_handler,
-        rerun_nightly_lane_handler, should_backfill_managed_allowlist_entry, verify_signature,
-        AppState, CiLiveUpdates, ForgeBranchLogsQuery, ForgeBranchResolveQuery, ForgeHealthState,
+        api_forge_branch_resolve_handler, auth_challenge_handler, branch_ci_stream_handler,
+        build_mirror_health_status, collect_forge_startup_issues, current_forge_runtime_issues,
+        inbox_review_handler, load_branch_ci_live_snapshot, load_nightly_live_snapshot,
+        markdown_to_safe_html, next_branch_ci_live_snapshot, next_nightly_live_snapshot,
+        nightly_stream_handler, render_detail_template, render_nightly_template,
+        rerun_branch_ci_lane_handler, rerun_nightly_lane_handler,
+        should_backfill_managed_allowlist_entry, verify_signature, AppState, CiLiveUpdates,
+        ForgeBranchLogsQuery, ForgeBranchResolveQuery, ForgeHealthState,
     };
     use crate::auth::AuthState;
     use crate::branch_store::{BranchUpsertInput, MirrorStatusRecord, MirrorSyncRunRecord};
@@ -3929,6 +3929,109 @@ mod tests {
         assert_eq!(json["branch_id"], branch.branch_id);
         assert_eq!(json["branch_name"], "feature/api-resolve");
         assert_eq!(json["branch_state"], "open");
+    }
+
+    #[tokio::test]
+    async fn api_forge_branch_resolve_returns_closed_branch_history() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let branch = store
+            .upsert_branch_record(&branch_upsert_input("feature/api-history", "head-history"))
+            .expect("insert branch");
+        store
+            .mark_branch_closed(branch.branch_id, TRUSTED_NPUB)
+            .expect("close branch");
+        let config = Config {
+            repos: vec!["sledtools/pika".to_string()],
+            forge_repo: Some(ForgeRepoConfig {
+                repo: "sledtools/pika".to_string(),
+                canonical_git_dir: "/tmp/pika.git".to_string(),
+                default_branch: "master".to_string(),
+                ci_concurrency: None,
+                mirror_remote: None,
+                mirror_poll_interval_secs: None,
+                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
+                hook_url: None,
+            }),
+            poll_interval_secs: 60,
+            model: "test-model".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            github_token_env: "GITHUB_TOKEN".to_string(),
+            merged_lookback_hours: 72,
+            worker_concurrency: 1,
+            retry_backoff_secs: 120,
+            webhook_secret_env: "PIKA_NEWS_WEBHOOK_SECRET".to_string(),
+            bind_address: "127.0.0.1".to_string(),
+            bind_port: 8787,
+            allowed_npubs: vec![],
+            bootstrap_admin_npubs: vec![],
+        };
+        let headers = trusted_headers(&store, TRUSTED_NPUB);
+        let state = test_state(store, config);
+
+        let response = api_forge_branch_resolve_handler(
+            State(state),
+            Query(ForgeBranchResolveQuery {
+                branch_name: "feature/api-history".to_string(),
+            }),
+            headers,
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("parse json");
+        assert_eq!(json["branch_id"], branch.branch_id);
+        assert_eq!(json["branch_name"], "feature/api-history");
+        assert_eq!(json["branch_state"], "closed");
+    }
+
+    #[tokio::test]
+    async fn auth_challenge_handler_allows_forge_only_auth_mode() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        store
+            .upsert_chat_allowlist_entry(
+                TRUSTED_NPUB,
+                false,
+                true,
+                Some("forge-only"),
+                "npub1admin",
+            )
+            .expect("upsert forge-only allowlist entry");
+        let config = Config {
+            repos: vec!["sledtools/pika".to_string()],
+            forge_repo: Some(ForgeRepoConfig {
+                repo: "sledtools/pika".to_string(),
+                canonical_git_dir: "/tmp/pika.git".to_string(),
+                default_branch: "master".to_string(),
+                ci_concurrency: None,
+                mirror_remote: None,
+                mirror_poll_interval_secs: None,
+                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
+                hook_url: None,
+            }),
+            poll_interval_secs: 60,
+            model: "test-model".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            github_token_env: "GITHUB_TOKEN".to_string(),
+            merged_lookback_hours: 72,
+            worker_concurrency: 1,
+            retry_backoff_secs: 120,
+            webhook_secret_env: "PIKA_NEWS_WEBHOOK_SECRET".to_string(),
+            bind_address: "127.0.0.1".to_string(),
+            bind_port: 8787,
+            allowed_npubs: vec![],
+            bootstrap_admin_npubs: vec![],
+        };
+        let state = test_state(store, config);
+
+        let response = auth_challenge_handler(State(state)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

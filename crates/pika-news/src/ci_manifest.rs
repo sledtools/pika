@@ -170,13 +170,23 @@ fn matches_any_path(changed_paths: &[String], patterns: &[String]) -> anyhow::Re
 mod tests {
     use super::{parse_manifest, select_branch_lanes};
 
-    #[test]
-    fn docs_only_branch_selects_expected_lanes() {
+    fn selected_lane_ids(changed: &[&str]) -> Vec<String> {
         let manifest =
             parse_manifest(include_str!("../../../ci/forge-lanes.toml")).expect("manifest");
-        let changed = vec!["docs/testing/ci-selectors.md".to_string()];
-        let selected = select_branch_lanes(&manifest, &changed).expect("select lanes");
-        let ids = selected.into_iter().map(|lane| lane.id).collect::<Vec<_>>();
+        let changed = changed
+            .iter()
+            .map(|path| path.to_string())
+            .collect::<Vec<_>>();
+        select_branch_lanes(&manifest, &changed)
+            .expect("select lanes")
+            .into_iter()
+            .map(|lane| lane.id)
+            .collect()
+    }
+
+    #[test]
+    fn docs_only_branch_selects_expected_lanes() {
+        let ids = selected_lane_ids(&["docs/testing/ci-selectors.md"]);
 
         assert!(ids.contains(&"pika_rust".to_string()));
         assert!(ids.contains(&"pika_followup".to_string()));
@@ -187,11 +197,7 @@ mod tests {
 
     #[test]
     fn rust_core_branch_selects_heavier_relevant_lanes() {
-        let manifest =
-            parse_manifest(include_str!("../../../ci/forge-lanes.toml")).expect("manifest");
-        let changed = vec!["rust/src/lib.rs".to_string()];
-        let selected = select_branch_lanes(&manifest, &changed).expect("select lanes");
-        let ids = selected.into_iter().map(|lane| lane.id).collect::<Vec<_>>();
+        let ids = selected_lane_ids(&["rust/src/lib.rs"]);
 
         assert!(ids.contains(&"pika_rust".to_string()));
         assert!(ids.contains(&"pika_followup".to_string()));
@@ -201,17 +207,18 @@ mod tests {
     }
 
     #[test]
-    fn typescript_plugin_branch_selects_only_typescript_lane() {
-        let manifest =
-            parse_manifest(include_str!("../../../ci/forge-lanes.toml")).expect("manifest");
-        let changed = vec!["pikachat-claude/src/channel-runtime.ts".to_string()];
-        let selected = select_branch_lanes(&manifest, &changed).expect("select lanes");
-        let ids = selected.into_iter().map(|lane| lane.id).collect::<Vec<_>>();
-
-        assert!(ids.contains(&"pikachat_typescript".to_string()));
-        assert!(!ids.contains(&"pikachat".to_string()));
-        assert!(!ids.contains(&"pika_rust".to_string()));
-        assert!(!ids.contains(&"pika_followup".to_string()));
+    fn pikachat_claude_paths_select_only_typescript_lane() {
+        for path in [
+            "pikachat-claude/src/access.test.ts",
+            "pikachat-claude/src/channel-runtime.ts",
+            "pikachat-claude/package.json",
+        ] {
+            assert_eq!(
+                selected_lane_ids(&[path]),
+                vec!["pikachat_typescript".to_string()],
+                "{path} should select only the dedicated TypeScript lane"
+            );
+        }
     }
 
     #[test]
@@ -295,5 +302,37 @@ command = ["./nightly.sh"]
                 ]
             );
         }
+    }
+
+    #[test]
+    fn forge_web_changes_select_control_plane_lanes() {
+        assert_eq!(
+            selected_lane_ids(&["crates/pika-news/src/web.rs"]),
+            vec!["notifications".to_string(), "agent_contracts".to_string()]
+        );
+    }
+
+    #[test]
+    fn ph_cli_changes_select_control_plane_lanes() {
+        assert_eq!(
+            selected_lane_ids(&["crates/ph/src/lib.rs"]),
+            vec!["notifications".to_string(), "agent_contracts".to_string()]
+        );
+    }
+
+    #[test]
+    fn agents_root_file_selects_agent_workflow_lanes() {
+        assert_eq!(
+            selected_lane_ids(&["AGENTS.md"]),
+            vec!["pika_followup".to_string(), "agent_contracts".to_string()]
+        );
+    }
+
+    #[test]
+    fn agents_skill_selects_agent_workflow_lanes() {
+        assert_eq!(
+            selected_lane_ids(&[".agents/skills/land/SKILL.md"]),
+            vec!["pika_followup".to_string(), "agent_contracts".to_string()]
+        );
     }
 }

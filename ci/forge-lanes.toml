@@ -37,6 +37,8 @@ title = "check-pika-followup"
 staged_linux_target = "pre-merge-pika-followup"
 paths = [
   "ci/forge-lanes.toml",
+  "AGENTS.md",
+  ".agents/**",
   "Cargo.toml",
   "Cargo.lock",
   "flake.nix",
@@ -78,10 +80,12 @@ paths = [
   ".github/workflows/pre-merge.yml",
   "scripts/pikaci-staged-linux-remote.sh",
   "scripts/ci-add-known-host.sh",
+  "crates/pika-news/**",
   "crates/pikaci/**",
   "crates/pika-agent-control-plane/**",
   "crates/pika-agent-microvm/**",
   "crates/pika-desktop/**",
+  "crates/ph/**",
   "crates/pikahut/**",
   "crates/pika-server/**",
   "crates/pika-marmot-runtime/**",
@@ -101,6 +105,8 @@ title = "check-agent-contracts"
 staged_linux_target = "pre-merge-agent-contracts"
 paths = [
   "ci/forge-lanes.toml",
+  "AGENTS.md",
+  ".agents/**",
   "Cargo.toml",
   "Cargo.lock",
   "cli/**",
@@ -113,10 +119,12 @@ paths = [
   ".github/workflows/pre-merge.yml",
   "scripts/pikaci-staged-linux-remote.sh",
   "scripts/ci-add-known-host.sh",
+  "crates/pika-news/**",
   "crates/pikaci/**",
   "crates/pika-agent-control-plane/**",
   "crates/pika-agent-protocol/**",
   "crates/pika-agent-microvm/**",
+  "crates/ph/**",
   "crates/pika-server/**",
   "crates/hypernote-protocol/**",
   "crates/pika-media/**",

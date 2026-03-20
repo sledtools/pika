@@ -47,6 +47,14 @@
       .lane-details { border: 1px solid var(--border); border-radius: 10px; padding: 0.55rem 0.7rem; margin-top: 0.75rem; background: var(--badge-bg-row); }
       .lane-details[open] { background: var(--badge-bg-alt); }
       .lane-details.lane-failed { border-color: #b8475b; background: rgba(184, 71, 91, 0.09); }
+      .lane-meta-row { display: flex; gap: 0.55rem; align-items: center; flex-wrap: wrap; margin-top: 0.55rem; }
+      .lane-status-badge { display: inline-flex; align-items: center; border-radius: 999px; border: 1px solid transparent; padding: 0.12rem 0.55rem; font-size: 0.76rem; font-weight: 600; line-height: 1.2; text-transform: uppercase; letter-spacing: 0.03em; }
+      .lane-status-badge.status-success { background: rgba(40, 167, 69, 0.12); border-color: rgba(40, 167, 69, 0.35); color: #1f7a3d; }
+      .lane-status-badge.status-failed { background: rgba(184, 71, 91, 0.14); border-color: rgba(184, 71, 91, 0.38); color: #8b1e3f; }
+      .lane-status-badge.status-running { background: rgba(15, 76, 129, 0.12); border-color: rgba(15, 76, 129, 0.34); color: #0f4c81; }
+      .lane-status-badge.status-queued { background: var(--badge-bg); border-color: var(--border-light); color: var(--text-secondary); }
+      .lane-status-badge.status-skipped { background: rgba(217, 164, 65, 0.14); border-color: rgba(217, 164, 65, 0.36); color: #8c6112; }
+      .lane-status-badge.status-neutral { background: var(--badge-bg); border-color: var(--border-light); color: var(--text-secondary); }
       .failure-hint { color: #8b1e3f; font-weight: 600; }
       .muted { color: var(--text-muted); }
       .lane-btn { margin-top: 0.5rem; }

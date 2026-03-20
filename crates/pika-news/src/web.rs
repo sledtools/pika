@@ -395,6 +395,8 @@ struct CiLaneView {
     title: String,
     entrypoint: String,
     status: String,
+    status_badge_class: String,
+    is_failed: bool,
     pikaci_run_id: Option<String>,
     pikaci_target_id: Option<String>,
     log_text: Option<String>,
@@ -1796,12 +1798,16 @@ fn map_ci_run_view(run: BranchCiRunRecord) -> CiRunView {
 }
 
 fn map_ci_lane_view(lane: BranchCiLaneRecord) -> CiLaneView {
+    let status_badge_class = lane_status_badge_class(&lane.status).to_string();
+    let is_failed = lane.status == "failed";
     CiLaneView {
         id: lane.id,
         lane_id: lane.lane_id,
         title: lane.title,
         entrypoint: lane.entrypoint,
         status: lane.status,
+        status_badge_class,
+        is_failed,
         pikaci_run_id: lane.pikaci_run_id,
         pikaci_target_id: lane.pikaci_target_id,
         log_text: lane.log_text,
@@ -1828,6 +1834,17 @@ fn map_nightly_lane_view(lane: NightlyLaneRecord) -> NightlyLaneView {
         created_at: lane.created_at,
         started_at: lane.started_at,
         finished_at: lane.finished_at,
+    }
+}
+
+fn lane_status_badge_class(status: &str) -> &'static str {
+    match status {
+        "failed" => "status-failed",
+        "success" => "status-success",
+        "running" => "status-running",
+        "queued" => "status-queued",
+        "skipped" => "status-skipped",
+        _ => "status-neutral",
     }
 }
 
@@ -5290,6 +5307,72 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
         assert!(rendered.contains("pikaci run"));
         assert!(rendered.contains("pikaci-run-branch-ui"));
         assert!(rendered.contains("pre-merge-pika-rust"));
+    }
+
+    #[test]
+    fn branch_detail_renders_skipped_lane_badges_in_summary_and_body() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let branch = store
+            .upsert_branch_record(&branch_upsert_input("feature/skipped-ui", "head-skipped"))
+            .expect("insert branch");
+        store
+            .queue_branch_ci_run_for_head(
+                branch.branch_id,
+                "head-skipped",
+                &[crate::ci_manifest::ForgeLane {
+                    id: "pikachat_typescript".to_string(),
+                    title: "check-pikachat-typescript".to_string(),
+                    entrypoint:
+                        "./scripts/pikaci-staged-linux-remote.sh run pre-merge-pikachat-typescript"
+                            .to_string(),
+                    command: vec![
+                        "./scripts/pikaci-staged-linux-remote.sh".to_string(),
+                        "run".to_string(),
+                        "pre-merge-pikachat-typescript".to_string(),
+                    ],
+                    paths: vec![],
+                    concurrency_group: Some(
+                        "staged-linux:pre-merge-pikachat-typescript".to_string(),
+                    ),
+                    staged_linux_target: Some("pre-merge-pikachat-typescript".to_string()),
+                }],
+            )
+            .expect("queue ci");
+        let skipped = store
+            .claim_pending_branch_ci_lane_runs(1, 120)
+            .expect("claim ci")
+            .into_iter()
+            .next()
+            .expect("ci lane");
+        store
+            .finish_branch_ci_lane_run(
+                skipped.lane_run_id,
+                skipped.claim_token,
+                "skipped",
+                "skipped; no changed files matched target filters",
+            )
+            .expect("finish skipped lane");
+
+        let detail = store
+            .get_branch_detail(branch.branch_id)
+            .expect("branch detail")
+            .expect("detail");
+        let ci_runs = store
+            .list_branch_ci_runs(branch.branch_id, 8)
+            .expect("branch ci runs");
+        let rendered = render_detail_template(detail, ci_runs, false)
+            .expect("render detail template")
+            .render()
+            .expect("render detail html");
+
+        assert_eq!(
+            rendered
+                .matches("lane-status-badge status-skipped\">skipped</span>")
+                .count(),
+            2
+        );
     }
 
     #[test]

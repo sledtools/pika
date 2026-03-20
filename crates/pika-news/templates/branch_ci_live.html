@@ -40,10 +40,17 @@
       <p class="muted">No lanes were selected for this branch head.</p>
       {% else %}
       {% for lane in run.lanes %}
-      <details class="lane-details {% if lane.status == "failed" %}lane-failed{% endif %}" {% if lane.status == "failed" %}open{% endif %}>
-        <summary>Lane #{{ lane.id }} · {{ lane.title }} · {{ lane.status }} · <code>{{ lane.entrypoint }}</code></summary>
-        <p class="muted">lane id <code>{{ lane.lane_id }}</code> · retries {{ lane.retry_count }} · queued {{ lane.created_at }}</p>
-        {% if lane.status == "failed" %}
+      <details class="lane-details {% if lane.is_failed %}lane-failed{% endif %}" {% if lane.is_failed %}open{% endif %}>
+        <summary>
+          Lane #{{ lane.id }} · {{ lane.title }} ·
+          <span class="lane-status-badge {{ lane.status_badge_class }}">{{ lane.status }}</span>
+          · <code>{{ lane.entrypoint }}</code>
+        </summary>
+        <div class="lane-meta-row">
+          <span class="lane-status-badge {{ lane.status_badge_class }}">{{ lane.status }}</span>
+          <span class="muted">lane id <code>{{ lane.lane_id }}</code> · retries {{ lane.retry_count }} · queued {{ lane.created_at }}</span>
+        </div>
+        {% if lane.is_failed %}
         <p class="failure-hint">This lane failed. Check the log output below before rerunning.</p>
         {% endif %}
         {% match lane.rerun_of_lane_run_id %}

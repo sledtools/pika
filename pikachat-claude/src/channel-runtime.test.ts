@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -14,6 +14,8 @@ class FakeDaemon {
   mediaBatches: Array<{ chatId: string; files: string[] }> = [];
   ready = { type: "ready", protocol_version: 1, pubkey: "botpub", npub: "npub1bot" } as const;
   memberCountByGroup = new Map<string, number>();
+  failSetRelays = false;
+  shutdownCalls = 0;
 
   onEvent(handler: PikachatDaemonEventHandler): void {
     this.handler = handler;
@@ -27,7 +29,11 @@ class FakeDaemon {
     return await new Promise<void>(() => {});
   }
 
-  async setRelays() {}
+  async setRelays() {
+    if (this.failSetRelays) {
+      throw new Error("set_relays failed");
+    }
+  }
 
   async publishKeypackage() {}
 
@@ -62,12 +68,12 @@ class FakeDaemon {
 
   async sendMedia(chatId: string, filePath: string) {
     this.mediaBatches.push({ chatId, files: [filePath] });
-    return {};
+    return { event_id: `media-${this.mediaBatches.length}` };
   }
 
   async sendMediaBatch(chatId: string, filePaths: string[]) {
     this.mediaBatches.push({ chatId, files: [...filePaths] });
-    return {};
+    return { event_id: `media-batch-${this.mediaBatches.length}` };
   }
 
   async sendTyping() {}
@@ -76,7 +82,9 @@ class FakeDaemon {
     return { messages: [] };
   }
 
-  async shutdown() {}
+  async shutdown() {
+    this.shutdownCalls += 1;
+  }
 
   pid() {
     return 1234;
@@ -156,7 +164,15 @@ describe("PikachatClaudeChannel", () => {
         created_at: 1,
         event_id: "ev1",
         message_id: "msg1",
-        media: [{ filename: "pic.jpg", mime_type: "image/jpeg", local_path: "/tmp/pic.jpg" }],
+        media: [{
+          filename: "pic.jpg",
+          mime_type: "image/jpeg",
+          url: "https://example.com/pic.jpg",
+          original_hash_hex: "abc123def456",
+          nonce_hex: "fed654cba321",
+          scheme_version: "1",
+          local_path: "/tmp/pic.jpg",
+        }],
       });
       assert.equal(notifications.length, 1);
       assert.equal(notifications[0].meta.chat_type, "direct");
@@ -210,6 +226,56 @@ describe("PikachatClaudeChannel", () => {
       assert.equal(notifications.length, 1);
       assert.equal(notifications[0].meta.chat_type, "group");
       assert.equal(notifications[0].meta.mentioned, "true");
+    } finally {
+      await channel.stop();
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans up the daemon when startup fails", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "pikachat-claude-"));
+    const daemon = new FakeDaemon();
+    daemon.failSetRelays = true;
+    const channel = createInMemoryChannelForTests({
+      daemon,
+      config: {
+        channelHome: tempDir,
+        accessFile: path.join(tempDir, "access.json"),
+        inboxDir: path.join(tempDir, "inbox"),
+      },
+    });
+    try {
+      await assert.rejects(() => channel.start(), /set_relays failed/);
+      assert.equal(daemon.shutdownCalls, 1);
+    } finally {
+      await channel.stop();
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns media event ids and restricts outbound attachments to trusted roots", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "pikachat-claude-"));
+    const inboxDir = path.join(tempDir, "inbox");
+    await mkdir(inboxDir, { recursive: true });
+    const allowedFile = path.join(inboxDir, "allowed.txt");
+    const blockedFile = path.join(tempDir, "blocked.txt");
+    await writeFile(allowedFile, "ok");
+    await writeFile(blockedFile, "nope");
+
+    const daemon = new FakeDaemon();
+    const channel = createInMemoryChannelForTests({
+      daemon,
+      config: {
+        channelHome: tempDir,
+        accessFile: path.join(tempDir, "access.json"),
+        inboxDir,
+      },
+    });
+    try {
+      await channel.start();
+      const result = await channel.reply({ chatId: "dm1", files: [allowedFile] });
+      assert.deepEqual(result.eventIds, ["media-1"]);
+      await assert.rejects(() => channel.reply({ chatId: "dm1", files: [blockedFile] }), /outside trusted roots/);
     } finally {
       await channel.stop();
       await rm(tempDir, { recursive: true, force: true });

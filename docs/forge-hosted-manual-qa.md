@@ -12,6 +12,7 @@ guessing which surfaces matter.
 
 ## Before Starting
 
+- Canonical push remote: `git@git.pikachat.org:pika.git`.
 - Confirm `/news/admin` loads and `Forge Health` shows `Poller`, `Generation Worker`, and `CI Runner` as `idle` or `active`, not `error`.
 - Confirm `Mirror Background` matches the intended mode for the host:
   - `disabled` if `forge_repo.mirror_poll_interval_secs = 0`

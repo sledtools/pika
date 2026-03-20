@@ -9,7 +9,6 @@ struct ChatListView: View {
     let onNewChat: @MainActor () -> Void
     let onNewGroupChat: @MainActor () -> Void
     let onEnsureOpenclawAgent: @MainActor () -> Void
-    let onEnsurePiAgent: @MainActor () -> Void
     let onRefreshProfile: @MainActor () -> Void
     let onSaveProfile: @MainActor (_ name: String, _ about: String) -> Void
     let onUploadProfilePhoto: @MainActor (_ data: Data, _ mimeType: String) -> Void
@@ -152,12 +151,9 @@ struct ChatListView: View {
             Button("OpenClaw") {
                 onEnsureOpenclawAgent()
             }
-            Button("Pi") {
-                onEnsurePiAgent()
-            }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Show experimental agent choices when creating a new agent.")
+            Text("Show experimental agent choices when creating a new agent. OpenClaw is the current supported option.")
         }
     }
 
@@ -191,7 +187,6 @@ struct ChatListView: View {
             onNewChat: {},
             onNewGroupChat: {},
             onEnsureOpenclawAgent: {},
-            onEnsurePiAgent: {},
             onRefreshProfile: {},
             onSaveProfile: { _, _ in },
             onUploadProfilePhoto: { _, _ in },
@@ -223,7 +218,6 @@ struct ChatListView: View {
             onNewChat: {},
             onNewGroupChat: {},
             onEnsureOpenclawAgent: {},
-            onEnsurePiAgent: {},
             onRefreshProfile: {},
             onSaveProfile: { _, _ in },
             onUploadProfilePhoto: { _, _ in },
@@ -255,7 +249,6 @@ struct ChatListView: View {
             onNewChat: {},
             onNewGroupChat: {},
             onEnsureOpenclawAgent: {},
-            onEnsurePiAgent: {},
             onRefreshProfile: {},
             onSaveProfile: { _, _ in },
             onUploadProfilePhoto: { _, _ in },

@@ -46,11 +46,22 @@ record_phase() {
 }
 
 record_phase cargo-metadata cargo metadata --format-version=1 --no-deps >/dev/null
-record_phase pikaci-bin cargo build -q -p pikaci --bin pikaci
-record_phase pikachat-tests-no-run cargo test -q -p pikachat --no-run
-record_phase pikachat-sidecar-tests-no-run cargo test -q -p pikachat-sidecar --no-run
-record_phase pikahut-deterministic-no-run cargo test -q -p pikahut --test integration_deterministic --no-run
-record_phase desktop-tests-no-run ./tools/cargo-with-xcode test -p pika-desktop --no-run
+
+case "$profile" in
+  generic)
+    record_phase pikaci-bin cargo build -q -p pikaci --bin pikaci
+    ;;
+  sanity)
+    record_phase desktop-tests-no-run ./tools/cargo-with-xcode test -p pika-desktop --no-run
+    ;;
+  bundle)
+    record_phase pikaci-bin cargo build -q -p pikaci --bin pikaci
+    record_phase pikachat-tests-no-run cargo test -q -p pikachat --no-run
+    record_phase pikachat-sidecar-tests-no-run cargo test -q -p pikachat-sidecar --no-run
+    record_phase pikahut-deterministic-no-run cargo test -q -p pikahut --test integration_deterministic --no-run
+    record_phase desktop-tests-no-run ./tools/cargo-with-xcode test -p pika-desktop --no-run
+    ;;
+esac
 
 if [[ "$profile" == "bundle" ]]; then
   record_phase shared-runtime-runtime-no-run cargo test -q -p pika-marmot-runtime --no-run

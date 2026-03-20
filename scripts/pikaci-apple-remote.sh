@@ -65,6 +65,10 @@ run_id=""
 ssh_host="${PIKACI_APPLE_SSH_HOST:-}"
 ssh_user="${PIKACI_APPLE_SSH_USER:-}"
 ssh_binary="${PIKACI_APPLE_SSH_BINARY:-ssh}"
+ssh_binary_defaulted=1
+if [[ -n "${PIKACI_APPLE_SSH_BINARY:-}" ]]; then
+  ssh_binary_defaulted=0
+fi
 remote_root="${PIKACI_APPLE_REMOTE_ROOT:-.cache/pikaci-apple}"
 artifact_dir=""
 just_recipe="${PIKACI_APPLE_JUST_RECIPE:-apple-host-bundle}"
@@ -72,6 +76,7 @@ keep_runs="${PIKACI_APPLE_KEEP_RUNS:-3}"
 keep_prepared="${PIKACI_APPLE_KEEP_PREPARED:-2}"
 lock_timeout_sec="${PIKACI_APPLE_LOCK_TIMEOUT_SEC:-0}"
 github_output=""
+ssh_key_override="${PIKACI_APPLE_SSH_KEY:-}"
 
 prepare_profile_for_recipe() {
   case "$1" in
@@ -107,6 +112,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --ssh-binary)
       ssh_binary="${2:?missing value for --ssh-binary}"
+      ssh_binary_defaulted=0
       shift 2
       ;;
     --remote-root)
@@ -187,15 +193,43 @@ bundle_created=0
 prepared_probe="unknown"
 upload_skipped=0
 desired_prepare_profile="$(prepare_profile_for_recipe "$just_recipe")"
+ssh_wrapper=""
+ssh_key_file=""
 
 cleanup() {
   set +e
   if [[ "$bundle_created" -eq 1 ]]; then
     git update-ref -d "$bundle_ref" >/dev/null 2>&1 || true
   fi
+  rm -f "$ssh_wrapper" "$ssh_key_file"
   rm -rf "$tmp_dir"
 }
 trap cleanup EXIT
+
+prepare_ssh_binary() {
+  if [[ "$ssh_binary_defaulted" -ne 1 || -z "$ssh_key_override" ]]; then
+    return
+  fi
+
+  ssh_key_file="$(mktemp "${TMPDIR:-/tmp}/pikaci-apple-ssh-key.XXXXXX")"
+  ssh_wrapper="$(mktemp "${TMPDIR:-/tmp}/pikaci-apple-ssh-wrapper.XXXXXX")"
+  chmod 600 "$ssh_key_file"
+  printf '%s\n' "$ssh_key_override" >"$ssh_key_file"
+  cat >"$ssh_wrapper" <<EOF
+#!/usr/bin/env bash
+exec ssh \\
+  -i $(printf '%q' "$ssh_key_file") \\
+  -o IdentityAgent=none \\
+  -o IdentitiesOnly=yes \\
+  -o PreferredAuthentications=publickey \\
+  -o BatchMode=yes \\
+  "\$@"
+EOF
+  chmod 700 "$ssh_wrapper"
+  ssh_binary="$ssh_wrapper"
+}
+
+prepare_ssh_binary
 
 ensure_source_history_available() {
   local is_shallow

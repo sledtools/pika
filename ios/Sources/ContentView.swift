@@ -256,7 +256,6 @@ private func screenView(
             onNewChat: { manager.dispatch(.pushScreen(screen: .newChat)) },
             onNewGroupChat: { manager.dispatch(.pushScreen(screen: .newGroupChat)) },
             onEnsureOpenclawAgent: { manager.ensureAgent() },
-            onEnsurePiAgent: { manager.ensureAgent(kind: .pi) },
             onRefreshProfile: { manager.refreshMyProfile() },
             onSaveProfile: { name, about in
                 manager.saveMyProfile(name: name, about: about)

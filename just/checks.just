@@ -150,7 +150,6 @@ apple-host-sanity:
         export PIKA_XCODE_INSTALL_PROMPT="${PIKA_XCODE_INSTALL_PROMPT:-0}"
         exec nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c just apple-host-sanity
     fi
-    cargo run -q -p pikaci --bin pikaci -- run pre-merge-pikachat-apple-followup
     just desktop-ui-test
     echo "apple-host-sanity complete"
 
@@ -167,6 +166,7 @@ apple-host-bundle:
         exec nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c just apple-host-bundle
     fi
     just apple-host-sanity
+    cargo run -q -p pikaci --bin pikaci -- run pre-merge-pikachat-apple-followup
     just cli-smoke
     just openclaw-pikachat-deterministic
     just shared-runtime-regression

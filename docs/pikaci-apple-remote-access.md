@@ -62,7 +62,7 @@ gh workflow run apple-mini-validate.yml --repo sledtools/pika --ref master -f la
 gh workflow run apple-mini-validate.yml --repo sledtools/pika --ref master -f lane=bundle
 ```
 
-Those trigger only the Apple mini validation workflow, not the broader `pre-merge.yml` matrix. `lane=sanity` runs `just apple-host-sanity` on the mini, and `lane=bundle` runs `just apple-host-bundle`.
+Those trigger only the Apple mini validation workflow, not the broader `pre-merge.yml` matrix. `lane=sanity` runs the tiny blocking smoke lane (`just apple-host-sanity`, currently `just desktop-ui-test`) on the mini, and `lane=bundle` runs the heavy nightly bundle (`just apple-host-bundle`).
 
 The Apple CI config/secret model now follows the repo's existing `age` pattern:
 

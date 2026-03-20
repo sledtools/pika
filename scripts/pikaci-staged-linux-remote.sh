@@ -13,6 +13,7 @@ Targets:
   pre-merge-pika-followup
   pre-merge-agent-contracts
   pre-merge-pikachat-rust
+  pre-merge-pikachat-typescript
   pre-merge-pikachat-openclaw-e2e
   pre-merge-notifications
   pre-merge-fixture-rust

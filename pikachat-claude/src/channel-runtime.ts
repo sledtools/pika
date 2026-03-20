@@ -111,6 +111,7 @@ export class PikachatClaudeChannel {
 
     await mkdir(this.#config.channelHome, { recursive: true });
     await mkdir(this.#config.inboxDir, { recursive: true });
+    // Persist a pruned baseline before the daemon starts mutating access state.
     const initialState = pruneExpiredPairings(await loadAccessState(this.#config.accessFile), this.#deps.now());
     await saveAccessState(this.#config.accessFile, initialState);
 

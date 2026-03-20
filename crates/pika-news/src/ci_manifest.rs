@@ -201,6 +201,20 @@ mod tests {
     }
 
     #[test]
+    fn typescript_plugin_branch_selects_only_typescript_lane() {
+        let manifest =
+            parse_manifest(include_str!("../../../ci/forge-lanes.toml")).expect("manifest");
+        let changed = vec!["pikachat-claude/src/channel-runtime.ts".to_string()];
+        let selected = select_branch_lanes(&manifest, &changed).expect("select lanes");
+        let ids = selected.into_iter().map(|lane| lane.id).collect::<Vec<_>>();
+
+        assert!(ids.contains(&"pikachat_typescript".to_string()));
+        assert!(!ids.contains(&"pikachat".to_string()));
+        assert!(!ids.contains(&"pika_rust".to_string()));
+        assert!(!ids.contains(&"pika_followup".to_string()));
+    }
+
+    #[test]
     fn canonical_manifest_change_selects_branch_lanes() {
         let manifest =
             parse_manifest(include_str!("../../../ci/forge-lanes.toml")).expect("manifest");
@@ -262,6 +276,7 @@ command = ["./nightly.sh"]
             ("agent_contracts", "pre-merge-agent-contracts"),
             ("rmp", "pre-merge-rmp"),
             ("pikachat", "pre-merge-pikachat-rust"),
+            ("pikachat_typescript", "pre-merge-pikachat-typescript"),
             ("pikachat_openclaw_e2e", "pre-merge-pikachat-openclaw-e2e"),
             ("fixture", "pre-merge-fixture-rust"),
         ] {

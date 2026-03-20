@@ -280,7 +280,7 @@ openclaw-pikachat-deterministic:
       cargo test -p pikahut --test integration_deterministic openclaw_scenario_audio_echo -- --ignored --nocapture
       PIKACHAT_TTS_FIXTURE=1 cargo test -p pikachat-sidecar daemon::tests::tts_pcm_publish_reaches_subscriber -- --nocapture
     fi
-    npx --yes tsx --test pikachat-openclaw/openclaw/extensions/pikachat-openclaw/src/channel-behavior.test.ts
+    ./scripts/pikachat-typescript-ci.sh --scope openclaw
 
 # Full OpenClaw integration lane (nightly/manual).
 openclaw-pikachat-e2e:

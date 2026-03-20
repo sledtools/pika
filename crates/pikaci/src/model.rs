@@ -155,6 +155,7 @@ pub enum StagedLinuxRustTarget {
     PreMergeFixtureRust,
     PreMergeRmp,
     PreMergePikachatRust,
+    PreMergePikachatTypescript,
     PreMergePikachatOpenclawE2e,
 }
 
@@ -197,6 +198,7 @@ pub enum StagedLinuxRustLane {
     PikachatCliSmokeLocal,
     PikachatPostRebaseInvalidEvent,
     PikachatPostRebaseLogoutSession,
+    PikachatTypescript,
     OpenclawInviteAndChat,
     OpenclawInviteAndChatRustBot,
     OpenclawInviteAndChatDaemon,
@@ -230,6 +232,7 @@ impl StagedLinuxRustLane {
             Self::PikachatCliSmokeLocal => "pikachat_cli_smoke_local",
             Self::PikachatPostRebaseInvalidEvent => "pikachat_post_rebase_invalid_event",
             Self::PikachatPostRebaseLogoutSession => "pikachat_post_rebase_logout_session",
+            Self::PikachatTypescript => "pikachat_typescript",
             Self::OpenclawInviteAndChat => "openclaw_invite_and_chat",
             Self::OpenclawInviteAndChatRustBot => "openclaw_invite_and_chat_rust_bot",
             Self::OpenclawInviteAndChatDaemon => "openclaw_invite_and_chat_daemon",
@@ -271,6 +274,7 @@ impl StagedLinuxRustLane {
             | Self::OpenclawInviteAndChatRustBot
             | Self::OpenclawInviteAndChatDaemon
             | Self::OpenclawAudioEcho => StagedLinuxRustTarget::PreMergePikachatRust,
+            Self::PikachatTypescript => StagedLinuxRustTarget::PreMergePikachatTypescript,
             Self::OpenclawGatewayE2e => StagedLinuxRustTarget::PreMergePikachatOpenclawE2e,
         }
     }
@@ -364,6 +368,9 @@ impl StagedLinuxRustLane {
             Self::PikachatPostRebaseLogoutSession => {
                 "/staged/linux-rust/workspace-build/bin/run-pikachat-post-rebase-logout-session"
             }
+            Self::PikachatTypescript => {
+                "/staged/linux-rust/workspace-build/bin/run-pikachat-typescript"
+            }
             Self::OpenclawInviteAndChat => {
                 "/staged/linux-rust/workspace-build/bin/run-openclaw-invite-and-chat"
             }
@@ -393,6 +400,7 @@ impl StagedLinuxRustTarget {
             "pre-merge-fixture-rust" => Some(Self::PreMergeFixtureRust),
             "pre-merge-rmp" => Some(Self::PreMergeRmp),
             "pre-merge-pikachat-rust" => Some(Self::PreMergePikachatRust),
+            "pre-merge-pikachat-typescript" => Some(Self::PreMergePikachatTypescript),
             "pre-merge-pikachat-openclaw-e2e" => Some(Self::PreMergePikachatOpenclawE2e),
             _ => None,
         }
@@ -407,6 +415,7 @@ impl StagedLinuxRustTarget {
             Self::PreMergeFixtureRust => "pre_merge_fixture_rust",
             Self::PreMergeRmp => "pre_merge_rmp",
             Self::PreMergePikachatRust => "pre_merge_pikachat_rust",
+            Self::PreMergePikachatTypescript => "pre_merge_pikachat_typescript",
             Self::PreMergePikachatOpenclawE2e => "pre_merge_pikachat_openclaw_e2e",
         }
     }
@@ -496,6 +505,18 @@ impl StagedLinuxRustTarget {
                 workspace_deps_installable: ".#ci.x86_64-linux.pikachatWorkspaceDeps",
                 workspace_build_installable: ".#ci.x86_64-linux.pikachatWorkspaceBuild",
                 shadow_recipe: "pre-merge-pikachat-rust-shadow",
+            },
+            Self::PreMergePikachatTypescript => StagedLinuxRustTargetConfig {
+                target_id: "pre-merge-pikachat-typescript",
+                target_description: "Run the VM-backed TypeScript tests from the pikachat lane",
+                shared_prepare_node_prefix: "pikachat-linux-rust",
+                shared_prepare_description: "pikachat staged Linux Rust lane",
+                workspace_deps_output_name: "ci.x86_64-linux.pikachatWorkspaceDeps",
+                workspace_build_output_name: "ci.x86_64-linux.pikachatWorkspaceBuild",
+                workspace_output_system: "x86_64-linux",
+                workspace_deps_installable: ".#ci.x86_64-linux.pikachatWorkspaceDeps",
+                workspace_build_installable: ".#ci.x86_64-linux.pikachatWorkspaceBuild",
+                shadow_recipe: "",
             },
             Self::PreMergePikachatOpenclawE2e => StagedLinuxRustTargetConfig {
                 target_id: "pre-merge-pikachat-openclaw-e2e",
@@ -778,6 +799,10 @@ mod tests {
         assert_eq!(
             StagedLinuxRustTarget::PreMergePikaRust.selector_key(),
             "pre_merge_pika_rust"
+        );
+        assert_eq!(
+            StagedLinuxRustTarget::PreMergePikachatTypescript.selector_key(),
+            "pre_merge_pikachat_typescript"
         );
         assert_eq!(
             StagedLinuxRustTarget::PreMergePikachatOpenclawE2e.selector_key(),
@@ -1145,7 +1170,7 @@ mod tests {
 
     #[test]
     fn pikachat_lane_uses_pikachat_workspace_outputs() {
-        let lane = StagedLinuxRustLane::OpenclawAudioEcho;
+        let lane = StagedLinuxRustLane::PikachatTypescript;
 
         assert_eq!(
             lane.workspace_deps_output_name(),
@@ -1157,7 +1182,7 @@ mod tests {
         );
         assert_eq!(
             lane.execute_wrapper_command(),
-            "/staged/linux-rust/workspace-build/bin/run-openclaw-audio-echo"
+            "/staged/linux-rust/workspace-build/bin/run-pikachat-typescript"
         );
     }
 
@@ -1251,6 +1276,29 @@ mod tests {
             StagedLinuxRustTarget::PreMergePikachatRust
         );
 
+        let pikachat_typescript =
+            StagedLinuxRustTarget::from_target_id("pre-merge-pikachat-typescript")
+                .expect("pikachat typescript target");
+        let pikachat_typescript_config = pikachat_typescript.config();
+
+        assert_eq!(
+            pikachat_typescript_config.target_id,
+            "pre-merge-pikachat-typescript"
+        );
+        assert_eq!(
+            pikachat_typescript_config.workspace_deps_installable,
+            ".#ci.x86_64-linux.pikachatWorkspaceDeps"
+        );
+        assert_eq!(
+            pikachat_typescript_config.workspace_build_installable,
+            ".#ci.x86_64-linux.pikachatWorkspaceBuild"
+        );
+        assert_eq!(pikachat_typescript_config.shadow_recipe, "");
+        assert_eq!(
+            StagedLinuxRustLane::PikachatTypescript.target(),
+            StagedLinuxRustTarget::PreMergePikachatTypescript
+        );
+
         let pikachat_openclaw =
             StagedLinuxRustTarget::from_target_id("pre-merge-pikachat-openclaw-e2e")
                 .expect("pikachat openclaw target");
@@ -1306,6 +1354,7 @@ mod tests {
             StagedLinuxRustTarget::PreMergeFixtureRust,
             StagedLinuxRustTarget::PreMergeRmp,
             StagedLinuxRustTarget::PreMergePikachatRust,
+            StagedLinuxRustTarget::PreMergePikachatTypescript,
             StagedLinuxRustTarget::PreMergePikachatOpenclawE2e,
         ] {
             let config = target.config();

@@ -202,6 +202,27 @@ paths = [
 ]
 
 [[branch.lanes]]
+id = "pikachat_typescript"
+title = "check-pikachat-typescript"
+staged_linux_target = "pre-merge-pikachat-typescript"
+paths = [
+  "ci/forge-lanes.toml",
+  ".github/workflows/pre-merge.yml",
+  "crates/pikaci/**",
+  "nix/ci/linux-rust.nix",
+  "scripts/forge-github-ci-shim.py",
+  "scripts/pikaci-staged-linux-remote.sh",
+  "scripts/pikachat-typescript-ci.sh",
+  "pikachat-claude/package.json",
+  "pikachat-claude/tsconfig.json",
+  "pikachat-claude/src/**",
+  "pikachat-openclaw/openclaw/extensions/pikachat-openclaw/package.json",
+  "pikachat-openclaw/openclaw/extensions/pikachat-openclaw/tsconfig.json",
+  "pikachat-openclaw/openclaw/extensions/pikachat-openclaw/index.ts",
+  "pikachat-openclaw/openclaw/extensions/pikachat-openclaw/src/**",
+]
+
+[[branch.lanes]]
 id = "apple_host_sanity"
 title = "check-apple-host-sanity"
 entrypoint = "./scripts/pikaci-apple-github-step remote-run --just-recipe apple-host-sanity"

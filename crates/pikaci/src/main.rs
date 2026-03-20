@@ -586,6 +586,26 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
             ],
             pikachat_rust_jobs(),
         )),
+        "pre-merge-pikachat-typescript" => Ok(staged_linux_target_spec(
+            StagedLinuxRustTarget::PreMergePikachatTypescript,
+            &[
+                ".github/workflows/pre-merge.yml",
+                "ci/forge-lanes.toml",
+                "crates/pikaci/**",
+                "nix/ci/linux-rust.nix",
+                "scripts/forge-github-ci-shim.py",
+                "scripts/pikaci-staged-linux-remote.sh",
+                "scripts/pikachat-typescript-ci.sh",
+                "pikachat-claude/package.json",
+                "pikachat-claude/tsconfig.json",
+                "pikachat-claude/src/**",
+                "pikachat-openclaw/openclaw/extensions/pikachat-openclaw/package.json",
+                "pikachat-openclaw/openclaw/extensions/pikachat-openclaw/tsconfig.json",
+                "pikachat-openclaw/openclaw/extensions/pikachat-openclaw/index.ts",
+                "pikachat-openclaw/openclaw/extensions/pikachat-openclaw/src/**",
+            ],
+            pikachat_typescript_jobs(),
+        )),
         "pre-merge-pikachat-openclaw-e2e" => Ok(staged_linux_target_spec(
             StagedLinuxRustTarget::PreMergePikachatOpenclawE2e,
             &[
@@ -1417,6 +1437,17 @@ fn pikachat_openclaw_e2e_jobs() -> Vec<JobSpec> {
     }]
 }
 
+fn pikachat_typescript_jobs() -> Vec<JobSpec> {
+    vec![JobSpec {
+        id: "pikachat-typescript",
+        description: "Run the Claude and OpenClaw TypeScript typecheck and unit tests in a remote Linux microVM",
+        timeout_secs: 1800,
+        writable_workspace: false,
+        guest_command: GuestCommand::ShellCommand { command: "ignored" },
+        staged_linux_rust_lane: Some(StagedLinuxRustLane::PikachatTypescript),
+    }]
+}
+
 fn fixture_rust_jobs() -> Vec<JobSpec> {
     vec![
         JobSpec {
@@ -2038,6 +2069,19 @@ mod tests {
                 .iter()
                 .all(|job| job.runner_kind() == RunnerKind::RemoteLinuxVm)
         );
+    }
+
+    #[test]
+    fn pre_merge_pikachat_typescript_target_uses_staged_linux_runner() {
+        let target =
+            target_spec("pre-merge-pikachat-typescript").expect("pikachat typescript target");
+
+        assert_eq!(target.jobs.len(), 1);
+        assert_eq!(
+            target.jobs[0].staged_linux_rust_lane(),
+            Some(StagedLinuxRustLane::PikachatTypescript)
+        );
+        assert_eq!(target.jobs[0].runner_kind(), RunnerKind::RemoteLinuxVm);
     }
 
     #[test]

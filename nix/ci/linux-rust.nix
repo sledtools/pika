@@ -1521,6 +1521,16 @@ CFG
           set -euo pipefail
           exec "$(dirname "$0")/run-pikahut-integration-deterministic" post_rebase_logout_session_convergence_boundary
           EOF
+          cat >"$out/bin/run-pikachat-typescript" <<'EOF'
+          #!${pkgs.bash}/bin/bash
+          set -euo pipefail
+
+          if [ -f /workspace/snapshot/Cargo.toml ]; then
+            cd /workspace/snapshot
+          fi
+          export PIKACHAT_TYPESCRIPT_CI_NPM_BIN="${pkgs.nodejs_22}/bin/npm"
+          exec ./scripts/pikachat-typescript-ci.sh
+          EOF
           cat >"$out/bin/run-openclaw-invite-and-chat" <<'EOF'
           #!${pkgs.bash}/bin/bash
           set -euo pipefail
@@ -1610,6 +1620,7 @@ CFG
             "$out/bin/run-pikachat-cli-smoke-local" \
             "$out/bin/run-pikachat-post-rebase-invalid-event" \
             "$out/bin/run-pikachat-post-rebase-logout-session" \
+            "$out/bin/run-pikachat-typescript" \
             "$out/bin/run-openclaw-invite-and-chat" \
             "$out/bin/run-openclaw-invite-and-chat-rust-bot" \
             "$out/bin/run-openclaw-invite-and-chat-daemon" \

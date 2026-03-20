@@ -271,6 +271,95 @@ command = ["python3", "-c", "print('nightly')"]
             self.assertEqual(payload["changed_paths"], ["docs/guide.md"])
             self.assertEqual([lane["id"] for lane in payload["include"]], ["docs"])
 
+    def test_branch_selection_routes_typescript_changes_to_dedicated_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            git(repo, "init")
+            git(repo, "config", "user.name", "Test User")
+            git(repo, "config", "user.email", "test@example.com")
+            (repo / "ci").mkdir()
+            (repo / "pikachat-claude" / "src").mkdir(parents=True)
+            (repo / "rust" / "src").mkdir(parents=True)
+            (repo / "ci" / "forge-lanes.toml").write_text(
+                """
+version = 1
+nightly_schedule_utc = "08:00"
+
+[[branch.lanes]]
+id = "pikachat_typescript"
+title = "check-pikachat-typescript"
+staged_linux_target = "pre-merge-pikachat-typescript"
+paths = [
+  "pikachat-claude/package.json",
+  "pikachat-claude/tsconfig.json",
+  "pikachat-claude/src/**",
+]
+
+[[branch.lanes]]
+id = "pikachat"
+title = "check-pikachat"
+staged_linux_target = "pre-merge-pikachat-rust"
+paths = ["rust/**"]
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            (repo / "pikachat-claude" / "package.json").write_text("{}\n", encoding="utf-8")
+            (repo / "pikachat-claude" / "tsconfig.json").write_text("{}\n", encoding="utf-8")
+            (repo / "pikachat-claude" / "src" / "channel-runtime.ts").write_text(
+                "export const ready = true;\n",
+                encoding="utf-8",
+            )
+            (repo / "rust" / "src" / "lib.rs").write_text(
+                "pub fn old_scope() {}\n",
+                encoding="utf-8",
+            )
+            git(
+                repo,
+                "add",
+                "ci/forge-lanes.toml",
+                "pikachat-claude/package.json",
+                "pikachat-claude/tsconfig.json",
+                "pikachat-claude/src/channel-runtime.ts",
+                "rust/src/lib.rs",
+            )
+            git(repo, "commit", "-m", "base")
+            base = git(repo, "rev-parse", "HEAD")
+
+            (repo / "pikachat-claude" / "src" / "channel-runtime.ts").write_text(
+                "export const ready = false;\n",
+                encoding="utf-8",
+            )
+            git(repo, "add", "pikachat-claude/src/channel-runtime.ts")
+            git(repo, "commit", "-m", "typescript change")
+            head = git(repo, "rev-parse", "HEAD")
+
+            completed = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPT),
+                    "select",
+                    "--mode",
+                    "branch",
+                    "--base",
+                    base,
+                    "--head",
+                    head,
+                    "--compare-repo-root",
+                    str(repo),
+                ],
+                cwd=REPO_ROOT,
+                env={**os.environ, "FORGE_GITHUB_CI_REPO_ROOT": str(repo)},
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            payload = json.loads(completed.stdout)
+            self.assertEqual(
+                [lane["id"] for lane in payload["include"]],
+                ["pikachat_typescript"],
+            )
+
     def test_branch_selection_matches_hidden_workflow_globs_in_unsynced_fork_pr(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -721,6 +810,7 @@ command = ["python3", "-c", "print('nightly')"]
                 "agent_contracts",
                 "rmp",
                 "pikachat",
+                "pikachat_typescript",
                 "apple_host_sanity",
                 "pikachat_openclaw_e2e",
                 "fixture",
@@ -758,6 +848,18 @@ command = ["python3", "-c", "print('nightly')"]
             ["./scripts/pikaci-staged-linux-remote.sh", "run", "pre-merge-pikachat-rust"],
         )
         self.assertEqual(groups["pikachat"], "staged-linux:pre-merge-pikachat-rust")
+        self.assertEqual(
+            commands["pikachat_typescript"],
+            [
+                "./scripts/pikaci-staged-linux-remote.sh",
+                "run",
+                "pre-merge-pikachat-typescript",
+            ],
+        )
+        self.assertEqual(
+            groups["pikachat_typescript"],
+            "staged-linux:pre-merge-pikachat-typescript",
+        )
         self.assertEqual(
             commands["pikachat_openclaw_e2e"],
             [

@@ -7,13 +7,15 @@
     "access": "public"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test src/**/*.test.ts"
   },
   "dependencies": {
     "bech32": "^2.0.0"
   },
   "devDependencies": {
     "openclaw": "^2026.2.26",
+    "tsx": "^4.19.3",
     "typescript": "^5.7.0"
   },
   "peerDependencies": {

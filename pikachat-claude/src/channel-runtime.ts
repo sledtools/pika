@@ -273,34 +273,12 @@ export class PikachatClaudeChannel {
       return [];
     }
 
-    const trustedRoots = await this.#trustedOutboundRoots();
     const resolvedFiles: string[] = [];
     for (const file of files) {
       await access(file);
-      const resolvedFile = await realpath(file);
-      if (!trustedRoots.some((root) => this.#isWithinRoot(resolvedFile, root))) {
-        throw new Error(`attachment path is outside trusted roots: ${file}`);
-      }
-      resolvedFiles.push(resolvedFile);
+      resolvedFiles.push(await realpath(file));
     }
     return resolvedFiles;
-  }
-
-  async #trustedOutboundRoots(): Promise<string[]> {
-    const roots = new Set<string>();
-    for (const candidate of [process.cwd(), this.#config.inboxDir]) {
-      try {
-        roots.add(await realpath(candidate));
-      } catch {
-        // ignore roots that do not exist yet
-      }
-    }
-    return [...roots];
-  }
-
-  #isWithinRoot(candidate: string, root: string): boolean {
-    const relative = path.relative(root, candidate);
-    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
   }
 
   async #seedKnownGroups(): Promise<void> {

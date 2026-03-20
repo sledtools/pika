@@ -307,14 +307,12 @@ describe("PikachatClaudeChannel", () => {
     }
   });
 
-  it("returns media event ids and restricts outbound attachments to trusted roots", async () => {
+  it("returns media event ids for outbound attachments", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "pikachat-claude-"));
     const inboxDir = path.join(tempDir, "inbox");
     await mkdir(inboxDir, { recursive: true });
-    const allowedFile = path.join(inboxDir, "allowed.txt");
-    const blockedFile = path.join(tempDir, "blocked.txt");
-    await writeFile(allowedFile, "ok");
-    await writeFile(blockedFile, "nope");
+    const testFile = path.join(tempDir, "test.txt");
+    await writeFile(testFile, "ok");
 
     const daemon = new FakeDaemon();
     const channel = createInMemoryChannelForTests({
@@ -327,9 +325,8 @@ describe("PikachatClaudeChannel", () => {
     });
     try {
       await channel.start();
-      const result = await channel.reply({ chatId: "dm1", files: [allowedFile] });
+      const result = await channel.reply({ chatId: "dm1", files: [testFile] });
       assert.deepEqual(result.eventIds, ["media-1"]);
-      await assert.rejects(() => channel.reply({ chatId: "dm1", files: [blockedFile] }), /outside trusted roots/);
     } finally {
       await channel.stop();
       await rm(tempDir, { recursive: true, force: true });

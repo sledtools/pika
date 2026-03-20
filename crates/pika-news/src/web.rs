@@ -45,6 +45,8 @@ struct AppState {
     max_prs: usize,
     auth: Arc<AuthState>,
     poll_notify: Arc<Notify>,
+    mirror_requested: Arc<AtomicBool>,
+    mirror_running: Arc<AtomicBool>,
     live_updates: CiLiveUpdates,
     webhook_secret: Option<String>,
     forge_health: Arc<Mutex<ForgeHealthState>>,
@@ -112,6 +114,27 @@ fn maybe_start_background_ci_pass(
             }
         }
     });
+}
+
+fn run_scheduled_mirror_pass(state: &AppState) -> anyhow::Result<mirror::MirrorPassResult> {
+    let force_requested = state.mirror_requested.load(Ordering::Acquire);
+    let acquired = state
+        .mirror_running
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok();
+    if !acquired {
+        return Ok(mirror::MirrorPassResult::default());
+    }
+
+    let result = if force_requested {
+        state.mirror_requested.store(false, Ordering::Release);
+        mirror::run_mirror_pass(&state.store, &state.config, "post-mutation")
+    } else {
+        mirror::run_background_mirror_pass(&state.store, &state.config)
+    };
+
+    state.mirror_running.store(false, Ordering::Release);
+    result
 }
 
 fn ci_pass_needs_follow_up_wake(ci: &ci::CiPassResult) -> bool {
@@ -786,6 +809,8 @@ pub async fn serve(
     }
 
     let poll_notify = Arc::new(Notify::new());
+    let mirror_requested = Arc::new(AtomicBool::new(false));
+    let mirror_running = Arc::new(AtomicBool::new(false));
     let live_updates = CiLiveUpdates::new(256);
     let webhook_secret = env::var(&config.webhook_secret_env).ok();
     let forge_mode = config.effective_forge_repo().is_some();
@@ -825,6 +850,8 @@ pub async fn serve(
         max_prs,
         auth,
         poll_notify: Arc::clone(&poll_notify),
+        mirror_requested: Arc::clone(&mirror_requested),
+        mirror_running: Arc::clone(&mirror_running),
         live_updates: live_updates.clone(),
         webhook_secret,
         forge_health: Arc::clone(&forge_health),
@@ -846,7 +873,7 @@ pub async fn serve(
                         Some(&state.live_updates),
                     ),
                     worker::run_generation_pass(&state.store, &state.config),
-                    mirror::run_background_mirror_pass(&state.store, &state.config),
+                    run_scheduled_mirror_pass(&state),
                 )
             })
             .await
@@ -1995,6 +2022,7 @@ async fn merge_handler(
     .await
     {
         Ok(Ok(())) => {
+            state.mirror_requested.store(true, Ordering::Release);
             state.poll_notify.notify_one();
             Json(serde_json::json!({
                 "status": "ok",
@@ -2123,6 +2151,7 @@ async fn close_handler(
     let store = state.store.clone();
     match tokio::task::spawn_blocking(move || store.mark_branch_closed(branch_id, &npub)).await {
         Ok(Ok(())) => {
+            state.mirror_requested.store(true, Ordering::Release);
             state.poll_notify.notify_one();
             Json(serde_json::json!({
                 "status": "ok",
@@ -3142,10 +3171,27 @@ async fn api_admin_mirror_sync_handler(
 
     let store = state.store.clone();
     let config = state.config.clone();
+    if state
+        .mirror_running
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "mirror sync already running"
+            })),
+        )
+            .into_response();
+    }
     match tokio::task::spawn_blocking(move || mirror::run_mirror_pass(&store, &config, "manual"))
         .await
     {
         Ok(Ok(result)) if result.attempted => {
+            state.mirror_running.store(false, Ordering::Release);
+            if state.mirror_requested.load(Ordering::Acquire) {
+                state.poll_notify.notify_one();
+            }
             state.poll_notify.notify_one();
             Json(serde_json::json!({
                 "attempted": result.attempted,
@@ -3154,23 +3200,32 @@ async fn api_admin_mirror_sync_handler(
             }))
             .into_response()
         }
-        Ok(Ok(_)) => (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "error": "mirror sync is unavailable; configure forge_repo.mirror_remote to enable mirroring"
-            })),
-        )
-            .into_response(),
-        Ok(Err(err)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
+        Ok(Ok(_)) => {
+            state.mirror_running.store(false, Ordering::Release);
+            (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": "mirror sync is unavailable; configure forge_repo.mirror_remote to enable mirroring"
+                })),
+            )
+                .into_response()
+        }
+        Ok(Err(err)) => {
+            state.mirror_running.store(false, Ordering::Release);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": err.to_string()})),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            state.mirror_running.store(false, Ordering::Release);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": err.to_string()})),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -3545,6 +3600,8 @@ mod tests {
             config,
             max_prs: 10,
             poll_notify: Arc::new(Notify::new()),
+            mirror_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            mirror_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             live_updates: CiLiveUpdates::new(live_buffer),
             webhook_secret: None,
             forge_health: Arc::new(Mutex::new(ForgeHealthState::new(forge_mode))),

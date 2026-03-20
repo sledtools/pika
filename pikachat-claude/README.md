@@ -22,10 +22,17 @@ Then run Claude with the plugin directory:
 
 ```sh
 claude --plugin-dir ./pikachat-claude \
-  --dangerously-load-development-channels plugin:pikachat-claude
+  --dangerously-load-development-channels plugin:pikachat-claude@inline
 ```
 
 Channels require Claude Code `v2.1.80+`.
+
+If you want to bypass at the MCP server level instead of the plugin level, this also works:
+
+```sh
+claude --plugin-dir ./pikachat-claude \
+  --dangerously-load-development-channels server:pikachat
+```
 
 If you are not using a preinstalled `pikachat` binary, the plugin will try to resolve one from GitHub releases using the same logic as `pikachat-openclaw`.
 

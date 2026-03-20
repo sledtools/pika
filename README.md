@@ -3,7 +3,7 @@
 End-to-end encrypted messaging for iOS, Android, and Desktop, built on [MLS](https://messaginglayersecurity.rocks/) over [Nostr](https://nostr.com/).
 
 > [!WARNING]
-> Alpha software. This project was largely vibe-coded and likely includes privacy and security flaws. Do not use it for sensitive or production workloads.
+> Alpha software. This project was largely vibe-coded and likely includes privacy and security flaws. Avoid using it for sensitive or production workloads.
 
 ## Features
 

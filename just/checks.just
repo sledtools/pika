@@ -150,7 +150,7 @@ apple-host-sanity:
         export PIKA_XCODE_INSTALL_PROMPT="${PIKA_XCODE_INSTALL_PROMPT:-0}"
         exec nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c just apple-host-sanity
     fi
-    just desktop-ui-test
+    ./scripts/apple-host-record-phase apple-host-sanity.desktop-ui-test rust-prepared -- just desktop-ui-test
     echo "apple-host-sanity complete"
 
 # Canonical nightly Apple-host bundle for the provisioned mini / future thin triggers.
@@ -167,15 +167,14 @@ apple-host-bundle:
     fi
     just apple-host-sanity
     if [[ -n "${PIKACI_APPLE_RUST_PREPARED_MANIFEST:-}" ]] && [[ -x "${CARGO_TARGET_DIR:-target}/debug/pikaci" ]]; then
-      "${CARGO_TARGET_DIR:-target}/debug/pikaci" run pre-merge-pikachat-apple-followup
+      ./scripts/apple-host-record-phase apple-host-bundle.pre-merge-pikachat-apple-followup rust-live -- "${CARGO_TARGET_DIR:-target}/debug/pikaci" run pre-merge-pikachat-apple-followup
     else
-      cargo run -q -p pikaci --bin pikaci -- run pre-merge-pikachat-apple-followup
+      ./scripts/apple-host-record-phase apple-host-bundle.pre-merge-pikachat-apple-followup rust-live -- cargo run -q -p pikaci --bin pikaci -- run pre-merge-pikachat-apple-followup
     fi
-    just cli-smoke
-    just openclaw-pikachat-deterministic
-    just shared-runtime-regression
-    just ios-ui-test
-    just nightly-primal-ios-interop
+    ./scripts/apple-host-record-phase apple-host-bundle.cli-smoke rust-prepared -- just cli-smoke
+    ./scripts/apple-host-record-phase apple-host-bundle.openclaw-pikachat-deterministic rust-prepared -- just openclaw-pikachat-deterministic
+    ./scripts/apple-host-record-phase apple-host-bundle.shared-runtime-regression rust-prepared -- just shared-runtime-regression
+    ./scripts/apple-host-record-phase apple-host-bundle.ios-ui-test apple-native -- just ios-ui-test
     echo "apple-host-bundle complete"
 
 # Deterministic HTTP control-plane contracts (mocked MicroVM spawner).

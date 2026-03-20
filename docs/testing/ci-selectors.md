@@ -38,7 +38,7 @@ This document defines the selector-first contract and current policy ownership f
 | `nightly-pika-e2e` | `integration_deterministic::call_over_local_moq_relay_boundary`, `integration_deterministic::call_with_pikachat_daemon_boundary`, `integration_deterministic::cli_smoke_media_local` |
 | `nightly-pikachat` | `integration_openclaw::openclaw_gateway_e2e` |
 | `nightly-pika-ui-android` | Android bot/media fixture selector via `integration_deterministic::ui_e2e_local_android` |
-| `nightly-apple-host-bundle` | `just apple-host-bundle` on the Mac mini via `./scripts/pikaci-apple-github-step remote-run --just-recipe apple-host-bundle`. This owns the retained heavy Apple coverage: `cargo run -q -p pikaci --bin pikaci -- run pre-merge-pikachat-apple-followup`, `just ios-ui-test`, `just nightly-primal-ios-interop`, `just shared-runtime-regression`, `just openclaw-pikachat-deterministic`, `just cli-smoke`, and the smaller `apple-host-sanity` smoke subset. The retained `ios-ui-test` path uses prepared `build-for-testing` outputs and skips the OpenClaw live-network UI E2E case unless explicitly opted back in. |
+| `nightly-apple-host-bundle` | `just apple-host-bundle` on the Mac mini via `./scripts/pikaci-apple-github-step remote-run --just-recipe apple-host-bundle`. This owns the retained heavy Apple coverage: `cargo run -q -p pikaci --bin pikaci -- run pre-merge-pikachat-apple-followup`, `just ios-ui-test`, `just shared-runtime-regression`, `just openclaw-pikachat-deterministic`, `just cli-smoke`, and the smaller `apple-host-sanity` smoke subset. The retained `ios-ui-test` path uses prepared `build-for-testing` outputs and skips the OpenClaw live-network UI E2E case unless explicitly opted back in. |
 
 ## Apple Live Validation Workflow
 
@@ -60,6 +60,12 @@ This document defines the selector-first contract and current policy ownership f
 | Lane / recipe | Canonical selectors |
 | --- | --- |
 | `integration-manual` | `integration_manual::manual_interop_rust_runbook_contract`, `integration_manual::manual_primal_lab_runbook_contract` |
+
+## Retained Manual Compatibility Smoke
+
+- `just nightly-primal-ios-interop` remains a checked-in manual compatibility canary for `integration_primal::primal_nostrconnect_smoke`.
+- `tools/primal-ios-interop-nightly` remains the thin selector wrapper for that smoke.
+- This path is intentionally outside CI-owned nightly Apple coverage because it depends on public network, external Primal app behavior, and cross-app interop timing.
 
 ## Compatibility-Only Wrappers
 

@@ -42,11 +42,14 @@ RMP checks are integrated into the repo's single CI entrypoint, not a separate w
   - restores Nix binaries via `DeterminateSystems/magic-nix-cache-action`
   - restores Cargo/target via `WarpBuilds/cache`
   - runs `rmp run ios` on a simulator
-- Optional macOS interop lane (`nightly-primal-ios-interop`): `just nightly-primal-ios-interop`
-  - disabled by default (set repo variable `PIKA_NIGHTLY_PRIMAL_INTEROP=1` to enable)
-  - builds + installs Primal iOS from source at a pinned ref
-  - verifies simulator routing for `nostrconnect://` via `simctl openurl`
-  - runs a Pika UI smoke test that emits a `nostrconnect://` marker file from the iOS signer bridge
+
+Retained manual-only macOS compatibility smoke:
+
+- `just nightly-primal-ios-interop`
+  - intentionally outside CI-owned nightly coverage
+  - retained as a checked-in manual compatibility canary
+  - still useful when you want to build + install Primal iOS from source at a pinned ref, verify simulator routing for `nostrconnect://` via `simctl openurl`, and run the Pika-side signer/interop smoke
+  - policy truth lives in `docs/testing/integration-matrix.md`, `docs/testing/ci-selectors.md`, and `docs/testing/manual-qa-gate.md`
 
 ## Notes
 

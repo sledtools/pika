@@ -471,6 +471,44 @@ fn integration_wrapper_scripts_dispatch_to_selectors() -> Result<()> {
 }
 
 #[test]
+fn primal_ios_interop_remains_manual_only_and_wrapper_backed() -> Result<()> {
+    let root = workspace_root();
+
+    let manual_gate = fs::read_to_string(root.join("docs/testing/manual-qa-gate.md"))?;
+    assert!(
+        manual_gate.contains("just nightly-primal-ios-interop"),
+        "manual QA gate must keep the retained Primal interop smoke visible"
+    );
+    assert!(
+        manual_gate.contains("manual-only compatibility coverage"),
+        "manual QA gate must explain that Primal interop is retained manual-only coverage"
+    );
+
+    let selectors = fs::read_to_string(root.join("docs/testing/ci-selectors.md"))?;
+    assert!(
+        selectors.contains("## Retained Manual Compatibility Smoke"),
+        "ci-selectors.md must keep a retained manual compatibility section"
+    );
+    assert!(
+        selectors.contains("just nightly-primal-ios-interop"),
+        "ci-selectors.md must keep nightly-primal-ios-interop in the manual inventory"
+    );
+
+    let matrix = fs::read_to_string(root.join("docs/testing/integration-matrix.md"))?;
+    assert!(
+        matrix.contains("| `just nightly-primal-ios-interop`")
+            && matrix.contains("| manual-only |"),
+        "integration-matrix.md must classify nightly-primal-ios-interop as manual-only"
+    );
+    assert!(
+        matrix.contains("compatibility-only -> `just nightly-primal-ios-interop`"),
+        "integration-matrix.md must keep tools/primal-ios-interop-nightly as a thin wrapper"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn agent_guest_chat_recipes_use_non_reset_wrapper() -> Result<()> {
     let root = workspace_root();
     let agent_just = fs::read_to_string(root.join("just/agent.just"))?;

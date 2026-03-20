@@ -21,6 +21,7 @@ Run the following representative matrix and confirm behavior + artifacts:
 
 3. Primal nightly smoke path
 - `just nightly-primal-ios-interop`
+- Treat this as retained manual-only compatibility coverage; it is intentionally not part of the core Apple nightly CI bundle.
 
 4. One manual debug lab flow
 - `just primal-ios-lab`

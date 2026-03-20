@@ -163,7 +163,7 @@ async function fetchReleaseByTag(params: { repo: string; version: string }): Pro
 }
 
 async function resolveVersion(log?: PikachatLogger, pinnedVersion?: string): Promise<string> {
-  if (pinnedVersion) {
+  if (pinnedVersion && pinnedVersion !== "latest") {
     return pinnedVersion;
   }
   const cacheDir = getCacheDir();
@@ -222,22 +222,14 @@ export async function resolvePikachatDaemonCommand(params: {
     throw new Error(`daemon command not found: ${requested}`);
   }
 
-  const version = await resolveVersion(params.log, params.pinnedVersion);
-  const binaryPath = getBinaryPath(version);
+  const resolvedVersion = await resolveVersion(params.log, params.pinnedVersion);
+  const binaryPath = getBinaryPath(resolvedVersion);
   if (await isExecutableFile(binaryPath)) {
     return binaryPath;
   }
 
   await mkdir(path.dirname(binaryPath), { recursive: true });
-  const release =
-    params.pinnedVersion && params.pinnedVersion !== "latest"
-      ? await fetchReleaseByTag({ repo: DEFAULT_REPO, version: params.pinnedVersion })
-      : await fetchLatestCompatibleRelease({
-          repo: DEFAULT_REPO,
-          assetName: resolvePlatformAsset(),
-          pluginVersion: getPackageVersion(),
-          log: params.log,
-        });
+  const release = await fetchReleaseByTag({ repo: DEFAULT_REPO, version: resolvedVersion });
   const asset = release.assets.find((entry) => entry.name === resolvePlatformAsset());
   if (!asset) {
     throw new Error(`release ${release.tag_name} missing asset ${resolvePlatformAsset()}`);

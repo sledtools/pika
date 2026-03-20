@@ -7,6 +7,8 @@ type MediaLike = {
   url?: string;
 };
 
+const MAX_MENTION_PATTERN_LENGTH = 100;
+
 export function augmentMessageText(content: string, media: MediaLike[] = []): string {
   if (!media.length) return content;
   const mediaLines = media.map((item) => {
@@ -47,6 +49,9 @@ export function detectMention(params: {
   }
   for (const pattern of params.mentionPatterns) {
     try {
+      if (pattern.length > MAX_MENTION_PATTERN_LENGTH) {
+        continue;
+      }
       if (new RegExp(pattern, "i").test(params.text)) {
         return true;
       }

@@ -1,4 +1,5 @@
-import { access, mkdir } from "node:fs/promises";
+import { access, mkdir, realpath } from "node:fs/promises";
+import path from "node:path";
 
 import {
   allowSender,
@@ -118,26 +119,43 @@ export class PikachatClaudeChannel {
       logger: this.#logger,
     });
     daemon.onEvent(async (event) => {
-      await this.#handleDaemonEvent(event);
-    });
+        await this.#handleDaemonEvent(event);
+      });
     this.#daemon = daemon;
 
-    const ready = await daemon.waitForReady(15_000);
-    this.#botPubkey = ready.pubkey.toLowerCase();
-    this.#botNpub = ready.npub;
-    this.#logger?.info?.(
-      `[pikachat-claude] daemon ready pubkey=${this.#botPubkey} npub=${this.#botNpub} pid=${daemon.pid() ?? "unknown"}`,
-    );
+    try {
+      const ready = await daemon.waitForReady(15_000);
+      this.#botPubkey = ready.pubkey.toLowerCase();
+      this.#botNpub = ready.npub;
+      this.#logger?.info?.(
+        `[pikachat-claude] daemon ready pubkey=${this.#botPubkey} npub=${this.#botNpub} pid=${daemon.pid() ?? "unknown"}`,
+      );
 
-    daemon.waitForExit().then(() => {
+      daemon.waitForExit().then(() => {
+        if (this.#daemon === daemon) {
+          this.#daemon = null;
+        }
+      });
+
+      await daemon.setRelays(this.#config.relays);
+      await daemon.publishKeypackage(this.#config.relays);
+      await this.#seedKnownGroups();
+    } catch (err) {
       if (this.#daemon === daemon) {
         this.#daemon = null;
       }
-    });
-
-    await daemon.setRelays(this.#config.relays);
-    await daemon.publishKeypackage(this.#config.relays);
-    await this.#seedKnownGroups();
+      this.#botPubkey = null;
+      this.#botNpub = null;
+      this.#memberCounts.clear();
+      try {
+        await daemon.shutdown();
+      } catch (shutdownErr) {
+        this.#logger?.warn?.(
+          `[pikachat-claude] failed to stop daemon after startup error: ${shutdownErr instanceof Error ? shutdownErr.message : String(shutdownErr)}`,
+        );
+      }
+      throw err;
+    }
   }
 
   async stop(): Promise<void> {
@@ -152,7 +170,7 @@ export class PikachatClaudeChannel {
     const notes: string[] = [];
     const eventIds: string[] = [];
     const text = request.text?.trim() ?? "";
-    const files = request.files ?? [];
+    const files = await this.#resolveOutboundFiles(request.files ?? []);
 
     if (!text && files.length === 0) {
       throw new Error("reply requires text or files");
@@ -168,13 +186,12 @@ export class PikachatClaudeChannel {
     }
 
     if (files.length > 0) {
-      for (const file of files) {
-        await access(file);
-      }
       if (files.length === 1) {
-        await daemon.sendMedia(request.chatId, files[0]);
+        const result = await daemon.sendMedia(request.chatId, files[0]);
+        if (result.event_id) eventIds.push(result.event_id);
       } else {
-        await daemon.sendMediaBatch(request.chatId, files);
+        const result = await daemon.sendMediaBatch(request.chatId, files);
+        if (result.event_id) eventIds.push(result.event_id);
       }
     }
 
@@ -237,6 +254,41 @@ export class PikachatClaudeChannel {
     const next = disableGroup(state, groupId);
     await saveAccessState(this.#config.accessFile, next);
     return next;
+  }
+
+  async #resolveOutboundFiles(files: string[]): Promise<string[]> {
+    if (files.length === 0) {
+      return [];
+    }
+
+    const trustedRoots = await this.#trustedOutboundRoots();
+    const resolvedFiles: string[] = [];
+    for (const file of files) {
+      await access(file);
+      const resolvedFile = await realpath(file);
+      if (!trustedRoots.some((root) => this.#isWithinRoot(resolvedFile, root))) {
+        throw new Error(`attachment path is outside trusted roots: ${file}`);
+      }
+      resolvedFiles.push(resolvedFile);
+    }
+    return resolvedFiles;
+  }
+
+  async #trustedOutboundRoots(): Promise<string[]> {
+    const roots = new Set<string>();
+    for (const candidate of [process.cwd(), this.#config.inboxDir]) {
+      try {
+        roots.add(await realpath(candidate));
+      } catch {
+        // ignore roots that do not exist yet
+      }
+    }
+    return [...roots];
+  }
+
+  #isWithinRoot(candidate: string, root: string): boolean {
+    const relative = path.relative(root, candidate);
+    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
   }
 
   async #seedKnownGroups(): Promise<void> {

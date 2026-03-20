@@ -26,7 +26,7 @@ export class SendThrottle {
   }
 
   enqueue(fn: () => Promise<unknown>): Promise<void> {
-    this.#chain = this.#chain.then(async () => {
+    const task = this.#chain.catch(() => undefined).then(async () => {
       const now = Date.now();
       const elapsed = now - this.#lastSendAt;
       if (elapsed < this.#minIntervalMs) {
@@ -40,9 +40,18 @@ export class SendThrottle {
         throw err;
       }
     });
-    return this.#chain;
+    this.#chain = task.catch(() => undefined);
+    return task;
   }
 }
+
+type SendMediaResult = {
+  event_id?: string;
+  uploaded_url?: string;
+  uploaded_urls?: string[];
+  original_hash_hex?: string;
+  original_hashes?: string[];
+};
 
 export type DaemonSpawnParams = {
   cmd: string;
@@ -67,12 +76,12 @@ export interface PikachatDaemonLike {
     nostrGroupId: string,
     filePath: string,
     opts?: { mimeType?: string; filename?: string; caption?: string; blossomServers?: string[] },
-  ): Promise<unknown>;
+  ): Promise<SendMediaResult>;
   sendMediaBatch(
     nostrGroupId: string,
     filePaths: string[],
     opts?: { caption?: string; blossomServers?: string[] },
-  ): Promise<unknown>;
+  ): Promise<SendMediaResult>;
   sendTyping(nostrGroupId: string): Promise<void>;
   getMessages(nostrGroupId: string, limit?: number): Promise<unknown>;
   shutdown(): Promise<void>;
@@ -80,13 +89,20 @@ export interface PikachatDaemonLike {
 }
 
 export class PikachatDaemonClient implements PikachatDaemonLike {
+  static readonly DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
   #proc: ChildProcessWithoutNullStreams;
   #closed = false;
   #readySeen = false;
   #requestSeq = 0;
   #pending = new Map<
     string,
-    { cmd: string; resolve: (value: unknown) => void; reject: (err: Error) => void; startedAt: number }
+    {
+      cmd: string;
+      resolve: (value: unknown) => void;
+      reject: (err: Error) => void;
+      startedAt: number;
+      timeoutId: NodeJS.Timeout;
+    }
   >();
   #onEvent: PikachatDaemonEventHandler | null = null;
   #readyResolve: ((msg: PikachatDaemonOutMsg & { type: "ready" }) => void) | null = null;
@@ -97,6 +113,7 @@ export class PikachatDaemonClient implements PikachatDaemonLike {
   #stderrTail: string[] = [];
   #logger: PikachatLogger | undefined;
   #sendThrottle: SendThrottle;
+  #requestTimeoutMs = PikachatDaemonClient.DEFAULT_REQUEST_TIMEOUT_MS;
 
   constructor(params: DaemonSpawnParams) {
     this.#logger = params.logger;
@@ -110,7 +127,10 @@ export class PikachatDaemonClient implements PikachatDaemonLike {
 
     const rl = readline.createInterface({ input: this.#proc.stdout });
     rl.on("line", (line: string) => {
-      void this.#handleLine(line);
+      void this.#handleLine(line).catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        this.#logger?.error?.(`[pikachat-claude] daemon event handling failed: ${message}`);
+      });
     });
 
     this.#proc.stderr.on("data", (buf: Buffer) => {
@@ -144,7 +164,8 @@ export class PikachatDaemonClient implements PikachatDaemonLike {
         );
       }
       const err = new Error(`pikachat daemon exited code=${code ?? "null"} signal=${signal ?? "null"}`);
-      for (const { reject } of this.#pending.values()) {
+      for (const { reject, timeoutId } of this.#pending.values()) {
+        clearTimeout(timeoutId);
         reject(err);
       }
       this.#pending.clear();
@@ -193,7 +214,14 @@ export class PikachatDaemonClient implements PikachatDaemonLike {
     const startedAt = Date.now();
     const cmdName = String((cmd as { cmd?: string }).cmd ?? "unknown");
     const promise = new Promise<unknown>((resolve, reject) => {
-      this.#pending.set(requestId, { cmd: cmdName, resolve, reject, startedAt });
+      const timeoutId = setTimeout(() => {
+        if (!this.#pending.delete(requestId)) {
+          return;
+        }
+        reject(new Error(`request timeout cmd=${cmdName} request_id=${requestId}`));
+      }, this.#requestTimeoutMs);
+      (timeoutId as any).unref?.();
+      this.#pending.set(requestId, { cmd: cmdName, resolve, reject, startedAt, timeoutId });
     });
     this.#proc.stdin.write(`${line}\n`);
     return await promise;
@@ -248,7 +276,7 @@ export class PikachatDaemonClient implements PikachatDaemonLike {
     nostrGroupId: string,
     filePath: string,
     opts?: { mimeType?: string; filename?: string; caption?: string; blossomServers?: string[] },
-  ): Promise<unknown> {
+  ): Promise<SendMediaResult> {
     let result: unknown;
     await this.#sendThrottle.enqueue(async () => {
       result = await this.request({
@@ -261,14 +289,14 @@ export class PikachatDaemonClient implements PikachatDaemonLike {
         blossom_servers: opts?.blossomServers,
       } as any);
     });
-    return result;
+    return (result as SendMediaResult) ?? {};
   }
 
   async sendMediaBatch(
     nostrGroupId: string,
     filePaths: string[],
     opts?: { caption?: string; blossomServers?: string[] },
-  ): Promise<unknown> {
+  ): Promise<SendMediaResult> {
     let result: unknown;
     await this.#sendThrottle.enqueue(async () => {
       result = await this.request({
@@ -279,7 +307,7 @@ export class PikachatDaemonClient implements PikachatDaemonLike {
         blossom_servers: opts?.blossomServers,
       } as any);
     });
-    return result;
+    return (result as SendMediaResult) ?? {};
   }
 
   async sendTyping(nostrGroupId: string): Promise<void> {
@@ -325,6 +353,7 @@ export class PikachatDaemonClient implements PikachatDaemonLike {
         const pending = this.#pending.get(requestId);
         if (pending) {
           this.#pending.delete(requestId);
+          clearTimeout(pending.timeoutId);
           const elapsedMs = Date.now() - pending.startedAt;
           if (msg.type === "ok") {
             this.#logger?.debug?.(

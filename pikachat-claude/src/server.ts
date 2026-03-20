@@ -35,18 +35,32 @@ const runtime = new PikachatClaudeChannel({
     error: (message) => log(message),
   },
   onNotification: async ({ content, meta }) => {
-    await mcp.notification({
-      method: "notifications/claude/channel",
-      params: {
-        content,
-        meta,
-      },
-    });
+    try {
+      await mcp.notification({
+        method: "notifications/claude/channel",
+        params: {
+          content,
+          meta,
+        },
+      });
+    } catch (err) {
+      log(
+        `[pikachat-claude] failed to forward notification chat_id=${meta.chat_id ?? "unknown"}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   },
 });
 
 function textResult(text: string) {
   return { content: [{ type: "text", text }] };
+}
+
+function requireNonEmptyString(args: Record<string, unknown>, key: string): string {
+  const value = args[key];
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`missing or invalid '${key}'`);
+  }
+  return value.trim();
 }
 
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -177,7 +191,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
   switch (request.params.name) {
     case "reply": {
       const result = await runtime.reply({
-        chatId: String(args.chat_id ?? ""),
+        chatId: requireNonEmptyString(args, "chat_id"),
         text: typeof args.text === "string" ? args.text : undefined,
         replyTo: typeof args.reply_to === "string" ? args.reply_to : undefined,
         files: Array.isArray(args.files) ? args.files.map((entry) => String(entry)) : undefined,
@@ -187,9 +201,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     case "react": {
       await runtime.react({
-        chatId: String(args.chat_id ?? ""),
-        eventId: String(args.event_id ?? ""),
-        emoji: String(args.emoji ?? ""),
+        chatId: requireNonEmptyString(args, "chat_id"),
+        eventId: requireNonEmptyString(args, "event_id"),
+        emoji: requireNonEmptyString(args, "emoji"),
       });
       return textResult("reaction sent");
     }
@@ -197,11 +211,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
       return textResult(JSON.stringify(await runtime.accessStatus(), null, 2));
     }
     case "approve_pairing": {
-      const result = await runtime.approvePairing(String(args.code ?? ""));
+      const result = await runtime.approvePairing(requireNonEmptyString(args, "code"));
       return textResult(result.senderId ? `approved ${result.senderId}` : "pairing code not found");
     }
     case "deny_pairing": {
-      const result = await runtime.denyPairing(String(args.code ?? ""));
+      const result = await runtime.denyPairing(requireNonEmptyString(args, "code"));
       return textResult(result.senderId ? `denied ${result.senderId}` : "pairing code not found");
     }
     case "set_dm_policy": {
@@ -212,16 +226,18 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
       return textResult(JSON.stringify(await runtime.setDmPolicy(policy), null, 2));
     }
     case "allow_sender": {
-      return textResult(JSON.stringify(await runtime.allowSender(String(args.sender_id ?? "")), null, 2));
+      return textResult(JSON.stringify(await runtime.allowSender(requireNonEmptyString(args, "sender_id")), null, 2));
     }
     case "remove_sender": {
-      return textResult(JSON.stringify(await runtime.removeSender(String(args.sender_id ?? "")), null, 2));
+      return textResult(
+        JSON.stringify(await runtime.removeSender(requireNonEmptyString(args, "sender_id")), null, 2),
+      );
     }
     case "enable_group": {
       return textResult(
         JSON.stringify(
           await runtime.enableGroup(
-            String(args.group_id ?? ""),
+            requireNonEmptyString(args, "group_id"),
             args.require_mention !== false,
             Array.isArray(args.allow_from) ? args.allow_from.map((entry) => String(entry)) : [],
           ),
@@ -231,7 +247,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
       );
     }
     case "disable_group": {
-      return textResult(JSON.stringify(await runtime.disableGroup(String(args.group_id ?? "")), null, 2));
+      return textResult(JSON.stringify(await runtime.disableGroup(requireNonEmptyString(args, "group_id")), null, 2));
     }
     default:
       throw new Error(`unknown tool: ${request.params.name}`);
@@ -243,8 +259,13 @@ async function main(): Promise<void> {
   await mcp.connect(new StdioServerTransport());
 }
 
-void main().catch((err) => {
+void main().catch(async (err) => {
   log(`[pikachat-claude] fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+  try {
+    await runtime.stop();
+  } catch (stopErr) {
+    log(`[pikachat-claude] stop failed: ${stopErr instanceof Error ? stopErr.message : String(stopErr)}`);
+  }
   process.exit(1);
 });
 

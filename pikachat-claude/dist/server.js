@@ -21674,7 +21674,7 @@ var PikachatClaudeChannel = class {
     this.#botPubkey = ready.pubkey.toLowerCase();
     this.#botNpub = ready.npub;
     this.#logger?.info?.(
-      `[pikachat-claude] daemon ready pubkey=${this.#botPubkey} pid=${daemon.pid() ?? "unknown"}`
+      `[pikachat-claude] daemon ready pubkey=${this.#botPubkey} npub=${this.#botNpub} pid=${daemon.pid() ?? "unknown"}`
     );
     daemon.waitForExit().then(() => {
       if (this.#daemon === daemon) {

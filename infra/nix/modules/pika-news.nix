@@ -88,7 +88,7 @@ in
     isSystemUser = true;
     group = serviceGroup;
     home = serviceStateDir;
-    createHome = true;
+    createHome = false;
   };
 
   users.users."${gitUser}" = {
@@ -155,5 +155,6 @@ in
 
   systemd.tmpfiles.rules = [
     "d ${serviceStateDir} 0750 ${serviceUser} ${serviceGroup} -"
+    "z ${serviceStateDir} 0750 ${serviceUser} ${serviceGroup} -"
   ];
 }

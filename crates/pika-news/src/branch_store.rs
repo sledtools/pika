@@ -1670,6 +1670,26 @@ impl Store {
         })
     }
 
+    pub fn count_running_ci_lane_runs(&self) -> anyhow::Result<usize> {
+        self.with_connection(|conn| {
+            let branch_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM branch_ci_run_lanes WHERE status = 'running'",
+                    [],
+                    |row| row.get(0),
+                )
+                .context("count running branch ci lanes")?;
+            let nightly_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM nightly_run_lanes WHERE status = 'running'",
+                    [],
+                    |row| row.get(0),
+                )
+                .context("count running nightly ci lanes")?;
+            Ok((branch_count + nightly_count).max(0) as usize)
+        })
+    }
+
     pub fn claim_pending_branch_ci_lane_runs(
         &self,
         limit: usize,

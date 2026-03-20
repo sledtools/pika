@@ -66,11 +66,13 @@ fn maybe_start_background_ci_pass(
 
     tokio::spawn(async move {
         let state_for_ci = Arc::clone(&state);
+        let scheduler_notify = Arc::clone(&notify);
         let ci_result = tokio::task::spawn_blocking(move || {
-            ci::run_ci_pass_with_updates(
+            ci::schedule_ci_pass_with_updates(
                 &state_for_ci.store,
                 &state_for_ci.config,
                 Some(&state_for_ci.live_updates),
+                Some(scheduler_notify),
             )
         })
         .await;

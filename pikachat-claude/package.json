@@ -1,0 +1,20 @@
+{
+  "name": "pikachat-claude",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claude Code channel plugin backed by pikachat daemon",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/server.ts --bundle --platform=node --format=esm --outfile=dist/server.js --banner:js='#!/usr/bin/env node'",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test src/**/*.test.ts",
+    "test:e2e-local-relay": "RUN_PIKACHAT_CLAUDE_E2E=1 node --import tsx --test src/local-relay-e2e.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.14",
+    "@modelcontextprotocol/sdk": "^1.17.5",
+    "esbuild": "^0.25.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}

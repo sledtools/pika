@@ -582,7 +582,7 @@ fn push_mirror(
         if let Some(token) = github_token {
             cmd.args([
                 "-c",
-                &format!("http.extraheader=Authorization: Bearer {token}"),
+                &format!("http.extraheader={}", github_http_auth_header(token)),
             ]);
         }
     }
@@ -601,6 +601,12 @@ fn remote_url(repo: &ForgeRepoConfig, remote_name: &str) -> anyhow::Result<Strin
     git_bare(repo, ["remote", "get-url", remote_name])
         .map(|url| url.trim().to_string())
         .with_context(|| format!("resolve mirror remote `{remote_name}`"))
+}
+
+fn github_http_auth_header(token: &str) -> String {
+    let credentials = format!("x-access-token:{token}");
+    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, credentials);
+    format!("AUTHORIZATION: basic {encoded}")
 }
 
 fn local_head_refs(
@@ -960,9 +966,9 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        close_branch, create_merge_commit, current_branch_head, inspect_mirror, install_hooks,
-        merge_branch, publish_merge_refs, render_pikaci_stdout_line, resolve_hook_tool,
-        run_ci_command_for_head_with_heartbeat, write_merge_tree,
+        close_branch, create_merge_commit, current_branch_head, github_http_auth_header,
+        inspect_mirror, install_hooks, merge_branch, publish_merge_refs, render_pikaci_stdout_line,
+        resolve_hook_tool, run_ci_command_for_head_with_heartbeat, write_merge_tree,
     };
     use crate::config::ForgeRepoConfig;
 
@@ -1374,5 +1380,14 @@ mod tests {
         let outcome = inspect_mirror(&forge_repo, "github").expect("inspect mirror");
         assert_eq!(outcome.synced_ref_count, 1);
         assert_eq!(outcome.lagging_ref_count, 1);
+    }
+
+    #[test]
+    fn github_http_auth_header_uses_basic_with_x_access_token_username() {
+        let header = github_http_auth_header("test-token");
+        assert_eq!(
+            header,
+            "AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46dGVzdC10b2tlbg=="
+        );
     }
 }

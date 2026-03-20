@@ -5,6 +5,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+import importlib.util
 from pathlib import Path
 
 
@@ -24,6 +25,32 @@ def git(cwd: Path, *args: str) -> str:
 
 
 class ForgeGithubCiShimTests(unittest.TestCase):
+    def test_lane_to_matrix_entry_marks_apple_github_step_as_apple_remote(self) -> None:
+        lane = {
+            "id": "apple_host_sanity",
+            "title": "check-apple-host-sanity",
+            "entrypoint": "./scripts/pikaci-apple-github-step remote-run --just-recipe apple-host-sanity",
+            "command": [
+                "./scripts/pikaci-apple-github-step",
+                "remote-run",
+                "--just-recipe",
+                "apple-host-sanity",
+            ],
+            "concurrency_group": "apple-host",
+        }
+
+        spec = importlib.util.spec_from_file_location("forge_github_ci_shim", SCRIPT)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        shim = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        spec.loader.exec_module(shim)
+        entry = shim.lane_to_matrix_entry(lane, "branch")
+
+        self.assertTrue(entry["uses_apple_remote"])
+        self.assertEqual(entry["runner"], "ubuntu-latest")
+        self.assertEqual(entry["concurrency_group"], "apple-host")
+
     def test_branch_selection_narrows_apple_host_sanity_to_smoke_surface(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

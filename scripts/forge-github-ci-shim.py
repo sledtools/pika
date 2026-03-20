@@ -170,7 +170,10 @@ def lane_concurrency_group(lane: dict) -> str | None:
 def lane_to_matrix_entry(lane: dict, mode: str) -> dict:
     command = lane_command(lane)
     staged_linux_target = lane.get("staged_linux_target")
-    uses_apple_remote = any("pikaci-apple-remote.sh" in part for part in command)
+    uses_apple_remote = any(
+        "pikaci-apple-remote.sh" in part or "pikaci-apple-github-step" in part
+        for part in command
+    )
     uses_staged_linux = staged_linux_target is not None
     return {
         "id": lane["id"],

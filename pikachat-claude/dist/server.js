@@ -20817,6 +20817,13 @@ var StdioServerTransport = class {
 // src/config.ts
 import os from "node:os";
 import path from "node:path";
+var DEFAULT_MESSAGE_RELAYS = [
+  "wss://relay.primal.net",
+  "wss://nos.lol",
+  "wss://relay.damus.io",
+  "wss://us-east.nostr.pikachat.org",
+  "wss://eu.nostr.pikachat.org"
+];
 function parseBoolean(value, fallback) {
   if (value === void 0) return fallback;
   const normalized = value.trim().toLowerCase();
@@ -20845,12 +20852,16 @@ function expandTilde(input) {
 function defaultClaudeChannelHome() {
   return path.join(os.homedir(), ".claude", "channels", "pikachat");
 }
+function defaultPikachatRelays() {
+  return [...DEFAULT_MESSAGE_RELAYS];
+}
 function resolvePikachatClaudeConfig(env = process.env) {
   const channelHome = path.resolve(
     expandTilde(env.PIKACHAT_CLAUDE_HOME?.trim() || defaultClaudeChannelHome())
   );
+  const configuredRelays = parseStringArray(env.PIKACHAT_RELAYS);
   return {
-    relays: parseStringArray(env.PIKACHAT_RELAYS),
+    relays: configuredRelays.length > 0 ? configuredRelays : defaultPikachatRelays(),
     stateDir: env.PIKACHAT_STATE_DIR?.trim() || void 0,
     daemonCmd: env.PIKACHAT_DAEMON_CMD?.trim() || env.PIKACHAT_SIDECAR_CMD?.trim() || void 0,
     daemonArgs: (() => {
@@ -22135,12 +22146,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 async function main() {
-  await mcp.connect(new StdioServerTransport());
   await runtime.start();
+  await mcp.connect(new StdioServerTransport());
 }
 void main().catch((err) => {
   log(`[pikachat-claude] fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
-  process.exitCode = 1;
+  process.exit(1);
 });
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {

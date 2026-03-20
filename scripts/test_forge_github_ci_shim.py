@@ -24,6 +24,15 @@ def git(cwd: Path, *args: str) -> str:
     return completed.stdout.strip()
 
 
+def load_shim():
+    spec = importlib.util.spec_from_file_location("forge_github_ci_shim", SCRIPT)
+    assert spec is not None
+    assert spec.loader is not None
+    shim = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(shim)
+    return shim
+
+
 class ForgeGithubCiShimTests(unittest.TestCase):
     def test_lane_to_matrix_entry_marks_apple_github_step_as_apple_remote(self) -> None:
         lane = {
@@ -39,17 +48,60 @@ class ForgeGithubCiShimTests(unittest.TestCase):
             "concurrency_group": "apple-host",
         }
 
-        spec = importlib.util.spec_from_file_location("forge_github_ci_shim", SCRIPT)
-        self.assertIsNotNone(spec)
-        self.assertIsNotNone(spec.loader)
-        shim = importlib.util.module_from_spec(spec)
-        assert spec and spec.loader
-        spec.loader.exec_module(shim)
+        shim = load_shim()
         entry = shim.lane_to_matrix_entry(lane, "branch")
 
         self.assertTrue(entry["uses_apple_remote"])
         self.assertEqual(entry["runner"], "ubuntu-latest")
         self.assertEqual(entry["concurrency_group"], "apple-host")
+
+    def test_checked_in_manifest_covers_forge_and_agent_workflow_paths(self) -> None:
+        shim = load_shim()
+        manifest = shim.load_manifest(REPO_ROOT / "ci" / "forge-lanes.toml")
+        lanes = shim.lane_catalog(manifest, "branch")
+
+        def selected_ids(path: str) -> list[str]:
+            return [
+                lane["id"]
+                for lane in lanes
+                if not lane.get("paths") or shim.match_path_any([path], lane.get("paths", []))
+            ]
+
+        self.assertEqual(
+            selected_ids("crates/pika-news/src/web.rs"),
+            ["notifications", "agent_contracts"],
+        )
+        self.assertEqual(
+            selected_ids("crates/ph/src/lib.rs"),
+            ["notifications", "agent_contracts"],
+        )
+        self.assertEqual(
+            selected_ids("AGENTS.md"),
+            ["pika_followup", "agent_contracts"],
+        )
+        self.assertEqual(
+            selected_ids(".agents/skills/land/SKILL.md"),
+            ["pika_followup", "agent_contracts"],
+        )
+
+    def test_checked_in_manifest_routes_pikachat_claude_paths_to_typescript_lane(self) -> None:
+        shim = load_shim()
+        manifest = shim.load_manifest(REPO_ROOT / "ci" / "forge-lanes.toml")
+        lanes = shim.lane_catalog(manifest, "branch")
+
+        def selected_ids(path: str) -> list[str]:
+            return [
+                lane["id"]
+                for lane in lanes
+                if not lane.get("paths") or shim.match_path_any([path], lane.get("paths", []))
+            ]
+
+        for path in [
+            "pikachat-claude/src/access.test.ts",
+            "pikachat-claude/src/channel-runtime.ts",
+            "pikachat-claude/package.json",
+        ]:
+            self.assertEqual(selected_ids(path), ["pikachat_typescript"], path)
 
     def test_branch_selection_narrows_apple_host_sanity_to_smoke_surface(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

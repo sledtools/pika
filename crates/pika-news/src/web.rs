@@ -75,6 +75,7 @@ fn maybe_start_background_ci_pass(
 
         match ci_result {
             Ok(Ok(ci)) => {
+                let should_wake_follow_up = ci_pass_needs_follow_up_wake(&ci);
                 if ci.claimed > 0 || ci.nightlies_scheduled > 0 || ci.retries_recovered > 0 {
                     eprintln!(
                         "ci: claimed={} succeeded={} failed={} nightlies_scheduled={} retries_recovered={}",
@@ -90,24 +91,35 @@ fn maybe_start_background_ci_pass(
                         ci.claimed > 0 || ci.nightlies_scheduled > 0 || ci.retries_recovered > 0;
                     health.ci.mark_success(ci_summary(&ci), active);
                 }
+                ci_running.store(false, Ordering::Release);
+                if should_wake_follow_up {
+                    notify.notify_one();
+                }
             }
             Ok(Err(err)) => {
                 eprintln!("pika-news ci runner error: {}", err);
                 if let Ok(mut health) = state.forge_health.lock() {
                     health.ci.mark_error(err.to_string());
                 }
+                ci_running.store(false, Ordering::Release);
             }
             Err(err) => {
                 eprintln!("pika-news ci runner task join error: {}", err);
                 if let Ok(mut health) = state.forge_health.lock() {
                     health.ci.mark_error(err.to_string());
                 }
+                ci_running.store(false, Ordering::Release);
             }
         }
-
-        ci_running.store(false, Ordering::Release);
-        notify.notify_one();
     });
+}
+
+fn ci_pass_needs_follow_up_wake(ci: &ci::CiPassResult) -> bool {
+    ci.claimed > 0
+        || ci.succeeded > 0
+        || ci.failed > 0
+        || ci.nightlies_scheduled > 0
+        || ci.retries_recovered > 0
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -3555,6 +3567,35 @@ mod tests {
         );
         headers
     }
+
+    #[test]
+    fn ci_follow_up_wake_only_for_material_progress() {
+        assert!(!super::ci_pass_needs_follow_up_wake(
+            &ci::CiPassResult::default()
+        ));
+
+        assert!(super::ci_pass_needs_follow_up_wake(&ci::CiPassResult {
+            claimed: 1,
+            ..Default::default()
+        }));
+        assert!(super::ci_pass_needs_follow_up_wake(&ci::CiPassResult {
+            succeeded: 1,
+            ..Default::default()
+        }));
+        assert!(super::ci_pass_needs_follow_up_wake(&ci::CiPassResult {
+            failed: 1,
+            ..Default::default()
+        }));
+        assert!(super::ci_pass_needs_follow_up_wake(&ci::CiPassResult {
+            nightlies_scheduled: 1,
+            ..Default::default()
+        }));
+        assert!(super::ci_pass_needs_follow_up_wake(&ci::CiPassResult {
+            retries_recovered: 1,
+            ..Default::default()
+        }));
+    }
+
     #[test]
     fn sanitizes_markdown_html_output() {
         let rendered = markdown_to_safe_html("ok<script>alert('xss')</script>");

@@ -23,27 +23,29 @@ Then run Claude from the repo root with the plugin directory:
 ```sh
 cd /Users/futurepaul/dev/sec/other-peoples-code/pika
 claude --plugin-dir ./pikachat-claude \
-  --dangerously-load-development-channels server:pikachat
+  --dangerously-load-development-channels plugin:pikachat-claude@inline
 ```
 
 Channels require Claude Code `v2.1.80+`.
 
 Running Claude from inside `pikachat-claude/` is not recommended for local testing because that plugin's `.mcp.json` will also be treated as the project's `.mcp.json`.
 
-If you want to test the plugin-scoped channel bypass directly, this also works:
+If you prefer a one-shot launch with explicit env overrides, this also works:
 
 ```sh
 cd /Users/futurepaul/dev/sec/other-peoples-code/pika
+PIKACHAT_RELAYS='["wss://example-relay"]' \
+PIKACHAT_STATE_DIR=~/.local/state/pikachat \
 claude --plugin-dir ./pikachat-claude \
   --dangerously-load-development-channels plugin:pikachat-claude@inline
 ```
 
-If you are not using a preinstalled `pikachat` binary, the plugin will try to resolve one from GitHub releases using the same logic as `pikachat-openclaw`.
+The plugin uses the same default relay profile as `pikachat` when `PIKACHAT_RELAYS` is not set. If you are not using a preinstalled `pikachat` binary, the plugin will try to resolve one from GitHub releases using the same logic as `pikachat-openclaw`.
 
 ## Environment
 
 - `PIKACHAT_RELAYS`
-  - JSON array or comma-separated relay URLs
+  - optional JSON array or comma-separated relay URLs; defaults to the standard pikachat relay profile
 - `PIKACHAT_STATE_DIR`
   - daemon state dir; set this before first start if you want a dedicated bot identity instead of reusing `~/.local/state/pikachat`
 - `PIKACHAT_DAEMON_CMD`
@@ -75,3 +77,25 @@ To inspect the active identity for a chosen state dir:
 ```sh
 cargo run -q -p pikachat -- --state-dir /tmp/pikachat-claude-state identity
 ```
+
+If you are using the default state dir, a plain:
+
+```sh
+pikachat identity
+```
+
+shows the same identity the plugin will use.
+
+## Startup sanity check
+
+After launching Claude, verify that the wrapper and daemon are both running:
+
+```sh
+ps -axo pid,ppid,command | rg 'pikachat|dist/server.js'
+```
+
+You should see:
+
+- `claude ...`
+- `node .../pikachat-claude/dist/server.js`
+- `pikachat daemon ...`

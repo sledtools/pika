@@ -778,8 +778,8 @@ command = ["python3", "-c", "print('nightly')"]
         self.assertEqual(
             commands["apple_host_sanity"],
             [
-                "./scripts/pikaci-apple-remote.sh",
-                "run",
+                "./scripts/pikaci-apple-github-step",
+                "remote-run",
                 "--just-recipe",
                 "apple-host-sanity",
             ],

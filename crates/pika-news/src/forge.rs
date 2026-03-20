@@ -908,18 +908,36 @@ fn render_pikaci_stdout_line(line: &str, default_target_id: Option<&str>) -> Str
             format!("[pikaci] job started: {} · {}", job.id, job.description)
         }
         RunLifecycleEvent::JobFinished { job, .. } => {
-            format!(
+            let mut line = format!(
                 "[pikaci] job finished: {} · status={}",
                 job.id,
                 render_run_status(job.status)
-            )
+            );
+            if let Some(message) = job
+                .message
+                .as_deref()
+                .filter(|message| !message.trim().is_empty())
+            {
+                line.push_str(" · ");
+                line.push_str(message.trim());
+            }
+            line
         }
         RunLifecycleEvent::RunFinished { run } => {
-            format!(
+            let mut line = format!(
                 "[pikaci] run finished: {} · status={}",
                 run.run_id,
                 render_run_status(run.status)
-            )
+            );
+            if let Some(message) = run
+                .message
+                .as_deref()
+                .filter(|message| !message.trim().is_empty())
+            {
+                line.push_str(" · ");
+                line.push_str(message.trim());
+            }
+            line
         }
     }
 }
@@ -943,7 +961,7 @@ mod tests {
 
     use super::{
         close_branch, create_merge_commit, current_branch_head, inspect_mirror, install_hooks,
-        merge_branch, publish_merge_refs, resolve_hook_tool,
+        merge_branch, publish_merge_refs, render_pikaci_stdout_line, resolve_hook_tool,
         run_ci_command_for_head_with_heartbeat, write_merge_tree,
     };
     use crate::config::ForgeRepoConfig;
@@ -1297,6 +1315,23 @@ mod tests {
         assert!(result
             .log
             .contains("[pikaci] job finished: job-one · status=passed"));
+    }
+
+    #[test]
+    fn structured_pikaci_failure_log_keeps_job_and_run_messages() {
+        let job_line = render_pikaci_stdout_line(
+            r#"{"event":"job_finished","run_id":"pikaci-run-123","job":{"id":"job-one","description":"job one","status":"failed","executor":"remote_linux_vm","timeout_secs":30,"host_log_path":"/tmp/host.log","guest_log_path":"/tmp/guest.log","started_at":"2026-03-19T00:00:01Z","finished_at":"2026-03-19T00:00:02Z","exit_code":1,"message":"cargo test failed in crate pika_core","remote_linux_vm_execution":null}}"#,
+            Some("pre-merge-pika-rust"),
+        );
+        assert!(job_line.contains("status=failed"));
+        assert!(job_line.contains("cargo test failed in crate pika_core"));
+
+        let run_line = render_pikaci_stdout_line(
+            r#"{"event":"run_finished","run":{"run_id":"pikaci-run-123","status":"failed","rerun_of":null,"target_id":"pre-merge-pika-rust","target_description":"Run staged pika rust","source_root":"/tmp/source","snapshot_dir":"/tmp/snapshot","git_head":null,"git_dirty":null,"created_at":"2026-03-19T00:00:00Z","finished_at":"2026-03-19T00:00:02Z","plan_path":null,"prepared_outputs_path":null,"prepared_output_consumer":null,"prepared_output_mode":null,"prepared_output_invocation_mode":null,"prepared_output_invocation_wrapper_program":null,"prepared_output_launcher_transport_mode":null,"prepared_output_launcher_transport_program":null,"prepared_output_launcher_transport_host":null,"prepared_output_launcher_transport_remote_launcher_program":null,"prepared_output_launcher_transport_remote_helper_program":null,"prepared_output_launcher_transport_remote_work_dir":null,"changed_files":[],"filters":[],"message":"prepared-output helper exited 1","jobs":[]}}"#,
+            Some("pre-merge-pika-rust"),
+        );
+        assert!(run_line.contains("status=failed"));
+        assert!(run_line.contains("prepared-output helper exited 1"));
     }
 
     #[test]

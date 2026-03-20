@@ -1569,6 +1569,9 @@ impl Store {
                 .execute(
                     "UPDATE branch_ci_run_lanes
                      SET status = 'queued',
+                         log_text = NULL,
+                         pikaci_run_id = NULL,
+                         pikaci_target_id = NULL,
                          retry_count = retry_count + 1,
                          started_at = NULL,
                          finished_at = NULL,
@@ -1584,6 +1587,9 @@ impl Store {
                 .execute(
                     "UPDATE nightly_run_lanes
                      SET status = 'queued',
+                         log_text = NULL,
+                         pikaci_run_id = NULL,
+                         pikaci_target_id = NULL,
                          retry_count = retry_count + 1,
                          started_at = NULL,
                          finished_at = NULL,
@@ -1686,6 +1692,9 @@ impl Store {
                         .execute(
                         "UPDATE branch_ci_run_lanes
                          SET status = 'running',
+                             log_text = NULL,
+                             pikaci_run_id = NULL,
+                             pikaci_target_id = NULL,
                              started_at = CURRENT_TIMESTAMP,
                              last_heartbeat_at = CURRENT_TIMESTAMP,
                              lease_expires_at = datetime('now', ?2),
@@ -1870,6 +1879,9 @@ impl Store {
                         .execute(
                         "UPDATE nightly_run_lanes
                          SET status = 'running',
+                             log_text = NULL,
+                             pikaci_run_id = NULL,
+                             pikaci_target_id = NULL,
                              started_at = CURRENT_TIMESTAMP,
                              last_heartbeat_at = CURRENT_TIMESTAMP,
                              lease_expires_at = datetime('now', ?2),
@@ -3034,6 +3046,9 @@ mod tests {
             .expect("fresh branch lane");
         assert_eq!(old_branch_lane.status, "queued");
         assert_eq!(old_branch_lane.retry_count, 1);
+        assert!(old_branch_lane.log_text.is_none());
+        assert!(old_branch_lane.pikaci_run_id.is_none());
+        assert!(old_branch_lane.pikaci_target_id.is_none());
         assert_eq!(fresh_branch_lane.status, "running");
         assert_eq!(fresh_branch_lane.retry_count, 0);
 
@@ -3055,8 +3070,86 @@ mod tests {
             .expect("fresh nightly lane");
         assert_eq!(old_nightly_lane.status, "queued");
         assert_eq!(old_nightly_lane.retry_count, 1);
+        assert!(old_nightly_lane.log_text.is_none());
+        assert!(old_nightly_lane.pikaci_run_id.is_none());
+        assert!(old_nightly_lane.pikaci_target_id.is_none());
         assert_eq!(fresh_nightly_lane.status, "running");
         assert_eq!(fresh_nightly_lane.retry_count, 0);
+    }
+
+    #[test]
+    fn recovered_lane_claim_clears_stale_pikaci_metadata_before_retry() {
+        let store = open_store();
+        let branch = store
+            .upsert_branch_record(&upsert_input("feature/recovered-meta", "head-meta-retry"))
+            .expect("insert branch");
+        store
+            .queue_branch_ci_run_for_head(
+                branch.branch_id,
+                "head-meta-retry",
+                &[sample_lane("pika")],
+            )
+            .expect("queue branch suite");
+        let first_job = store
+            .claim_pending_branch_ci_lane_runs(1, 120)
+            .expect("claim first job")
+            .pop()
+            .expect("first job");
+        store
+            .record_branch_ci_lane_pikaci_run(
+                first_job.lane_run_id,
+                first_job.claim_token,
+                "pikaci-stale",
+                Some("pre-merge-pika-rust"),
+            )
+            .expect("record stale pikaci metadata");
+        store
+            .with_connection(|conn| {
+                conn.execute(
+                    "UPDATE branch_ci_run_lanes
+                     SET lease_expires_at = datetime('now', '-1 minute'),
+                         log_text = 'stale log from prior attempt'
+                     WHERE id = ?1",
+                    params![first_job.lane_run_id],
+                )?;
+                Ok::<(), anyhow::Error>(())
+            })
+            .expect("expire first lease");
+        assert_eq!(store.recover_stale_ci_lanes().expect("recover stale"), 1);
+
+        let recovered = store
+            .list_branch_ci_runs(branch.branch_id, 4)
+            .expect("list recovered runs");
+        let queued_lane = &recovered[0].lanes[0];
+        assert!(queued_lane.log_text.is_none());
+        assert!(queued_lane.pikaci_run_id.is_none());
+        assert!(queued_lane.pikaci_target_id.is_none());
+
+        let second_job = store
+            .claim_pending_branch_ci_lane_runs(1, 120)
+            .expect("claim retried job")
+            .pop()
+            .expect("retried job");
+        store
+            .finish_branch_ci_lane_run(
+                second_job.lane_run_id,
+                second_job.claim_token,
+                "failed",
+                "retry failed before run_started",
+            )
+            .expect("finish retried job");
+
+        let finished = store
+            .list_branch_ci_runs(branch.branch_id, 4)
+            .expect("list finished runs");
+        let lane = &finished[0].lanes[0];
+        assert_eq!(lane.status, "failed");
+        assert_eq!(
+            lane.log_text.as_deref(),
+            Some("retry failed before run_started")
+        );
+        assert!(lane.pikaci_run_id.is_none());
+        assert!(lane.pikaci_target_id.is_none());
     }
 
     #[test]

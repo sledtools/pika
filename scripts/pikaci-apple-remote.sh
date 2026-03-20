@@ -185,7 +185,7 @@ artifact_dir="${artifact_dir:-$repo_root/.pikaci/apple-remote/$run_id}"
 mkdir -p "$artifact_dir"
 
 tmp_dir="$(mktemp -d)"
-prepared_schema_version=4
+prepared_schema_version=5
 bundle_ref="refs/pikaci-apple/${command}/${run_id}"
 bundle_path="$tmp_dir/source.bundle"
 ssh_target="${ssh_user}@${ssh_host}"

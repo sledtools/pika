@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -60,6 +61,24 @@ def write_manifest(path: pathlib.Path, payload: dict) -> None:
     tmp_path.replace(path)
 
 
+def stage_executables(
+    manifest_path: pathlib.Path, entry_id: str, executables: list[str]
+) -> list[str]:
+    stage_root = manifest_path.parent / "rust-prepared-executables" / entry_id
+    shutil.rmtree(stage_root, ignore_errors=True)
+    stage_root.mkdir(parents=True, exist_ok=True)
+
+    staged_paths: list[str] = []
+    for index, executable in enumerate(executables):
+        source_path = pathlib.Path(executable).resolve()
+        if not source_path.exists():
+            raise SystemExit(f"error: prepared executable not found: {source_path}")
+        staged_path = stage_root / f"{index:02d}-{source_path.name}"
+        shutil.copy2(source_path, staged_path)
+        staged_paths.append(str(staged_path))
+    return staged_paths
+
+
 def collect_executables(command: list[str]) -> list[str]:
     proc = subprocess.Popen(
         command,
@@ -109,12 +128,13 @@ def main() -> int:
         executables = [str(pathlib.Path(args.binary).resolve())]
     else:
         executables = collect_executables(args.command)
+    staged_executables = stage_executables(manifest_path, args.entry, executables)
 
     manifest = load_manifest(manifest_path)
-    manifest.setdefault("schema_version", 1)
+    manifest["schema_version"] = 2
     entries = manifest.setdefault("entries", {})
     entries[args.entry] = {
-        "executables": executables,
+        "executables": staged_executables,
         "default_args": args.default_arg,
     }
     write_manifest(manifest_path, manifest)

@@ -175,7 +175,6 @@ apple-host-bundle:
     ./scripts/apple-host-record-phase apple-host-bundle.openclaw-pikachat-deterministic rust-prepared -- just openclaw-pikachat-deterministic
     ./scripts/apple-host-record-phase apple-host-bundle.shared-runtime-regression rust-prepared -- just shared-runtime-regression
     ./scripts/apple-host-record-phase apple-host-bundle.ios-ui-test apple-native -- just ios-ui-test
-    ./scripts/apple-host-record-phase apple-host-bundle.nightly-primal-ios-interop rust-prepared -- just nightly-primal-ios-interop
     echo "apple-host-bundle complete"
 
 # Deterministic HTTP control-plane contracts (mocked MicroVM spawner).

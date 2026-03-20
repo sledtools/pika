@@ -314,8 +314,11 @@ fn ensure_openclaw_runtime_ready(
 
 async fn wait_for_sidecar_keypackage(
     relay_url: &str,
+    sidecar_cmd: &str,
     sidecar_state_dir: &Path,
     gateway: &mut SpawnHandle,
+    runner: &CommandRunner<'_>,
+    command_outcomes: &mut Vec<CommandOutcomeRecord>,
 ) -> Result<String> {
     let relay_url = RelayUrl::parse(relay_url).context("parse openclaw relay url")?;
     let relay_urls = vec![relay_url.clone()];
@@ -329,8 +332,37 @@ async fn wait_for_sidecar_keypackage(
 
     let mut peer_pubkey_hex: Option<String> = None;
     let mut last_fetch_err: Option<String> = None;
+    let mut last_publish_err: Option<String> = None;
+    let mut publish_outcome_recorded = false;
 
     for _ in 0..240 {
+        let publish_result = runner.run(
+            &CommandSpec::new(sidecar_cmd.to_string())
+                .args([
+                    "--remote".to_string(),
+                    "--state-dir".to_string(),
+                    sidecar_state_dir.to_string_lossy().to_string(),
+                    "publish-kp".to_string(),
+                ])
+                .timeout(Duration::from_secs(5))
+                .capture_name("openclaw-sidecar-publish-keypackage"),
+        );
+        match publish_result {
+            Ok(output) => {
+                last_publish_err = None;
+                if !publish_outcome_recorded {
+                    command_outcomes.push(CommandOutcomeRecord::from_output(
+                        "openclaw-sidecar-publish-keypackage",
+                        &output,
+                    ));
+                    publish_outcome_recorded = true;
+                }
+            }
+            Err(err) => {
+                last_publish_err = Some(format!("{err:#}"));
+            }
+        }
+
         if peer_pubkey_hex.is_none() && identity_path.is_file() {
             peer_pubkey_hex = Some(read_identity_pubkey_hex(&identity_path)?);
         }
@@ -359,9 +391,10 @@ async fn wait_for_sidecar_keypackage(
         if let Some(status) = gateway.try_wait()? {
             client.shutdown().await;
             bail!(
-                "openclaw gateway exited before bot keypackage was published (status={status}, identity_present={}, last_fetch_error={})",
+                "openclaw gateway exited before bot keypackage was published (status={status}, identity_present={}, last_fetch_error={}, last_publish_error={})",
                 identity_path.is_file(),
-                last_fetch_err.unwrap_or_else(|| "none".to_string())
+                last_fetch_err.unwrap_or_else(|| "none".to_string()),
+                last_publish_err.unwrap_or_else(|| "none".to_string()),
             );
         }
 
@@ -370,9 +403,10 @@ async fn wait_for_sidecar_keypackage(
 
     client.shutdown().await;
     bail!(
-        "timed out waiting for OpenClaw bot keypackage publication (identity_present={}, last_fetch_error={})",
+        "timed out waiting for OpenClaw bot keypackage publication (identity_present={}, last_fetch_error={}, last_publish_error={})",
         identity_path.is_file(),
-        last_fetch_err.unwrap_or_else(|| "none".to_string())
+        last_fetch_err.unwrap_or_else(|| "none".to_string()),
+        last_publish_err.unwrap_or_else(|| "none".to_string()),
     )
 }
 
@@ -561,13 +595,18 @@ pub async fn run_openclaw_e2e(args: OpenclawE2eRequest) -> Result<ScenarioRunOut
     let openclaw_log = gateway.stdout_path.clone();
     let openclaw_err = gateway.stderr_path.clone();
 
-    let peer_pubkey = wait_for_sidecar_keypackage(&relay_url, &sidecar_state_dir, &mut gateway)
-        .await
-        .inspect_err(|err| {
-            eprintln!(
-                "OpenClaw/pikachat-openclaw bot did not publish a usable keypackage: {err:#}"
-            );
-        });
+    let peer_pubkey = wait_for_sidecar_keypackage(
+        &relay_url,
+        &sidecar_cmd,
+        &sidecar_state_dir,
+        &mut gateway,
+        &runner,
+        &mut command_outcomes,
+    )
+    .await
+    .inspect_err(|err| {
+        eprintln!("OpenClaw/pikachat-openclaw bot did not publish a usable keypackage: {err:#}");
+    });
 
     let peer_pubkey = match peer_pubkey {
         Ok(peer_pubkey) => peer_pubkey,

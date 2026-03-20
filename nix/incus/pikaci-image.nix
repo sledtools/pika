@@ -74,6 +74,7 @@
     jq
     linuxHeaders
     nix
+    nodejs_22
     openssl
     pkg-config
     postgresql

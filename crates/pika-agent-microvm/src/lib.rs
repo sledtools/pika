@@ -2105,7 +2105,6 @@ done
             value["guest_autostart"]["env"]["PIKA_RELAY_URLS"],
             "wss://relay-a.example.com,wss://relay-b.example.com"
         );
-        assert_eq!(value["guest_autostart"]["startup_plan"]["agent_kind"], "pi");
         assert_eq!(
             value["guest_autostart"]["startup_plan"]["service_kind"],
             "pikachat_daemon"
@@ -2148,7 +2147,7 @@ done
         assert!(script.contains("startup plan runner requires jq"));
         assert!(script.contains("--state-dir \"$daemon_state_dir\""));
         assert!(script.contains("PIKA_PIKACHAT_BIN"));
-        assert!(script.contains("plan_value '.agent_kind'"));
+        assert!(script.contains("plan_value '.service_kind'"));
         assert!(script.contains("plan_value '.backend_mode'"));
         assert!(script.contains("wait_for_service_ready"));
         assert!(script.contains("rm -f \"$service_log_path\""));
@@ -2387,10 +2386,6 @@ done
         );
 
         let value = serde_json::to_value(req).expect("serialize create vm request");
-        assert_eq!(
-            value["guest_autostart"]["startup_plan"]["agent_kind"],
-            "openclaw"
-        );
         assert_eq!(
             value["guest_autostart"]["startup_plan"]["service_kind"],
             "openclaw_gateway"

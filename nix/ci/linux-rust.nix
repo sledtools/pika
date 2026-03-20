@@ -53,10 +53,10 @@ let
       pkgs.alsa-lib
       pkgs.openssl
       pkgs.postgresql
-    ] ++ pkgs.lib.optionals (lane == "pika-core" || lane == "agent-contracts" || lane == "pikachat" || lane == "pika-followup" || lane == "fixture") [
+    ] ++ pkgs.lib.optionals (lane == "pika-core" || lane == "agent-contracts" || lane == "pikachat" || lane == "pika-followup" || lane == "notifications" || lane == "fixture") [
       pkgs.llvmPackages.libclang
       pkgs.linuxHeaders
-    ] ++ pkgs.lib.optionals (lane == "pika-core" || lane == "agent-contracts" || lane == "pikachat" || lane == "pika-followup" || lane == "fixture") [
+    ] ++ pkgs.lib.optionals (lane == "pika-core" || lane == "agent-contracts" || lane == "pikachat" || lane == "pika-followup" || lane == "notifications" || lane == "fixture") [
       pkgs.xorg.libX11
       pkgs.xorg.libXcursor
       pkgs.xorg.libXi
@@ -67,7 +67,7 @@ let
       pkgs.mesa
       pkgs.vulkan-loader
     ];
-  } // pkgs.lib.optionalAttrs (lane == "pika-core" || lane == "agent-contracts" || lane == "pikachat" || lane == "pika-followup" || lane == "fixture") {
+  } // pkgs.lib.optionalAttrs (lane == "pika-core" || lane == "agent-contracts" || lane == "pikachat" || lane == "pika-followup" || lane == "notifications" || lane == "fixture") {
     LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
     BINDGEN_EXTRA_CLANG_ARGS = builtins.concatStringsSep " " [
       "-I${pkgs.linuxHeaders}/include"
@@ -76,6 +76,15 @@ let
   };
 
   followupGradle = if androidJdk != null then pkgs.gradle.override { java = androidJdk; } else pkgs.gradle;
+  stagedRuntimeEnv = ''
+    host_store_root="''${PIKACI_STAGED_HOST_NIX_STORE_ROOT:-/nix/store}"
+    staged_runtime_ld="${pkgs.lib.makeLibraryPath commonArgs.buildInputs}"
+    staged_runtime_ld="''${staged_runtime_ld//\/nix\/store/$host_store_root}"
+    staged_postgres_bin="${pkgs.postgresql}/bin"
+    staged_postgres_bin="''${staged_postgres_bin//\/nix\/store/$host_store_root}"
+    export PATH="$staged_postgres_bin:$PATH"
+    export LD_LIBRARY_PATH="$staged_runtime_ld''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  '';
 
   pikaFollowupGradleDepsPackage =
     if lane == "pika-followup" && androidSdk != null && androidJdk != null then
@@ -951,7 +960,8 @@ let
         fi
 
         ${pkgs.lib.optionalString (pikaRelayPkg != null) ''
-        ln -s ${pikaRelayPkg}/bin/pika-relay "$out/bin/pika-relay"
+        cp ${pikaRelayPkg}/bin/pika-relay "$out/bin/pika-relay"
+        chmod +x "$out/bin/pika-relay"
         ''}
 
         cat >"$out/bin/run-pika-core-test-manifest" <<'EOF'
@@ -969,6 +979,7 @@ let
           echo "missing staged pika_core test manifest at $manifest" >&2
           exit 1
         fi
+        ${stagedRuntimeEnv}
 
         if [ -x "$root/bin/pika-server" ]; then
           export PIKA_FIXTURE_SERVER_CMD="$root/bin/pika-server"
@@ -1077,6 +1088,7 @@ let
             echo "missing staged pika-server package test manifest at $manifest" >&2
             exit 1
           fi
+          ${stagedRuntimeEnv}
 
           export PIKA_FIXTURE_SERVER_CMD="$root/bin/pika-server"
           state_dir="$(mktemp -d /tmp/pikahut-notifications.XXXXXX)"
@@ -1148,7 +1160,8 @@ let
           fi
 
           ${pkgs.lib.optionalString (pikaRelayPkg != null) ''
-          ln -s ${pikaRelayPkg}/bin/pika-relay "$out/bin/pika-relay"
+          cp ${pikaRelayPkg}/bin/pika-relay "$out/bin/pika-relay"
+          chmod +x "$out/bin/pika-relay"
           ''}
 
           cat >"$out/bin/run-pikahut-clippy" <<'EOF'
@@ -1172,6 +1185,7 @@ let
 
           root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
           bin="$root/bin/pikahut"
+          ${stagedRuntimeEnv}
           if [ -x "$root/bin/pika-relay" ]; then
             export PIKA_FIXTURE_RELAY_CMD="$root/bin/pika-relay"
           fi
@@ -1254,7 +1268,15 @@ let
           copy_target_relative "$rmp_relative"
           ln -s "../target/$rmp_relative" "$out/bin/rmp"
 
-          cp -R "$cargoVendorDir" "$out/share/pikaci/rmp-vendor"
+          mkdir -p "$out/share/pikaci/rmp-vendor"
+          vendor_store_dir="$(${pkgs.gawk}/bin/awk -F'\"' '/^directory = \"/ { print $2; exit }' "$cargoVendorDir/config.toml")"
+          if [ -z "$vendor_store_dir" ]; then
+            echo "failed to resolve staged rmp vendor store dir from $cargoVendorDir/config.toml" >&2
+            cat "$cargoVendorDir/config.toml" >&2
+            exit 1
+          fi
+          cp "$cargoVendorDir/config.toml" "$out/share/pikaci/rmp-vendor/upstream-config.toml"
+          cp -RL "$vendor_store_dir" "$out/share/pikaci/rmp-vendor/vendor"
 
           cp ${pkgs.writeShellScript "run-rmp-init-smoke-ci" ''
             set -euo pipefail
@@ -1269,9 +1291,13 @@ let
             }
             trap cleanup EXIT
 
-            cp "$root/share/pikaci/rmp-vendor/config.toml" "$cargo_home/config.toml"
-            chmod u+w "$cargo_home/config.toml"
-            cat >>"$cargo_home/config.toml" <<CFG
+            vendor_dir="$root/share/pikaci/rmp-vendor/vendor"
+            cat >"$cargo_home/config.toml" <<CFG
+[source.crates-io]
+replace-with = "pikaci-rmp-vendor"
+
+[source.pikaci-rmp-vendor]
+directory = "$vendor_dir"
 
 [net]
 offline = true
@@ -1384,10 +1410,32 @@ CFG
           ${pkgs.lib.optionalString (openclawGatewayPkg != null) ''
           mkdir -p "$out/lib"
           cp -R ${openclawGatewayPkg}/lib/openclaw "$out/lib/openclaw"
-          ln -s ${openclawGatewayPkg}/bin/openclaw "$out/bin/openclaw"
+          chmod -R u+w "$out/lib/openclaw"
+          find "$out/lib/openclaw" -type l | while IFS= read -r link; do
+            target="$(readlink "$link")"
+            case "$target" in
+              ${openclawGatewayPkg}/lib/openclaw/*)
+                relative_target="''${target#${openclawGatewayPkg}/lib/openclaw/}"
+                rewritten_target="$(${pkgs.coreutils}/bin/realpath \
+                  --relative-to="$(dirname "$link")" \
+                  "$out/lib/openclaw/$relative_target")"
+                ln -snf "$rewritten_target" "$link"
+                ;;
+            esac
+          done
+          cat >"$out/bin/openclaw" <<'EOF'
+          #!${pkgs.bash}/bin/bash
+          set -euo pipefail
+
+          root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
+          export OPENCLAW_NIX_MODE="''${OPENCLAW_NIX_MODE:-1}"
+          exec /run/current-system/sw/bin/node "$root/lib/openclaw/dist/index.js" "$@"
+          EOF
+          chmod +x "$out/bin/openclaw"
           ''}
           ${pkgs.lib.optionalString (pikaRelayPkg != null) ''
-          ln -s ${pikaRelayPkg}/bin/pika-relay "$out/bin/pika-relay"
+          cp ${pikaRelayPkg}/bin/pika-relay "$out/bin/pika-relay"
+          chmod +x "$out/bin/pika-relay"
           ''}
 
           cat >"$out/bin/run-staged-test-manifest" <<'EOF'
@@ -1406,6 +1454,7 @@ CFG
             echo "missing staged test manifest at $manifest" >&2
             exit 1
           fi
+          ${stagedRuntimeEnv}
 
           while IFS= read -r relative; do
             [ -n "$relative" ] || continue
@@ -1643,7 +1692,8 @@ CFG
         install_staged_binary "$PIKACI_PIKACHAT_EXECUTABLE" "pikachat"
 
         ${pkgs.lib.optionalString (pikaRelayPkg != null) ''
-        ln -s ${pikaRelayPkg}/bin/pika-relay "$out/bin/pika-relay"
+        cp ${pikaRelayPkg}/bin/pika-relay "$out/bin/pika-relay"
+        chmod +x "$out/bin/pika-relay"
         ''}
 
         cat >"$out/bin/run-staged-test-manifest" <<'EOF'
@@ -1662,6 +1712,7 @@ CFG
           echo "missing staged test manifest at $manifest" >&2
           exit 1
         fi
+        ${stagedRuntimeEnv}
 
         while IFS= read -r relative; do
           [ -n "$relative" ] || continue

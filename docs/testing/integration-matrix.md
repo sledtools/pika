@@ -10,7 +10,7 @@ read_when:
 This matrix is the canonical ownership map for integration coverage.
 
 - Canonical execution model: integration ownership is selector-first. Most coverage lives under `crates/pikahut/tests/integration_*.rs` selectors that call `pikahut::testing` APIs and scenario modules.
-- Retained non-selector exception: some Apple-hosted lanes are intentionally still non-selector today, most notably the mini-owned nightly XCTest / interop bundle.
+- Retained non-selector exception: some platform-hosted lanes are intentionally still non-selector today, most notably nightly iOS XCTest coverage via `just ios-ui-test`.
 - Compatibility rule: `just` and shell wrappers are retained only as thin selector dispatchers unless this matrix explicitly calls out a retained non-selector lane.
 - Root aggregates and regression bundles are documented below only as non-owner entrypoints; they are not the canonical policy contract.
 - Shared-fixture pooling remains out of scope for this phase (strict fixture mode only).

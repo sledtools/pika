@@ -656,6 +656,36 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
             &[],
             pika_followup_jobs(),
         ),
+        "pika-rust-deps-hygiene" => single_job_target_spec(
+            "pika-rust-deps-hygiene",
+            "Run the staged Pika rust-deps-hygiene follow-up lane",
+            &[],
+            pika_followup_jobs(),
+        ),
+        "pika-core-lib-app-flows-tests" => single_job_target_spec(
+            "pika-core-lib-app-flows-tests",
+            "Run the staged pika_core lib/app_flows lane",
+            &[],
+            pika_rust_jobs(),
+        ),
+        "pika-server-package-tests" => single_job_target_spec(
+            "pika-server-package-tests",
+            "Run the staged notifications pika-server package-tests lane",
+            &[],
+            notification_jobs(),
+        ),
+        "pikachat-package-tests" => single_job_target_spec(
+            "pikachat-package-tests",
+            "Run the staged pikachat package-tests lane",
+            &[],
+            pikachat_rust_jobs(),
+        ),
+        "pikahut-clippy" => single_job_target_spec(
+            "pikahut-clippy",
+            "Run the staged fixture pikahut clippy lane",
+            &[],
+            fixture_rust_jobs(),
+        ),
         "pre-merge-pikachat-apple-followup" => Ok(TargetSpec {
             id: "pre-merge-pikachat-apple-followup",
             description: "Run the Apple-host pikachat follow-up after the staged Linux Rust lane",
@@ -2053,6 +2083,46 @@ mod tests {
             rmp.jobs[0].staged_linux_rust_lane(),
             Some(StagedLinuxRustLane::RmpInitSmokeCi)
         );
+
+        let rust_deps = target_spec("pika-rust-deps-hygiene").expect("rust deps hygiene target");
+        assert_eq!(rust_deps.jobs.len(), 1);
+        assert_eq!(rust_deps.jobs[0].id, "pika-rust-deps-hygiene");
+        assert_eq!(
+            rust_deps.jobs[0].staged_linux_rust_lane(),
+            Some(StagedLinuxRustLane::PikaFollowupRustDepsHygiene)
+        );
+
+        let app_flows = target_spec("pika-core-lib-app-flows-tests").expect("app flows target");
+        assert_eq!(app_flows.jobs.len(), 1);
+        assert_eq!(app_flows.jobs[0].id, "pika-core-lib-app-flows-tests");
+        assert_eq!(
+            app_flows.jobs[0].staged_linux_rust_lane(),
+            Some(StagedLinuxRustLane::PikaCoreLibAppFlows)
+        );
+
+        let notifications = target_spec("pika-server-package-tests").expect("notifications target");
+        assert_eq!(notifications.jobs.len(), 1);
+        assert_eq!(notifications.jobs[0].id, "pika-server-package-tests");
+        assert_eq!(
+            notifications.jobs[0].staged_linux_rust_lane(),
+            Some(StagedLinuxRustLane::NotificationsServerPackageTests)
+        );
+
+        let pikachat = target_spec("pikachat-package-tests").expect("pikachat package target");
+        assert_eq!(pikachat.jobs.len(), 1);
+        assert_eq!(pikachat.jobs[0].id, "pikachat-package-tests");
+        assert_eq!(
+            pikachat.jobs[0].staged_linux_rust_lane(),
+            Some(StagedLinuxRustLane::PikachatPackageTests)
+        );
+
+        let fixture = target_spec("pikahut-clippy").expect("fixture target");
+        assert_eq!(fixture.jobs.len(), 1);
+        assert_eq!(fixture.jobs[0].id, "pikahut-clippy");
+        assert_eq!(
+            fixture.jobs[0].staged_linux_rust_lane(),
+            Some(StagedLinuxRustLane::FixturePikahutClippy)
+        );
     }
 
     #[test]
@@ -2404,6 +2474,7 @@ mod tests {
             changed_files: vec![],
             filters: vec![],
             message: None,
+            prepare_timings: vec![],
             jobs: vec![],
         }
     }
@@ -2422,6 +2493,7 @@ mod tests {
             finished_at: Some("2026-03-07T00:00:01Z".to_string()),
             exit_code: Some(0),
             message: Some("ok".to_string()),
+            pre_execution_prepare_duration_ms: None,
             remote_linux_vm_execution: None,
         }
     }

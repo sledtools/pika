@@ -4,8 +4,15 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
 
+workspace_paths=(
+  cli
+  crates
+  rust
+  uniffi-bindgen
+)
+
 if cargo machete --version >/dev/null 2>&1; then
-  exec cargo machete --skip-target-dir
+  exec cargo machete --skip-target-dir "${workspace_paths[@]}"
 fi
 
-exec nix develop --command cargo machete --skip-target-dir
+exec nix develop --command cargo machete --skip-target-dir "${workspace_paths[@]}"

@@ -17,51 +17,56 @@ fn clean_token(token: &str) -> String {
         .to_string()
 }
 
-fn indent_width(line: &str) -> usize {
-    line.chars().take_while(|ch| *ch == ' ').count()
-}
-
-fn extract_paths_filter_entries(workflow: &str, filter_name: &str) -> Vec<String> {
+fn extract_branch_lane_paths(manifest: &str, lane_id: &str) -> Vec<String> {
     let mut entries = Vec::new();
-    let mut in_filters = false;
-    let mut filters_indent = 0usize;
-    let mut current_filter: Option<&str> = None;
+    let mut in_branch_lane = false;
+    let mut current_lane_id: Option<String> = None;
+    let mut collecting_paths = false;
 
-    for line in workflow.lines() {
-        if !in_filters {
-            if line.trim() == "filters: |" {
-                in_filters = true;
-                filters_indent = indent_width(line);
+    for line in manifest.lines() {
+        let trimmed = line.trim();
+
+        if trimmed == "[[branch.lanes]]" {
+            if collecting_paths {
+                break;
+            }
+            in_branch_lane = true;
+            current_lane_id = None;
+            continue;
+        }
+
+        if !in_branch_lane {
+            continue;
+        }
+
+        if let Some(id) = trimmed
+            .strip_prefix("id = \"")
+            .and_then(|rest| rest.strip_suffix('"'))
+        {
+            current_lane_id = Some(id.to_string());
+            continue;
+        }
+
+        if current_lane_id.as_deref() != Some(lane_id) {
+            continue;
+        }
+
+        if !collecting_paths {
+            if trimmed == "paths = [" {
+                collecting_paths = true;
             }
             continue;
         }
 
-        let indent = indent_width(line);
-        let trimmed = line.trim_start();
-
-        if !trimmed.is_empty() && indent <= filters_indent {
+        if trimmed == "]" {
             break;
         }
-        if trimmed.is_empty() {
-            continue;
-        }
 
-        if indent == filters_indent + 2 && trimmed.ends_with(':') {
-            current_filter = Some(trimmed.trim_end_matches(':'));
-            continue;
-        }
-
-        if current_filter == Some(filter_name)
-            && indent >= filters_indent + 4
-            && trimmed.starts_with("- ")
+        if let Some(entry) = trimmed
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix("\",").or_else(|| rest.strip_suffix('"')))
         {
-            entries.push(
-                trimmed
-                    .trim_start_matches("- ")
-                    .trim_matches('\'')
-                    .trim_matches('"')
-                    .to_string(),
-            );
+            entries.push(entry.to_string());
         }
     }
 
@@ -469,41 +474,28 @@ fn integration_wrapper_scripts_dispatch_to_selectors() -> Result<()> {
 fn agent_guest_chat_recipes_use_non_reset_wrapper() -> Result<()> {
     let root = workspace_root();
     let agent_just = fs::read_to_string(root.join("just/agent.just"))?;
-    let agent_demo = fs::read_to_string(root.join("scripts/agent-demo.sh"))?;
-    let agent_chat_demo = fs::read_to_string(root.join("scripts/agent-chat-demo.sh"))?;
-    let ensure_demo = fs::read_to_string(root.join("scripts/demo-agent-microvm.sh"))?;
+    let agent_demo = fs::read_to_string(root.join("scripts/agent-demo-incus.sh"))?;
+    let ensure_demo = fs::read_to_string(root.join("scripts/demo-agent-incus.sh"))?;
 
     assert!(
-        agent_just.contains("PIKA_AGENT_MICROVM_KIND=pi ./scripts/agent-chat-demo.sh"),
-        "agent-pi must use the non-reset chat wrapper"
+        agent_just.contains("./scripts/agent-demo-incus.sh"),
+        "agent-incus-chat must keep using the checked-in Incus chat wrapper"
     );
     assert!(
-        agent_just.contains(
-            "PIKA_AGENT_MICROVM_KIND=openclaw PIKA_AGENT_MICROVM_BACKEND=native ./scripts/agent-chat-demo.sh"
-        ),
-        "agent-claw must use the non-reset chat wrapper with native backend"
-    );
-    assert!(
-        agent_just.contains(
-            "PIKA_AGENT_MICROVM_KIND=openclaw PIKA_AGENT_MICROVM_BACKEND=native ./scripts/demo-agent-microvm.sh"
-        ),
-        "agent-claw-ensure must force native backend"
+        agent_just.contains("./scripts/demo-agent-incus.sh"),
+        "agent-incus must keep using the checked-in Incus ensure wrapper"
     );
     assert!(
         !agent_demo.contains("--recover-after-attempt"),
         "agent-demo wrapper must not pass removed pikachat agent chat flags"
     );
     assert!(
-        agent_demo.contains("openclaw)\n    set_agent_microvm_backend_default native"),
-        "agent-demo wrapper must default OpenClaw guests to native backend"
+        agent_demo.contains("set_agent_incus_lane_defaults"),
+        "agent-demo wrapper must seed the Incus lane defaults"
     );
     assert!(
-        agent_chat_demo.contains("openclaw)\n    set_agent_microvm_backend_default native"),
-        "agent-chat-demo wrapper must default OpenClaw guests to native backend"
-    );
-    assert!(
-        ensure_demo.contains("openclaw)\n    set_agent_microvm_backend_default native"),
-        "demo-agent-microvm wrapper must default OpenClaw guests to native backend"
+        ensure_demo.contains("set_agent_incus_lane_defaults"),
+        "demo-agent wrapper must seed the Incus lane defaults"
     );
 
     Ok(())
@@ -588,8 +580,8 @@ fn policy_docs_call_out_non_owner_surfaces_and_deferred_mismatches() -> Result<(
 #[test]
 fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
     let root = workspace_root();
-    let workflow = fs::read_to_string(root.join(".github/workflows/pre-merge.yml"))?;
-    let pikachat_filter = extract_paths_filter_entries(&workflow, "pikachat");
+    let manifest = fs::read_to_string(root.join("ci/forge-lanes.toml"))?;
+    let pikachat_filter = extract_branch_lane_paths(&manifest, "pikachat");
     let pikachat_filter: HashSet<_> = pikachat_filter.into_iter().collect();
 
     let justfile = fs::read_to_string(root.join("justfile"))?;
@@ -601,7 +593,7 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
     );
     assert!(
         pikachat_filter.contains("just/checks.just"),
-        "pikachat workflow filter must include just/checks.just because pre-merge-pikachat is defined there"
+        "pikachat forge lane paths must include just/checks.just because pre-merge-pikachat is defined there"
     );
 
     let pikaci = fs::read_to_string(root.join("crates/pikaci/src/main.rs"))?;
@@ -651,7 +643,7 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
         .collect();
     assert!(
         missing_from_workflow.is_empty(),
-        "pikachat workflow filter must cover the checked-in pre-merge-pikachat-rust dependency surface; missing: {:?}",
+        "pikachat forge lane paths must cover the checked-in pre-merge-pikachat-rust dependency surface; missing: {:?}",
         missing_from_workflow
     );
 
@@ -662,7 +654,7 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
         .collect();
     assert!(
         missing_followup_from_workflow.is_empty(),
-        "pikachat workflow filter must cover the checked-in pre-merge-pikachat-apple-followup dependency surface; missing: {:?}",
+        "pikachat forge lane paths must cover the checked-in pre-merge-pikachat-apple-followup dependency surface; missing: {:?}",
         missing_followup_from_workflow
     );
     if apple_followup_jobs.contains("channel-behavior.test.ts") {
@@ -672,7 +664,7 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
         );
         assert!(
             pikachat_filter.contains("pikachat-openclaw/**"),
-            "pikachat workflow filter must include pikachat-openclaw/** while the Apple follow-up runs the channel behavior test"
+            "pikachat forge lane paths must include pikachat-openclaw/** while the Apple follow-up runs the channel behavior test"
         );
     }
 
@@ -695,7 +687,7 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
             );
             assert!(
                 pikachat_filter.contains(filter_path),
-                "pikachat workflow filter must include {filter_path} while cli/Cargo.toml keeps the direct {dependency_name} dependency"
+                "pikachat forge lane paths must include {filter_path} while cli/Cargo.toml keeps the direct {dependency_name} dependency"
             );
         }
     }
@@ -709,7 +701,7 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
         );
         assert!(
             pikachat_filter.contains("crates/pika-media/**"),
-            "pikachat workflow filter must include crates/pika-media/** while Apple follow-up sidecar clippy keeps pika-media in the build graph"
+            "pikachat forge lane paths must include crates/pika-media/** while Apple follow-up sidecar clippy keeps pika-media in the build graph"
         );
     }
     if apple_followup_jobs.contains("ui_e2e_local_desktop") {
@@ -719,7 +711,7 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
         );
         assert!(
             pikachat_filter.contains("rust/**"),
-            "pikachat workflow filter must include rust/** while the Apple follow-up keeps the desktop selector path"
+            "pikachat forge lane paths must include rust/** while the Apple follow-up keeps the desktop selector path"
         );
     }
     if cli_manifest.contains("pika-test-utils") {
@@ -729,7 +721,7 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
         );
         assert!(
             pikachat_filter.contains("crates/pika-test-utils/**"),
-            "pikachat workflow filter must include crates/pika-test-utils/** while cli/Cargo.toml keeps the shared test dependency"
+            "pikachat forge lane paths must include crates/pika-test-utils/** while cli/Cargo.toml keeps the shared test dependency"
         );
     }
 
@@ -856,8 +848,8 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
 #[test]
 fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<()> {
     let root = workspace_root();
-    let workflow = fs::read_to_string(root.join(".github/workflows/pre-merge.yml"))?;
-    let agent_filter = extract_paths_filter_entries(&workflow, "agent_contracts");
+    let manifest = fs::read_to_string(root.join("ci/forge-lanes.toml"))?;
+    let agent_filter = extract_branch_lane_paths(&manifest, "agent_contracts");
     let agent_filter: HashSet<_> = agent_filter.into_iter().collect();
     let checks = fs::read_to_string(root.join("just/checks.just"))?;
     let justfile = fs::read_to_string(root.join("justfile"))?;
@@ -869,7 +861,7 @@ fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<(
     );
     assert!(
         agent_filter.contains("just/checks.just"),
-        "agent_contracts workflow filter must include just/checks.just because pre-merge-agent-contracts is defined there"
+        "agent_contracts forge lane paths must include just/checks.just because pre-merge-agent-contracts is defined there"
     );
 
     let recipe = extract_just_recipe_body(&checks, "pre-merge-agent-contracts");
@@ -890,7 +882,7 @@ fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<(
         );
         assert!(
             agent_filter.contains("just/infra.just"),
-            "agent_contracts workflow filter must include just/infra.just while the lane reaches the Apple remote helper through the infra module"
+            "agent_contracts forge lane paths must include just/infra.just while the lane reaches the Apple remote helper through the infra module"
         );
 
         let infra = fs::read_to_string(root.join("just/infra.just"))?;
@@ -906,7 +898,7 @@ fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<(
         {
             assert!(
                 agent_filter.contains("scripts/pikaci-staged-linux-remote.sh"),
-                "agent_contracts workflow filter must include scripts/pikaci-staged-linux-remote.sh while the Apple remote helper runs through that checked-in script"
+                "agent_contracts forge lane paths must include scripts/pikaci-staged-linux-remote.sh while the Apple remote helper runs through that checked-in script"
             );
         }
     }
@@ -925,7 +917,7 @@ fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<(
         .collect();
     assert!(
         missing_from_workflow.is_empty(),
-        "agent_contracts workflow filter must cover the checked-in pre-merge-agent-contracts dependency surface; missing: {:?}",
+        "agent_contracts forge lane paths must cover the checked-in pre-merge-agent-contracts dependency surface; missing: {:?}",
         missing_from_workflow
     );
 
@@ -942,7 +934,7 @@ fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<(
         );
         assert!(
             agent_filter.contains("crates/pika-test-utils/**"),
-            "agent_contracts workflow filter must include crates/pika-test-utils/** while staged agent test crates keep that shared test dependency"
+            "agent_contracts forge lane paths must include crates/pika-test-utils/** while staged agent test crates keep that shared test dependency"
         );
     }
 
@@ -964,15 +956,15 @@ fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<(
     }
     assert!(
         agent_filter.contains("crates/pikahut/src/**"),
-        "agent_contracts workflow filter must include crates/pikahut/src/** while the lane keeps host-side agent selectors"
+        "agent_contracts forge lane paths must include crates/pikahut/src/** while the lane keeps host-side agent selectors"
     );
     assert!(
         agent_filter.contains("crates/pikahut/tests/**"),
-        "agent_contracts workflow filter must include crates/pikahut/tests/** while the lane keeps host-side agent selectors"
+        "agent_contracts forge lane paths must include crates/pikahut/tests/** while the lane keeps host-side agent selectors"
     );
     assert!(
         agent_filter.contains("crates/pikahut/Cargo.toml"),
-        "agent_contracts workflow filter must include crates/pikahut/Cargo.toml while the lane keeps host-side agent selectors"
+        "agent_contracts forge lane paths must include crates/pikahut/Cargo.toml while the lane keeps host-side agent selectors"
     );
     let pikahut_manifest = fs::read_to_string(root.join("crates/pikahut/Cargo.toml"))?;
     if pikahut_manifest.contains("pika-desktop") {
@@ -1007,14 +999,14 @@ fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<(
             if cli_manifest.contains(dependency_name) {
                 assert!(
                     agent_filter.contains(filter_path),
-                    "agent_contracts workflow filter must include {filter_path} while host-side pikachat selectors depend on {dependency_name}"
+                    "agent_contracts forge lane paths must include {filter_path} while host-side pikachat selectors depend on {dependency_name}"
                 );
             }
         }
     }
     assert!(
         agent_filter.contains("cli/**"),
-        "agent_contracts workflow filter must include cli/** while the lane keeps agent_http_cli_new selectors"
+        "agent_contracts forge lane paths must include cli/** while the lane keeps agent_http_cli_new selectors"
     );
 
     Ok(())
@@ -1023,8 +1015,8 @@ fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<(
 #[test]
 fn pre_merge_notifications_filter_tracks_checked_in_lane_surface() -> Result<()> {
     let root = workspace_root();
-    let workflow = fs::read_to_string(root.join(".github/workflows/pre-merge.yml"))?;
-    let notifications_filter = extract_paths_filter_entries(&workflow, "notifications");
+    let manifest = fs::read_to_string(root.join("ci/forge-lanes.toml"))?;
+    let notifications_filter = extract_branch_lane_paths(&manifest, "notifications");
     let notifications_filter: HashSet<_> = notifications_filter.into_iter().collect();
     let checks = fs::read_to_string(root.join("just/checks.just"))?;
     let justfile = fs::read_to_string(root.join("justfile"))?;
@@ -1036,7 +1028,7 @@ fn pre_merge_notifications_filter_tracks_checked_in_lane_surface() -> Result<()>
     );
     assert!(
         notifications_filter.contains("just/checks.just"),
-        "notifications workflow filter must include just/checks.just because pre-merge-notifications is defined there"
+        "notifications forge lane paths must include just/checks.just because pre-merge-notifications is defined there"
     );
 
     let recipe = extract_just_recipe_body(&checks, "pre-merge-notifications");
@@ -1057,7 +1049,7 @@ fn pre_merge_notifications_filter_tracks_checked_in_lane_surface() -> Result<()>
         );
         assert!(
             notifications_filter.contains("just/infra.just"),
-            "notifications workflow filter must include just/infra.just while the lane reaches the Apple remote helper through the infra module"
+            "notifications forge lane paths must include just/infra.just while the lane reaches the Apple remote helper through the infra module"
         );
 
         let infra = fs::read_to_string(root.join("just/infra.just"))?;
@@ -1073,7 +1065,7 @@ fn pre_merge_notifications_filter_tracks_checked_in_lane_surface() -> Result<()>
         {
             assert!(
                 notifications_filter.contains("scripts/pikaci-staged-linux-remote.sh"),
-                "notifications workflow filter must include scripts/pikaci-staged-linux-remote.sh while the Apple remote helper runs through that checked-in script"
+                "notifications forge lane paths must include scripts/pikaci-staged-linux-remote.sh while the Apple remote helper runs through that checked-in script"
             );
         }
     }
@@ -1092,7 +1084,7 @@ fn pre_merge_notifications_filter_tracks_checked_in_lane_surface() -> Result<()>
         .collect();
     assert!(
         missing_from_workflow.is_empty(),
-        "notifications workflow filter must cover the checked-in pre-merge-notifications dependency surface; missing: {:?}",
+        "notifications forge lane paths must cover the checked-in pre-merge-notifications dependency surface; missing: {:?}",
         missing_from_workflow
     );
 
@@ -1112,7 +1104,7 @@ fn pre_merge_notifications_filter_tracks_checked_in_lane_surface() -> Result<()>
             );
             assert!(
                 notifications_filter.contains(filter_path),
-                "notifications workflow filter must include {filter_path} while pika-server keeps dependency {dependency_name}"
+                "notifications forge lane paths must include {filter_path} while pika-server keeps dependency {dependency_name}"
             );
         }
     }
@@ -1123,19 +1115,19 @@ fn pre_merge_notifications_filter_tracks_checked_in_lane_surface() -> Result<()>
     {
         assert!(
             notifications_filter.contains("crates/pika-server/**"),
-            "notifications workflow filter must include crates/pika-server/** while the lane runs pika-server checks"
+            "notifications forge lane paths must include crates/pika-server/** while the lane runs pika-server checks"
         );
     }
     if recipe_text.contains("cargo run -q -p pikahut -- up --profile postgres") {
         assert!(
             notifications_filter.contains("crates/pikahut/**"),
-            "notifications workflow filter must include crates/pikahut/** while the lane runs the local pikahut postgres fixture wrapper"
+            "notifications forge lane paths must include crates/pikahut/** while the lane runs the local pikahut postgres fixture wrapper"
         );
         let pikahut_manifest = fs::read_to_string(root.join("crates/pikahut/Cargo.toml"))?;
         if pikahut_manifest.contains("pika-desktop") {
             assert!(
                 notifications_filter.contains("crates/pika-desktop/**"),
-                "notifications workflow filter must include crates/pika-desktop/** while the local pikahut wrapper depends on pika-desktop"
+                "notifications forge lane paths must include crates/pika-desktop/** while the local pikahut wrapper depends on pika-desktop"
             );
         }
     }
@@ -1146,8 +1138,8 @@ fn pre_merge_notifications_filter_tracks_checked_in_lane_surface() -> Result<()>
 #[test]
 fn pre_merge_fixture_filter_tracks_checked_in_lane_surface() -> Result<()> {
     let root = workspace_root();
-    let workflow = fs::read_to_string(root.join(".github/workflows/pre-merge.yml"))?;
-    let fixture_filter = extract_paths_filter_entries(&workflow, "fixture");
+    let manifest = fs::read_to_string(root.join("ci/forge-lanes.toml"))?;
+    let fixture_filter = extract_branch_lane_paths(&manifest, "fixture");
     let fixture_filter: HashSet<_> = fixture_filter.into_iter().collect();
     let checks = fs::read_to_string(root.join("just/checks.just"))?;
     let justfile = fs::read_to_string(root.join("justfile"))?;
@@ -1159,7 +1151,7 @@ fn pre_merge_fixture_filter_tracks_checked_in_lane_surface() -> Result<()> {
     );
     assert!(
         fixture_filter.contains("just/checks.just"),
-        "fixture workflow filter must include just/checks.just because pre-merge-fixture is defined there"
+        "fixture forge lane paths must include just/checks.just because pre-merge-fixture is defined there"
     );
 
     let recipe = extract_just_recipe_body(&checks, "pre-merge-fixture");
@@ -1191,7 +1183,7 @@ fn pre_merge_fixture_filter_tracks_checked_in_lane_surface() -> Result<()> {
         .collect();
     assert!(
         missing_from_workflow.is_empty(),
-        "fixture workflow filter must cover the checked-in pre-merge-fixture-rust dependency surface; missing: {:?}",
+        "fixture forge lane paths must cover the checked-in pre-merge-fixture-rust dependency surface; missing: {:?}",
         missing_from_workflow
     );
 
@@ -1205,7 +1197,7 @@ fn pre_merge_fixture_filter_tracks_checked_in_lane_surface() -> Result<()> {
             );
             assert!(
                 filter_covers_path(fixture_filter.iter(), &path),
-                "fixture workflow filter must include {path} while the lane keeps pikahut package tests and guardrails.rs reads that checked-in path"
+                "fixture forge lane paths must include {path} while the lane keeps pikahut package tests and guardrails.rs reads that checked-in path"
             );
         }
     }
@@ -1219,7 +1211,7 @@ fn pre_merge_fixture_filter_tracks_checked_in_lane_surface() -> Result<()> {
         "staged fixture workspace build must validate pikahut clippy before remote execute so the microVM lane stays offline"
     );
     assert!(
-        linux_rust.contains("ln -s ${pikaRelayPkg}/bin/pika-relay \"$out/bin/pika-relay\""),
+        linux_rust.contains("cp ${pikaRelayPkg}/bin/pika-relay \"$out/bin/pika-relay\""),
         "staged fixture workspace build must install pika-relay for remote fixture smoke so the guest does not fall back to go build"
     );
     assert!(
@@ -1233,6 +1225,14 @@ fn pre_merge_fixture_filter_tracks_checked_in_lane_surface() -> Result<()> {
 
     for (member, required_snippet) in [
         ("cli", "cp -R ${./cli}/. \"$out/cli\""),
+        (
+            "cli/src/main.rs",
+            "cp ${./config/channels.json} \"$out/config/channels.json\"",
+        ),
+        (
+            "tests/support/nostr_connect.rs",
+            "cp -R ${./tests/support} \"$out/tests/support\"",
+        ),
         (
             "crates/pika-agent-protocol",
             "cp -R ${./crates/pika-agent-protocol} \"$out/crates/pika-agent-protocol\"",
@@ -1259,14 +1259,14 @@ fn pre_merge_fixture_remote_lane_skips_fork_pull_requests() -> Result<()> {
     let workflow = fs::read_to_string(root.join(".github/workflows/pre-merge.yml"))?;
 
     assert!(
-        workflow.contains(
-            "if: needs.detect-changes.outputs.fixture == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)"
-        ),
-        "check-fixture must skip fork pull_request runs because repository secrets are unavailable there"
+        workflow.contains("PIKA_BUILD_SSH_KEY: ${{ secrets.PIKA_BUILD_SSH_KEY }}"),
+        "staged Linux branch lanes must keep reading PIKA_BUILD_SSH_KEY from repository secrets"
     );
     assert!(
-        workflow.contains("check-fixture: skipped (fork PR; remote secrets unavailable)"),
-        "check-pika summary must treat fork pull_request fixture skips as expected rather than failed required lanes"
+        workflow.contains(
+            "error: set repository secret PIKA_BUILD_SSH_KEY for staged Linux shadow lanes"
+        ),
+        "staged Linux branch lanes must fail fast with an explicit missing-secret error when remote secrets are unavailable"
     );
 
     Ok(())
@@ -1294,13 +1294,13 @@ fn pre_merge_pikachat_apple_split_stays_explicit() -> Result<()> {
     assert!(
         apple_branch
             .iter()
-            .any(|line| line.contains("nix run .#pikaci -- run pre-merge-pikachat-rust")),
+            .any(|line| line.contains("run pre-merge-pikachat-rust")),
         "Apple Silicon branch must keep the staged Linux Rust segment explicit"
     );
     assert!(
         apple_branch
             .iter()
-            .any(|line| line.contains("nix run .#pikaci -- run pre-merge-pikachat-apple-followup")),
+            .any(|line| line.contains("run pre-merge-pikachat-apple-followup")),
         "Apple Silicon branch must keep the Apple host follow-up explicit"
     );
     assert!(

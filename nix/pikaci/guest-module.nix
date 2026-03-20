@@ -80,6 +80,7 @@ in
     linuxHeaders
     llvmPackages.libclang
     nix
+    nodejs_22
     openssl
     pkg-config
     postgresql
@@ -108,6 +109,7 @@ in
       git
       jq
       nix
+      nodejs_22
       postgresql
       procps
       pkg-config

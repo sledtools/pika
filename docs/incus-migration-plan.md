@@ -856,37 +856,75 @@ Implement a new `pikaci` executor that can:
 
 Current `pika-build` proof status:
 
-- the first real Incus path now uses an env-gated per-lane selector
-  (`PIKACI_REMOTE_LINUX_VM_INCUS_LANES`) on top of `RemoteLinuxVmBackend`
-- the first working backend shape is explicitly Incus-native:
-  build staged workspace outputs on the host, sync the snapshot to `pika-build`, create one
-  ephemeral Incus VM, import the staged output closures into the guest Nix store, run the staged
-  wrapper, pull artifacts, and delete the instance
-- this path is currently validated against bounded follow-up lanes (`pika-actionlint`,
-  `pika-doc-contracts`) on `pika-build`
+- Incus now defaults to the mixed single-host fast path on `pika-build` when
+  `PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST` points at `pika-build` or `localhost`;
+  `PIKACI_REMOTE_LINUX_VM_BACKEND=microvm` remains the rollback escape hatch, and
+  `PIKACI_REMOTE_LINUX_VM_INCUS_LANES` still exists as a narrower debug selector
+- `transfer` remains an explicit fallback via `PIKACI_REMOTE_LINUX_VM_INCUS_MODE=transfer`, and
+  the staged runtime wrappers now keep working there instead of assuming the shared host-store
+  mount exists
+- the winning backend shape is still intentionally mixed-mode rather than a whole-workdir share:
+  sync the snapshot to `pika-build`, share the snapshot plus staged Linux Rust outputs into the
+  guest as readonly `virtiofs` mounts, keep `/artifacts`, `/cargo-home`, and `/cargo-target`
+  guest-local and writable, run the staged wrapper, collect artifacts, and delete the VM
 - the Incus executor now preserves the staged-job read-only workspace contract and persists remote
   backend phase metadata even when an Incus execution fails during runtime bring-up
 - running `pikaci` on `pika-build` itself still needs a localhost fast path instead of SSH for the
   remote work-dir seam, because self-SSH is not guaranteed there
-- the first explicit single-host shared-mount experiment is implemented behind
-  `PIKACI_REMOTE_LINUX_VM_INCUS_MODE=single_host_shared` and now passes on `pika-build`, but the
-  winning dataplane is intentionally mixed-mode rather than a whole-workdir share:
-  readonly `virtiofs` mounts for the synced snapshot and staged Linux Rust outputs, guest-local
-  writable `/artifacts`, `/cargo-home`, and `/cargo-target`, and no closure import in shared mode
-- on `pika-build`, `pika-actionlint` measured about `63s` total wall time via the transfer Incus
-  path and about `37s` total wall time via the shared single-host Incus path, which is a strong
-  enough result to show a plausible path to ~1 minute CI on this host
-- within the recorded remote-executor phases, the dominant Incus cost is still `prepare_runtime`,
-  but the shared mode cut that executor-local phase from about `53s` to about `27s`
-- the current same-host microVM comparison for `pika-actionlint` was about `116s` total wall
-  time, but that number is not yet a clean apples-to-apples executor dataplane comparison because
-  the run still pays older backend-specific prepare-node work outside the recorded remote phase
-  list, including the runner-flake path
-- `pika-doc-contracts` also passes on `pika-build` at about `60s` via transfer Incus and `32s`
-  via the shared single-host Incus path
-- the same on-host microVM comparison path now works again after fixing stale remote runner-flake
-  replacement and snapshot sync behavior, but a cleaner microVM apples-to-apples benchmark would
-  still be needed before making a stronger dataplane-only claim against it
+- validated successful Incus runs on `pika-build` now include:
+  `pika-actionlint`, `pika-doc-contracts`, `pika-rust-deps-hygiene`, `pre-merge-pika-rust`,
+  `pre-merge-notifications`, `pre-merge-fixture-rust`, `pre-merge-rmp`,
+  `pre-merge-pikachat-rust`, and the full `pre-merge-pika-followup` target
+  (`pika-android-test-compile`, `pikachat-build`, `pika-desktop-check`, `pika-actionlint`,
+  `pika-doc-contracts`, `pika-rust-deps-hygiene`)
+- `run.json` now records prepare-node timing outside the remote-execution seam, so comparisons can
+  separate total wall time from pre-execution prepare work and executor-local phases
+- current measurements on `pika-build` are:
+  - `pika-actionlint` transfer Incus: about `155s` wall, about `102s` pre-execution prepare, about
+    `51.7s` Incus `prepare_runtime`
+  - `pika-actionlint` fast-path Incus: about `32s` wall, about `7.9s` pre-execution prepare, about
+    `22.2s` Incus `prepare_runtime`
+  - `pika-actionlint` microVM: about `21s` wall, about `14.9s` pre-execution prepare, about `5.5s`
+    guest wait time, so the current smallest-lane comparison no longer supports the old claim that
+    Incus is simply faster than microVM on this host
+  - `pika-doc-contracts` transfer Incus: about `67s` wall, about `8.3s` pre-execution prepare,
+    about `56.3s` Incus `prepare_runtime`
+  - `pika-doc-contracts` fast-path Incus: about `40s` wall, about `8.9s` pre-execution prepare,
+    about `28.6s` Incus `prepare_runtime`
+  - `pika-rust-deps-hygiene` fast-path Incus: about `49s` wall, about `14.1s` pre-execution
+    prepare, about `31.7s` Incus `prepare_runtime`
+  - full `pre-merge-pika-followup` fast-path Incus target: about `95s` wall for six passing jobs,
+    with about `17.0s` total shared prepare time before execution and per-job Incus
+    `prepare_runtime` mostly in the `22s` to `28s` range
+- the old staged workspace-deps blockers are now fixed at the shared reduced-workspace layer:
+  the reduced `pika-core` and `rmp` lockfiles were stale, the reduced `pika-core` source omitted
+  `tests/support` and `config/channels.json`, notifications needed the same bindgen environment as
+  the other desktop-linked lanes, the localhost Incus fast path needed to repoint staged-output
+  symlinks plus expose the host `/nix/store` into the guest for staged runtime wrappers, and the
+  follow-up `cargo machete` check needed to ignore CI fixture manifests under `nix/ci`
+- the staged `pre-merge-rmp` parity blocker is now fixed end-to-end: the reduced RMP workspace now
+  mirrors the generated template dependency surface closely enough for offline Cargo vendor checks,
+  and both fast-path Incus and `transfer` fallback runs reach a passing `rmp-init-smoke-ci`
+- the current remaining blockers are no longer in the Incus executor dataplane:
+  - `pre-merge-agent-contracts` is still red, but it no longer belongs in the
+    Incus-parity bucket:
+    `cargo test -p pika-agent-microvm --lib` passes again, and the remaining
+    `agent_http_ensure_local` failure now reproduces locally before any guest
+    bootstrap because `pika-server` rejects the request with
+    `missing incus.endpoint; set request.incus.endpoint or PIKA_AGENT_INCUS_ENDPOINT`
+    while that deterministic test still only seeds the legacy mock
+    `PIKA_AGENT_MICROVM_SPAWNER_URL` path
+  - `pre-merge-pikachat-openclaw-e2e` still fails on Incus, but the blocker is
+    now precise:
+    the guest-local Node runtime works, the old `libsimdjson.so.29` and
+    `Cannot find module 'hasown'` crashes are gone, and the staged scenario now
+    proves the real remaining gap is account startup in the packaged gateway
+    path because repeated `pikachat --remote ... publish-kp` attempts fail with
+    `connect to daemon .../daemon.sock` `No such file or directory`
+- because of that, the current honest migration read is:
+  staged Linux on `pika-build` now defaults to Incus for the green branch targets, with two
+  explicit automatic-default exclusions still kept off the Incus path:
+  `pre-merge-agent-contracts` and `pre-merge-pikachat-openclaw-e2e`
 
 #### Phase C: Validate Performance And Developer Experience
 

@@ -143,11 +143,15 @@
       };
       ciPikaCoreWorkspaceSrc = ciLinuxPkgs.runCommand "ci-pika-core-workspace-src" { } ''
         mkdir -p "$out/cli"
+        mkdir -p "$out/config"
         mkdir -p "$out/crates"
         mkdir -p "$out/pikachat-openclaw/openclaw/extensions"
+        mkdir -p "$out/tests"
         cp ${./VERSION} "$out/VERSION"
         cp -R ${./cli}/. "$out/cli"
+        cp ${./config/channels.json} "$out/config/channels.json"
         cp -R ${ciPikaCoreRustSrc}/rust "$out/rust"
+        cp -R ${./tests/support} "$out/tests/support"
         chmod -R u+w "$out/rust"
         rm -f "$out/rust/.pikaci-review-trigger"
         cp -R ${./crates/hypernote-protocol} "$out/crates/hypernote-protocol"

@@ -239,13 +239,13 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 async function main(): Promise<void> {
-  await mcp.connect(new StdioServerTransport());
   await runtime.start();
+  await mcp.connect(new StdioServerTransport());
 }
 
 void main().catch((err) => {
   log(`[pikachat-claude] fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
-  process.exitCode = 1;
+  process.exit(1);
 });
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {

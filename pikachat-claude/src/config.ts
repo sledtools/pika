@@ -1,6 +1,14 @@
 import os from "node:os";
 import path from "node:path";
 
+const DEFAULT_MESSAGE_RELAYS = [
+  "wss://relay.primal.net",
+  "wss://nos.lol",
+  "wss://relay.damus.io",
+  "wss://us-east.nostr.pikachat.org",
+  "wss://eu.nostr.pikachat.org",
+];
+
 export type PikachatClaudeConfig = {
   relays: string[];
   stateDir?: string;
@@ -53,12 +61,17 @@ export function defaultClaudeChannelHome(): string {
   return path.join(os.homedir(), ".claude", "channels", "pikachat");
 }
 
+export function defaultPikachatRelays(): string[] {
+  return [...DEFAULT_MESSAGE_RELAYS];
+}
+
 export function resolvePikachatClaudeConfig(env: NodeJS.ProcessEnv = process.env): PikachatClaudeConfig {
   const channelHome = path.resolve(
     expandTilde(env.PIKACHAT_CLAUDE_HOME?.trim() || defaultClaudeChannelHome()),
   );
+  const configuredRelays = parseStringArray(env.PIKACHAT_RELAYS);
   return {
-    relays: parseStringArray(env.PIKACHAT_RELAYS),
+    relays: configuredRelays.length > 0 ? configuredRelays : defaultPikachatRelays(),
     stateDir: env.PIKACHAT_STATE_DIR?.trim() || undefined,
     daemonCmd: env.PIKACHAT_DAEMON_CMD?.trim() || env.PIKACHAT_SIDECAR_CMD?.trim() || undefined,
     daemonArgs: (() => {

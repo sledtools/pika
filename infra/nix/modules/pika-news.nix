@@ -20,6 +20,7 @@ let
     ${pkgs.findutils}/bin/find "$repo" -type d -exec ${pkgs.coreutils}/bin/chmod 2775 {} +
     ${pkgs.findutils}/bin/find "$repo" -type f -exec ${pkgs.coreutils}/bin/chmod ug+rw,o-rwx {} +
     if [ -d "$repo/.githooks" ]; then
+      ${pkgs.coreutils}/bin/chown -R ${serviceUser}:${serviceGroup} "$repo/.githooks"
       ${pkgs.findutils}/bin/find "$repo/.githooks" -type f -exec ${pkgs.coreutils}/bin/chmod 0775 {} +
     fi
     ${pkgs.coreutils}/bin/chmod 0664 "$repo"/HEAD "$repo"/config "$repo"/description 2>/dev/null || true

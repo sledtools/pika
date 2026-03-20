@@ -41,6 +41,10 @@ descs+=("Agent-native CLI for Pika messaging (one-shot + daemon mode).")
 
 titles+=("ph help")
 cmds+=("cargo run -q -p ph -- --help")
+descs+=("Thin forge control-plane client for branch CI, logs, merge, and close.")
+
+titles+=("ph help")
+cmds+=("cargo run -q -p ph -- --help")
 descs+=("Thin forge control-plane CLI for branch status, waiting, logs, merge, and close.")
 
 # --- Canonical run CLI ---

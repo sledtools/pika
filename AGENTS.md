@@ -1,6 +1,12 @@
 Run `./scripts/agent-brief` once at the start of each new agent session in this worktree (not every turn).
 Rerun only if asked, if you switch worktrees, or if the first run failed.
 
+For this project, canonical Git lives on `git.pikachat.org`. Prefer pushing branches to the forge
+remote and using `ph` for agent-facing forge actions like status, wait, logs, merge, and close.
+Do not silently rename remotes or rewrite a user's remote layout unless they explicitly ask; if the
+current remote setup is not forge-native, call it out and recommend using `origin` for
+`git@git.pikachat.org:pika.git`.
+
 ## Related codebases
 
 | Repo | Description |

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+phase_name="${1:-}"
+phase_kind="${2:-}"
+shift 2 || true
+
+if [[ -z "$phase_name" || -z "$phase_kind" || "${1:-}" != "--" ]]; then
+  echo "usage: ./scripts/apple-host-record-phase <phase-name> <phase-kind> -- <command...>" >&2
+  exit 2
+fi
+shift
+
+phase_file="${PIKACI_APPLE_PHASE_REPORT:-}"
+started_at="$(date +%s)"
+"$@"
+ended_at="$(date +%s)"
+duration_sec="$(( ended_at - started_at ))"
+
+if [[ -n "$phase_file" ]]; then
+  mkdir -p "$(dirname "$phase_file")"
+  printf '%s\t%s\t%s\n' "$phase_name" "$phase_kind" "$duration_sec" >> "$phase_file"
+fi

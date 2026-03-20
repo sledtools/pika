@@ -1446,7 +1446,11 @@ fn pikachat_apple_followup_jobs() -> Vec<JobSpec> {
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::HostShellCommand {
-                command: "cargo clippy -p pikachat -- -D warnings",
+                command: concat!(
+                    "./scripts/apple-host-record-phase ",
+                    "pikachat-followup.pikachat-clippy rust-live-clippy -- ",
+                    "cargo clippy -p pikachat -- -D warnings"
+                ),
             },
             staged_linux_rust_lane: None,
         },
@@ -1456,7 +1460,11 @@ fn pikachat_apple_followup_jobs() -> Vec<JobSpec> {
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::HostShellCommand {
-                command: "cargo clippy -p pikachat-sidecar -- -D warnings",
+                command: concat!(
+                    "./scripts/apple-host-record-phase ",
+                    "pikachat-followup.pikachat-sidecar-clippy rust-live-clippy -- ",
+                    "cargo clippy -p pikachat-sidecar -- -D warnings"
+                ),
             },
             staged_linux_rust_lane: None,
         },
@@ -1467,11 +1475,13 @@ fn pikachat_apple_followup_jobs() -> Vec<JobSpec> {
             writable_workspace: false,
             guest_command: GuestCommand::HostShellCommand {
                 command: concat!(
+                    "./scripts/apple-host-record-phase ",
+                    "pikachat-followup.pikachat-ui-e2e-local-desktop rust-prepared -- bash -lc '",
                     "if [[ -n \"${PIKACI_APPLE_RUST_PREPARED_MANIFEST:-}\" ]]; then ",
                     "./scripts/apple-host-run-prepared-entry pikahut-integration-deterministic ui_e2e_local_desktop --ignored --nocapture; ",
                     "else ",
                     "cargo test -p pikahut --test integration_deterministic ui_e2e_local_desktop -- --ignored --nocapture; ",
-                    "fi"
+                    "fi'"
                 ),
             },
             staged_linux_rust_lane: None,
@@ -1482,7 +1492,12 @@ fn pikachat_apple_followup_jobs() -> Vec<JobSpec> {
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::HostShellCommand {
-                command: "npx --yes tsx --test pikachat-openclaw/openclaw/extensions/pikachat-openclaw/src/channel-behavior.test.ts",
+                command: concat!(
+                    "./scripts/apple-host-record-phase ",
+                    "pikachat-followup.pikachat-openclaw-channel-behavior js-live -- ",
+                    "npx --yes tsx --test ",
+                    "pikachat-openclaw/openclaw/extensions/pikachat-openclaw/src/channel-behavior.test.ts"
+                ),
             },
             staged_linux_rust_lane: None,
         },

@@ -403,6 +403,7 @@ rust_manifest_file="${prepared_dir}/rust-prepared-manifest.json"
 artifacts_dir="${run_dir}/artifacts"
 logs_dir="${run_dir}/logs"
 remote_artifact_path="${run_dir}/artifact.tgz"
+bundle_phase_file="${artifacts_dir}/bundle_phases.tsv"
 prepare_status="unknown"
 prepare_duration_sec=0
 bundle_duration_sec=0
@@ -621,12 +622,14 @@ PY
       source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
     fi
     export PIKA_XCODE_INSTALL_PROMPT=0
-    export CARGO_TARGET_DIR="$shared_target_dir"
-    export PIKACI_APPLE_PREPARED_PROFILE="$desired_prepare_profile"
-    export PIKACI_APPLE_RUST_PREPARED_MANIFEST="$rust_manifest_file"
-    if [[ "$desired_prepare_profile" == "bundle" ]]; then
-      export PIKACI_IOS_UI_TEST_USE_PREPARED=1
-    fi
+  export CARGO_TARGET_DIR="$shared_target_dir"
+  export PIKACI_APPLE_PREPARED_PROFILE="$desired_prepare_profile"
+  export PIKACI_APPLE_RUST_PREPARED_MANIFEST="$rust_manifest_file"
+  export PIKACI_APPLE_PHASE_REPORT="$bundle_phase_file"
+  : >"$bundle_phase_file"
+  if [[ "$desired_prepare_profile" == "bundle" ]]; then
+    export PIKACI_IOS_UI_TEST_USE_PREPARED=1
+  fi
     nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c just "$just_recipe"
     bundle_exit=$?
     set -e
@@ -666,8 +669,9 @@ export resolved_remote_root command run_id bundle_ref resolved_commit keep_runs 
   lock_timeout_sec prepared_schema_version skip_source_import just_recipe desired_prepare_profile \
   run_dir bundle_path mirror_dir shared_target_dir lock_file prepared_root prepared_dir \
   prepared_worktree_dir prepared_ref prepared_marker prepare_phase_file rust_manifest_file \
-  artifacts_dir logs_dir remote_artifact_path prepare_status prepare_duration_sec bundle_duration_sec
-export -f run_locked_body
+  artifacts_dir logs_dir remote_artifact_path bundle_phase_file \
+  prepare_status prepare_duration_sec bundle_duration_sec
+export -f prepare_profile_rank prepare_profile_satisfies run_locked_body
 
 python3 - "$lock_file" "$lock_timeout_sec" <<'PY'
 import fcntl

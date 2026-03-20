@@ -423,31 +423,26 @@ prepare_profile_satisfies() {
 }
 
 mkdir -p "$artifacts_dir" "$logs_dir"
-exec > >(tee -a "${logs_dir}/remote.log") 2>&1
+run_locked_body() {
+  exec > >(tee -a "${logs_dir}/remote.log") 2>&1
 
-exec 9>"$lock_file"
-if ! lockf -s -t "$lock_timeout_sec" 9; then
-  echo "error: Apple host is busy; could not acquire run lock ${lock_file} within ${lock_timeout_sec}s" >&2
-  exit 75
-fi
+  cleanup() {
+    set +e
+    rm -f "$bundle_path"
+  }
+  trap cleanup EXIT
 
-cleanup() {
-  set +e
-  rm -f "$bundle_path"
-}
-trap cleanup EXIT
+  remote_q() {
+    printf "'%s'" "${1//\'/\'\"\'\"\'}"
+  }
 
-remote_q() {
-  printf "'%s'" "${1//\'/\'\"\'\"\'}"
-}
+  ensure_mirror() {
+    if [[ ! -d "$mirror_dir" ]]; then
+      git init --bare "$mirror_dir" >/dev/null
+    fi
+  }
 
-ensure_mirror() {
-  if [[ ! -d "$mirror_dir" ]]; then
-    git init --bare "$mirror_dir" >/dev/null
-  fi
-}
-
-ensure_prepared_checkout() {
+  ensure_prepared_checkout() {
   local should_prewarm=0
   local prepare_started_at
   local marker_schema_version=""
@@ -540,9 +535,9 @@ PREPARED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
   touch "$prepared_dir"
   prepare_duration_sec="$(( $(date +%s) - prepare_started_at ))"
-}
+  }
 
-prune_runs() {
+  prune_runs() {
   python3 - "$resolved_remote_root/runs" "$run_id" "$keep_runs" <<'PY'
 from pathlib import Path
 import shutil
@@ -560,9 +555,9 @@ for stale in run_dirs[keep:]:
         continue
     shutil.rmtree(stale, ignore_errors=True)
 PY
-}
+  }
 
-prune_prepared() {
+  prune_prepared() {
   python3 - "$mirror_dir" "$prepared_root" "$resolved_commit" "$keep_prepared" <<'PY'
 from pathlib import Path
 import shutil
@@ -599,72 +594,109 @@ for stale in prepared_dirs[keep:]:
         )
     shutil.rmtree(stale, ignore_errors=True)
 PY
+  }
+
+  ensure_prepared_checkout
+
+  printf '%s\n' "$prepare_status" > "${artifacts_dir}/prepare_status.txt"
+  printf '%s\n' "$prepare_duration_sec" > "${artifacts_dir}/prepare_duration_sec.txt"
+  printf '%s\n' "$prepared_worktree_dir" > "${artifacts_dir}/prepared_worktree_dir.txt"
+  printf '%s\n' "$desired_prepare_profile" > "${artifacts_dir}/prepare_profile.txt"
+  printf '%s\n' "$resolved_commit" > "${artifacts_dir}/revision.txt"
+  printf '%s\n' "$command" > "${artifacts_dir}/command.txt"
+  if [[ -f "$prepare_phase_file" ]]; then
+    cp "$prepare_phase_file" "${artifacts_dir}/prepare_phases.tsv"
+  fi
+  if [[ -f "$rust_manifest_file" ]]; then
+    cp "$rust_manifest_file" "${artifacts_dir}/rust_prepared_manifest.json"
+  fi
+
+  if [[ "$command" == "run" ]]; then
+    cd "$prepared_worktree_dir"
+    bundle_started_at="$(date +%s)"
+    bundle_exit=0
+    set +e
+    if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
+      # shellcheck disable=SC1091
+      source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+    fi
+    export PIKA_XCODE_INSTALL_PROMPT=0
+    export CARGO_TARGET_DIR="$shared_target_dir"
+    export PIKACI_APPLE_PREPARED_PROFILE="$desired_prepare_profile"
+    export PIKACI_APPLE_RUST_PREPARED_MANIFEST="$rust_manifest_file"
+    if [[ "$desired_prepare_profile" == "bundle" ]]; then
+      export PIKACI_IOS_UI_TEST_USE_PREPARED=1
+    fi
+    nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c just "$just_recipe"
+    bundle_exit=$?
+    set -e
+    bundle_duration_sec="$(( $(date +%s) - bundle_started_at ))"
+    printf '%s\n' "just --unstable ${just_recipe}" > "${artifacts_dir}/bundle-command.txt"
+    printf '%s\n' "$bundle_duration_sec" > "${artifacts_dir}/bundle_duration_sec.txt"
+    printf '%s\n' "$bundle_exit" > "${artifacts_dir}/exit_code.txt"
+  else
+    bundle_exit=0
+    printf '%s\n' "prepare-only" > "${artifacts_dir}/bundle-command.txt"
+    printf '%s\n' "$bundle_duration_sec" > "${artifacts_dir}/bundle_duration_sec.txt"
+    printf '%s\n' "$bundle_exit" > "${artifacts_dir}/exit_code.txt"
+  fi
+
+  {
+    sw_vers || true
+    uname -a
+    df -h /
+    du -sh "$shared_target_dir" 2>/dev/null || true
+    du -sh "${prepared_worktree_dir}/.pikaci" 2>/dev/null || true
+    du -sh "${prepared_worktree_dir}/ios/build" 2>/dev/null || true
+  } > "${artifacts_dir}/system.txt"
+
+  if [[ -d "${prepared_worktree_dir}/ios/build/Logs/Test" ]]; then
+    tar -C "${prepared_worktree_dir}/ios/build/Logs" -czf "${artifacts_dir}/ios-test-logs.tgz" Test
+  fi
+
+  tar -C "$run_dir" -czf "$remote_artifact_path" artifacts logs
+
+  prune_runs
+  prune_prepared
+
+  exit "$bundle_exit"
 }
 
-ensure_prepared_checkout
+export resolved_remote_root command run_id bundle_ref resolved_commit keep_runs keep_prepared \
+  lock_timeout_sec prepared_schema_version skip_source_import just_recipe desired_prepare_profile \
+  run_dir bundle_path mirror_dir shared_target_dir lock_file prepared_root prepared_dir \
+  prepared_worktree_dir prepared_ref prepared_marker prepare_phase_file rust_manifest_file \
+  artifacts_dir logs_dir remote_artifact_path prepare_status prepare_duration_sec bundle_duration_sec
+export -f run_locked_body
 
-printf '%s\n' "$prepare_status" > "${artifacts_dir}/prepare_status.txt"
-printf '%s\n' "$prepare_duration_sec" > "${artifacts_dir}/prepare_duration_sec.txt"
-printf '%s\n' "$prepared_worktree_dir" > "${artifacts_dir}/prepared_worktree_dir.txt"
-printf '%s\n' "$desired_prepare_profile" > "${artifacts_dir}/prepare_profile.txt"
-printf '%s\n' "$resolved_commit" > "${artifacts_dir}/revision.txt"
-printf '%s\n' "$command" > "${artifacts_dir}/command.txt"
-if [[ -f "$prepare_phase_file" ]]; then
-  cp "$prepare_phase_file" "${artifacts_dir}/prepare_phases.tsv"
-fi
-if [[ -f "$rust_manifest_file" ]]; then
-  cp "$rust_manifest_file" "${artifacts_dir}/rust_prepared_manifest.json"
-fi
+python3 - "$lock_file" "$lock_timeout_sec" <<'PY'
+import fcntl
+import os
+import subprocess
+import sys
+import time
 
-if [[ "$command" == "run" ]]; then
-  cd "$prepared_worktree_dir"
-  bundle_started_at="$(date +%s)"
-  bundle_exit=0
-  set +e
-  if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
-    # shellcheck disable=SC1091
-    source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-  fi
-  export PIKA_XCODE_INSTALL_PROMPT=0
-  export CARGO_TARGET_DIR="$shared_target_dir"
-  export PIKACI_APPLE_PREPARED_PROFILE="$desired_prepare_profile"
-  export PIKACI_APPLE_RUST_PREPARED_MANIFEST="$rust_manifest_file"
-  if [[ "$desired_prepare_profile" == "bundle" ]]; then
-    export PIKACI_IOS_UI_TEST_USE_PREPARED=1
-  fi
-  nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c just "$just_recipe"
-  bundle_exit=$?
-  set -e
-  bundle_duration_sec="$(( $(date +%s) - bundle_started_at ))"
-  printf '%s\n' "just --unstable ${just_recipe}" > "${artifacts_dir}/bundle-command.txt"
-  printf '%s\n' "$bundle_duration_sec" > "${artifacts_dir}/bundle_duration_sec.txt"
-  printf '%s\n' "$bundle_exit" > "${artifacts_dir}/exit_code.txt"
-else
-  bundle_exit=0
-  printf '%s\n' "prepare-only" > "${artifacts_dir}/bundle-command.txt"
-  printf '%s\n' "$bundle_duration_sec" > "${artifacts_dir}/bundle_duration_sec.txt"
-  printf '%s\n' "$bundle_exit" > "${artifacts_dir}/exit_code.txt"
-fi
+lock_file = sys.argv[1]
+timeout_sec = int(sys.argv[2])
+lock_fd = os.open(lock_file, os.O_RDWR | os.O_CREAT, 0o644)
+deadline = time.time() + timeout_sec
 
-{
-  sw_vers || true
-  uname -a
-  df -h /
-  du -sh "$shared_target_dir" 2>/dev/null || true
-  du -sh "${prepared_worktree_dir}/.pikaci" 2>/dev/null || true
-  du -sh "${prepared_worktree_dir}/ios/build" 2>/dev/null || true
-} > "${artifacts_dir}/system.txt"
+while True:
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        break
+    except BlockingIOError:
+        if time.time() >= deadline:
+            print(
+                f"error: Apple host is busy; could not acquire run lock {lock_file} within {timeout_sec}s",
+                file=sys.stderr,
+            )
+            sys.exit(75)
+        time.sleep(1)
 
-if [[ -d "${prepared_worktree_dir}/ios/build/Logs/Test" ]]; then
-  tar -C "${prepared_worktree_dir}/ios/build/Logs" -czf "${artifacts_dir}/ios-test-logs.tgz" Test
-fi
-
-tar -C "$run_dir" -czf "$remote_artifact_path" artifacts logs
-
-prune_runs
-prune_prepared
-
-exit "$bundle_exit"
+proc = subprocess.run(["bash", "-lc", "run_locked_body"], close_fds=True)
+sys.exit(proc.returncode)
+PY
 REMOTE_RUN
   remote_exit_local=${PIPESTATUS[0]}
   set -e

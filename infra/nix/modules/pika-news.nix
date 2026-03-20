@@ -120,6 +120,7 @@ in
       Type = "simple";
       User = serviceUser;
       Group = serviceGroup;
+      PermissionsStartOnly = true;
       WorkingDirectory = serviceStateDir;
       EnvironmentFile = [ config.sops.templates."pika-news-env".path ];
       ExecStartPre = [ prepareCanonicalRepo ];

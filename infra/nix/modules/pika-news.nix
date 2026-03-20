@@ -16,7 +16,7 @@ let
       exit 0
     fi
 
-    ${pkgs.coreutils}/bin/chown -R ${serviceUser}:${serviceGroup} "$repo"
+    ${pkgs.coreutils}/bin/chown -R ${gitUser}:${serviceGroup} "$repo"
     ${pkgs.findutils}/bin/find "$repo" -type d -exec ${pkgs.coreutils}/bin/chmod 2775 {} +
     ${pkgs.findutils}/bin/find "$repo" -type f -exec ${pkgs.coreutils}/bin/chmod ug+rw,o-rwx {} +
     if [ -d "$repo/.githooks" ]; then

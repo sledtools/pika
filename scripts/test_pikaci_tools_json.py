@@ -144,6 +144,55 @@ class PikaciToolsJsonTests(unittest.TestCase):
             )
             self.assertIn("host failure details", completed.stderr)
 
+    def test_pikaci_ci_run_degrades_cleanly_when_log_metadata_lookup_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            fake_bin = tmp_path / "pikaci"
+            fake_bin.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env python3
+                    import json
+                    import sys
+
+                    args = sys.argv[1:]
+                    if args == ["run", "fake-target", "--output", "json"]:
+                        print(json.dumps({
+                            "run_id": "run-2",
+                            "status": "failed",
+                            "jobs": [],
+                        }))
+                        raise SystemExit(1)
+                    if args == ["logs", "run-2", "--metadata-json"]:
+                        print("not-json")
+                        raise SystemExit(1)
+                    raise SystemExit(f"unexpected args: {args}")
+                    """
+                )
+            )
+            fake_bin.chmod(fake_bin.stat().st_mode | stat.S_IXUSR)
+
+            completed = subprocess.run(
+                ["bash", str(ROOT / "scripts/pikaci-ci-run.sh"), "fake-target"],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                env={
+                    **os.environ,
+                    "PIKACI_BIN": str(fake_bin),
+                    "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY": "/tmp/pikaci-fulfill-prepared-output",
+                    "PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY": "/tmp/pikaci-launch-fulfill-prepared-output",
+                },
+            )
+
+            self.assertEqual(completed.returncode, 1)
+            self.assertIn('"run_id": "run-2"', completed.stdout)
+            self.assertIn(
+                "warning: failed to load pikaci log metadata for run=run-2",
+                completed.stderr,
+            )
+            self.assertNotIn("Traceback", completed.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

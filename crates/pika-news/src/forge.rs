@@ -2,13 +2,16 @@ use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::io::Write;
+use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context};
+use pikaci::{RunLifecycleEvent, RunStatus};
 use tempfile::TempDir;
 
 use crate::config::ForgeRepoConfig;
@@ -40,9 +43,20 @@ pub struct CloseOutcome {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CiExecutionResult {
     pub success: bool,
     pub log: String,
+    pub pikaci_run_id: Option<String>,
+    pub pikaci_target_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum CiExecutionEvent {
+    PikaciRunStarted {
+        run_id: String,
+        target_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -262,39 +276,105 @@ pub fn close_branch(
     })
 }
 
-pub fn run_ci_command_for_head_with_heartbeat<F>(
+pub fn run_ci_command_for_head_with_heartbeat<F, G>(
     repo: &ForgeRepoConfig,
     head_sha: &str,
     command: &[String],
     heartbeat_interval: Duration,
     mut heartbeat: F,
+    mut on_event: G,
 ) -> anyhow::Result<CiExecutionResult>
 where
     F: FnMut() -> anyhow::Result<()>,
+    G: FnMut(CiExecutionEvent) -> anyhow::Result<()>,
 {
     if command.is_empty() {
         bail!("ci command is empty");
     }
+    let structured_pikaci_target = staged_pikaci_target_from_command(command);
+    let effective_command = if structured_pikaci_target.is_some() {
+        ensure_structured_pikaci_output(command)
+    } else {
+        command.to_vec()
+    };
     let worktree = temp_worktree(repo, head_sha)?;
     let ci_result = (|| {
-        let stdout_path = worktree.path().join(".pika-ci.stdout.log");
-        let stderr_path = worktree.path().join(".pika-ci.stderr.log");
-        let stdout = fs::File::create(&stdout_path)
-            .with_context(|| format!("create ci stdout log {}", stdout_path.display()))?;
-        let stderr = fs::File::create(&stderr_path)
-            .with_context(|| format!("create ci stderr log {}", stderr_path.display()))?;
-        let mut cmd = Command::new(&command[0]);
-        cmd.args(&command[1..])
+        let mut cmd = Command::new(&effective_command[0]);
+        cmd.args(&effective_command[1..])
             .current_dir(worktree.path())
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr));
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         let mut child = cmd
             .spawn()
             .with_context(|| format!("run ci command in {}", worktree.path().display()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("missing ci stdout pipe"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow!("missing ci stderr pipe"))?;
+        let stdout_log = Arc::new(Mutex::new(String::new()));
+        let stderr_log = Arc::new(Mutex::new(String::new()));
+        let (event_tx, event_rx) = mpsc::channel::<CiExecutionEvent>();
+        let stdout_log_for_thread = Arc::clone(&stdout_log);
+        let structured_pikaci_target_for_stdout = structured_pikaci_target.clone();
+        let stdout_reader = thread::spawn(move || -> anyhow::Result<()> {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                let line = line.context("read ci stdout line")?;
+                let rendered = render_pikaci_stdout_line(
+                    &line,
+                    structured_pikaci_target_for_stdout.as_deref(),
+                );
+                if let Some(event) = parse_pikaci_execution_event(&line) {
+                    let _ = event_tx.send(event);
+                }
+                let mut log = stdout_log_for_thread
+                    .lock()
+                    .map_err(|_| anyhow!("lock ci stdout log"))?;
+                log.push_str(&rendered);
+                log.push('\n');
+            }
+            Ok(())
+        });
+        let stderr_log_for_thread = Arc::clone(&stderr_log);
+        let stderr_reader = thread::spawn(move || -> anyhow::Result<()> {
+            let mut raw = String::new();
+            BufReader::new(stderr)
+                .read_to_string(&mut raw)
+                .context("read ci stderr")?;
+            let mut log = stderr_log_for_thread
+                .lock()
+                .map_err(|_| anyhow!("lock ci stderr log"))?;
+            log.push_str(&raw);
+            Ok(())
+        });
+
+        let mut pikaci_run_id = None;
+        let mut pikaci_target_id = structured_pikaci_target;
         heartbeat()?;
         let poll_interval = Duration::from_millis(250);
         let mut next_heartbeat = Instant::now() + heartbeat_interval;
         let status = loop {
+            while let Ok(event) = event_rx.try_recv() {
+                match event {
+                    CiExecutionEvent::PikaciRunStarted { run_id, target_id } => {
+                        pikaci_run_id = Some(run_id.clone());
+                        if target_id.is_some() {
+                            pikaci_target_id = target_id.clone();
+                        }
+                        if let Err(err) =
+                            on_event(CiExecutionEvent::PikaciRunStarted { run_id, target_id })
+                        {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            return Err(err);
+                        }
+                    }
+                }
+            }
             let polled = child
                 .try_wait()
                 .with_context(|| format!("poll ci command in {}", worktree.path().display()));
@@ -317,20 +397,42 @@ where
             }
             thread::sleep(poll_interval);
         };
-        let stdout_bytes = fs::read(&stdout_path)
-            .with_context(|| format!("read ci stdout log {}", stdout_path.display()))?;
-        let stderr_bytes = fs::read(&stderr_path)
-            .with_context(|| format!("read ci stderr log {}", stderr_path.display()))?;
-        let mut log = String::from_utf8_lossy(&stdout_bytes).into_owned();
-        if !stderr_bytes.is_empty() {
+        while let Ok(event) = event_rx.try_recv() {
+            match event {
+                CiExecutionEvent::PikaciRunStarted { run_id, target_id } => {
+                    pikaci_run_id = Some(run_id.clone());
+                    if target_id.is_some() {
+                        pikaci_target_id = target_id.clone();
+                    }
+                    on_event(CiExecutionEvent::PikaciRunStarted { run_id, target_id })?;
+                }
+            }
+        }
+        stdout_reader
+            .join()
+            .map_err(|_| anyhow!("join ci stdout reader"))??;
+        stderr_reader
+            .join()
+            .map_err(|_| anyhow!("join ci stderr reader"))??;
+        let mut log = stdout_log
+            .lock()
+            .map_err(|_| anyhow!("lock ci stdout log"))?
+            .clone();
+        let stderr_log = stderr_log
+            .lock()
+            .map_err(|_| anyhow!("lock ci stderr log"))?
+            .clone();
+        if !stderr_log.is_empty() {
             if !log.is_empty() && !log.ends_with('\n') {
                 log.push('\n');
             }
-            log.push_str(&String::from_utf8_lossy(&stderr_bytes));
+            log.push_str(&stderr_log);
         }
         Ok(CiExecutionResult {
             success: status.success(),
             log,
+            pikaci_run_id,
+            pikaci_target_id,
         })
     })();
     let cleanup_result = remove_temp_worktree(repo, worktree);
@@ -750,15 +852,116 @@ fn some_if_non_empty(input: &str) -> Option<String> {
     }
 }
 
+fn staged_pikaci_target_from_command(command: &[String]) -> Option<String> {
+    let executable = command.first()?;
+    let file_name = Path::new(executable).file_name()?.to_str()?;
+    if file_name != "pikaci-staged-linux-remote.sh" {
+        return None;
+    }
+    if command.get(1).map(String::as_str) != Some("run") {
+        return None;
+    }
+    command.get(2).cloned()
+}
+
+fn ensure_structured_pikaci_output(command: &[String]) -> Vec<String> {
+    if command.iter().any(|arg| arg == "--output") {
+        return command.to_vec();
+    }
+    let mut structured = command.to_vec();
+    structured.push("--output".to_string());
+    structured.push("jsonl".to_string());
+    structured
+}
+
+fn parse_pikaci_execution_event(line: &str) -> Option<CiExecutionEvent> {
+    match serde_json::from_str::<RunLifecycleEvent>(line).ok()? {
+        RunLifecycleEvent::RunStarted {
+            run_id, target_id, ..
+        } => Some(CiExecutionEvent::PikaciRunStarted { run_id, target_id }),
+        _ => None,
+    }
+}
+
+fn render_pikaci_stdout_line(line: &str, default_target_id: Option<&str>) -> String {
+    let Ok(event) = serde_json::from_str::<RunLifecycleEvent>(line) else {
+        return line.to_string();
+    };
+    match event {
+        RunLifecycleEvent::RunStarted {
+            run_id,
+            target_id,
+            target_description,
+            ..
+        } => {
+            let target = target_id
+                .or_else(|| default_target_id.map(str::to_string))
+                .unwrap_or_else(|| "unknown-target".to_string());
+            match target_description {
+                Some(description) => {
+                    format!("[pikaci] run started: {run_id} · {target} · {description}")
+                }
+                None => format!("[pikaci] run started: {run_id} · {target}"),
+            }
+        }
+        RunLifecycleEvent::JobStarted { job, .. } => {
+            format!("[pikaci] job started: {} · {}", job.id, job.description)
+        }
+        RunLifecycleEvent::JobFinished { job, .. } => {
+            let mut line = format!(
+                "[pikaci] job finished: {} · status={}",
+                job.id,
+                render_run_status(job.status)
+            );
+            if let Some(message) = job
+                .message
+                .as_deref()
+                .filter(|message| !message.trim().is_empty())
+            {
+                line.push_str(" · ");
+                line.push_str(message.trim());
+            }
+            line
+        }
+        RunLifecycleEvent::RunFinished { run } => {
+            let mut line = format!(
+                "[pikaci] run finished: {} · status={}",
+                run.run_id,
+                render_run_status(run.status)
+            );
+            if let Some(message) = run
+                .message
+                .as_deref()
+                .filter(|message| !message.trim().is_empty())
+            {
+                line.push_str(" · ");
+                line.push_str(message.trim());
+            }
+            line
+        }
+    }
+}
+
+fn render_run_status(status: RunStatus) -> &'static str {
+    match status {
+        RunStatus::Running => "running",
+        RunStatus::Passed => "passed",
+        RunStatus::Failed => "failed",
+        RunStatus::Skipped => "skipped",
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::process::Command;
     use std::time::Duration;
 
     use super::{
         close_branch, create_merge_commit, current_branch_head, inspect_mirror, install_hooks,
-        merge_branch, publish_merge_refs, resolve_hook_tool,
+        merge_branch, publish_merge_refs, render_pikaci_stdout_line, resolve_hook_tool,
         run_ci_command_for_head_with_heartbeat, write_merge_tree,
     };
     use crate::config::ForgeRepoConfig;
@@ -1035,11 +1238,100 @@ mod tests {
             &["/definitely/missing/pika-ci-command".to_string()],
             Duration::from_secs(1),
             || Ok(()),
+            |_| Ok(()),
         )
         .expect_err("ci command spawn should fail");
 
         assert!(err.to_string().contains("run ci command"));
         assert_eq!(worktree_count(&forge_repo), before);
+    }
+
+    #[test]
+    fn staged_pikaci_lane_reports_run_id_and_human_log_summary() {
+        let (_root, forge_repo, seed) = setup_repo();
+        let scripts_dir = seed.join("scripts");
+        fs::create_dir_all(&scripts_dir).expect("create scripts dir");
+        let wrapper_path = scripts_dir.join("pikaci-staged-linux-remote.sh");
+        fs::write(
+            &wrapper_path,
+            concat!(
+                "#!/usr/bin/env bash\n",
+                "set -euo pipefail\n",
+                "if [[ \"$1\" != \"run\" || \"$2\" != \"pre-merge-pika-rust\" || \"$3\" != \"--output\" || \"$4\" != \"jsonl\" ]]; then\n",
+                "  echo \"unexpected args: $*\" >&2\n",
+                "  exit 99\n",
+                "fi\n",
+                "cat <<'EOF'\n",
+                "{\"event\":\"run_started\",\"run_id\":\"pikaci-run-123\",\"created_at\":\"2026-03-19T00:00:00Z\",\"target_id\":\"pre-merge-pika-rust\",\"target_description\":\"Run staged pika rust\"}\n",
+                "{\"event\":\"job_started\",\"run_id\":\"pikaci-run-123\",\"job\":{\"id\":\"job-one\",\"description\":\"job one\",\"status\":\"running\",\"executor\":\"remote_linux_vm\",\"timeout_secs\":30,\"host_log_path\":\"/tmp/host.log\",\"guest_log_path\":\"/tmp/guest.log\",\"started_at\":\"2026-03-19T00:00:01Z\",\"finished_at\":null,\"exit_code\":null,\"message\":null,\"remote_linux_vm_execution\":null}}\n",
+                "{\"event\":\"job_finished\",\"run_id\":\"pikaci-run-123\",\"job\":{\"id\":\"job-one\",\"description\":\"job one\",\"status\":\"passed\",\"executor\":\"remote_linux_vm\",\"timeout_secs\":30,\"host_log_path\":\"/tmp/host.log\",\"guest_log_path\":\"/tmp/guest.log\",\"started_at\":\"2026-03-19T00:00:01Z\",\"finished_at\":\"2026-03-19T00:00:02Z\",\"exit_code\":0,\"message\":null,\"remote_linux_vm_execution\":null}}\n",
+                "{\"event\":\"run_finished\",\"run\":{\"run_id\":\"pikaci-run-123\",\"status\":\"passed\",\"rerun_of\":null,\"target_id\":\"pre-merge-pika-rust\",\"target_description\":\"Run staged pika rust\",\"source_root\":\"/tmp/source\",\"snapshot_dir\":\"/tmp/snapshot\",\"git_head\":null,\"git_dirty\":null,\"created_at\":\"2026-03-19T00:00:00Z\",\"finished_at\":\"2026-03-19T00:00:02Z\",\"plan_path\":null,\"prepared_outputs_path\":null,\"prepared_output_consumer\":null,\"prepared_output_mode\":null,\"prepared_output_invocation_mode\":null,\"prepared_output_invocation_wrapper_program\":null,\"prepared_output_launcher_transport_mode\":null,\"prepared_output_launcher_transport_program\":null,\"prepared_output_launcher_transport_host\":null,\"prepared_output_launcher_transport_remote_launcher_program\":null,\"prepared_output_launcher_transport_remote_helper_program\":null,\"prepared_output_launcher_transport_remote_work_dir\":null,\"changed_files\":[],\"filters\":[],\"message\":null,\"jobs\":[]}}\n",
+                "EOF\n"
+            ),
+        )
+        .expect("write fake wrapper");
+        let mut perms = fs::metadata(&wrapper_path)
+            .expect("wrapper metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&wrapper_path, perms).expect("set wrapper perms");
+        git(&seed, &["add", "scripts/pikaci-staged-linux-remote.sh"]);
+        git(&seed, &["commit", "-m", "add fake staged wrapper"]);
+        git(&seed, &["push", "origin", "master"]);
+
+        let head_sha = current_branch_head(&forge_repo, "master")
+            .expect("resolve master head")
+            .expect("master head");
+        let mut started_run_ids = Vec::new();
+        let result = run_ci_command_for_head_with_heartbeat(
+            &forge_repo,
+            &head_sha,
+            &[
+                "./scripts/pikaci-staged-linux-remote.sh".to_string(),
+                "run".to_string(),
+                "pre-merge-pika-rust".to_string(),
+            ],
+            Duration::from_secs(1),
+            || Ok(()),
+            |event| {
+                match event {
+                    super::CiExecutionEvent::PikaciRunStarted { run_id, .. } => {
+                        started_run_ids.push(run_id);
+                    }
+                }
+                Ok(())
+            },
+        )
+        .expect("run structured staged lane");
+
+        assert!(result.success);
+        assert_eq!(result.pikaci_run_id.as_deref(), Some("pikaci-run-123"));
+        assert_eq!(
+            result.pikaci_target_id.as_deref(),
+            Some("pre-merge-pika-rust")
+        );
+        assert_eq!(started_run_ids, vec!["pikaci-run-123".to_string()]);
+        assert!(result.log.contains("[pikaci] run started: pikaci-run-123"));
+        assert!(result
+            .log
+            .contains("[pikaci] job finished: job-one · status=passed"));
+    }
+
+    #[test]
+    fn structured_pikaci_failure_log_keeps_job_and_run_messages() {
+        let job_line = render_pikaci_stdout_line(
+            r#"{"event":"job_finished","run_id":"pikaci-run-123","job":{"id":"job-one","description":"job one","status":"failed","executor":"remote_linux_vm","timeout_secs":30,"host_log_path":"/tmp/host.log","guest_log_path":"/tmp/guest.log","started_at":"2026-03-19T00:00:01Z","finished_at":"2026-03-19T00:00:02Z","exit_code":1,"message":"cargo test failed in crate pika_core","remote_linux_vm_execution":null}}"#,
+            Some("pre-merge-pika-rust"),
+        );
+        assert!(job_line.contains("status=failed"));
+        assert!(job_line.contains("cargo test failed in crate pika_core"));
+
+        let run_line = render_pikaci_stdout_line(
+            r#"{"event":"run_finished","run":{"run_id":"pikaci-run-123","status":"failed","rerun_of":null,"target_id":"pre-merge-pika-rust","target_description":"Run staged pika rust","source_root":"/tmp/source","snapshot_dir":"/tmp/snapshot","git_head":null,"git_dirty":null,"created_at":"2026-03-19T00:00:00Z","finished_at":"2026-03-19T00:00:02Z","plan_path":null,"prepared_outputs_path":null,"prepared_output_consumer":null,"prepared_output_mode":null,"prepared_output_invocation_mode":null,"prepared_output_invocation_wrapper_program":null,"prepared_output_launcher_transport_mode":null,"prepared_output_launcher_transport_program":null,"prepared_output_launcher_transport_host":null,"prepared_output_launcher_transport_remote_launcher_program":null,"prepared_output_launcher_transport_remote_helper_program":null,"prepared_output_launcher_transport_remote_work_dir":null,"changed_files":[],"filters":[],"message":"prepared-output helper exited 1","jobs":[]}}"#,
+            Some("pre-merge-pika-rust"),
+        );
+        assert!(run_line.contains("status=failed"));
+        assert!(run_line.contains("prepared-output helper exited 1"));
     }
 
     #[test]

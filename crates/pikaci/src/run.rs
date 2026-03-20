@@ -133,6 +133,7 @@ pub fn run_jobs_with_metadata_and_reporter(
     reporter: &mut RunLifecycleReporter<'_>,
 ) -> anyhow::Result<RunRecord> {
     let prepared = prepare_run(options)?;
+    let mut early_run_record = initialize_running_run_record(&prepared, options, &metadata)?;
     reporter(RunLifecycleEvent::RunStarted {
         run_id: prepared.run_id.clone(),
         created_at: prepared.created_at.clone(),
@@ -140,9 +141,12 @@ pub fn run_jobs_with_metadata_and_reporter(
         target_id: metadata.target_id.clone(),
         target_description: metadata.target_description.clone(),
     })?;
-    run_host_setup_commands(jobs, &options.source_root, &prepared.run_dir)?;
-    let snapshot = prepare_snapshot_source(jobs, options, &prepared, &metadata)?;
-    run_jobs_against_snapshot(jobs, &prepared, &snapshot, metadata, Some(reporter))
+    let run = (|| {
+        run_host_setup_commands(jobs, &options.source_root, &prepared.run_dir)?;
+        let snapshot = prepare_snapshot_source(jobs, options, &prepared, &metadata)?;
+        run_jobs_against_snapshot(jobs, &prepared, &snapshot, metadata, Some(reporter))
+    })();
+    finish_early_run_failure(run, &prepared, &mut early_run_record, reporter)
 }
 
 fn snapshot_profile_for_jobs(jobs: &[JobSpec]) -> SnapshotProfile {
@@ -206,6 +210,7 @@ pub fn rerun_jobs_with_metadata_and_reporter(
     }
 
     let prepared = prepare_run(options)?;
+    let mut early_run_record = initialize_running_run_record(&prepared, options, &metadata)?;
     reporter(RunLifecycleEvent::RunStarted {
         run_id: prepared.run_id.clone(),
         created_at: prepared.created_at.clone(),
@@ -213,7 +218,67 @@ pub fn rerun_jobs_with_metadata_and_reporter(
         target_id: metadata.target_id.clone(),
         target_description: metadata.target_description.clone(),
     })?;
-    run_jobs_against_snapshot(jobs, &prepared, &snapshot, metadata, Some(reporter))
+    let run = run_jobs_against_snapshot(jobs, &prepared, &snapshot, metadata, Some(reporter));
+    finish_early_run_failure(run, &prepared, &mut early_run_record, reporter)
+}
+
+fn initialize_running_run_record(
+    prepared: &PreparedRun,
+    options: &RunOptions,
+    metadata: &RunMetadata,
+) -> anyhow::Result<RunRecord> {
+    let run_record = RunRecord {
+        run_id: prepared.run_id.clone(),
+        status: RunStatus::Running,
+        rerun_of: metadata.rerun_of.clone(),
+        target_id: metadata.target_id.clone(),
+        target_description: metadata.target_description.clone(),
+        source_root: options.source_root.display().to_string(),
+        snapshot_dir: String::new(),
+        git_head: git_head(&options.source_root),
+        git_dirty: git_dirty(&options.source_root),
+        created_at: prepared.created_at.clone(),
+        finished_at: None,
+        plan_path: None,
+        prepared_outputs_path: None,
+        prepared_output_consumer: None,
+        prepared_output_mode: None,
+        prepared_output_invocation_mode: None,
+        prepared_output_invocation_wrapper_program: None,
+        prepared_output_launcher_transport_mode: None,
+        prepared_output_launcher_transport_program: None,
+        prepared_output_launcher_transport_host: None,
+        prepared_output_launcher_transport_remote_launcher_program: None,
+        prepared_output_launcher_transport_remote_helper_program: None,
+        prepared_output_launcher_transport_remote_work_dir: None,
+        changed_files: metadata.changed_files.clone(),
+        filters: metadata.filters.clone(),
+        message: metadata.message.clone(),
+        jobs: Vec::new(),
+    };
+    write_run_record(&prepared.run_dir, &run_record)?;
+    Ok(run_record)
+}
+
+fn finish_early_run_failure(
+    run: anyhow::Result<RunRecord>,
+    prepared: &PreparedRun,
+    early_run_record: &mut RunRecord,
+    reporter: &mut RunLifecycleReporter<'_>,
+) -> anyhow::Result<RunRecord> {
+    match run {
+        Ok(run) => Ok(run),
+        Err(err) => {
+            early_run_record.status = RunStatus::Failed;
+            early_run_record.finished_at = Some(Utc::now().to_rfc3339());
+            early_run_record.message = Some(format!("{err:#}"));
+            write_run_record(&prepared.run_dir, early_run_record)?;
+            reporter(RunLifecycleEvent::RunFinished {
+                run: Box::new(early_run_record.clone()),
+            })?;
+            Ok(early_run_record.clone())
+        }
+    }
 }
 
 fn run_jobs_against_snapshot(
@@ -516,14 +581,6 @@ pub fn record_skipped_run_with_reporter(
     let created_at = Utc::now().to_rfc3339();
     let run_dir = options.state_root.join("runs").join(&run_id);
     fs::create_dir_all(&run_dir).with_context(|| format!("create {}", run_dir.display()))?;
-    reporter(RunLifecycleEvent::RunStarted {
-        run_id: run_id.clone(),
-        created_at: created_at.clone(),
-        rerun_of: metadata.rerun_of.clone(),
-        target_id: metadata.target_id.clone(),
-        target_description: metadata.target_description.clone(),
-    })?;
-
     let run_record = RunRecord {
         run_id,
         status: RunStatus::Skipped,
@@ -535,7 +592,7 @@ pub fn record_skipped_run_with_reporter(
         git_head: git_head(&options.source_root),
         git_dirty: git_dirty(&options.source_root),
         created_at: created_at.clone(),
-        finished_at: Some(created_at),
+        finished_at: Some(created_at.clone()),
         plan_path: None,
         prepared_outputs_path: None,
         prepared_output_consumer: None,
@@ -554,6 +611,13 @@ pub fn record_skipped_run_with_reporter(
         jobs: Vec::new(),
     };
     write_run_record(&run_dir, &run_record)?;
+    reporter(RunLifecycleEvent::RunStarted {
+        run_id: run_record.run_id.clone(),
+        created_at: created_at.clone(),
+        rerun_of: run_record.rerun_of.clone(),
+        target_id: run_record.target_id.clone(),
+        target_description: run_record.target_description.clone(),
+    })?;
     reporter(RunLifecycleEvent::RunFinished {
         run: Box::new(run_record.clone()),
     })?;
@@ -4350,6 +4414,57 @@ mod tests {
             events.last(),
             Some(RunLifecycleEvent::RunFinished { run: finished_run })
                 if finished_run.run_id == run.run_id && finished_run.status == RunStatus::Passed
+        ));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn run_started_failure_persists_terminal_run_record() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-run-start-failure-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let options = RunOptions {
+            source_root: root.join("missing-source"),
+            state_root: root.join("state"),
+        };
+        let jobs = vec![JobSpec {
+            id: "host-echo",
+            description: "Run a trivial host-local command",
+            timeout_secs: 30,
+            writable_workspace: false,
+            guest_command: GuestCommand::HostShellCommand {
+                command: "printf 'ok\\n'",
+            },
+            staged_linux_rust_lane: None,
+        }];
+        let metadata = RunMetadata {
+            target_id: Some("host-echo".to_string()),
+            target_description: Some("Run a trivial host-local command".to_string()),
+            ..RunMetadata::default()
+        };
+        let mut events = Vec::new();
+        let run = run_jobs_with_metadata_and_reporter(&jobs, &options, metadata, &mut |event| {
+            events.push(event);
+            Ok(())
+        })
+        .expect("run should persist failed record instead of erroring");
+
+        assert_eq!(run.status, RunStatus::Failed);
+        assert!(run.finished_at.is_some());
+        let loaded =
+            super::load_run_record(&options.state_root, &run.run_id).expect("load failed run");
+        assert_eq!(loaded.run_id, run.run_id);
+        assert_eq!(loaded.status, RunStatus::Failed);
+        assert!(matches!(
+            events.first(),
+            Some(RunLifecycleEvent::RunStarted { run_id, .. }) if run_id == &run.run_id
+        ));
+        assert!(matches!(
+            events.last(),
+            Some(RunLifecycleEvent::RunFinished { run: finished_run })
+                if finished_run.run_id == run.run_id && finished_run.status == RunStatus::Failed
         ));
 
         let _ = fs::remove_dir_all(&root);

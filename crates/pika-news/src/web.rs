@@ -297,6 +297,8 @@ struct CiLaneView {
     title: String,
     entrypoint: String,
     status: String,
+    pikaci_run_id: Option<String>,
+    pikaci_target_id: Option<String>,
     log_text: Option<String>,
     retry_count: i64,
     rerun_of_lane_run_id: Option<i64>,
@@ -312,6 +314,8 @@ struct NightlyLaneView {
     title: String,
     entrypoint: String,
     status: String,
+    pikaci_run_id: Option<String>,
+    pikaci_target_id: Option<String>,
     log_text: Option<String>,
     retry_count: i64,
     rerun_of_lane_run_id: Option<i64>,
@@ -1651,6 +1655,8 @@ fn map_ci_lane_view(lane: BranchCiLaneRecord) -> CiLaneView {
         title: lane.title,
         entrypoint: lane.entrypoint,
         status: lane.status,
+        pikaci_run_id: lane.pikaci_run_id,
+        pikaci_target_id: lane.pikaci_target_id,
         log_text: lane.log_text,
         retry_count: lane.retry_count,
         rerun_of_lane_run_id: lane.rerun_of_lane_run_id,
@@ -1667,6 +1673,8 @@ fn map_nightly_lane_view(lane: NightlyLaneRecord) -> NightlyLaneView {
         title: lane.title,
         entrypoint: lane.entrypoint,
         status: lane.status,
+        pikaci_run_id: lane.pikaci_run_id,
+        pikaci_target_id: lane.pikaci_target_id,
         log_text: lane.log_text,
         retry_count: lane.retry_count,
         rerun_of_lane_run_id: lane.rerun_of_lane_run_id,
@@ -4476,6 +4484,60 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
     }
 
     #[test]
+    fn branch_detail_renders_pikaci_run_metadata() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let branch = store
+            .upsert_branch_record(&branch_upsert_input("feature/pikaci-ui", "head-pikaci"))
+            .expect("insert branch");
+        store
+            .queue_branch_ci_run_for_head(
+                branch.branch_id,
+                "head-pikaci",
+                &[crate::ci_manifest::ForgeLane {
+                    id: "pika".to_string(),
+                    title: "check-pika".to_string(),
+                    entrypoint: "just checks::pre-merge-pika".to_string(),
+                    command: vec!["just".to_string(), "checks::pre-merge-pika".to_string()],
+                    paths: vec![],
+                    concurrency_group: None,
+                    staged_linux_target: Some("pre-merge-pika-rust".to_string()),
+                }],
+            )
+            .expect("queue ci");
+        let running = store
+            .claim_pending_branch_ci_lane_runs(1, 120)
+            .expect("claim ci")
+            .into_iter()
+            .next()
+            .expect("ci lane");
+        store
+            .record_branch_ci_lane_pikaci_run(
+                running.lane_run_id,
+                running.claim_token,
+                "pikaci-run-branch-ui",
+                Some("pre-merge-pika-rust"),
+            )
+            .expect("persist branch pikaci metadata");
+
+        let detail = store
+            .get_branch_detail(branch.branch_id)
+            .expect("branch detail")
+            .expect("detail");
+        let ci_runs = store
+            .list_branch_ci_runs(branch.branch_id, 8)
+            .expect("branch ci runs");
+        let rendered = render_detail_template(detail, ci_runs, false)
+            .expect("render detail template")
+            .render()
+            .expect("render detail html");
+        assert!(rendered.contains("pikaci run"));
+        assert!(rendered.contains("pikaci-run-branch-ui"));
+        assert!(rendered.contains("pre-merge-pika-rust"));
+    }
+
+    #[test]
     fn nightly_page_renders_manual_rerun_provenance() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let db_path = dir.path().join("pika-news.db");
@@ -4529,5 +4591,63 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
             .expect("render nightly html");
         assert!(rendered.contains("manual rerun of nightly #"));
         assert!(rendered.contains("manual rerun of lane #"));
+    }
+
+    #[test]
+    fn nightly_page_renders_pikaci_run_metadata() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let repo_id = store
+            .ensure_forge_repo_metadata(
+                "sledtools/pika",
+                "/tmp/pika.git",
+                "master",
+                "ci/forge-lanes.toml",
+            )
+            .expect("ensure repo metadata");
+        let lane = crate::ci_manifest::ForgeLane {
+            id: "nightly_pika".to_string(),
+            title: "nightly-pika".to_string(),
+            entrypoint: "just checks::nightly-pika-e2e".to_string(),
+            command: vec!["just".to_string(), "checks::nightly-pika-e2e".to_string()],
+            paths: vec![],
+            concurrency_group: None,
+            staged_linux_target: Some("pre-merge-pika-rust".to_string()),
+        };
+        store
+            .queue_nightly_run(
+                repo_id,
+                "refs/heads/master",
+                "nightly-pikaci-head",
+                "2026-03-19T08:00:00Z",
+                std::slice::from_ref(&lane),
+            )
+            .expect("queue nightly");
+        let running = store
+            .claim_pending_nightly_lane_runs(1, 120)
+            .expect("claim nightly")
+            .into_iter()
+            .next()
+            .expect("nightly lane");
+        store
+            .record_nightly_lane_pikaci_run(
+                running.lane_run_id,
+                running.claim_token,
+                "pikaci-run-nightly-ui",
+                Some("pre-merge-pika-rust"),
+            )
+            .expect("persist nightly pikaci metadata");
+
+        let run = store
+            .get_nightly_run(running.nightly_run_id)
+            .expect("nightly detail")
+            .expect("nightly run");
+        let rendered = render_nightly_template(run)
+            .render()
+            .expect("render nightly html");
+        assert!(rendered.contains("pikaci run"));
+        assert!(rendered.contains("pikaci-run-nightly-ui"));
+        assert!(rendered.contains("pre-merge-pika-rust"));
     }
 }

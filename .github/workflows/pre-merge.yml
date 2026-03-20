@@ -176,6 +176,7 @@ jobs:
     if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'pre-merge'))
     needs: [select-branch, branch-lanes]
     runs-on: ubuntu-latest
+    name: check-pika
     steps:
       - name: Summarize branch shadow suite
         run: |

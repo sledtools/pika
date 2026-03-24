@@ -771,9 +771,6 @@ let
         export PIKACI_AGENT_MICROVM_TESTS_MANIFEST="$TMPDIR/agent-microvm-tests.manifest"
         export PIKACI_SERVER_AGENT_API_TESTS_MANIFEST="$TMPDIR/server-agent-api-tests.manifest"
         export PIKACI_CORE_AGENT_NIP98_TEST_MANIFEST="$TMPDIR/core-agent-nip98-test.manifest"
-        export PIKACI_AGENT_HTTP_DETERMINISTIC_TESTS_MANIFEST="$TMPDIR/agent-http-deterministic-tests.manifest"
-        export PIKACI_PIKA_SERVER_EXECUTABLE="$TMPDIR/pika-server-executable"
-        export PIKACI_PIKACHAT_EXECUTABLE="$TMPDIR/pikachat-executable"
         cargoJobs="''${CARGO_BUILD_JOBS:-''${NIX_BUILD_CORES:-}}"
         case "$cargoJobs" in
           ""|0)
@@ -824,43 +821,6 @@ let
           --message-format json-render-diagnostics >"$cargoBuildLog"
         capture_artifacts "$cargoBuildLog"
 
-        cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
-        cargo test --locked -j "$cargoJobs" -p pikahut \
-          --test integration_deterministic \
-          --no-run \
-          --message-format json-render-diagnostics >"$cargoBuildLog"
-        capture_artifacts "$cargoBuildLog"
-
-        cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
-        cargo build --locked -j "$cargoJobs" -p pika-server \
-          --bin pika-server \
-          --message-format json-render-diagnostics >"$cargoBuildLog"
-        ${pkgs.jq}/bin/jq -r '
-          select(.reason == "compiler-artifact" and .target.name == "pika-server" and .executable != null)
-          | .executable
-        ' <"$cargoBuildLog" | head -n1 >"$PIKACI_PIKA_SERVER_EXECUTABLE"
-        if [ ! -s "$PIKACI_PIKA_SERVER_EXECUTABLE" ]; then
-          echo "missing staged pika-server executable" >&2
-          cat "$cargoBuildLog" >&2
-          exit 1
-        fi
-
-        if [ "''${PIKACI_STAGE_PIKACHAT_BINARY:-0}" = "1" ]; then
-          cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
-          cargo build --locked -j "$cargoJobs" -p pikachat \
-            --bin pikachat \
-            --message-format json-render-diagnostics >"$cargoBuildLog"
-          ${pkgs.jq}/bin/jq -r '
-            select(.reason == "compiler-artifact" and .target.name == "pikachat" and .executable != null)
-            | .executable
-          ' <"$cargoBuildLog" | head -n1 >"$PIKACI_PIKACHAT_EXECUTABLE"
-          if [ ! -s "$PIKACI_PIKACHAT_EXECUTABLE" ]; then
-            echo "missing staged pikachat executable" >&2
-            cat "$cargoBuildLog" >&2
-            exit 1
-          fi
-        fi
-
         sort -u -o "$PIKACI_AGENT_CONTRACTS_TEST_EXECUTABLES" "$PIKACI_AGENT_CONTRACTS_TEST_EXECUTABLES"
 
         manifest_from_targets() {
@@ -896,7 +856,6 @@ let
         manifest_from_targets "$PIKACI_AGENT_MICROVM_TESTS_MANIFEST" pika_agent_microvm
         manifest_from_targets "$PIKACI_SERVER_AGENT_API_TESTS_MANIFEST" pika-server
         manifest_from_targets "$PIKACI_CORE_AGENT_NIP98_TEST_MANIFEST" pika_core
-        manifest_from_targets "$PIKACI_AGENT_HTTP_DETERMINISTIC_TESTS_MANIFEST" integration_deterministic
       '';
 
   installPhaseCommand =
@@ -1408,21 +1367,32 @@ CFG
           install_staged_binary "$PIKACI_PIKA_CORE_E2E_MESSAGING_BIN" "pika-core-e2e-messaging"
           install_staged_binary "$PIKACI_PIKA_CORE_APP_FLOWS_BIN" "pika-core-app-flows"
           ${pkgs.lib.optionalString (openclawGatewayPkg != null) ''
-          mkdir -p "$out/lib"
-          cp -R ${openclawGatewayPkg}/lib/openclaw "$out/lib/openclaw"
-          chmod -R u+w "$out/lib/openclaw"
-          find "$out/lib/openclaw" -type l | while IFS= read -r link; do
-            target="$(readlink "$link")"
-            case "$target" in
-              ${openclawGatewayPkg}/lib/openclaw/*)
-                relative_target="''${target#${openclawGatewayPkg}/lib/openclaw/}"
-                rewritten_target="$(${pkgs.coreutils}/bin/realpath \
-                  --relative-to="$(dirname "$link")" \
-                  "$out/lib/openclaw/$relative_target")"
-                ln -snf "$rewritten_target" "$link"
-                ;;
-            esac
-          done
+          copy_packaged_openclaw_root() {
+            local package_root="$1"
+            mkdir -p "$package_root/lib"
+            cp -R ${openclawGatewayPkg}/lib/openclaw "$package_root/lib/openclaw"
+            chmod -R u+w "$package_root/lib/openclaw"
+            find "$package_root/lib/openclaw" -type l | while IFS= read -r link; do
+              target="$(readlink "$link")"
+              case "$target" in
+                ${openclawGatewayPkg}/lib/openclaw/*)
+                  relative_target="''${target#${openclawGatewayPkg}/lib/openclaw/}"
+                  rewritten_target="$(${pkgs.coreutils}/bin/realpath \
+                    --relative-to="$(dirname "$link")" \
+                    "$package_root/lib/openclaw/$relative_target")"
+                  ln -snf "$rewritten_target" "$link"
+                  ;;
+              esac
+            done
+          }
+
+          mkdir -p "$out/lib" "$out/share/pikaci"
+          copy_packaged_openclaw_root "$out"
+
+          openclaw_e2e_root="$out/share/pikaci/openclaw-gateway-e2e"
+          copy_packaged_openclaw_root "$openclaw_e2e_root"
+          rm -rf "$openclaw_e2e_root/lib/openclaw/extensions"
+          mkdir -p "$openclaw_e2e_root/lib/openclaw/extensions"
           cat >"$out/bin/openclaw" <<'EOF'
           #!${pkgs.bash}/bin/bash
           set -euo pipefail
@@ -1432,6 +1402,9 @@ CFG
           exec /run/current-system/sw/bin/node "$root/lib/openclaw/dist/index.js" "$@"
           EOF
           chmod +x "$out/bin/openclaw"
+          mkdir -p "$openclaw_e2e_root/bin"
+          cp "$out/bin/openclaw" "$openclaw_e2e_root/bin/openclaw"
+          chmod +x "$openclaw_e2e_root/bin/openclaw"
           ''}
           ${pkgs.lib.optionalString (pikaRelayPkg != null) ''
           cp ${pikaRelayPkg}/bin/pika-relay "$out/bin/pika-relay"
@@ -1560,46 +1533,10 @@ CFG
             export PIKAHUT_TEST_WORKSPACE_ROOT=/workspace/snapshot
             cd "$PIKAHUT_TEST_WORKSPACE_ROOT"
           fi
-          openclaw_stage_dir="$(mktemp -d /tmp/pikaci-openclaw-package.XXXXXX)"
-          cleanup() {
-            rm -rf "$openclaw_stage_dir"
-          }
-          trap cleanup EXIT
-          mkdir -p \
-            "$openclaw_stage_dir/bin" \
-            "$openclaw_stage_dir/lib/openclaw/extensions" \
-            "$openclaw_stage_dir/lib/openclaw/node_modules"
-          for entry in "$root/lib/openclaw"/*; do
-            name="$(basename "$entry")"
-            if [ "$name" = "extensions" ] || [ "$name" = "node_modules" ] || [ "$name" = "package.json" ]; then
-              continue
-            fi
-            ln -s "$entry" "$openclaw_stage_dir/lib/openclaw/$name"
-          done
-          cp "$root/lib/openclaw/package.json" "$openclaw_stage_dir/lib/openclaw/package.json"
-          for entry in "$root/lib/openclaw/node_modules"/.* "$root/lib/openclaw/node_modules"/*; do
-            name="$(basename "$entry")"
-            if [ "$name" = "." ] || [ "$name" = ".." ]; then
-              continue
-            fi
-            ln -s "$entry" "$openclaw_stage_dir/lib/openclaw/node_modules/$name"
-          done
-          ln -s .. "$openclaw_stage_dir/lib/openclaw/node_modules/openclaw"
-          if [ -d "$root/lib/openclaw/extensions" ]; then
-            for entry in "$root/lib/openclaw/extensions"/*; do
-              name="$(basename "$entry")"
-              if [ "$name" = "pikachat-openclaw" ]; then
-                continue
-              fi
-              ln -s "$entry" "$openclaw_stage_dir/lib/openclaw/extensions/$name"
-            done
-          fi
-          cp -R "$root/share/pikaci/pikachat-openclaw-extension" \
-            "$openclaw_stage_dir/lib/openclaw/extensions/pikachat-openclaw"
+          openclaw_stage_dir="$root/share/pikaci/openclaw-gateway-e2e"
           export PIKAHUT_TEST_PIKACHAT_BIN="$root/bin/pikachat"
-          ln -s "$root/bin/openclaw" "$openclaw_stage_dir/bin/openclaw"
           export PIKAHUT_OPENCLAW_E2E_GATEWAY_BIN="$openclaw_stage_dir/bin/openclaw"
-          export PIKAHUT_OPENCLAW_EXTENSION_SOURCE_ROOT="$openclaw_stage_dir/lib/openclaw/extensions/pikachat-openclaw"
+          export PIKAHUT_OPENCLAW_EXTENSION_SOURCE_ROOT="$root/share/pikaci/pikachat-openclaw-extension"
           if [ -x "$root/bin/pika-relay" ]; then
             export PIKA_FIXTURE_RELAY_CMD="$root/bin/pika-relay"
           fi
@@ -1635,7 +1572,6 @@ CFG
         cp "$PIKACI_AGENT_MICROVM_TESTS_MANIFEST" "$out/share/pikaci/agent-microvm-tests.manifest"
         cp "$PIKACI_SERVER_AGENT_API_TESTS_MANIFEST" "$out/share/pikaci/server-agent-api-tests.manifest"
         cp "$PIKACI_CORE_AGENT_NIP98_TEST_MANIFEST" "$out/share/pikaci/core-agent-nip98-test.manifest"
-        cp "$PIKACI_AGENT_HTTP_DETERMINISTIC_TESTS_MANIFEST" "$out/share/pikaci/agent-http-deterministic-tests.manifest"
         cp -R "$src/pikachat-openclaw/openclaw/extensions/pikachat-openclaw" \
           "$out/share/pikaci/pikachat-openclaw-extension"
 
@@ -1657,7 +1593,6 @@ CFG
           "$PIKACI_AGENT_MICROVM_TESTS_MANIFEST" \
           "$PIKACI_SERVER_AGENT_API_TESTS_MANIFEST" \
           "$PIKACI_CORE_AGENT_NIP98_TEST_MANIFEST" \
-          "$PIKACI_AGENT_HTTP_DETERMINISTIC_TESTS_MANIFEST" \
           | sort -u >"$staged_runtime_manifest"
 
         while IFS= read -r relative; do
@@ -1697,15 +1632,6 @@ CFG
           copy_target_relative "$relative"
           ln -s "../target/$relative" "$out/bin/$output_name"
         }
-
-        target_root_abs="$(pwd)/$target_root/"
-        install_staged_binary "$PIKACI_PIKA_SERVER_EXECUTABLE" "pika-server"
-        install_staged_binary "$PIKACI_PIKACHAT_EXECUTABLE" "pikachat"
-
-        ${pkgs.lib.optionalString (pikaRelayPkg != null) ''
-        cp ${pikaRelayPkg}/bin/pika-relay "$out/bin/pika-relay"
-        chmod +x "$out/bin/pika-relay"
-        ''}
 
         cat >"$out/bin/run-staged-test-manifest" <<'EOF'
         #!${pkgs.bash}/bin/bash
@@ -1754,32 +1680,12 @@ CFG
         set -euo pipefail
         exec "$(dirname "$0")/run-staged-test-manifest" core-agent-nip98-test.manifest core::agent::tests::run_agent_flow_signs_requests_with_nip98_authorization --exact --nocapture
         EOF
-        cat >"$out/bin/run-agent-http-deterministic-tests" <<'EOF'
-        #!${pkgs.bash}/bin/bash
-        set -euo pipefail
-        root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
-        export PIKA_FIXTURE_SERVER_CMD="$root/bin/pika-server"
-        if [ -x "$root/bin/pika-relay" ]; then
-          export PIKA_FIXTURE_RELAY_CMD="$root/bin/pika-relay"
-        fi
-        export PIKAHUT_PIKACHAT_CMD="$root/bin/pikachat"
-
-        run_one() {
-          "$(dirname "$0")/run-staged-test-manifest" agent-http-deterministic-tests.manifest "$1" --exact --ignored --nocapture
-        }
-
-        run_one agent_http_ensure_local
-        run_one agent_http_cli_new_local
-        run_one agent_http_cli_new_idempotent_local
-        run_one agent_http_cli_new_me_recover_local
-        EOF
         chmod +x \
           "$out/bin/run-staged-test-manifest" \
           "$out/bin/run-agent-control-plane-unit-tests" \
           "$out/bin/run-agent-microvm-tests" \
           "$out/bin/run-server-agent-api-tests" \
-          "$out/bin/run-core-agent-nip98-test" \
-          "$out/bin/run-agent-http-deterministic-tests"
+          "$out/bin/run-core-agent-nip98-test"
       '';
 in
 rec {

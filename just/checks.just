@@ -55,27 +55,27 @@ pre-merge-pika-followup:
     nix run .#pikaci -- run pre-merge-pika-followup
     echo "pre-merge-pika complete"
 
-# Advisory shadow CI lane for the staged Linux Rust remote microVM path.
+# Advisory shadow CI lane for the staged Linux Rust remote VM path.
 pre-merge-pika-rust-shadow:
     just pikaci-remote-fulfill-pre-merge-pika-rust
     echo "pre-merge-pika-rust-shadow complete"
 
-# Advisory shadow CI lane for the staged Linux notifications remote microVM path.
+# Advisory shadow CI lane for the staged Linux notifications remote VM path.
 pre-merge-notifications-shadow:
     just pikaci-remote-fulfill-pre-merge-notifications
     echo "pre-merge-notifications-shadow complete"
 
-# Advisory shadow CI lane for the staged Linux agent-contracts remote microVM path.
+# Advisory shadow CI lane for the staged Linux agent-contracts remote VM path.
 pre-merge-agent-contracts-shadow:
     just pikaci-remote-fulfill-pre-merge-agent-contracts
     echo "pre-merge-agent-contracts-shadow complete"
 
-# Advisory shadow CI lane for the staged Linux RMP remote microVM path.
+# Advisory shadow CI lane for the staged Linux RMP remote VM path.
 pre-merge-rmp-shadow:
     just pikaci-remote-fulfill-pre-merge-rmp
     echo "pre-merge-rmp-shadow complete"
 
-# Advisory shadow CI lane for the staged Linux pikachat remote microVM path.
+# Advisory shadow CI lane for the staged Linux pikachat remote VM path.
 pre-merge-pikachat-rust-shadow:
     just pikaci-remote-fulfill-pre-merge-pikachat-rust
     echo "pre-merge-pikachat-rust-shadow complete"
@@ -177,24 +177,18 @@ apple-host-bundle:
     ./scripts/apple-host-record-phase apple-host-bundle.ios-ui-test apple-native -- just ios-ui-test
     echo "apple-host-bundle complete"
 
-# Deterministic HTTP control-plane contracts (mocked MicroVM spawner).
+# Checked-in staged Linux agent provider contracts.
 pre-merge-agent-contracts:
     #!/usr/bin/env bash
     set -euo pipefail
     if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
         just pikaci-remote-fulfill-pre-merge-agent-contracts
     else
+        cargo test -p pika-agent-control-plane --lib
         cargo test -p pika-agent-microvm
         cargo test -p pika-server -- agent_api::tests
         cargo test -p pika_core --lib core::agent::tests::run_agent_flow_signs_requests_with_nip98_authorization
     fi
-    cargo test -p pikahut --test integration_deterministic agent_http_ensure_local -- --ignored --nocapture
-    cargo test -p pikahut --test integration_deterministic agent_http_cli_new_local -- --ignored --nocapture
-    cargo test -p pikahut --test integration_deterministic agent_http_cli_new_idempotent_local -- --ignored --nocapture
-    cargo test -p pikahut --test integration_deterministic agent_http_cli_new_me_recover_local -- --ignored --nocapture
-    cargo test -p pikahut --test integration_deterministic agent_launch_provisioning_boundary -- --ignored --nocapture
-    cargo test -p pikahut --test integration_deterministic agent_launch_provisioning_failure_boundary -- --ignored --nocapture
-    cargo test -p pikahut --test integration_deterministic agent_launch_first_reply_boundary -- --ignored --nocapture
     echo "pre-merge-agent-contracts complete"
 
 # CI-safe pre-merge for the RMP tooling lane.

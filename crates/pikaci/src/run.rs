@@ -4412,6 +4412,43 @@ mod tests {
         result
     }
 
+    fn with_remote_linux_vm_backend_env<T>(value: Option<&str>, action: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock");
+        let previous_selector = std::env::var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES").ok();
+        let previous_backend = std::env::var("PIKACI_REMOTE_LINUX_VM_BACKEND").ok();
+        let previous_ssh_host = std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV).ok();
+
+        unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES") };
+        unsafe { std::env::remove_var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV) };
+        match value {
+            Some(value) => unsafe { std::env::set_var("PIKACI_REMOTE_LINUX_VM_BACKEND", value) },
+            None => unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_BACKEND") },
+        }
+
+        let result = action();
+
+        match previous_selector {
+            Some(value) => unsafe {
+                std::env::set_var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES", value)
+            },
+            None => unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES") },
+        }
+        match previous_backend {
+            Some(value) => unsafe { std::env::set_var("PIKACI_REMOTE_LINUX_VM_BACKEND", value) },
+            None => unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_BACKEND") },
+        }
+        match previous_ssh_host {
+            Some(value) => unsafe {
+                std::env::set_var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV, value)
+            },
+            None => unsafe { std::env::remove_var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV) },
+        }
+        result
+    }
+
     #[test]
     fn gc_runs_keeps_latest_run_directories() {
         let root = std::env::temp_dir().join(format!("pikaci-gc-test-{}", uuid::Uuid::new_v4()));
@@ -4704,7 +4741,9 @@ mod tests {
         ];
 
         let snapshot = sample_snapshot_source(&prepared);
-        let plan = build_run_plan(&jobs, &prepared, &snapshot, &metadata).expect("build plan");
+        let plan = with_remote_linux_vm_backend_env(Some("microvm"), || {
+            build_run_plan(&jobs, &prepared, &snapshot, &metadata).expect("build plan")
+        });
 
         assert_eq!(plan.record.schema_version, 1);
         assert_eq!(plan.record.scope, PlanScope::PostHostSetupAndSnapshot);

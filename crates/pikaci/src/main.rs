@@ -1192,21 +1192,6 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
             },
             staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsCoreNip98),
         },
-        JobSpec {
-            id: "agent-http-deterministic-tests",
-            description: "Run the deterministic pikahut agent HTTP tests in a remote Linux microVM",
-            timeout_secs: 1800,
-            writable_workspace: false,
-            guest_command: GuestCommand::ShellCommand {
-                command: concat!(
-                    "cargo test -p pikahut --test integration_deterministic agent_http_ensure_local -- --ignored --nocapture; ",
-                    "cargo test -p pikahut --test integration_deterministic agent_http_cli_new_local -- --ignored --nocapture; ",
-                    "cargo test -p pikahut --test integration_deterministic agent_http_cli_new_idempotent_local -- --ignored --nocapture; ",
-                    "cargo test -p pikahut --test integration_deterministic agent_http_cli_new_me_recover_local -- --ignored --nocapture"
-                ),
-            },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsDeterministicHttp),
-        },
     ]
 }
 
@@ -1365,7 +1350,7 @@ fn pika_followup_jobs() -> Vec<JobSpec> {
     vec![
         JobSpec {
             id: "pika-android-test-compile",
-            description: "Compile Android instrumentation test Kotlin for the Pika app in a remote microVM guest",
+            description: "Compile Android instrumentation test Kotlin for the Pika app in a remote Linux VM guest",
             timeout_secs: 3600,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {
@@ -1375,7 +1360,7 @@ fn pika_followup_jobs() -> Vec<JobSpec> {
         },
         JobSpec {
             id: "pikachat-build",
-            description: "Build pikachat in a remote microVM guest",
+            description: "Build pikachat in a remote Linux VM guest",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {
@@ -1385,7 +1370,7 @@ fn pika_followup_jobs() -> Vec<JobSpec> {
         },
         JobSpec {
             id: "pika-desktop-check",
-            description: "Run desktop-check in a remote microVM guest",
+            description: "Run desktop-check in a remote Linux VM guest",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {
@@ -1395,7 +1380,7 @@ fn pika_followup_jobs() -> Vec<JobSpec> {
         },
         JobSpec {
             id: "pika-actionlint",
-            description: "Run actionlint in a remote microVM guest",
+            description: "Run actionlint in a remote Linux VM guest",
             timeout_secs: 600,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {
@@ -1405,7 +1390,7 @@ fn pika_followup_jobs() -> Vec<JobSpec> {
         },
         JobSpec {
             id: "pika-doc-contracts",
-            description: "Run docs and justfile contract checks in a remote microVM guest",
+            description: "Run docs and justfile contract checks in a remote Linux VM guest",
             timeout_secs: 900,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {
@@ -1415,7 +1400,7 @@ fn pika_followup_jobs() -> Vec<JobSpec> {
         },
         JobSpec {
             id: "pika-rust-deps-hygiene",
-            description: "Run cargo machete dependency hygiene in a remote microVM guest",
+            description: "Run cargo machete dependency hygiene in a remote Linux VM guest",
             timeout_secs: 900,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {
@@ -1429,7 +1414,7 @@ fn pika_followup_jobs() -> Vec<JobSpec> {
 fn pikachat_openclaw_e2e_jobs() -> Vec<JobSpec> {
     vec![JobSpec {
         id: "pikachat-openclaw-gateway-e2e",
-        description: "Run the heavy OpenClaw gateway end-to-end scenario in a remote Linux microVM",
+        description: "Run the heavy OpenClaw gateway end-to-end scenario in a remote Linux VM",
         timeout_secs: 3600,
         writable_workspace: false,
         guest_command: GuestCommand::ShellCommand { command: "ignored" },
@@ -1440,7 +1425,7 @@ fn pikachat_openclaw_e2e_jobs() -> Vec<JobSpec> {
 fn pikachat_typescript_jobs() -> Vec<JobSpec> {
     vec![JobSpec {
         id: "pikachat-typescript",
-        description: "Run the Claude and OpenClaw TypeScript typecheck and unit tests in a remote Linux microVM",
+        description: "Run the Claude and OpenClaw TypeScript typecheck and unit tests in a remote Linux VM",
         timeout_secs: 1800,
         writable_workspace: false,
         guest_command: GuestCommand::ShellCommand { command: "ignored" },
@@ -1452,7 +1437,7 @@ fn fixture_rust_jobs() -> Vec<JobSpec> {
     vec![
         JobSpec {
             id: "pikahut-clippy",
-            description: "Run pikahut clippy checks in a remote Linux microVM",
+            description: "Run pikahut clippy checks in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand { command: "ignored" },
@@ -1460,7 +1445,7 @@ fn fixture_rust_jobs() -> Vec<JobSpec> {
         },
         JobSpec {
             id: "fixture-relay-smoke",
-            description: "Exercise the relay-profile pikahut smoke flow in a remote Linux microVM",
+            description: "Exercise the relay-profile pikahut smoke flow in a remote Linux VM",
             timeout_secs: 300,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand { command: "ignored" },
@@ -1538,7 +1523,7 @@ fn pikachat_apple_followup_jobs() -> Vec<JobSpec> {
 fn rmp_jobs() -> Vec<JobSpec> {
     vec![JobSpec {
         id: "rmp-init-smoke-ci",
-        description: "Run the RMP init smoke checks in a remote Linux microVM",
+        description: "Run the RMP init smoke checks in a remote Linux VM",
         timeout_secs: 1800,
         writable_workspace: false,
         guest_command: GuestCommand::ShellCommand {
@@ -1985,17 +1970,19 @@ mod tests {
         assert_eq!(standalone.jobs[0].runner_kind(), RunnerKind::VfkitLocal);
         assert_eq!(standalone.jobs[0].staged_linux_rust_lane(), None);
 
-        assert_eq!(pre_merge.jobs.len(), 5);
+        assert_eq!(pre_merge.jobs.len(), 4);
         assert!(
             pre_merge
                 .jobs
                 .iter()
                 .all(|job| job.runner_kind() == RunnerKind::RemoteLinuxVm)
         );
-        assert!(pre_merge.jobs.iter().any(|job| {
-            job.staged_linux_rust_lane()
-                == Some(StagedLinuxRustLane::AgentContractsDeterministicHttp)
-        }));
+        assert!(
+            pre_merge
+                .jobs
+                .iter()
+                .all(|job| job.id != "agent-http-deterministic-tests")
+        );
     }
 
     #[test]

@@ -40,11 +40,69 @@ Three options to evaluate later:
 
 Lean toward hybrid — get the easy wins first.
 
-## 5. Data-driven scheduling
+## 5. Persistent runner pool
 
-Once we have per-binary timing data across runs:
+Don't boot VMs during CI runs at all. Pre-provision a pool of persistent runners on pika-build.
+All mounts (snapshot, nix store, cargo caches, staged deps/build) stay active via virtiofs.
+Per-job overhead drops to ~0 (SSH exec + reset artifacts dir).
 
-- Identify bottleneck binaries (split them or optimize the tests)
-- Bin-pack fast tests into shared VMs instead of one-per-VM (reduces VM count without hurting wall clock)
-- Detect timing regressions automatically
-- Let the scheduler read historical data and pack optimally each run
+Between jobs: just `rm -rf /artifacts/*; mkdir -p /artifacts`. No restart. If a runner gets
+corrupted, restart that one runner; others keep working.
+
+Sizing: 128GB RAM, 32 cores → 16 runners at 2 cores + 4GB each. More than enough.
+
+Works for either microvm or Incus single-host-shared backend. Incus has nicer lifecycle
+management; microvm has slightly faster boot (irrelevant once pool is persistent).
+
+## 6. Longest-first scheduling with bin-packing
+
+With historical per-binary timing data:
+
+1. Sort all binaries longest-first
+2. Priority queue of runners ordered by earliest-available time
+3. Assign each binary to the runner that becomes free soonest
+4. Wall clock = duration of the slowest runner
+
+Example with realistic numbers: 9 binaries totaling 71s sequential, with 4 runners and
+longest-first scheduling → 25s wall clock (limited by the single slowest binary at 25s).
+Splitting that slow binary into 3 parts → 15s. That's a 4.7x speedup.
+
+Full pre-merge across all targets: maybe 40-60 binaries, 300s sequential. With 16 runners
+and longest-first: 30-40s execute time. Add snapshot sync + workspace build → under 60s total.
+Versus ~5-10 minutes today.
+
+## 7. Identify and split slow binaries
+
+The scheduling bottleneck is always the single slowest binary. Once instrumented (#1), identify
+the outliers and split them (more granular test modules, or separate compilation units).
+Each split gives a directly proportional wall-clock improvement until the next binary becomes
+the bottleneck.
+
+## Incus considerations
+
+Transfer mode (copying data into guest) adds minutes per job — not viable for sub-minute CI.
+Single-host-shared mode (virtiofs disk devices) matches microvm performance and works for the
+persistent pool model. This is the only viable Incus path for fast CI.
+
+## Apple path (pika-mini) considerations
+
+Completely separate execution model from the Linux path. Uses Tart macOS VMs on a Mac mini,
+orchestrated by `pikaci-apple-remote.sh` (bash, not the Rust pikaci). Source delivered via git
+bundles with commit-keyed prepared worktrees. Build caching via shared cargo target dir + Xcode
+DerivedData, not Nix.
+
+Apple-side bottlenecks are different:
+- macOS VM clone + boot + agent wait: ~10-30s per job (vs sub-second microvm)
+- Xcode build-for-testing: expensive, not Nix-cacheable
+- Only 2-4 concurrent macOS VMs realistic on a Mac mini (vs 16+ microvms on pika-build)
+- Simulator state isolation between concurrent VMs is harder than cargo test isolation
+
+Apple pool model: 2-3 pre-booted Tart VMs with separate simulator + DerivedData paths, tests
+dispatched across them. Smaller gains than Linux side but still meaningful for parallel iOS
+test suites.
+
+## Snapshot system
+
+Not a cache. Just a filtered copy of the working directory synced to pika-build so runners can
+read it via virtiofs. Content-addressed for dedup (skip sync if hash matches). Nix handles all
+build artifact caching (WorkspaceDeps, WorkspaceBuild).

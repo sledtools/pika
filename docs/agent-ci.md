@@ -14,8 +14,9 @@ This document defines deterministic CI coverage for `pikachat agent new` provide
 These lanes are defined canonically in `ci/forge-lanes.toml` and orchestrated by the forge on `git.pikachat.org`. GitHub mirrors them through `.github/workflows/pre-merge.yml` as advisory shadow CI:
 
 - `check-agent-contracts`:
-  - Runs mocked HTTP control-plane contracts for MicroVM (no real cloud credentials/hosts).
-  - Covers: `pika-agent-microvm` tests, `pika-server` agent API tests, the lower-level `pikahut` deterministic HTTP integration probes (`agent_http_ensure_local`, `agent_http_cli_new_local`, `agent_http_cli_new_idempotent_local`, `agent_http_cli_new_me_recover_local`), the app-facing `pikahut` provisioning selectors (`agent_launch_provisioning_boundary`, `agent_launch_provisioning_failure_boundary`), and the post-launch `pikahut` peer-usable selector (`agent_launch_first_reply_boundary`).
+  - Runs the checked-in staged Linux agent provider contract surface on `pikaci`.
+  - Covers: `pika-agent-control-plane` unit tests, `pika-agent-microvm` tests, `pika-server` `agent_api::tests`, and the `pika_core` NIP-98 signing contract test.
+  - Intentionally does not cover the old host-side `pikahut` deterministic HTTP / CLI selectors anymore. Those selectors still encode legacy vm-spawner-era assumptions, so they were removed from provider-contract CI instead of being silently treated as an Incus parity problem. They are currently manual-only until they are rewritten against the surviving Incus/OpenClaw product contract and given a new truthful lane.
   - Command: `nix develop .#default -c just pre-merge-agent-contracts`
 
 ## Advisory Integration Lanes
@@ -30,7 +31,7 @@ Real-provider probes stay outside pre-merge gating:
 Run these commands locally to reproduce provider contract failures:
 
 ```bash
-# MicroVM mocked contracts
+# Staged Linux provider contracts
 just pre-merge-agent-contracts
 
 # Full pre-merge lane for pikachat crate
@@ -63,13 +64,7 @@ Use these PR-change patterns to confirm manifest-driven path-filter behavior:
   - expected: `check-agent-contracts` runs.
 - Touch `crates/pika-test-utils/src/lib.rs`:
   - expected: `check-agent-contracts` runs.
-- Touch `crates/pika-desktop/src/lib.rs`:
-  - expected: `check-agent-contracts` runs.
 - Touch `scripts/pikaci-staged-linux-remote.sh`:
   - expected: `check-agent-contracts` runs.
-- Touch `crates/pikahut/Cargo.toml`:
-  - expected: `check-agent-contracts` runs.
-- Touch `crates/pikahut/tests/support.rs`:
-  - expected: `check-agent-contracts` runs.
 - Touch `cli/src/main.rs` only:
-  - expected: `check-pikachat` and `check-agent-contracts` run.
+  - expected: `check-pikachat` runs; `check-agent-contracts` no longer owns stale CLI provisioning coverage.

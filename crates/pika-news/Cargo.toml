@@ -16,6 +16,7 @@ base64 = { workspace = true }
 chrono = { workspace = true, features = ["clock", "serde"] }
 clap = { workspace = true }
 futures = { workspace = true }
+fs2 = { workspace = true }
 globset = "0.4"
 hex = { workspace = true }
 hmac = { workspace = true }

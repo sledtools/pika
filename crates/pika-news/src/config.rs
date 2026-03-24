@@ -17,6 +17,7 @@ pub const DEFAULT_BIND_PORT: u16 = 8787;
 pub const DEFAULT_FORGE_REPO: &str = "sledtools/pika";
 pub const DEFAULT_DEFAULT_BRANCH: &str = "master";
 pub const DEFAULT_MIRROR_POLL_INTERVAL_SECS: u64 = 300;
+pub const DEFAULT_MIRROR_TIMEOUT_SECS: u64 = 120;
 
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
@@ -63,6 +64,8 @@ pub struct ForgeRepoConfig {
     pub mirror_remote: Option<String>,
     #[serde(default)]
     pub mirror_poll_interval_secs: Option<u64>,
+    #[serde(default)]
+    pub mirror_timeout_secs: Option<u64>,
     #[serde(default = "default_ci_command")]
     pub ci_command: Vec<String>,
     #[serde(default)]
@@ -90,6 +93,14 @@ impl Config {
             }
             if forge.mirror_remote.is_some() && forge.mirror_poll_interval_secs.is_none() {
                 forge.mirror_poll_interval_secs = Some(DEFAULT_MIRROR_POLL_INTERVAL_SECS);
+            }
+            if forge.mirror_remote.is_some() {
+                if forge.mirror_timeout_secs == Some(0) {
+                    forge.mirror_timeout_secs = None;
+                }
+                if forge.mirror_timeout_secs.is_none() {
+                    forge.mirror_timeout_secs = Some(DEFAULT_MIRROR_TIMEOUT_SECS);
+                }
             }
             if forge.hook_url.is_none() {
                 forge.hook_url = Some(format!("http://127.0.0.1:{}/news/webhook", self.bind_port));
@@ -182,6 +193,7 @@ canonical_git_dir = "/srv/pika.git"
 default_branch = "master"
 mirror_remote = "github"
 mirror_poll_interval_secs = 300
+mirror_timeout_secs = 120
 ci_command = ["just", "pre-merge"]
 "#;
 
@@ -203,6 +215,7 @@ ci_command = ["just", "pre-merge"]
         assert_eq!(forge.default_branch, "master");
         assert_eq!(forge.mirror_remote.as_deref(), Some("github"));
         assert_eq!(forge.mirror_poll_interval_secs, Some(300));
+        assert_eq!(forge.mirror_timeout_secs, Some(120));
         assert_eq!(forge.ci_command, vec!["just", "pre-merge"]);
     }
 
@@ -228,10 +241,39 @@ canonical_git_dir = "/srv/test.git"
         assert_eq!(forge.ci_command, vec!["just", "pre-merge"]);
         assert_eq!(forge.ci_concurrency, None);
         assert_eq!(forge.mirror_poll_interval_secs, None);
+        assert_eq!(forge.mirror_timeout_secs, None);
         assert_eq!(
             forge.hook_url.as_deref(),
             Some("http://127.0.0.1:9999/news/webhook")
         );
+    }
+
+    #[test]
+    fn mirror_remote_defaults_poll_interval_and_timeout() {
+        let raw = r#"
+repos = ["test/repo"]
+[forge_repo]
+canonical_git_dir = "/srv/test.git"
+mirror_remote = "github"
+"#;
+        let parsed: Config = toml::from_str(raw).expect("parse config");
+        let forge = parsed.effective_forge_repo().expect("forge repo");
+        assert_eq!(forge.mirror_poll_interval_secs, Some(300));
+        assert_eq!(forge.mirror_timeout_secs, Some(120));
+    }
+
+    #[test]
+    fn explicit_zero_mirror_timeout_uses_default() {
+        let raw = r#"
+repos = ["test/repo"]
+[forge_repo]
+canonical_git_dir = "/srv/test.git"
+mirror_remote = "github"
+mirror_timeout_secs = 0
+"#;
+        let parsed: Config = toml::from_str(raw).expect("parse config");
+        let forge = parsed.effective_forge_repo().expect("forge repo");
+        assert_eq!(forge.mirror_timeout_secs, Some(120));
     }
 
     #[test]

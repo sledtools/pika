@@ -3234,6 +3234,18 @@ fn classify_mirror_failure_kind(status: &str, error_text: Option<&str>) -> Optio
         return None;
     }
     let lower = error_text.unwrap_or_default().to_ascii_lowercase();
+    if lower.contains("already in sync; treating this trigger as obsolete") {
+        return Some("obsolete");
+    }
+    if lower.contains("stale mirror sync still holds repo lock") {
+        return Some("stale");
+    }
+    if lower.contains("mirror sync already running") {
+        return Some("busy");
+    }
+    if lower.contains("timed out after") {
+        return Some("timeout");
+    }
     let config_markers = [
         "mirror remote",
         "authentication failed",
@@ -3397,7 +3409,7 @@ fn update_nightly_run_status(conn: &Connection, nightly_run_id: i64) -> anyhow::
 mod tests {
     use rusqlite::params;
 
-    use super::{BranchUpsertInput, CI_LANE_LEASE_LOST};
+    use super::{classify_mirror_failure_kind, BranchUpsertInput, CI_LANE_LEASE_LOST};
     use crate::ci_manifest::ForgeLane;
     use crate::ci_state::CiLaneExecutionReason;
     use crate::storage::Store;
@@ -3489,6 +3501,38 @@ mod tests {
                 .map_err(Into::into)
             })
             .expect("lookup target health row")
+    }
+
+    #[test]
+    fn classifies_mirror_failure_kinds_for_runtime_safety_cases() {
+        assert_eq!(
+            classify_mirror_failure_kind(
+                "failed",
+                Some("mirror sync already running (pid 42, trigger background, elapsed 9s)")
+            ),
+            Some("busy")
+        );
+        assert_eq!(
+            classify_mirror_failure_kind(
+                "failed",
+                Some("stale mirror sync still holds repo lock (pid 42, trigger background, elapsed 999s)")
+            ),
+            Some("stale")
+        );
+        assert_eq!(
+            classify_mirror_failure_kind(
+                "failed",
+                Some("push canonical refs to mirror remote `github` timed out after 120s")
+            ),
+            Some("timeout")
+        );
+        assert_eq!(
+            classify_mirror_failure_kind(
+                "failed",
+                Some("mirror sync already running (pid 42, trigger background, elapsed 3s): mirror is already in sync; treating this trigger as obsolete")
+            ),
+            Some("obsolete")
+        );
     }
 
     #[test]

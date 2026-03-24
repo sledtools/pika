@@ -34,6 +34,7 @@ let
       default_branch = "master";
       mirror_remote = "github";
       mirror_poll_interval_secs = 300;
+      mirror_timeout_secs = 120;
       hook_url = "http://127.0.0.1:${toString servicePort}/news/webhook";
     };
     poll_interval_secs = 300;

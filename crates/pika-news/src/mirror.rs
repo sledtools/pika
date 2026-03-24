@@ -21,6 +21,8 @@ pub struct MirrorRuntimeStatus {
     pub remote_name: Option<String>,
     pub background_enabled: bool,
     pub background_interval_secs: Option<u64>,
+    pub timeout_secs: Option<u64>,
+    pub active_run: Option<forge::MirrorLockStatus>,
     pub github_token_env: String,
 }
 
@@ -42,11 +44,24 @@ pub fn mirror_runtime_status(config: &Config) -> MirrorRuntimeStatus {
             None
         }
     });
+    let timeout_secs = forge_repo.as_ref().and_then(|repo| {
+        if repo.mirror_remote.is_some() {
+            repo.mirror_timeout_secs
+        } else {
+            None
+        }
+    });
+    let active_run = forge_repo
+        .as_ref()
+        .filter(|repo| repo.mirror_remote.is_some())
+        .and_then(forge::current_mirror_lock_status);
     MirrorRuntimeStatus {
         configured: remote_name.is_some(),
         remote_name,
         background_enabled: background_interval_secs.unwrap_or(0) > 0,
         background_interval_secs,
+        timeout_secs,
+        active_run,
         github_token_env: config.github_token_env.clone(),
     }
 }
@@ -94,7 +109,12 @@ pub fn run_mirror_pass(
         return Ok(MirrorPassResult::default());
     };
     let github_token = env::var(&config.github_token_env).ok();
-    match forge::sync_mirror(&forge_repo, remote_name, github_token.as_deref()) {
+    match forge::sync_mirror(
+        &forge_repo,
+        remote_name,
+        github_token.as_deref(),
+        trigger_source,
+    ) {
         Ok(outcome) => {
             store.record_mirror_sync_run(&MirrorSyncRunInput {
                 repo: forge_repo.repo.clone(),
@@ -218,6 +238,7 @@ mod tests {
                 ci_concurrency: Some(2),
                 mirror_remote: mirror_remote.map(str::to_string),
                 mirror_poll_interval_secs: Some(300),
+                mirror_timeout_secs: Some(120),
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: Some("http://127.0.0.1:9999/news/webhook".to_string()),
             }),

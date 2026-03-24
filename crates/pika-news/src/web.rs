@@ -776,23 +776,61 @@ fn build_mirror_health_status(
             summary: Some("background sync disabled; manual sync only".to_string()),
         };
     }
+    if let Some(active_run) = runtime.active_run.as_ref() {
+        let elapsed = active_run
+            .age_secs
+            .map(|age| format!("{age}s"))
+            .unwrap_or_else(|| "unknown".to_string());
+        let trigger = active_run
+            .trigger_source
+            .as_deref()
+            .unwrap_or("unknown trigger");
+        let pid = active_run
+            .pid
+            .map(|value| format!("pid {value}"))
+            .unwrap_or_else(|| "unknown pid".to_string());
+        let summary = if active_run.state == "stale" {
+            format!(
+                "stale mirror run still holds the repo lock ({trigger}, {pid}, elapsed {elapsed})"
+            )
+        } else {
+            format!("mirror sync currently running ({trigger}, {pid}, elapsed {elapsed})")
+        };
+        return ForgeMirrorHealthStatus {
+            state: if active_run.state == "stale" {
+                "error".to_string()
+            } else {
+                "active".to_string()
+            },
+            background_enabled: true,
+            background_interval_secs: runtime.background_interval_secs,
+            last_success_at: status.and_then(|s| s.last_success_at.clone()),
+            last_failure_at: status.and_then(|s| s.last_failure_at.clone()),
+            summary: Some(summary),
+        };
+    }
     if let Some(status) = status {
-        let state = if status.current_failure_kind.is_some() {
+        let state = if matches!(
+            status.current_failure_kind.as_deref(),
+            Some("config" | "stale" | "timeout")
+        ) {
             "error"
+        } else if matches!(
+            status.current_failure_kind.as_deref(),
+            Some("busy" | "obsolete")
+        ) {
+            "active"
         } else {
             "idle"
         };
-        let summary = if status.current_failure_kind.is_some() {
-            Some(format!(
-                "last background attempt failed{}",
-                status
-                    .current_failure_kind
-                    .as_ref()
-                    .map(|kind| format!(" ({kind})"))
-                    .unwrap_or_default()
-            ))
-        } else {
-            Some("background sync enabled".to_string())
+        let summary = match status.current_failure_kind.as_deref() {
+            Some("busy") => Some("another mirror run was already active".to_string()),
+            Some("obsolete") => Some(
+                "another mirror run already completed the needed sync; this trigger was obsolete"
+                    .to_string(),
+            ),
+            Some(kind) => Some(format!("last background attempt failed ({kind})")),
+            None => Some("background sync enabled".to_string()),
         };
         return ForgeMirrorHealthStatus {
             state: state.to_string(),
@@ -4634,6 +4672,7 @@ mod tests {
                 ci_concurrency: Some(2),
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
+                mirror_timeout_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -4758,6 +4797,7 @@ mod tests {
                 ci_concurrency: Some(2),
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
+                mirror_timeout_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: Some("http://127.0.0.1:8788/news/webhook".to_string()),
             }),
@@ -4795,6 +4835,7 @@ mod tests {
                 ci_concurrency: Some(2),
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
+                mirror_timeout_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: Some("http://127.0.0.1:8788/news/webhook".to_string()),
             }),
@@ -4849,6 +4890,8 @@ mod tests {
                 remote_name: Some("github".to_string()),
                 background_enabled: false,
                 background_interval_secs: Some(0),
+                timeout_secs: Some(120),
+                active_run: None,
                 github_token_env: "GITHUB_TOKEN".to_string(),
             },
             None,
@@ -4861,6 +4904,8 @@ mod tests {
                 remote_name: Some("github".to_string()),
                 background_enabled: true,
                 background_interval_secs: Some(300),
+                timeout_secs: Some(120),
+                active_run: None,
                 github_token_env: "GITHUB_TOKEN".to_string(),
             },
             Some(&MirrorStatusRecord {
@@ -4887,6 +4932,55 @@ mod tests {
             }),
         );
         assert_eq!(errored.state, "error");
+    }
+
+    #[test]
+    fn mirror_health_surfaces_active_and_stale_lock_state() {
+        let active = build_mirror_health_status(
+            &MirrorRuntimeStatus {
+                configured: true,
+                remote_name: Some("github".to_string()),
+                background_enabled: true,
+                background_interval_secs: Some(300),
+                timeout_secs: Some(120),
+                active_run: Some(crate::forge::MirrorLockStatus {
+                    state: "active".to_string(),
+                    pid: Some(4242),
+                    trigger_source: Some("post-mutation".to_string()),
+                    operation: Some("git push --prune mirror".to_string()),
+                    started_at: Some("2026-03-24T12:00:00Z".to_string()),
+                    age_secs: Some(7),
+                }),
+                github_token_env: "GITHUB_TOKEN".to_string(),
+            },
+            None,
+        );
+        assert_eq!(active.state, "active");
+
+        let stale = build_mirror_health_status(
+            &MirrorRuntimeStatus {
+                configured: true,
+                remote_name: Some("github".to_string()),
+                background_enabled: true,
+                background_interval_secs: Some(300),
+                timeout_secs: Some(120),
+                active_run: Some(crate::forge::MirrorLockStatus {
+                    state: "stale".to_string(),
+                    pid: Some(4242),
+                    trigger_source: Some("background".to_string()),
+                    operation: Some("git push --prune mirror".to_string()),
+                    started_at: Some("2026-03-24T12:00:00Z".to_string()),
+                    age_secs: Some(999),
+                }),
+                github_token_env: "GITHUB_TOKEN".to_string(),
+            },
+            None,
+        );
+        assert_eq!(stale.state, "error");
+        assert!(stale
+            .summary
+            .unwrap_or_default()
+            .contains("stale mirror run"));
     }
 
     #[test]
@@ -4989,6 +5083,7 @@ mod tests {
                 ci_concurrency: Some(2),
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
+                mirror_timeout_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -5049,6 +5144,7 @@ mod tests {
                 ci_concurrency: Some(2),
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
+                mirror_timeout_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -5097,6 +5193,7 @@ mod tests {
                 ci_concurrency: None,
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
+                mirror_timeout_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -5155,6 +5252,7 @@ mod tests {
                 ci_concurrency: None,
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
+                mirror_timeout_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -5216,6 +5314,7 @@ mod tests {
                 ci_concurrency: None,
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
+                mirror_timeout_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -5284,6 +5383,7 @@ mod tests {
                 ci_concurrency: None,
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
+                mirror_timeout_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -5403,6 +5503,7 @@ mod tests {
                 ci_concurrency: Some(1),
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
+                mirror_timeout_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -5519,6 +5620,7 @@ mod tests {
                 ci_concurrency: None,
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
+                mirror_timeout_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -5604,6 +5706,7 @@ mod tests {
                 ci_concurrency: Some(2),
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
+                mirror_timeout_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -5697,6 +5800,7 @@ mod tests {
                 ci_concurrency: Some(2),
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
+                mirror_timeout_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -5947,6 +6051,7 @@ mod tests {
                 ci_concurrency: None,
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
+                mirror_timeout_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -6039,6 +6144,7 @@ mod tests {
                 ci_concurrency: None,
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
+                mirror_timeout_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -6105,6 +6211,7 @@ mod tests {
                 ci_concurrency: None,
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
+                mirror_timeout_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -6201,6 +6308,7 @@ mod tests {
                 ci_concurrency: None,
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
+                mirror_timeout_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -6282,6 +6390,7 @@ mod tests {
                 ci_concurrency: None,
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
+                mirror_timeout_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -6371,6 +6480,7 @@ mod tests {
                 ci_concurrency: None,
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
+                mirror_timeout_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: None,
             }),
@@ -6478,6 +6588,7 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
                 ci_concurrency: Some(2),
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
+                mirror_timeout_secs: None,
                 ci_command: vec!["./ci.sh".to_string()],
                 hook_url: Some("http://127.0.0.1:9999/news/webhook".to_string()),
             }),

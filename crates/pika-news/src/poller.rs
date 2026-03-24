@@ -157,6 +157,7 @@ mod tests {
                 ci_concurrency: Some(2),
                 mirror_remote: None,
                 mirror_poll_interval_secs: None,
+                mirror_timeout_secs: None,
                 ci_command: vec!["just".to_string(), "pre-merge".to_string()],
                 hook_url: Some("http://127.0.0.1:9999/news/webhook".to_string()),
             }),

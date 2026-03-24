@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
+use std::fs::OpenOptions;
 use std::io::Write;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -11,10 +12,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context};
+use chrono::Utc;
+use fs2::FileExt;
 use pikaci::{RunLifecycleEvent, RunStatus};
 use tempfile::TempDir;
 
-use crate::config::ForgeRepoConfig;
+use crate::config::{ForgeRepoConfig, DEFAULT_MIRROR_TIMEOUT_SECS};
 
 #[derive(Debug, Clone)]
 pub struct CanonicalBranch {
@@ -66,6 +69,35 @@ pub struct MirrorSyncOutcome {
     pub remote_default_head: Option<String>,
     pub lagging_ref_count: i64,
     pub synced_ref_count: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MirrorLockStatus {
+    pub state: String,
+    pub pid: Option<u32>,
+    pub trigger_source: Option<String>,
+    pub operation: Option<String>,
+    pub started_at: Option<String>,
+    pub age_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct MirrorLockMetadata {
+    pid: u32,
+    trigger_source: String,
+    operation: String,
+    started_at: String,
+    started_at_unix_secs: i64,
+}
+
+struct MirrorLockGuard {
+    file: std::fs::File,
+}
+
+impl Drop for MirrorLockGuard {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
 }
 
 pub fn ensure_canonical_repo(repo: &ForgeRepoConfig) -> anyhow::Result<()> {
@@ -451,7 +483,20 @@ pub fn sync_mirror(
     repo: &ForgeRepoConfig,
     remote_name: &str,
     github_token: Option<&str>,
+    trigger_source: &str,
 ) -> anyhow::Result<MirrorSyncOutcome> {
+    let _mirror_lock = match acquire_mirror_lock(repo, trigger_source) {
+        Ok(lock) => lock,
+        Err(lock_err) => {
+            if let Ok(outcome) = inspect_mirror(repo, remote_name) {
+                if outcome.lagging_ref_count == 0 {
+                    return Err(lock_err
+                        .context("mirror is already in sync; treating this trigger as obsolete"));
+                }
+            }
+            return Err(lock_err);
+        }
+    };
     push_mirror(repo, remote_name, github_token)?;
     inspect_mirror(repo, remote_name)
 }
@@ -536,6 +581,142 @@ fn canonical_git_dir(repo: &ForgeRepoConfig) -> PathBuf {
     PathBuf::from(&repo.canonical_git_dir)
 }
 
+fn mirror_timeout(repo: &ForgeRepoConfig) -> Duration {
+    Duration::from_secs(
+        repo.mirror_timeout_secs
+            .unwrap_or(DEFAULT_MIRROR_TIMEOUT_SECS)
+            .max(1),
+    )
+}
+
+fn mirror_lock_path(repo: &ForgeRepoConfig) -> PathBuf {
+    canonical_git_dir(repo).join("pika-news-mirror.lock")
+}
+
+pub fn current_mirror_lock_status(repo: &ForgeRepoConfig) -> Option<MirrorLockStatus> {
+    let path = mirror_lock_path(repo);
+    let file = OpenOptions::new().read(true).write(true).open(&path).ok()?;
+    match file.try_lock_exclusive() {
+        Ok(()) => {
+            let _ = file.unlock();
+            None
+        }
+        Err(err) if err.kind() == ErrorKind::WouldBlock => {
+            let timeout = mirror_timeout(repo);
+            let metadata = read_mirror_lock_metadata(&file).ok().flatten();
+            Some(mirror_lock_status_from_metadata(metadata, timeout))
+        }
+        Err(_) => None,
+    }
+}
+
+fn acquire_mirror_lock(
+    repo: &ForgeRepoConfig,
+    trigger_source: &str,
+) -> anyhow::Result<MirrorLockGuard> {
+    let path = mirror_lock_path(repo);
+    let mut file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("open mirror lock file {}", path.display()))?;
+    match file.try_lock_exclusive() {
+        Ok(()) => {
+            let metadata = MirrorLockMetadata {
+                pid: std::process::id(),
+                trigger_source: trigger_source.to_string(),
+                operation: "git push --prune mirror".to_string(),
+                started_at: Utc::now().to_rfc3339(),
+                started_at_unix_secs: Utc::now().timestamp(),
+            };
+            write_mirror_lock_metadata(&mut file, &metadata)?;
+            Ok(MirrorLockGuard { file })
+        }
+        Err(err) if err.kind() == ErrorKind::WouldBlock => {
+            let status = mirror_lock_status_from_metadata(
+                read_mirror_lock_metadata(&file).ok().flatten(),
+                mirror_timeout(repo),
+            );
+            let trigger = status
+                .trigger_source
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
+            let age = status
+                .age_secs
+                .map(|secs| format!("{secs}s"))
+                .unwrap_or_else(|| "unknown age".to_string());
+            let pid = status
+                .pid
+                .map(|value| format!("pid {value}"))
+                .unwrap_or_else(|| "unknown pid".to_string());
+            if status.state == "stale" {
+                bail!(
+                    "stale mirror sync still holds repo lock ({pid}, trigger {trigger}, elapsed {age})"
+                );
+            }
+            bail!("mirror sync already running ({pid}, trigger {trigger}, elapsed {age})");
+        }
+        Err(err) => Err(err).with_context(|| format!("lock mirror sync file {}", path.display())),
+    }
+}
+
+fn write_mirror_lock_metadata(
+    file: &mut std::fs::File,
+    metadata: &MirrorLockMetadata,
+) -> anyhow::Result<()> {
+    file.set_len(0).context("truncate mirror lock file")?;
+    file.seek(SeekFrom::Start(0))
+        .context("rewind mirror lock file")?;
+    serde_json::to_writer(&mut *file, metadata).context("write mirror lock metadata")?;
+    file.write_all(b"\n")
+        .context("terminate mirror lock metadata")?;
+    file.sync_data().context("flush mirror lock metadata")?;
+    Ok(())
+}
+
+fn read_mirror_lock_metadata(file: &std::fs::File) -> anyhow::Result<Option<MirrorLockMetadata>> {
+    let mut reader = file
+        .try_clone()
+        .context("clone mirror lock file for metadata read")?;
+    reader
+        .seek(SeekFrom::Start(0))
+        .context("rewind mirror lock file for metadata read")?;
+    let mut raw = String::new();
+    reader
+        .read_to_string(&mut raw)
+        .context("read mirror lock metadata")?;
+    if raw.trim().is_empty() {
+        return Ok(None);
+    }
+    let metadata = serde_json::from_str(raw.trim()).context("parse mirror lock metadata")?;
+    Ok(Some(metadata))
+}
+
+fn mirror_lock_status_from_metadata(
+    metadata: Option<MirrorLockMetadata>,
+    timeout: Duration,
+) -> MirrorLockStatus {
+    let age_secs = metadata.as_ref().and_then(|meta| {
+        let elapsed = Utc::now().timestamp() - meta.started_at_unix_secs;
+        (elapsed >= 0).then_some(elapsed as u64)
+    });
+    let is_stale = age_secs.map(|age| age > timeout.as_secs()).unwrap_or(false);
+    MirrorLockStatus {
+        state: if is_stale {
+            "stale".to_string()
+        } else {
+            "active".to_string()
+        },
+        pid: metadata.as_ref().map(|meta| meta.pid),
+        trigger_source: metadata.as_ref().map(|meta| meta.trigger_source.clone()),
+        operation: metadata.as_ref().map(|meta| meta.operation.clone()),
+        started_at: metadata.as_ref().map(|meta| meta.started_at.clone()),
+        age_secs,
+    }
+}
+
 fn effective_hooks_dir(repo: &ForgeRepoConfig) -> anyhow::Result<PathBuf> {
     let git_dir = canonical_git_dir(repo);
     let output = Command::new("git")
@@ -577,6 +758,7 @@ fn push_mirror(
 ) -> anyhow::Result<()> {
     let mut cmd = Command::new("git");
     cmd.arg("--git-dir").arg(canonical_git_dir(repo));
+    cmd.args(["-c", "gc.auto=0", "-c", "maintenance.auto=0"]);
     let remote_url = remote_url(repo, remote_name)?;
     if remote_url.contains("github.com") {
         if let Some(token) = github_token {
@@ -586,10 +768,12 @@ fn push_mirror(
             ]);
         }
     }
-    let output = cmd
-        .args(["push", "--prune", remote_name, "refs/heads/*:refs/heads/*"])
-        .output()
-        .with_context(|| format!("push canonical refs to mirror remote `{remote_name}`"))?;
+    cmd.args(["push", "--prune", remote_name, "refs/heads/*:refs/heads/*"]);
+    let output = run_command_output_bounded(
+        cmd,
+        mirror_timeout(repo),
+        &format!("push canonical refs to mirror remote `{remote_name}`"),
+    )?;
     decode_git_output(output).map(|_| ())
 }
 
@@ -627,8 +811,12 @@ fn remote_head_refs(
     repo: &ForgeRepoConfig,
     remote_name: &str,
 ) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
-    let output = git_bare(repo, ["ls-remote", "--heads", remote_name])
-        .with_context(|| format!("list remote heads for mirror `{remote_name}`"))?;
+    let output = git_bare_bounded(
+        repo,
+        mirror_timeout(repo),
+        ["ls-remote", "--heads", remote_name],
+        &format!("list remote heads for mirror `{remote_name}`"),
+    )?;
     let mut refs = std::collections::BTreeMap::new();
     for line in output.lines() {
         let mut parts = line.split_whitespace();
@@ -711,6 +899,58 @@ fn git_bare<const N: usize>(repo: &ForgeRepoConfig, args: [&str; N]) -> anyhow::
         .output()
         .context("run git command against canonical bare repo")?;
     decode_git_output(output)
+}
+
+fn git_bare_bounded<const N: usize>(
+    repo: &ForgeRepoConfig,
+    timeout: Duration,
+    args: [&str; N],
+    context: &str,
+) -> anyhow::Result<String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("--git-dir")
+        .arg(canonical_git_dir(repo))
+        .args(["-c", "gc.auto=0", "-c", "maintenance.auto=0"])
+        .args(args);
+    let output = run_command_output_bounded(cmd, timeout, context)?;
+    decode_git_output(output)
+}
+
+fn run_command_output_bounded(
+    mut cmd: Command,
+    timeout: Duration,
+    context: &str,
+) -> anyhow::Result<Output> {
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().with_context(|| context.to_string())?;
+    let started = Instant::now();
+    loop {
+        if child
+            .try_wait()
+            .with_context(|| format!("poll {context}"))?
+            .is_some()
+        {
+            return child
+                .wait_with_output()
+                .with_context(|| format!("collect output for {context}"));
+        }
+        if started.elapsed() > timeout {
+            let _ = child.kill();
+            let output = child
+                .wait_with_output()
+                .with_context(|| format!("collect timed-out output for {context}"))?;
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if stderr.is_empty() {
+                bail!("{context} timed out after {}s", timeout.as_secs());
+            }
+            bail!(
+                "{context} timed out after {}s: {}",
+                timeout.as_secs(),
+                stderr
+            );
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn write_merge_tree(
@@ -965,10 +1205,14 @@ mod tests {
     use std::process::Command;
     use std::time::Duration;
 
+    use chrono::Utc;
+
     use super::{
-        close_branch, create_merge_commit, current_branch_head, github_http_auth_header,
-        inspect_mirror, install_hooks, merge_branch, publish_merge_refs, render_pikaci_stdout_line,
-        resolve_hook_tool, run_ci_command_for_head_with_heartbeat, write_merge_tree,
+        acquire_mirror_lock, close_branch, create_merge_commit, current_branch_head,
+        current_mirror_lock_status, github_http_auth_header, inspect_mirror, install_hooks,
+        merge_branch, mirror_lock_path, publish_merge_refs, render_pikaci_stdout_line,
+        resolve_hook_tool, run_ci_command_for_head_with_heartbeat, run_command_output_bounded,
+        write_merge_tree, write_mirror_lock_metadata, MirrorLockMetadata,
     };
     use crate::config::ForgeRepoConfig;
 
@@ -1014,6 +1258,7 @@ mod tests {
             ci_concurrency: Some(2),
             mirror_remote: None,
             mirror_poll_interval_secs: None,
+            mirror_timeout_secs: None,
             ci_command: vec!["./ci.sh".to_string()],
             hook_url: Some("http://127.0.0.1:9/news/webhook".to_string()),
         };
@@ -1380,6 +1625,43 @@ mod tests {
         let outcome = inspect_mirror(&forge_repo, "github").expect("inspect mirror");
         assert_eq!(outcome.synced_ref_count, 1);
         assert_eq!(outcome.lagging_ref_count, 1);
+    }
+
+    #[test]
+    fn bounded_command_times_out_and_kills_child() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 2"]);
+        let err = run_command_output_bounded(cmd, Duration::from_millis(100), "sleep command")
+            .expect_err("command should time out");
+        assert!(err.to_string().contains("timed out after"));
+    }
+
+    #[test]
+    fn current_mirror_lock_status_reports_stale_lock() {
+        let (_root, forge_repo, _seed) = setup_repo();
+        let mut guard = acquire_mirror_lock(&forge_repo, "manual").expect("acquire mirror lock");
+        let stale_metadata = MirrorLockMetadata {
+            pid: 4242,
+            trigger_source: "manual".to_string(),
+            operation: "git push --prune mirror".to_string(),
+            started_at: "2026-03-24T00:00:00Z".to_string(),
+            started_at_unix_secs: Utc::now().timestamp() - 600,
+        };
+        write_mirror_lock_metadata(&mut guard.file, &stale_metadata)
+            .expect("rewrite stale mirror lock metadata");
+
+        let status = current_mirror_lock_status(&forge_repo).expect("lock status");
+        assert_eq!(status.state, "stale");
+        assert_eq!(status.trigger_source.as_deref(), Some("manual"));
+        assert_eq!(status.pid, Some(4242));
+    }
+
+    #[test]
+    fn mirror_lock_file_lives_in_canonical_git_dir() {
+        let (_root, forge_repo, _seed) = setup_repo();
+        let lock_path = mirror_lock_path(&forge_repo);
+        assert!(lock_path.ends_with("pika-news-mirror.lock"));
+        assert!(lock_path.starts_with(&forge_repo.canonical_git_dir));
     }
 
     #[test]

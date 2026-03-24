@@ -214,6 +214,13 @@
           return 'idle';
         }
 
+        function mirrorFailureTone(kind, status, lagging) {
+          if (kind === 'config' || kind === 'stale' || kind === 'timeout') return 'error';
+          if (kind === 'busy' || kind === 'obsolete') return 'warning';
+          if (status === 'failed') return 'error';
+          return (lagging || 0) > 0 ? 'warning' : 'success';
+        }
+
         function renderForgeSubsystemCard(title, subsystem, extraLines) {
           var state = subsystem && subsystem.state ? subsystem.state : 'idle';
           var lines = [];
@@ -316,6 +323,24 @@
             };
           }
           var remoteName = escapeHtml(runtime.remote_name || (status && status.remote_name) || 'unknown');
+          if (runtime.active_run) {
+            var active = runtime.active_run;
+            var activeTone = active.state === 'stale' ? 'error' : 'warning';
+            var lastSuccess = status ? status.last_success_at : null;
+            var lastFailure = status ? status.last_failure_at : null;
+            return {
+              className: 'status ' + activeTone,
+              html:
+                'remote <code>' + remoteName + '</code> · ' +
+                (active.state === 'stale' ? 'stale mirror run detected' : 'mirror sync currently running') + ' · ' +
+                'trigger <strong>' + escapeHtml(active.trigger_source || 'unknown') + '</strong> · ' +
+                'pid <strong>' + escapeHtml(String(active.pid || 'unknown')) + '</strong> · ' +
+                'elapsed <strong>' + escapeHtml(String(active.age_secs || 0)) + 's</strong> · ' +
+                'timeout <strong>' + escapeHtml(String(runtime.timeout_secs || 0)) + 's</strong><br />' +
+                'last success ' + escapeHtml(lastSuccess || 'never') + ' · ' +
+                'last failure ' + escapeHtml(lastFailure || 'none')
+            };
+          }
           if (!runtime.background_enabled) {
             if (status && status.last_attempt) {
               return {
@@ -339,7 +364,8 @@
             return {
               html:
                 'Mirror remote <code>' + remoteName + '</code> is configured and background sync is enabled. ' +
-                'No sync attempts recorded yet. Background interval: <strong>' + escapeHtml(String(runtime.background_interval_secs || 0)) + 's</strong>.',
+                'No sync attempts recorded yet. Background interval: <strong>' + escapeHtml(String(runtime.background_interval_secs || 0)) + 's</strong>. ' +
+                'Timeout: <strong>' + escapeHtml(String(runtime.timeout_secs || 0)) + 's</strong>.',
               className: 'status muted'
             };
           }
@@ -347,14 +373,18 @@
           var lastAttempt = status.last_attempt;
           var backgroundState = status.current_failure_kind === 'config'
             ? 'background sync enabled but blocked by config or credentials'
-            : (lastAttempt.status === 'failed'
-              ? 'background sync enabled but currently failing'
-              : 'background sync enabled');
-          var stateClass = status.current_failure_kind === 'config'
-            ? 'error'
-            : (lastAttempt.status === 'failed'
-              ? 'error'
-              : ((status.current_lagging_ref_count || 0) > 0 ? 'warning' : 'success'));
+            : (status.current_failure_kind === 'stale'
+              ? 'background sync enabled but the last run went stale'
+              : (status.current_failure_kind === 'timeout'
+                ? 'background sync enabled but the last run timed out'
+                : (status.current_failure_kind === 'busy'
+                  ? 'another mirror run was already active'
+                  : (status.current_failure_kind === 'obsolete'
+                    ? 'another mirror run already finished the needed sync'
+                    : (lastAttempt.status === 'failed'
+                      ? 'background sync enabled but currently failing'
+                      : 'background sync enabled')))));
+          var stateClass = mirrorFailureTone(status.current_failure_kind, lastAttempt.status, status.current_lagging_ref_count);
           var remoteHead = lastAttempt.remote_default_head || 'missing';
           var localHead = lastAttempt.local_default_head || 'missing';
           var lagText = (status.current_lagging_ref_count || 0) > 0
@@ -369,7 +399,7 @@
               'remote <code>' + escapeHtml(status.remote_name) + '</code> · ' +
               backgroundState + ' · ' +
               'last attempt <strong>' + escapeHtml(lastAttempt.status) + '</strong> at ' + escapeHtml(lastAttempt.finished_at || lastAttempt.created_at || 'unknown') + ' · ' +
-              lagText + '<br />' +
+              lagText + ' · timeout <strong>' + escapeHtml(String(runtime.timeout_secs || 0)) + 's</strong><br />' +
               'last success ' + escapeHtml(status.last_success_at || 'never') + ' · ' +
               'last failure ' + escapeHtml(status.last_failure_at || 'none') + ' · ' +
               'consecutive failures <strong>' + escapeHtml(String(status.consecutive_failure_count || 0)) + '</strong><br />' +
@@ -390,11 +420,7 @@
           }
 
           mirrorHistoryEl.innerHTML = history.map(function (run) {
-            var stateClass = run.failure_kind === 'config'
-              ? 'error'
-              : (run.status === 'failed'
-              ? 'error'
-              : ((run.lagging_ref_count || 0) > 0 ? 'warning' : 'success'));
+            var stateClass = mirrorFailureTone(run.failure_kind, run.status, run.lagging_ref_count);
             var errorBlock = run.error_text
               ? '<div class="mirror-error ' + stateClass + '">' + escapeHtml(run.error_text) + '</div>'
               : '';

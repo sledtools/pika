@@ -28,6 +28,7 @@ canonical_git_dir = "/var/lib/pika-news/pika.git"
 default_branch = "master"
 mirror_remote = "github"
 mirror_poll_interval_secs = 300
+mirror_timeout_secs = 120
 hook_url = "http://127.0.0.1:8787/news/webhook"
 ```
 
@@ -35,6 +36,7 @@ hook_url = "http://127.0.0.1:8787/news/webhook"
 - `forge_repo`: canonical forge metadata for the single hosted `pika` bare repo.
 - `forge_repo.mirror_remote`: outbound mirror remote name in the canonical bare repo, for example `github`.
 - `forge_repo.mirror_poll_interval_secs`: hosted background mirror cadence in seconds. Set `0` to disable background mirroring and keep manual sync only.
+- `forge_repo.mirror_timeout_secs`: hard timeout for outbound mirror push and inspection git commands. This bounds stale mirror jobs so they do not linger for hours and interfere with unrelated git work.
 - `ci/forge-lanes.toml`: checked-in source of truth for canonical pre-merge lane selection and nightly lane definitions. Branch pushes are evaluated against the branch head's proposed manifest; nightly uses the default branch manifest.
 - `forge_repo.hook_url`: internal canonical-bare-repo hook target. This is used by the forge-managed Git hook path, not by GitHub repo webhooks.
 - `poll_interval_secs`: interval used by hosted mode repair scans of the canonical bare repo.

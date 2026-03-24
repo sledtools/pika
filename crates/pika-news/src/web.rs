@@ -296,17 +296,22 @@ struct DetailTemplate {
     repo: String,
     branch_id: i64,
     branch_name: String,
+    title: String,
     target_branch: String,
     updated_at: String,
     branch_state: String,
+    tutorial_status: String,
+    ci_status: String,
+    head_sha: String,
+    merge_base_sha: String,
     merge_commit_sha: Option<String>,
     executive_html: Option<String>,
     media_links: Vec<MediaLinkView>,
     error_message: Option<String>,
     steps: Vec<StepView>,
     diff_json: Option<String>,
-    branch_ci_live_html: String,
-    branch_ci_live_enabled: bool,
+    branch_ci_summary_html: String,
+    branch_ci_summary_enabled: bool,
     review_mode: bool,
 }
 
@@ -330,6 +335,25 @@ struct InboxTemplate {}
 #[derive(Template)]
 #[template(path = "admin.html")]
 struct AdminTemplate {}
+
+#[derive(Template)]
+#[template(path = "branch_ci.html")]
+struct BranchCiTemplate {
+    page_title: String,
+    repo: String,
+    branch_id: i64,
+    branch_name: String,
+    title: String,
+    target_branch: String,
+    updated_at: String,
+    branch_state: String,
+    head_sha: String,
+    merge_base_sha: String,
+    review_mode: bool,
+    back_href: String,
+    branch_ci_live_html: String,
+    branch_ci_live_enabled: bool,
+}
 
 #[derive(Clone)]
 struct FeedItemView {
@@ -376,10 +400,33 @@ struct PageNoticeView {
 }
 
 #[derive(Clone, serde::Serialize)]
+struct CiSummaryRunView {
+    id: i64,
+    status: String,
+    status_tone: String,
+    lane_count: usize,
+    created_at: String,
+    source_head_sha: String,
+    rerun_of_run_id: Option<i64>,
+    success_count: usize,
+    active_count: usize,
+    failed_count: usize,
+    lanes: Vec<CiSummaryLaneView>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct CiSummaryLaneView {
+    title: String,
+    status: String,
+    status_tone: String,
+}
+
+#[derive(Clone, serde::Serialize)]
 struct CiRunView {
     id: i64,
     source_head_sha: String,
     status: String,
+    status_tone: String,
     lane_count: usize,
     rerun_of_run_id: Option<i64>,
     created_at: String,
@@ -395,8 +442,7 @@ struct CiLaneView {
     title: String,
     entrypoint: String,
     status: String,
-    status_badge_class: String,
-    is_failed: bool,
+    status_tone: String,
     pikaci_run_id: Option<String>,
     pikaci_target_id: Option<String>,
     log_text: Option<String>,
@@ -439,10 +485,22 @@ struct BranchCiLiveTemplate {
     branch_state: String,
     tutorial_status: String,
     ci_status: String,
+    ci_status_tone: String,
     live_active: bool,
     ci_runs: Vec<CiRunView>,
     page_notices: Vec<PageNoticeView>,
     latest_failed_lane_count: usize,
+}
+
+#[derive(Template)]
+#[template(path = "branch_ci_summary.html")]
+struct BranchCiSummaryTemplate {
+    ci_status: String,
+    ci_status_tone: String,
+    live_active: bool,
+    ci_details_path: String,
+    latest_run: Option<CiSummaryRunView>,
+    page_notices: Vec<PageNoticeView>,
 }
 
 #[derive(Template)]
@@ -464,6 +522,73 @@ struct NightlyLiveTemplate {
 #[derive(serde::Serialize)]
 struct LiveHtmlPayload {
     html: String,
+}
+
+fn deserialize_boolish<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct BoolishVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for BoolishVisitor {
+        type Value = bool;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a boolean or boolean-like value")
+        }
+
+        fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+            Ok(value)
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            match value {
+                0 => Ok(false),
+                1 => Ok(true),
+                _ => Err(E::custom("expected 0 or 1")),
+            }
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            match value {
+                0 => Ok(false),
+                1 => Ok(true),
+                _ => Err(E::custom("expected 0 or 1")),
+            }
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            match value {
+                "1" | "true" | "TRUE" | "True" => Ok(true),
+                "0" | "false" | "FALSE" | "False" => Ok(false),
+                _ => Err(E::custom("expected true/false or 1/0")),
+            }
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            self.visit_str(&value)
+        }
+    }
+
+    deserializer.deserialize_any(BoolishVisitor)
+}
+
+#[derive(Clone, Copy, Default, serde::Deserialize)]
+struct ReviewModeQuery {
+    #[serde(default, deserialize_with = "deserialize_boolish")]
+    review: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -523,6 +648,53 @@ struct ForgeNightlyDetailResponse {
 
 fn now_string() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+fn ci_status_tone(status: &str) -> &'static str {
+    match status {
+        "success" | "passed" | "succeeded" | "ready" => "success",
+        "failed" | "error" | "lost" | "timed_out" | "timeout" | "cancelled" => "danger",
+        "queued"
+        | "running"
+        | "pending"
+        | "waiting"
+        | "waiting_for_capacity"
+        | "blocked_by_concurrency_group"
+        | "blocked_by_target_health"
+        | "needs_attention" => "warning",
+        _ => "neutral",
+    }
+}
+
+fn branch_ci_page_path(branch_id: i64, review_mode: bool) -> String {
+    if review_mode {
+        format!("/news/branch/{}/ci?review=true", branch_id)
+    } else {
+        format!("/news/branch/{}/ci", branch_id)
+    }
+}
+
+fn branch_detail_path(branch_id: i64, review_mode: bool) -> String {
+    if review_mode {
+        format!("/news/inbox/review/{}", branch_id)
+    } else {
+        format!("/news/branch/{}", branch_id)
+    }
+}
+
+fn ci_lane_counts(run: &BranchCiRunRecord) -> (usize, usize, usize) {
+    let mut success_count = 0;
+    let mut active_count = 0;
+    let mut failed_count = 0;
+    for lane in &run.lanes {
+        match ci_status_tone(&lane.status) {
+            "success" => success_count += 1,
+            "warning" => active_count += 1,
+            "danger" => failed_count += 1,
+            _ => {}
+        }
+    }
+    (success_count, active_count, failed_count)
 }
 
 fn forge_issue(severity: &str, code: &str, message: impl Into<String>) -> ForgeHealthIssue {
@@ -1012,10 +1184,15 @@ pub async fn serve(
         .route("/", get(feed_handler))
         .route("/news", get(feed_handler))
         .route("/news/branch/:pr_id", get(detail_handler))
+        .route("/news/branch/:branch_id/ci", get(branch_ci_page_handler))
         .route("/news/nightly/:nightly_run_id", get(nightly_handler))
         .route(
             "/news/branch/:branch_id/ci/stream",
             get(branch_ci_stream_handler),
+        )
+        .route(
+            "/news/branch/:branch_id/ci/stream/full",
+            get(branch_ci_full_stream_handler),
         )
         .route(
             "/news/nightly/:nightly_run_id/stream",
@@ -1248,6 +1425,46 @@ async fn detail_handler(
     detail_page(state, pr_id, false).await
 }
 
+async fn branch_ci_page_handler(
+    State(state): State<Arc<AppState>>,
+    Path(branch_id): Path<i64>,
+    Query(query): Query<ReviewModeQuery>,
+) -> impl IntoResponse {
+    let (detail, ci_runs) =
+        match load_branch_detail_and_runs(Arc::clone(&state), branch_id, 8).await {
+            Ok(Some(result)) => result,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    format!("branch {} not found", branch_id),
+                )
+                    .into_response();
+            }
+            Err((status, message)) => return (status, message).into_response(),
+        };
+
+    match render_branch_ci_template_with_notices(
+        detail,
+        ci_runs,
+        branch_page_notices(&state),
+        query.review,
+    ) {
+        Ok(template) => match template.render() {
+            Ok(rendered) => Html(rendered).into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to render branch ci template: {}", err),
+            )
+                .into_response(),
+        },
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to build branch ci view: {}", err),
+        )
+            .into_response(),
+    }
+}
+
 async fn inbox_review_handler(
     State(state): State<Arc<AppState>>,
     Path(review_id): Path<i64>,
@@ -1375,9 +1592,46 @@ struct BranchCiLiveSnapshot {
     active: bool,
 }
 
+struct BranchCiSummarySnapshot {
+    html: String,
+    active: bool,
+}
+
 struct NightlyLiveSnapshot {
     html: String,
     active: bool,
+}
+
+async fn load_branch_ci_summary_snapshot(
+    state: Arc<AppState>,
+    branch_id: i64,
+    review_mode: bool,
+) -> Result<Option<BranchCiSummarySnapshot>, (StatusCode, String)> {
+    let detail_store = state.store.clone();
+    let runs_store = state.store.clone();
+    let detail = match tokio::task::spawn_blocking(move || {
+        detail_store.get_branch_detail(branch_id)
+    })
+    .await
+    {
+        Ok(Ok(Some(record))) => record,
+        Ok(Ok(None)) => return Ok(None),
+        Ok(Err(err)) => return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
+        Err(err) => return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
+    };
+    let ci_runs =
+        match tokio::task::spawn_blocking(move || runs_store.list_branch_ci_runs(branch_id, 8))
+            .await
+        {
+            Ok(Ok(runs)) => runs,
+            Ok(Err(err)) => return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
+            Err(err) => return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
+        };
+    let html =
+        render_branch_ci_summary_html(&detail, &ci_runs, &branch_page_notices(&state), review_mode)
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let active = branch_ci_runs_are_active(&ci_runs);
+    Ok(Some(BranchCiSummarySnapshot { html, active }))
 }
 
 async fn load_branch_ci_live_snapshot(
@@ -1450,6 +1704,55 @@ fn nightly_live_update_error_html(status: StatusCode, message: &str) -> String {
         status.as_u16(),
         message
     )
+}
+
+async fn next_branch_ci_summary_snapshot(
+    receiver: &mut tokio::sync::broadcast::Receiver<CiLiveUpdate>,
+    state: Arc<AppState>,
+    branch_id: i64,
+    review_mode: bool,
+) -> Option<BranchCiSummarySnapshot> {
+    loop {
+        match receiver.recv().await {
+            Ok(CiLiveUpdate::BranchChanged {
+                branch_id: updated_branch_id,
+                ..
+            }) if updated_branch_id == branch_id => {
+                return match load_branch_ci_summary_snapshot(
+                    Arc::clone(&state),
+                    branch_id,
+                    review_mode,
+                )
+                .await
+                {
+                    Ok(Some(snapshot)) => Some(snapshot),
+                    Ok(None) => None,
+                    Err((status, message)) => Some(BranchCiSummarySnapshot {
+                        html: branch_live_update_error_html(status, &message),
+                        active: false,
+                    }),
+                };
+            }
+            Ok(_) => continue,
+            Err(RecvError::Lagged(_)) => {
+                return match load_branch_ci_summary_snapshot(
+                    Arc::clone(&state),
+                    branch_id,
+                    review_mode,
+                )
+                .await
+                {
+                    Ok(Some(snapshot)) => Some(snapshot),
+                    Ok(None) => None,
+                    Err((status, message)) => Some(BranchCiSummarySnapshot {
+                        html: branch_live_update_error_html(status, &message),
+                        active: false,
+                    }),
+                };
+            }
+            Err(RecvError::Closed) => return None,
+        }
+    }
 }
 
 async fn next_branch_ci_live_snapshot(
@@ -1525,6 +1828,68 @@ async fn next_nightly_live_snapshot(
 }
 
 async fn branch_ci_stream_handler(
+    State(state): State<Arc<AppState>>,
+    Path(branch_id): Path<i64>,
+    Query(query): Query<ReviewModeQuery>,
+) -> impl IntoResponse {
+    let review_mode = query.review;
+    let initial =
+        match load_branch_ci_summary_snapshot(Arc::clone(&state), branch_id, review_mode).await {
+            Ok(Some(snapshot)) => snapshot,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    format!("branch {} not found", branch_id),
+                )
+                    .into_response();
+            }
+            Err((status, message)) => return (status, message).into_response(),
+        };
+    let receiver = state.live_updates.subscribe();
+    let stream = stream::unfold(
+        Some((Some(initial), receiver, state, branch_id)),
+        move |state| async move {
+            let (pending, mut receiver, state, branch_id) = match state {
+                Some(state) => state,
+                None => return None,
+            };
+            if let Some(snapshot) = pending {
+                let next_state = if snapshot.active {
+                    Some((None, receiver, state, branch_id))
+                } else {
+                    None
+                };
+                return Some((live_html_event(snapshot.html), next_state));
+            }
+            let snapshot = match next_branch_ci_summary_snapshot(
+                &mut receiver,
+                Arc::clone(&state),
+                branch_id,
+                review_mode,
+            )
+            .await
+            {
+                Some(snapshot) => snapshot,
+                None => return None,
+            };
+            let next_state = if snapshot.active {
+                Some((None, receiver, state, branch_id))
+            } else {
+                None
+            };
+            Some((live_html_event(snapshot.html), next_state))
+        },
+    );
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keep-alive"),
+        )
+        .into_response()
+}
+
+async fn branch_ci_full_stream_handler(
     State(state): State<Arc<AppState>>,
     Path(branch_id): Path<i64>,
 ) -> impl IntoResponse {
@@ -1705,8 +2070,9 @@ fn render_detail_template_with_notices(
         }
     }
 
-    let branch_ci_live_html = render_branch_ci_live_html(&record, &ci_runs, &page_notices)?;
-    let branch_ci_live_enabled = branch_ci_runs_are_active(&ci_runs);
+    let branch_ci_summary_html =
+        render_branch_ci_summary_html(&record, &ci_runs, &page_notices, review_mode)?;
+    let branch_ci_summary_enabled = branch_ci_runs_are_active(&ci_runs);
 
     Ok(DetailTemplate {
         page_title: format!(
@@ -1716,9 +2082,14 @@ fn render_detail_template_with_notices(
         repo: record.repo,
         branch_id: record.branch_id,
         branch_name: record.branch_name,
+        title: record.title,
         target_branch: record.target_branch,
         updated_at: record.updated_at,
         branch_state: record.branch_state.clone(),
+        tutorial_status: record.tutorial_status,
+        ci_status: record.ci_status,
+        head_sha: record.head_sha,
+        merge_base_sha: record.merge_base_sha,
         merge_commit_sha: record.merge_commit_sha,
         executive_html,
         media_links,
@@ -1733,9 +2104,35 @@ fn render_detail_template_with_notices(
                 .unwrap_or_default()
                 .replace("</", r"<\/")
         }),
+        branch_ci_summary_html,
+        branch_ci_summary_enabled,
+        review_mode,
+    })
+}
+
+fn render_branch_ci_template_with_notices(
+    record: BranchDetailRecord,
+    ci_runs: Vec<BranchCiRunRecord>,
+    page_notices: Vec<PageNoticeView>,
+    review_mode: bool,
+) -> anyhow::Result<BranchCiTemplate> {
+    let branch_ci_live_html = render_branch_ci_live_html(&record, &ci_runs, &page_notices)?;
+    let branch_ci_live_enabled = branch_ci_runs_are_active(&ci_runs);
+    Ok(BranchCiTemplate {
+        page_title: format!("{} #{} CI", record.repo, record.branch_id),
+        repo: record.repo,
+        branch_id: record.branch_id,
+        branch_name: record.branch_name,
+        title: record.title,
+        target_branch: record.target_branch,
+        updated_at: record.updated_at,
+        branch_state: record.branch_state,
+        head_sha: record.head_sha,
+        merge_base_sha: record.merge_base_sha,
+        review_mode,
+        back_href: branch_detail_path(record.branch_id, review_mode),
         branch_ci_live_html,
         branch_ci_live_enabled,
-        review_mode,
     })
 }
 
@@ -1800,6 +2197,7 @@ fn render_branch_ci_live_html(
         branch_state: record.branch_state.clone(),
         tutorial_status: record.tutorial_status.clone(),
         ci_status: record.ci_status.clone(),
+        ci_status_tone: ci_status_tone(&record.ci_status).to_string(),
         live_active: branch_ci_runs_are_active(ci_runs),
         ci_runs: ci_runs.iter().cloned().map(map_ci_run_view).collect(),
         page_notices: page_notices.to_vec(),
@@ -1807,6 +2205,25 @@ fn render_branch_ci_live_html(
     }
     .render()
     .context("render branch ci live template")
+}
+
+fn render_branch_ci_summary_html(
+    record: &BranchDetailRecord,
+    ci_runs: &[BranchCiRunRecord],
+    page_notices: &[PageNoticeView],
+    review_mode: bool,
+) -> anyhow::Result<String> {
+    let latest_run = ci_runs.first().map(map_ci_summary_run);
+    BranchCiSummaryTemplate {
+        ci_status: record.ci_status.clone(),
+        ci_status_tone: ci_status_tone(&record.ci_status).to_string(),
+        live_active: branch_ci_runs_are_active(ci_runs),
+        ci_details_path: branch_ci_page_path(record.branch_id, review_mode),
+        latest_run,
+        page_notices: page_notices.to_vec(),
+    }
+    .render()
+    .context("render branch ci summary template")
 }
 
 fn render_nightly_live_html(
@@ -1841,10 +2258,12 @@ fn render_nightly_live_html(
 }
 
 fn map_ci_run_view(run: BranchCiRunRecord) -> CiRunView {
+    let status_tone = ci_status_tone(&run.status).to_string();
     CiRunView {
         id: run.id,
         source_head_sha: run.source_head_sha,
         status: run.status,
+        status_tone,
         lane_count: run.lane_count,
         rerun_of_run_id: run.rerun_of_run_id,
         created_at: run.created_at,
@@ -1855,8 +2274,6 @@ fn map_ci_run_view(run: BranchCiRunRecord) -> CiRunView {
 }
 
 fn map_ci_lane_view(lane: BranchCiLaneRecord) -> CiLaneView {
-    let status_badge_class = lane_status_badge_class(&lane.status).to_string();
-    let is_failed = lane.status == "failed";
     let operator_hint = lane_operator_hint(
         &lane.status,
         &lane.created_at,
@@ -1865,14 +2282,14 @@ fn map_ci_lane_view(lane: BranchCiLaneRecord) -> CiLaneView {
         lane.last_heartbeat_at.as_deref(),
         lane.lease_expires_at.as_deref(),
     );
+    let status_tone = ci_status_tone(&lane.status).to_string();
     CiLaneView {
         id: lane.id,
         lane_id: lane.lane_id,
         title: lane.title,
         entrypoint: lane.entrypoint,
         status: lane.status,
-        status_badge_class,
-        is_failed,
+        status_tone,
         pikaci_run_id: lane.pikaci_run_id,
         pikaci_target_id: lane.pikaci_target_id,
         log_text: lane.log_text,
@@ -1884,6 +2301,31 @@ fn map_ci_lane_view(lane: BranchCiLaneRecord) -> CiLaneView {
         last_heartbeat_at: lane.last_heartbeat_at,
         lease_expires_at: lane.lease_expires_at,
         operator_hint,
+    }
+}
+
+fn map_ci_summary_run(run: &BranchCiRunRecord) -> CiSummaryRunView {
+    let (success_count, active_count, failed_count) = ci_lane_counts(run);
+    CiSummaryRunView {
+        id: run.id,
+        status: run.status.clone(),
+        status_tone: ci_status_tone(&run.status).to_string(),
+        lane_count: run.lane_count,
+        created_at: run.created_at.clone(),
+        source_head_sha: run.source_head_sha.clone(),
+        rerun_of_run_id: run.rerun_of_run_id,
+        success_count,
+        active_count,
+        failed_count,
+        lanes: run
+            .lanes
+            .iter()
+            .map(|lane| CiSummaryLaneView {
+                title: lane.title.clone(),
+                status: lane.status.clone(),
+                status_tone: ci_status_tone(&lane.status).to_string(),
+            })
+            .collect(),
     }
 }
 
@@ -1990,7 +2432,6 @@ fn lane_operator_hint(
             .or_else(|| Some(format!("Current state: {status}."))),
     }
 }
-
 #[derive(serde::Deserialize)]
 struct ForgeBranchResolveQuery {
     branch_name: String,
@@ -4016,10 +4457,11 @@ mod tests {
         fail_branch_ci_lane_handler, fail_nightly_lane_handler, inbox_review_handler,
         load_branch_ci_live_snapshot, load_nightly_live_snapshot, markdown_to_safe_html,
         next_branch_ci_live_snapshot, next_nightly_live_snapshot, nightly_stream_handler,
-        recover_branch_ci_run_handler, render_detail_template, render_nightly_template,
-        rerun_branch_ci_lane_handler, rerun_nightly_lane_handler,
-        should_backfill_managed_allowlist_entry, verify_signature, wake_ci_handler, AppState,
-        CiLiveUpdates, ForgeBranchLogsQuery, ForgeBranchResolveQuery, ForgeHealthState,
+        recover_branch_ci_run_handler, render_branch_ci_template_with_notices,
+        render_detail_template, render_nightly_template, rerun_branch_ci_lane_handler,
+        rerun_nightly_lane_handler, should_backfill_managed_allowlist_entry, verify_signature,
+        wake_ci_handler, AppState, CiLiveUpdates, ForgeBranchLogsQuery, ForgeBranchResolveQuery,
+        ForgeHealthState, ReviewModeQuery,
     };
     use crate::auth::AuthState;
     use crate::branch_store::{BranchUpsertInput, MirrorStatusRecord, MirrorSyncRunRecord};
@@ -5277,9 +5719,13 @@ mod tests {
             bootstrap_admin_npubs: vec![],
         };
         let state = test_state(store, config);
-        let response = branch_ci_stream_handler(State(state), Path(branch.branch_id))
-            .await
-            .into_response();
+        let response = branch_ci_stream_handler(
+            State(state),
+            Path(branch.branch_id),
+            Query(ReviewModeQuery::default()),
+        )
+        .await
+        .into_response();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response
@@ -5295,7 +5741,7 @@ mod tests {
         assert!(text.contains("event: ci-update"));
         assert!(text.contains("\"html\":"));
         assert!(text.contains("check-pika"));
-        assert!(text.contains("ci: success"));
+        assert!(text.contains("CI: success"));
     }
 
     #[tokio::test]
@@ -5436,7 +5882,7 @@ mod tests {
             .await
             .expect("load queued snapshot")
             .expect("queued snapshot exists");
-        assert!(queued.html.contains("ci: queued"));
+        assert!(queued.html.contains("CI: queued"));
         assert!(queued.html.contains("data-branch-ci-active=\"true\""));
 
         let claimed = store
@@ -5459,7 +5905,7 @@ mod tests {
             .await
             .expect("load finished snapshot")
             .expect("finished snapshot exists");
-        assert!(finished.html.contains("ci: success"));
+        assert!(finished.html.contains("CI: success"));
         assert!(finished.html.contains("data-branch-ci-active=\"false\""));
     }
 
@@ -5629,7 +6075,7 @@ mod tests {
         let snapshot = next_branch_ci_live_snapshot(&mut receiver, state, branch.branch_id)
             .await
             .expect("lagged snapshot");
-        assert!(snapshot.html.contains("ci: success"));
+        assert!(snapshot.html.contains("CI: success"));
         assert!(!snapshot.active);
     }
 
@@ -5865,12 +6311,22 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
         let ci_runs = store
             .list_branch_ci_runs(branch.branch_id, 4)
             .expect("ci runs");
-        let template =
-            render_detail_template(detail, ci_runs, false).expect("render detail template");
-        let rendered = template.render().expect("render html");
-        assert!(rendered.contains("feature/render-history"));
-        assert!(rendered.contains("branch-ci-ok"));
-        assert!(rendered.contains("merge commit"));
+        let detail_rendered = render_detail_template(detail.clone(), ci_runs.clone(), false)
+            .expect("render detail template")
+            .render()
+            .expect("render detail html");
+        assert!(detail_rendered.contains("feature/render-history"));
+        assert!(detail_rendered.contains("Open CI Details"));
+        assert!(!detail_rendered.contains("branch-ci-ok"));
+        assert!(detail_rendered.contains("Merge Commit"));
+
+        let ci_rendered =
+            render_branch_ci_template_with_notices(detail, ci_runs, Vec::new(), false)
+                .expect("render branch ci template")
+                .render()
+                .expect("render branch ci html");
+        assert!(ci_rendered.contains("branch-ci-ok"));
+        assert!(ci_rendered.contains("Run History"));
     }
 
     #[test]
@@ -5917,12 +6373,19 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
         let ci_runs = store
             .list_branch_ci_runs(branch.branch_id, 8)
             .expect("branch ci runs");
-        let rendered = render_detail_template(detail, ci_runs, false)
+        let detail_rendered = render_detail_template(detail.clone(), ci_runs.clone(), false)
             .expect("render detail template")
             .render()
             .expect("render detail html");
-        assert!(rendered.contains("manual rerun of run #"));
-        assert!(rendered.contains("manual rerun of lane #"));
+        assert!(detail_rendered.contains("manual rerun of run #"));
+        assert!(!detail_rendered.contains("manual rerun of lane #"));
+
+        let ci_rendered =
+            render_branch_ci_template_with_notices(detail, ci_runs, Vec::new(), false)
+                .expect("render branch ci template")
+                .render()
+                .expect("render branch ci html");
+        assert!(ci_rendered.contains("manual rerun of lane #"));
     }
 
     #[test]
@@ -5970,13 +6433,70 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
         let ci_runs = store
             .list_branch_ci_runs(branch.branch_id, 8)
             .expect("branch ci runs");
-        let rendered = render_detail_template(detail, ci_runs, false)
+        let detail_rendered = render_detail_template(detail.clone(), ci_runs.clone(), false)
             .expect("render detail template")
             .render()
             .expect("render detail html");
-        assert!(rendered.contains("pikaci run"));
-        assert!(rendered.contains("pikaci-run-branch-ui"));
-        assert!(rendered.contains("pre-merge-pika-rust"));
+        assert!(!detail_rendered.contains("pikaci run"));
+
+        let ci_rendered =
+            render_branch_ci_template_with_notices(detail, ci_runs, Vec::new(), false)
+                .expect("render branch ci template")
+                .render()
+                .expect("render branch ci html");
+        assert!(ci_rendered.contains("pikaci run"));
+        assert!(ci_rendered.contains("pikaci-run-branch-ui"));
+        assert!(ci_rendered.contains("pre-merge-pika-rust"));
+    }
+
+    #[test]
+    fn review_mode_ci_links_preserve_inbox_context() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let branch = store
+            .upsert_branch_record(&branch_upsert_input("feature/review-ci", "head-review-ci"))
+            .expect("insert branch");
+
+        let detail = store
+            .get_branch_detail(branch.branch_id)
+            .expect("branch detail")
+            .expect("detail");
+        let ci_runs = store
+            .list_branch_ci_runs(branch.branch_id, 8)
+            .expect("branch ci runs");
+
+        let detail_rendered = render_detail_template(detail.clone(), ci_runs.clone(), true)
+            .expect("render detail template")
+            .render()
+            .expect("render detail html");
+        assert!(
+            detail_rendered.contains(&format!("/news/branch/{}/ci?review=true", branch.branch_id))
+        );
+
+        let ci_rendered = render_branch_ci_template_with_notices(detail, ci_runs, Vec::new(), true)
+            .expect("render branch ci template")
+            .render()
+            .expect("render branch ci html");
+        assert!(ci_rendered.contains(&format!("href=\"/news/inbox/review/{}\"", branch.branch_id)));
+    }
+
+    #[test]
+    fn review_mode_query_accepts_numeric_and_text_bools() {
+        let uri_numeric: axum::http::Uri =
+            "/news/branch/7/ci?review=1".parse().expect("numeric uri");
+        let numeric =
+            Query::<ReviewModeQuery>::try_from_uri(&uri_numeric).expect("numeric review query");
+        assert!(numeric.0.review);
+
+        let uri_text: axum::http::Uri = "/news/branch/7/ci?review=true".parse().expect("text uri");
+        let text = Query::<ReviewModeQuery>::try_from_uri(&uri_text).expect("text review query");
+        assert!(text.0.review);
+
+        let uri_missing: axum::http::Uri = "/news/branch/7/ci".parse().expect("missing uri");
+        let missing =
+            Query::<ReviewModeQuery>::try_from_uri(&uri_missing).expect("missing review query");
+        assert!(!missing.0.review);
     }
 
     #[test]
@@ -6032,17 +6552,20 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
         let ci_runs = store
             .list_branch_ci_runs(branch.branch_id, 8)
             .expect("branch ci runs");
-        let rendered = render_detail_template(detail, ci_runs, false)
+        let detail_rendered = render_detail_template(detail.clone(), ci_runs.clone(), false)
             .expect("render detail template")
             .render()
             .expect("render detail html");
+        assert!(detail_rendered.contains("check-pikachat-typescript"));
+        assert!(detail_rendered.contains("skipped"));
 
-        assert_eq!(
-            rendered
-                .matches("lane-status-badge status-skipped\">skipped</span>")
-                .count(),
-            2
-        );
+        let ci_rendered =
+            render_branch_ci_template_with_notices(detail, ci_runs, Vec::new(), false)
+                .expect("render branch ci template")
+                .render()
+                .expect("render branch ci html");
+        assert!(ci_rendered.contains("check-pikachat-typescript"));
+        assert!(ci_rendered.contains("skipped"));
     }
 
     #[test]

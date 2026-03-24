@@ -1,0 +1,56 @@
+<section class="panel ci-summary-card tone-{{ ci_status_tone }}" data-branch-ci-active="{% if live_active %}true{% else %}false{% endif %}">
+  <div class="ci-summary-head">
+    <div>
+      <p class="branch-kicker">Continuous Integration</p>
+      <h2>CI: {{ ci_status }}</h2>
+      {% if live_active %}
+      <p class="meta">Live updates stay active while lanes are queued or running.</p>
+      {% else %}
+      <p class="meta">Compact status on the review page, with full logs on the CI page.</p>
+      {% endif %}
+    </div>
+    <a class="ci-link-btn" href="{{ ci_details_path }}">Open CI Details</a>
+  </div>
+
+  {% for notice in page_notices %}
+  <section class="notice {{ notice.tone }}">
+    <p>{{ notice.message }}</p>
+  </section>
+  {% endfor %}
+
+  {% match latest_run %}
+  {% when Some with (run) %}
+  <div class="ci-summary-run">
+    <div class="ci-summary-run-head">
+      <p><strong>Latest run #{{ run.id }}</strong> <span class="status tone-{{ run.status_tone }}">{{ run.status }}</span></p>
+      <div class="status-row">
+        {% if run.success_count > 0 %}
+        <span class="status tone-success">{{ run.success_count }} passed</span>
+        {% endif %}
+        {% if run.active_count > 0 %}
+        <span class="status tone-warning">{{ run.active_count }} active</span>
+        {% endif %}
+        {% if run.failed_count > 0 %}
+        <span class="status tone-danger">{{ run.failed_count }} failed</span>
+        {% endif %}
+      </div>
+    </div>
+    <p class="meta">head <code>{{ run.source_head_sha }}</code> · queued {{ run.created_at }} · {{ run.lane_count }} lane(s)</p>
+    {% match run.rerun_of_run_id %}
+    {% when Some with (original_run_id) %}
+    <p class="meta">manual rerun of run #{{ original_run_id }}</p>
+    {% when None %}{% endmatch %}
+    {% if run.lanes.is_empty() %}
+    <p class="muted">No lanes were selected for this branch head.</p>
+    {% else %}
+    <div class="status-row">
+      {% for lane in run.lanes %}
+      <span class="status tone-{{ lane.status_tone }}">{{ lane.title }} · {{ lane.status }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% when None %}
+  <p class="muted">No CI runs yet.</p>
+  {% endmatch %}
+</section>

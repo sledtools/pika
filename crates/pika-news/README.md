@@ -11,13 +11,6 @@ Hosted forge:
 
 ```toml
 repos = ["sledtools/pika"]
-[forge_repo]
-repo = "sledtools/pika"
-canonical_git_dir = "/var/lib/pika-news/pika.git"
-default_branch = "master"
-mirror_remote = "github"
-mirror_poll_interval_secs = 300
-hook_url = "http://127.0.0.1:8788/news/webhook"
 
 poll_interval_secs = 60
 model = "claude-sonnet-4-5-20250929"
@@ -28,6 +21,14 @@ retry_backoff_secs = 120
 bind_address = "127.0.0.1"
 bind_port = 8787
 bootstrap_admin_npubs = ["npub1..."]
+
+[forge_repo]
+repo = "sledtools/pika"
+canonical_git_dir = "/var/lib/pika-news/pika.git"
+default_branch = "master"
+mirror_remote = "github"
+mirror_poll_interval_secs = 300
+hook_url = "http://127.0.0.1:8787/news/webhook"
 ```
 
 - `repos`: legacy repo slug list; keep `["sledtools/pika"]`.
@@ -70,3 +71,21 @@ bootstrap_admin_npubs = ["npub1..."]
 - Append local staged/unstaged changes: `--include-uncommitted`.
 - Output path: `--out <path>` (defaults to `./pika-news-local.html`).
 - Auto-open: enabled by default; disable with `--no-open`.
+
+## Local hosted dev
+
+If you want the forge-style web UI locally, use:
+
+```bash
+./scripts/news
+```
+
+That wrapper:
+
+- creates a local hosted-mode config under `.tmp/`
+- points the forge at this repo's shared git dir
+- stores sqlite state at `.tmp/pika-news.db`
+- exports `GITHUB_TOKEN` from `gh auth token`
+- runs `pika-news serve` under `cargo watch`
+
+The default bind is `127.0.0.1:8787`. Override with `PIKA_NEWS_PORT=8788 ./scripts/news`.

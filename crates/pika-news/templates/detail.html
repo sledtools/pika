@@ -312,7 +312,8 @@
           {% match error_message %}
           {% when Some with (msg) %}
           <section class="panel">
-            <h2>Branch Tutorial Generation Failed</h2>
+            <h2>Branch-Specific Tutorial Generation Failed</h2>
+            <p>This failure is specific to the current branch head.</p>
             <p>{{ msg }}</p>
           </section>
           {% when None %}{% endmatch %}
@@ -355,7 +356,7 @@
             <section class="panel">
               <h2>Summary</h2>
               {% if tutorial_status == "failed" %}
-              <p>This branch tutorial is unavailable because generation failed. Check the branch tutorial error above for details.</p>
+              <p>This branch tutorial is unavailable because generation for this branch head failed. That is separate from any forge-wide generator worker warning.</p>
               {% else %}
               <p>Summary is not ready yet. Refresh shortly.</p>
               {% endif %}

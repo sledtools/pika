@@ -938,19 +938,23 @@ fn load_prepared_output_payload_manifest(
 }
 
 fn load_remote_prepared_output_payload_manifest(
+    transport_program: Option<&Path>,
     remote_host: &str,
     realized_path: &Path,
 ) -> anyhow::Result<Option<PreparedOutputPayloadManifestRecord>> {
     let manifest_path = realized_path.join(PREPARED_OUTPUT_PAYLOAD_MANIFEST_RELATIVE_PATH);
-    let output = Command::new(
-        std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV)
-            .unwrap_or_else(|_| "/usr/bin/ssh".to_string()),
-    )
-    .arg(remote_host)
-    .arg("cat")
-    .arg(&manifest_path)
-    .output()
-    .with_context(|| format!("read remote {}", manifest_path.display()))?;
+    let transport_program = transport_program.map(Path::to_path_buf).unwrap_or_else(|| {
+        PathBuf::from(
+            std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV)
+                .unwrap_or_else(|_| "/usr/bin/ssh".to_string()),
+        )
+    });
+    let output = Command::new(&transport_program)
+        .arg(remote_host)
+        .arg("cat")
+        .arg(&manifest_path)
+        .output()
+        .with_context(|| format!("read remote {}", manifest_path.display()))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         if stderr.contains("No such file or directory") {
@@ -990,7 +994,40 @@ fn load_prepared_output_payload_manifest_for_record(
     else {
         return Ok(None);
     };
-    load_remote_prepared_output_payload_manifest(&remote.remote_host, realized_path)
+    load_remote_prepared_output_payload_manifest(
+        invocation.launcher_transport_program,
+        &remote.remote_host,
+        realized_path,
+    )
+}
+
+fn load_prepared_output_payload_manifest_best_effort(
+    run_dir: &Path,
+    installable: &str,
+    realized_path: &Path,
+    residency: PreparedOutputResidency,
+    invocation: PreparedOutputInvocationConfig<'_>,
+    log_paths: &[PathBuf],
+) -> Option<PreparedOutputPayloadManifestRecord> {
+    match load_prepared_output_payload_manifest_for_record(
+        run_dir,
+        installable,
+        realized_path,
+        residency,
+        invocation,
+    ) {
+        Ok(payload) => payload,
+        Err(err) => {
+            let _ = append_log_line_many(
+                log_paths,
+                &format!(
+                    "[pikaci] warning: failed to load payload metadata for {}: {err:#}",
+                    realized_path.display()
+                ),
+            );
+            None
+        }
+    }
 }
 
 pub fn load_run_record(state_root: &Path, run_id: &str) -> anyhow::Result<RunRecord> {
@@ -4104,14 +4141,14 @@ fn run_prepare_nodes(
                                 .consumer_transport_request_path,
                             exposures: consumer_result.exposures,
                             requested_exposures: consumer_result.requested_exposures,
-                            payload: load_prepared_output_payload_manifest_for_record(
+                            payload: load_prepared_output_payload_manifest_best_effort(
                                 run_dir,
                                 installable,
                                 &output_path,
                                 *residency,
                                 invocation,
-                            )
-                            .map_err(|err| format!("{err:#}"))?,
+                                log_paths,
+                            ),
                         },
                     )
                     .map_err(|err| format!("{err:#}"))?;

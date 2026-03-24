@@ -165,11 +165,6 @@
         function clearAuth() {
           if (window.pikaAuth && window.pikaAuth.clear) {
             window.pikaAuth.clear();
-          } else {
-            sessionStorage.removeItem('pika_news_token');
-            sessionStorage.removeItem('pika_news_npub');
-            sessionStorage.removeItem('pika_news_is_admin');
-            sessionStorage.removeItem('pika_news_can_forge_write');
           }
         }
 

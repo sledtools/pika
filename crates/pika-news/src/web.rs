@@ -4883,6 +4883,21 @@ mod tests {
     }
 
     #[test]
+    fn browser_auth_bootstrap_uses_local_storage_across_tabs() {
+        let base_template = include_str!("../templates/base.html");
+        let inbox_template = include_str!("../templates/inbox.html");
+        let admin_template = include_str!("../templates/admin.html");
+
+        assert!(base_template.contains("const authStorage = window.localStorage;"));
+        assert!(base_template.contains("window.addEventListener('storage'"));
+        assert!(!base_template.contains("sessionStorage.getItem('pika_news_token')"));
+        assert!(!base_template.contains("sessionStorage.setItem('pika_news_token'"));
+        assert!(!base_template.contains("sessionStorage.removeItem('pika_news_token'"));
+        assert!(!inbox_template.contains("sessionStorage.removeItem('pika_news_token'"));
+        assert!(!admin_template.contains("sessionStorage.removeItem('pika_news_token'"));
+    }
+
+    #[test]
     fn mirror_health_distinguishes_disabled_and_error_states() {
         let disabled = build_mirror_health_status(
             &MirrorRuntimeStatus {

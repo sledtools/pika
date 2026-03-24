@@ -95,18 +95,41 @@
 
         if (!loginBtn) return;
 
-        // Use a global token stored per-site (not per-PR)
-        let authToken = sessionStorage.getItem('pika_news_token');
-        let savedNpub = sessionStorage.getItem('pika_news_npub');
-        let savedIsAdmin = sessionStorage.getItem('pika_news_is_admin') === '1';
-        let savedCanForgeWrite = sessionStorage.getItem('pika_news_can_forge_write') === '1';
+        const authStorage = window.localStorage;
+
+        function getAuthValue(key) {
+          return authStorage.getItem(key);
+        }
+
+        function setAuthValue(key, value) {
+          authStorage.setItem(key, value);
+        }
+
+        function removeAuthValue(key) {
+          authStorage.removeItem(key);
+        }
+
+        function readAuthSnapshot() {
+          return {
+            token: getAuthValue('pika_news_token'),
+            npub: getAuthValue('pika_news_npub'),
+            isAdmin: getAuthValue('pika_news_is_admin') === '1',
+            canForgeWrite: getAuthValue('pika_news_can_forge_write') === '1',
+          };
+        }
+
+        // Use a global token stored per-origin so auth survives new tabs and normal navigation.
+        let authToken = getAuthValue('pika_news_token');
+        let savedNpub = getAuthValue('pika_news_npub');
+        let savedIsAdmin = getAuthValue('pika_news_is_admin') === '1';
+        let savedCanForgeWrite = getAuthValue('pika_news_can_forge_write') === '1';
 
         window.pikaAuth = {
-          getToken: function () { return sessionStorage.getItem('pika_news_token'); },
-          getNpub: function () { return sessionStorage.getItem('pika_news_npub'); },
-          isAdmin: function () { return sessionStorage.getItem('pika_news_is_admin') === '1'; },
-          canForgeWrite: function () { return sessionStorage.getItem('pika_news_can_forge_write') === '1'; },
-          isAuthed: function () { return !!sessionStorage.getItem('pika_news_token'); },
+          getToken: function () { return getAuthValue('pika_news_token'); },
+          getNpub: function () { return getAuthValue('pika_news_npub'); },
+          isAdmin: function () { return getAuthValue('pika_news_is_admin') === '1'; },
+          canForgeWrite: function () { return getAuthValue('pika_news_can_forge_write') === '1'; },
+          isAuthed: function () { return !!getAuthValue('pika_news_token'); },
           clear: clearAuth,
         };
 
@@ -117,10 +140,10 @@
 
         function clearAuth() {
           var badge = document.getElementById('inbox-badge');
-          sessionStorage.removeItem('pika_news_token');
-          sessionStorage.removeItem('pika_news_npub');
-          sessionStorage.removeItem('pika_news_is_admin');
-          sessionStorage.removeItem('pika_news_can_forge_write');
+          removeAuthValue('pika_news_token');
+          removeAuthValue('pika_news_npub');
+          removeAuthValue('pika_news_is_admin');
+          removeAuthValue('pika_news_can_forge_write');
           authActions.style.display = '';
           userActions.style.display = 'none';
           setAdminVisible(false);
@@ -143,7 +166,7 @@
         }
 
         function fetchInboxCount() {
-          var token = sessionStorage.getItem('pika_news_token');
+          var token = getAuthValue('pika_news_token');
           if (!token) return;
           var badge = document.getElementById('inbox-badge');
           if (!badge) return;
@@ -168,7 +191,7 @@
         }
 
         function refreshSessionInfo() {
-          var token = sessionStorage.getItem('pika_news_token');
+          var token = getAuthValue('pika_news_token');
           if (!token) return;
           fetch('/news/api/me', { headers: { 'Authorization': 'Bearer ' + token } })
             .then(function (r) {
@@ -184,9 +207,9 @@
                 clearAuth();
                 return;
               }
-              sessionStorage.setItem('pika_news_npub', data.npub || '');
-              sessionStorage.setItem('pika_news_is_admin', data.is_admin ? '1' : '0');
-              sessionStorage.setItem('pika_news_can_forge_write', data.can_forge_write ? '1' : '0');
+              setAuthValue('pika_news_npub', data.npub || '');
+              setAuthValue('pika_news_is_admin', data.is_admin ? '1' : '0');
+              setAuthValue('pika_news_can_forge_write', data.can_forge_write ? '1' : '0');
               showAuthed(data.npub, data.is_admin, data.can_forge_write);
             })
             .catch(function () {});
@@ -225,10 +248,10 @@
               throw new Error(err.error || 'Verification failed');
             }
             const { token, npub, is_admin, can_forge_write } = await verifyRes.json();
-            sessionStorage.setItem('pika_news_token', token);
-            sessionStorage.setItem('pika_news_npub', npub || pubkey);
-            sessionStorage.setItem('pika_news_is_admin', is_admin ? '1' : '0');
-            sessionStorage.setItem('pika_news_can_forge_write', can_forge_write ? '1' : '0');
+            setAuthValue('pika_news_token', token);
+            setAuthValue('pika_news_npub', npub || pubkey);
+            setAuthValue('pika_news_is_admin', is_admin ? '1' : '0');
+            setAuthValue('pika_news_can_forge_write', can_forge_write ? '1' : '0');
             showAuthed(npub || pubkey, !!is_admin, !!can_forge_write);
           } catch (e) {
             loginBtn.textContent = 'Sign in with Nostr';
@@ -238,6 +261,17 @@
         }
 
         loginBtn.addEventListener('click', doLogin);
+
+        window.addEventListener('storage', function (event) {
+          if (!event.key || !event.key.startsWith('pika_news_')) return;
+          const snapshot = readAuthSnapshot();
+          if (snapshot.token && snapshot.npub) {
+            showAuthed(snapshot.npub, snapshot.isAdmin, snapshot.canForgeWrite);
+            refreshSessionInfo();
+          } else {
+            clearAuth();
+          }
+        });
 
         if (authToken && savedNpub) {
           showAuthed(savedNpub, savedIsAdmin, savedCanForgeWrite);

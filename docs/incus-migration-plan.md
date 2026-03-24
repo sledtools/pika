@@ -949,6 +949,12 @@ Current `pika-build` proof status:
   remaining automatic Incus exclusions in the path discussed in this plan
   and with the guest runtime owned by the Incus image plus staged payloads,
   not by an executor-mounted host `/nix/store`
+- `pika-news` no longer has to collapse staged `pikaci` runs back into an
+  ephemeral temp-worktree `.pikaci` tree:
+  structured staged runs can now be pointed at a service-owned persistent
+  state root, and the forge API can reload the resulting `RunRecord`,
+  per-job log metadata, and host/guest log content by `pikaci_run_id`
+  after the temporary source worktree is removed
 
 #### Phase C: Validate Performance And Developer Experience
 

@@ -100,6 +100,22 @@ impl Drop for MirrorLockGuard {
     }
 }
 
+pub fn pikaci_state_root(repo: &ForgeRepoConfig) -> PathBuf {
+    let repo_slug = repo
+        .repo
+        .chars()
+        .map(|ch| match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => ch,
+            _ => '-',
+        })
+        .collect::<String>();
+    canonical_git_dir(repo)
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("pikaci-state")
+        .join(repo_slug)
+}
+
 pub fn ensure_canonical_repo(repo: &ForgeRepoConfig) -> anyhow::Result<()> {
     let git_dir = canonical_git_dir(repo);
     if git_dir.join("HEAD").exists() {
@@ -324,6 +340,9 @@ where
         bail!("ci command is empty");
     }
     let structured_pikaci_target = staged_pikaci_target_from_command(command);
+    let structured_pikaci_state_root = structured_pikaci_target
+        .as_ref()
+        .map(|_| pikaci_state_root(repo));
     let effective_command = if structured_pikaci_target.is_some() {
         ensure_structured_pikaci_output(command)
     } else {
@@ -336,6 +355,11 @@ where
             .current_dir(worktree.path())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(state_root) = structured_pikaci_state_root.as_ref() {
+            fs::create_dir_all(state_root)
+                .with_context(|| format!("create pikaci state root {}", state_root.display()))?;
+            cmd.env("PIKACI_STATE_ROOT", state_root);
+        }
         let mut child = cmd
             .spawn()
             .with_context(|| format!("run ci command in {}", worktree.path().display()))?;
@@ -1512,6 +1536,13 @@ mod tests {
                 "  echo \"unexpected args: $*\" >&2\n",
                 "  exit 99\n",
                 "fi\n",
+                "run_root=\"${PIKACI_STATE_ROOT:?missing-state-root}/runs/pikaci-run-123/jobs/job-one\"\n",
+                "mkdir -p \"$run_root\"\n",
+                "printf 'host log\\n' > \"$run_root/host.log\"\n",
+                "printf 'guest log\\n' > \"$run_root/guest.log\"\n",
+                "cat > \"${PIKACI_STATE_ROOT}/runs/pikaci-run-123/run.json\" <<EOF_RUN\n",
+                "{\"run_id\":\"pikaci-run-123\",\"status\":\"passed\",\"rerun_of\":null,\"target_id\":\"pre-merge-pika-rust\",\"target_description\":\"Run staged pika rust\",\"source_root\":\"/tmp/source\",\"snapshot_dir\":\"/tmp/snapshot\",\"git_head\":null,\"git_dirty\":null,\"created_at\":\"2026-03-19T00:00:00Z\",\"finished_at\":\"2026-03-19T00:00:02Z\",\"plan_path\":null,\"prepared_outputs_path\":null,\"prepared_output_consumer\":null,\"prepared_output_mode\":null,\"prepared_output_invocation_mode\":null,\"prepared_output_invocation_wrapper_program\":null,\"prepared_output_launcher_transport_mode\":null,\"prepared_output_launcher_transport_program\":null,\"prepared_output_launcher_transport_host\":null,\"prepared_output_launcher_transport_remote_launcher_program\":null,\"prepared_output_launcher_transport_remote_helper_program\":null,\"prepared_output_launcher_transport_remote_work_dir\":null,\"changed_files\":[],\"filters\":[],\"message\":null,\"prepare_timings\":[],\"jobs\":[{\"id\":\"job-one\",\"description\":\"job one\",\"status\":\"passed\",\"executor\":\"remote_linux_vm\",\"plan_node_id\":null,\"timeout_secs\":30,\"host_log_path\":\"$run_root/host.log\",\"guest_log_path\":\"$run_root/guest.log\",\"started_at\":\"2026-03-19T00:00:01Z\",\"finished_at\":\"2026-03-19T00:00:02Z\",\"exit_code\":0,\"message\":null,\"pre_execution_prepare_duration_ms\":null,\"remote_linux_vm_execution\":null}]}\n",
+                "EOF_RUN\n",
                 "cat <<'EOF'\n",
                 "{\"event\":\"run_started\",\"run_id\":\"pikaci-run-123\",\"created_at\":\"2026-03-19T00:00:00Z\",\"target_id\":\"pre-merge-pika-rust\",\"target_description\":\"Run staged pika rust\"}\n",
                 "{\"event\":\"job_started\",\"run_id\":\"pikaci-run-123\",\"job\":{\"id\":\"job-one\",\"description\":\"job one\",\"status\":\"running\",\"executor\":\"remote_linux_vm\",\"timeout_secs\":30,\"host_log_path\":\"/tmp/host.log\",\"guest_log_path\":\"/tmp/guest.log\",\"started_at\":\"2026-03-19T00:00:01Z\",\"finished_at\":null,\"exit_code\":null,\"message\":null,\"remote_linux_vm_execution\":null}}\n",
@@ -1566,6 +1597,11 @@ mod tests {
         assert!(result
             .log
             .contains("[pikaci] job finished: job-one · status=passed"));
+        let state_root = super::pikaci_state_root(&forge_repo);
+        assert!(state_root.join("runs/pikaci-run-123/run.json").is_file());
+        assert!(state_root
+            .join("runs/pikaci-run-123/jobs/job-one/host.log")
+            .is_file());
     }
 
     #[test]

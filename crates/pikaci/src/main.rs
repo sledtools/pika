@@ -8,6 +8,7 @@ use pikaci::{
     rerun_jobs_with_metadata_and_reporter, run_jobs_with_metadata_and_reporter,
     staged_linux_remote_defaults,
 };
+use std::path::PathBuf;
 
 struct TargetSpec {
     id: &'static str,
@@ -20,6 +21,8 @@ struct TargetSpec {
 #[command(name = "pikaci")]
 #[command(about = "Wave 1 local-first CI runner for Pika")]
 struct Cli {
+    #[arg(long, global = true)]
+    state_root: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -90,7 +93,7 @@ fn main() -> anyhow::Result<()> {
     let cwd = std::env::current_dir().context("read current directory")?;
     let options = RunOptions {
         source_root: cwd.clone(),
-        state_root: cwd.join(".pikaci"),
+        state_root: resolve_state_root(&cwd, cli.state_root),
     };
 
     match cli.command {
@@ -198,6 +201,12 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn resolve_state_root(cwd: &std::path::Path, configured: Option<PathBuf>) -> PathBuf {
+    configured
+        .or_else(|| std::env::var_os("PIKACI_STATE_ROOT").map(PathBuf::from))
+        .unwrap_or_else(|| cwd.join(".pikaci"))
 }
 
 fn fail_if_removed_backend_selector_is_set() -> anyhow::Result<()> {
@@ -1954,7 +1963,7 @@ fn matches_filter(path: &str, pattern: &str) -> bool {
 mod tests {
     use super::{
         format_status_lines, matches_any_filter, matches_filter, rerun_metadata,
-        staged_linux_remote_defaults_json, target_spec, target_spec_for_rerun,
+        resolve_state_root, staged_linux_remote_defaults_json, target_spec, target_spec_for_rerun,
     };
     use pikaci::{
         JobRecord, PreparedOutputConsumerKind, RemoteLinuxVmBackend, RunLifecycleEvent, RunRecord,
@@ -1972,6 +1981,24 @@ mod tests {
             ".github/**"
         ));
         assert!(!matches_filter("docs/agent-ci.md", "rust/**"));
+    }
+
+    #[test]
+    fn resolve_state_root_defaults_to_dot_pikaci_under_cwd() {
+        let cwd = std::path::Path::new("/tmp/pika");
+        assert_eq!(resolve_state_root(cwd, None), cwd.join(".pikaci"));
+    }
+
+    #[test]
+    fn resolve_state_root_prefers_explicit_override() {
+        let cwd = std::path::Path::new("/tmp/pika");
+        assert_eq!(
+            resolve_state_root(
+                cwd,
+                Some(std::path::PathBuf::from("/var/lib/pika-news/pikaci"))
+            ),
+            std::path::PathBuf::from("/var/lib/pika-news/pikaci")
+        );
     }
 
     #[test]

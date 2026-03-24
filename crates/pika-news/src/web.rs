@@ -14,7 +14,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Json, Redirect};
 use axum::routing::{get, post};
 use axum::Router;
-use chrono::{DateTime, NaiveDateTime, SecondsFormat, Utc};
+use chrono::{DateTime, NaiveDateTime, SecondsFormat, TimeDelta, Utc};
 use futures::stream;
 use hmac::{Hmac, Mac};
 use pulldown_cmark::{html, Options, Parser};
@@ -411,6 +411,7 @@ struct CiSummaryRunView {
     created_at: String,
     source_head_sha: String,
     rerun_of_run_id: Option<i64>,
+    timing_summary: Option<String>,
     success_count: usize,
     active_count: usize,
     failed_count: usize,
@@ -435,6 +436,7 @@ struct CiRunView {
     created_at: String,
     started_at: Option<String>,
     finished_at: Option<String>,
+    timing_summary: Option<String>,
     lanes: Vec<CiLaneView>,
 }
 
@@ -461,6 +463,7 @@ struct CiLaneView {
     created_at: String,
     started_at: Option<String>,
     finished_at: Option<String>,
+    timing_summary: Option<String>,
     last_heartbeat_at: Option<String>,
     lease_expires_at: Option<String>,
     operator_hint: Option<String>,
@@ -2239,6 +2242,15 @@ fn render_branch_ci_live_html(
     ci_runs: &[BranchCiRunRecord],
     page_notices: &[PageNoticeView],
 ) -> anyhow::Result<String> {
+    render_branch_ci_live_html_at(record, ci_runs, page_notices, Utc::now())
+}
+
+fn render_branch_ci_live_html_at(
+    record: &BranchDetailRecord,
+    ci_runs: &[BranchCiRunRecord],
+    page_notices: &[PageNoticeView],
+    now: DateTime<Utc>,
+) -> anyhow::Result<String> {
     let latest_failed_lane_count = ci_runs
         .first()
         .map(|run| {
@@ -2255,7 +2267,11 @@ fn render_branch_ci_live_html(
         ci_status: record.ci_status.clone(),
         ci_status_tone: ci_status_tone(&record.ci_status).to_string(),
         live_active: branch_ci_runs_are_active(ci_runs),
-        ci_runs: ci_runs.iter().cloned().map(map_ci_run_view).collect(),
+        ci_runs: ci_runs
+            .iter()
+            .cloned()
+            .map(|run| map_ci_run_view(run, now))
+            .collect(),
         page_notices: page_notices.to_vec(),
         latest_failed_lane_count,
     }
@@ -2269,7 +2285,17 @@ fn render_branch_ci_summary_html(
     page_notices: &[PageNoticeView],
     review_mode: bool,
 ) -> anyhow::Result<String> {
-    let latest_run = ci_runs.first().map(map_ci_summary_run);
+    render_branch_ci_summary_html_at(record, ci_runs, page_notices, review_mode, Utc::now())
+}
+
+fn render_branch_ci_summary_html_at(
+    record: &BranchDetailRecord,
+    ci_runs: &[BranchCiRunRecord],
+    page_notices: &[PageNoticeView],
+    review_mode: bool,
+    now: DateTime<Utc>,
+) -> anyhow::Result<String> {
+    let latest_run = ci_runs.first().map(|run| map_ci_summary_run(run, now));
     BranchCiSummaryTemplate {
         ci_status: record.ci_status.clone(),
         ci_status_tone: ci_status_tone(&record.ci_status).to_string(),
@@ -2313,8 +2339,14 @@ fn render_nightly_live_html(
     .context("render nightly live template")
 }
 
-fn map_ci_run_view(run: BranchCiRunRecord) -> CiRunView {
+fn map_ci_run_view(run: BranchCiRunRecord, now: DateTime<Utc>) -> CiRunView {
     let status_tone = ci_status_tone(&run.status).to_string();
+    let timing_summary = ci_timing_summary(
+        &run.created_at,
+        run.started_at.as_deref(),
+        run.finished_at.as_deref(),
+        now,
+    );
     CiRunView {
         id: run.id,
         source_head_sha: run.source_head_sha,
@@ -2325,14 +2357,23 @@ fn map_ci_run_view(run: BranchCiRunRecord) -> CiRunView {
         created_at: run.created_at,
         started_at: run.started_at,
         finished_at: run.finished_at,
-        lanes: run.lanes.into_iter().map(map_ci_lane_view).collect(),
+        timing_summary,
+        lanes: run
+            .lanes
+            .into_iter()
+            .map(|lane| map_ci_lane_view(lane, now))
+            .collect(),
     }
 }
 
-fn map_ci_lane_view(lane: BranchCiLaneRecord) -> CiLaneView {
-    let target_health_summary =
-        lane_target_health_summary(lane.ci_target_key.as_deref(), lane.target_health.as_ref());
+fn map_ci_lane_view(lane: BranchCiLaneRecord, now: DateTime<Utc>) -> CiLaneView {
+    let target_health_summary = lane_target_health_summary(
+        lane.ci_target_key.as_deref(),
+        lane.target_health.as_ref(),
+        now,
+    );
     let operator_hint = lane_operator_hint(&LaneHintContext {
+        now,
         status: &lane.status,
         execution_reason: lane.execution_reason,
         failure_kind: lane.failure_kind,
@@ -2347,10 +2388,16 @@ fn map_ci_lane_view(lane: BranchCiLaneRecord) -> CiLaneView {
     let status_tone = ci_status_tone(&lane.status).to_string();
     let failure_kind = lane.failure_kind.map(|kind| kind.as_str().to_string());
     let failure_kind_label = lane.failure_kind.map(|kind| kind.label().to_string());
+    let timing_summary = ci_timing_summary(
+        &lane.created_at,
+        lane.started_at.as_deref(),
+        lane.finished_at.as_deref(),
+        now,
+    );
     let target_health_state = lane
         .target_health
         .as_ref()
-        .map(|snapshot| snapshot.effective_state(Utc::now()).as_str().to_string());
+        .map(|snapshot| snapshot.effective_state(now).as_str().to_string());
     CiLaneView {
         id: lane.id,
         lane_id: lane.lane_id,
@@ -2373,13 +2420,14 @@ fn map_ci_lane_view(lane: BranchCiLaneRecord) -> CiLaneView {
         created_at: lane.created_at,
         started_at: lane.started_at,
         finished_at: lane.finished_at,
+        timing_summary,
         last_heartbeat_at: lane.last_heartbeat_at,
         lease_expires_at: lane.lease_expires_at,
         operator_hint,
     }
 }
 
-fn map_ci_summary_run(run: &BranchCiRunRecord) -> CiSummaryRunView {
+fn map_ci_summary_run(run: &BranchCiRunRecord, now: DateTime<Utc>) -> CiSummaryRunView {
     let (success_count, active_count, failed_count) = ci_lane_counts(run);
     CiSummaryRunView {
         id: run.id,
@@ -2389,6 +2437,12 @@ fn map_ci_summary_run(run: &BranchCiRunRecord) -> CiSummaryRunView {
         created_at: run.created_at.clone(),
         source_head_sha: run.source_head_sha.clone(),
         rerun_of_run_id: run.rerun_of_run_id,
+        timing_summary: ci_timing_summary(
+            &run.created_at,
+            run.started_at.as_deref(),
+            run.finished_at.as_deref(),
+            now,
+        ),
         success_count,
         active_count,
         failed_count,
@@ -2405,11 +2459,16 @@ fn map_ci_summary_run(run: &BranchCiRunRecord) -> CiSummaryRunView {
 }
 
 fn map_nightly_lane_view(lane: NightlyLaneRecord) -> NightlyLaneView {
+    let now = Utc::now();
     let status_badge_class = lane_status_badge_class(&lane.status).to_string();
     let is_failed = lane.status == "failed";
-    let target_health_summary =
-        lane_target_health_summary(lane.ci_target_key.as_deref(), lane.target_health.as_ref());
+    let target_health_summary = lane_target_health_summary(
+        lane.ci_target_key.as_deref(),
+        lane.target_health.as_ref(),
+        now,
+    );
     let operator_hint = lane_operator_hint(&LaneHintContext {
+        now,
         status: &lane.status,
         execution_reason: lane.execution_reason,
         failure_kind: lane.failure_kind,
@@ -2426,7 +2485,7 @@ fn map_nightly_lane_view(lane: NightlyLaneRecord) -> NightlyLaneView {
     let target_health_state = lane
         .target_health
         .as_ref()
-        .map(|snapshot| snapshot.effective_state(Utc::now()).as_str().to_string());
+        .map(|snapshot| snapshot.effective_state(now).as_str().to_string());
     NightlyLaneView {
         id: lane.id,
         lane_id: lane.lane_id,
@@ -2478,7 +2537,66 @@ fn parse_ci_timestamp(raw: &str) -> Option<DateTime<Utc>> {
         })
 }
 
+fn ci_timing_summary(
+    created_at: &str,
+    started_at: Option<&str>,
+    finished_at: Option<&str>,
+    now: DateTime<Utc>,
+) -> Option<String> {
+    let created_at = parse_ci_timestamp(created_at);
+    let started_at = started_at.and_then(parse_ci_timestamp);
+    let finished_at = finished_at.and_then(parse_ci_timestamp);
+
+    let queued = match (created_at, started_at) {
+        (Some(created_at), Some(started_at)) => {
+            compact_duration_part("queued", started_at.signed_duration_since(created_at))
+        }
+        (Some(created_at), None) if finished_at.is_none() => {
+            compact_duration_part("queued", now.signed_duration_since(created_at))
+        }
+        _ => None,
+    };
+
+    let ran = started_at.and_then(|started_at| {
+        let end = finished_at.unwrap_or(now);
+        compact_duration_part("ran", end.signed_duration_since(started_at))
+    });
+
+    let parts = [queued, ran].into_iter().flatten().collect::<Vec<_>>();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" · "))
+    }
+}
+
+fn compact_duration_part(label: &str, duration: TimeDelta) -> Option<String> {
+    if duration.num_seconds() < 0 {
+        return None;
+    }
+    Some(format!("{label} {}", format_compact_duration(duration)))
+}
+
+fn format_compact_duration(duration: TimeDelta) -> String {
+    let total_seconds = duration.num_seconds().max(0);
+    let days = total_seconds / 86_400;
+    let hours = (total_seconds % 86_400) / 3_600;
+    let minutes = (total_seconds % 3_600) / 60;
+    let seconds = total_seconds % 60;
+
+    if days > 0 {
+        format!("{days}d {hours:02}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes:02}m")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds:02}s")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
 struct LaneHintContext<'a> {
+    now: DateTime<Utc>,
     status: &'a str,
     execution_reason: CiLaneExecutionReason,
     failure_kind: Option<CiLaneFailureKind>,
@@ -2506,7 +2624,7 @@ fn lane_operator_hint(context: &LaneHintContext<'_>) -> Option<String> {
                 let detail = context
                     .target_health
                     .and_then(|snapshot| {
-                        snapshot.cooloff_active_until(Utc::now()).map(|cooloff_until| {
+                        snapshot.cooloff_active_until(context.now).map(|cooloff_until| {
                             format!(
                                 " after {} consecutive infra failures until {}",
                                 snapshot.consecutive_infra_failure_count, cooloff_until
@@ -2522,7 +2640,7 @@ fn lane_operator_hint(context: &LaneHintContext<'_>) -> Option<String> {
             ),
             _ => {
                 let age = parse_ci_timestamp(context.created_at)
-                    .map(|created| Utc::now().signed_duration_since(created).num_minutes());
+                    .map(|created| context.now.signed_duration_since(created).num_minutes());
                 if age.is_some_and(|minutes| minutes >= 15) {
                     Some(format!(
                         "Queued too long since {}. Wake CI or requeue if the scheduler is wedged.",
@@ -2538,7 +2656,7 @@ fn lane_operator_hint(context: &LaneHintContext<'_>) -> Option<String> {
                 || "Running with no lease metadata.".to_string(),
                 |lease| {
                     let prefix = match parse_ci_timestamp(lease) {
-                        Some(expires_at) if expires_at <= Utc::now() => {
+                        Some(expires_at) if expires_at <= context.now => {
                             "Running with an expired lease"
                         }
                         _ => "Running with lease",
@@ -2573,14 +2691,15 @@ fn lane_operator_hint(context: &LaneHintContext<'_>) -> Option<String> {
 fn lane_target_health_summary(
     ci_target_key: Option<&str>,
     target_health: Option<&CiTargetHealthSnapshot>,
+    now: DateTime<Utc>,
 ) -> Option<String> {
     let snapshot = target_health?;
-    if snapshot.effective_state(Utc::now()) != CiTargetHealthState::Unhealthy {
+    if snapshot.effective_state(now) != CiTargetHealthState::Unhealthy {
         return None;
     }
     let target = ci_target_key.unwrap_or(&snapshot.target_id);
     let cooloff_suffix = snapshot
-        .cooloff_active_until(Utc::now())
+        .cooloff_active_until(now)
         .map(|cooloff_until| format!(" · cooloff until {cooloff_until}"))
         .unwrap_or_default();
     Some(format!(
@@ -3349,7 +3468,10 @@ async fn api_forge_branch_detail_handler(
     match load_branch_detail_and_runs(Arc::clone(&state), branch_id, 8).await {
         Ok(Some((detail, ci_runs))) => Json(ForgeBranchDetailResponse {
             branch: map_forge_branch_summary(detail),
-            ci_runs: ci_runs.into_iter().map(map_ci_run_view).collect(),
+            ci_runs: ci_runs
+                .into_iter()
+                .map(|run| map_ci_run_view(run, Utc::now()))
+                .collect(),
         })
         .into_response(),
         Ok(None) => (
@@ -3387,7 +3509,7 @@ async fn api_forge_branch_logs_handler(
                 branch_id: detail.branch_id,
                 branch_name: detail.branch_name,
                 run_id,
-                lane: map_ci_lane_view(lane),
+                lane: map_ci_lane_view(lane, Utc::now()),
             })
             .into_response()
         }
@@ -4649,6 +4771,7 @@ mod tests {
     use axum::extract::{Path, Query, State};
     use axum::http::{header::AUTHORIZATION, HeaderMap, HeaderValue, StatusCode};
     use axum::response::IntoResponse;
+    use chrono::{TimeZone, Utc};
     use tokio::sync::Notify;
 
     use super::{
@@ -5041,6 +5164,142 @@ mod tests {
             .summary
             .unwrap_or_default()
             .contains("stale mirror run"));
+    }
+
+    #[test]
+    fn compact_duration_formatter_prefers_short_human_readable_forms() {
+        assert_eq!(
+            super::format_compact_duration(chrono::TimeDelta::seconds(12)),
+            "12s"
+        );
+        assert_eq!(
+            super::format_compact_duration(chrono::TimeDelta::seconds(68)),
+            "1m 08s"
+        );
+        assert_eq!(
+            super::format_compact_duration(chrono::TimeDelta::seconds(2 * 3_600 + 3 * 60)),
+            "2h 03m"
+        );
+    }
+
+    #[test]
+    fn ci_timing_summary_tracks_queued_running_and_finished_time() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 3, 24, 12, 0, 45)
+            .single()
+            .expect("valid timestamp");
+
+        assert_eq!(
+            super::ci_timing_summary("2026-03-24T12:00:31Z", None, None, now)
+                .expect("queued summary"),
+            "queued 14s"
+        );
+        assert_eq!(
+            super::ci_timing_summary(
+                "2026-03-24T12:00:00Z",
+                Some("2026-03-24T12:00:14Z"),
+                None,
+                now,
+            )
+            .expect("running summary"),
+            "queued 14s · ran 31s"
+        );
+        assert_eq!(
+            super::ci_timing_summary(
+                "2026-03-24T12:00:00Z",
+                Some("2026-03-24T12:00:14Z"),
+                Some("2026-03-24T12:00:45Z"),
+                now,
+            )
+            .expect("finished summary"),
+            "queued 14s · ran 31s"
+        );
+    }
+
+    #[test]
+    fn branch_ci_templates_render_timing_summaries() {
+        let summary_html = super::BranchCiSummaryTemplate {
+            ci_status: "running".to_string(),
+            ci_status_tone: "warning".to_string(),
+            live_active: true,
+            ci_details_path: "/news/branch/7/ci".to_string(),
+            latest_run: Some(super::CiSummaryRunView {
+                id: 14,
+                status: "running".to_string(),
+                status_tone: "warning".to_string(),
+                lane_count: 1,
+                created_at: "2026-03-24T12:00:00Z".to_string(),
+                source_head_sha: "abc123".to_string(),
+                rerun_of_run_id: None,
+                timing_summary: Some("queued 14s · running 31s".to_string()),
+                success_count: 0,
+                active_count: 1,
+                failed_count: 0,
+                lanes: vec![super::CiSummaryLaneView {
+                    title: "pre-merge-pika".to_string(),
+                    status: "running".to_string(),
+                    status_tone: "warning".to_string(),
+                }],
+            }),
+            page_notices: Vec::new(),
+        }
+        .render()
+        .expect("render summary template");
+        assert!(summary_html.contains("queued 14s"));
+        assert!(summary_html.contains("running 31s"));
+
+        let live_html = super::BranchCiLiveTemplate {
+            branch_id: 7,
+            branch_state: "open".to_string(),
+            tutorial_status: "ready".to_string(),
+            ci_status: "running".to_string(),
+            ci_status_tone: "warning".to_string(),
+            live_active: true,
+            ci_runs: vec![super::CiRunView {
+                id: 14,
+                source_head_sha: "abc123".to_string(),
+                status: "running".to_string(),
+                status_tone: "warning".to_string(),
+                lane_count: 1,
+                rerun_of_run_id: None,
+                created_at: "2026-03-24T12:00:00Z".to_string(),
+                started_at: Some("2026-03-24T12:00:14Z".to_string()),
+                finished_at: None,
+                timing_summary: Some("queued 14s · running 31s".to_string()),
+                lanes: vec![super::CiLaneView {
+                    id: 23,
+                    lane_id: "pika".to_string(),
+                    title: "pre-merge-pika".to_string(),
+                    entrypoint: "just checks::pre-merge-pika".to_string(),
+                    status: "running".to_string(),
+                    status_tone: "warning".to_string(),
+                    execution_reason: "running".to_string(),
+                    execution_reason_label: "running".to_string(),
+                    failure_kind: None,
+                    failure_kind_label: None,
+                    pikaci_run_id: None,
+                    pikaci_target_id: None,
+                    ci_target_key: None,
+                    target_health_state: None,
+                    target_health_summary: None,
+                    log_text: None,
+                    retry_count: 0,
+                    rerun_of_lane_run_id: None,
+                    created_at: "2026-03-24T12:00:00Z".to_string(),
+                    started_at: Some("2026-03-24T12:00:14Z".to_string()),
+                    finished_at: None,
+                    timing_summary: Some("queued 14s · running 31s".to_string()),
+                    last_heartbeat_at: None,
+                    lease_expires_at: None,
+                    operator_hint: None,
+                }],
+            }],
+            page_notices: Vec::new(),
+            latest_failed_lane_count: 0,
+        }
+        .render()
+        .expect("render live template");
+        assert!(live_html.contains("queued 14s · running 31s"));
     }
 
     #[test]

@@ -51,6 +51,10 @@
           <div>
             <p><strong>Run #{{ run.id }}</strong> <span class="status tone-{{ run.status_tone }}">{{ run.status }}</span></p>
             <p class="meta">head <code>{{ run.source_head_sha }}</code> · queued {{ run.created_at }} · {{ run.lane_count }} lane(s)</p>
+            {% match run.timing_summary %}
+            {% when Some with (timing_summary) %}
+            <p class="meta">{{ timing_summary }}</p>
+            {% when None %}{% endmatch %}
             {% match run.rerun_of_run_id %}
             {% when Some with (original_run_id) %}
             <p class="meta">manual rerun of run #{{ original_run_id }}</p>
@@ -89,6 +93,10 @@
               <span class="status tone-{{ lane.status_tone }}">{{ lane.status }}</span>
             </summary>
             <p class="meta"><code>{{ lane.entrypoint }}</code> · lane id <code>{{ lane.lane_id }}</code> · retries {{ lane.retry_count }} · queued {{ lane.created_at }}</p>
+            {% match lane.timing_summary %}
+            {% when Some with (timing_summary) %}
+            <p class="meta">{{ timing_summary }}</p>
+            {% when None %}{% endmatch %}
             {% if lane.status == "queued" || lane.status == "running" %}
             <p class="meta">state {{ lane.execution_reason_label }}</p>
             {% endif %}

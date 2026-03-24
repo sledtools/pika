@@ -956,7 +956,7 @@ fn branch_page_notices(state: &AppState) -> Vec<PageNoticeView> {
             &mut notices,
             &mut seen,
             "warning",
-            "Summary generation hit an error. New tutorial updates may be delayed until it recovers.",
+            "The summary generator is unhealthy. New tutorials across the forge may be delayed until it recovers.",
         );
     }
     if health.ci.state == "error" {
@@ -4576,10 +4576,11 @@ mod tests {
         load_branch_ci_live_snapshot, load_nightly_live_snapshot, markdown_to_safe_html,
         next_branch_ci_live_snapshot, next_nightly_live_snapshot, nightly_stream_handler,
         recover_branch_ci_run_handler, render_branch_ci_template_with_notices,
-        render_detail_template, render_nightly_template, rerun_branch_ci_lane_handler,
-        rerun_nightly_lane_handler, should_backfill_managed_allowlist_entry, verify_signature,
-        wake_ci_handler, AppState, CiLiveUpdates, ForgeBranchLogsQuery, ForgeBranchResolveQuery,
-        ForgeHealthState, ReviewModeQuery,
+        render_detail_template, render_detail_template_with_notices, render_nightly_template,
+        rerun_branch_ci_lane_handler, rerun_nightly_lane_handler,
+        should_backfill_managed_allowlist_entry, verify_signature, wake_ci_handler, AppState,
+        CiLiveUpdates, ForgeBranchLogsQuery, ForgeBranchResolveQuery, ForgeHealthState,
+        PageNoticeView, ReviewModeQuery,
     };
     use crate::auth::AuthState;
     use crate::branch_store::{BranchUpsertInput, MirrorStatusRecord, MirrorSyncRunRecord};
@@ -6820,6 +6821,113 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
         let missing =
             Query::<ReviewModeQuery>::try_from_uri(&uri_missing).expect("missing review query");
         assert!(!missing.0.review);
+    }
+
+    #[test]
+    fn branch_detail_distinguishes_global_generator_health_from_branch_failure() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let branch = store
+            .upsert_branch_record(&branch_upsert_input(
+                "feature/tutorial-failure",
+                "head-tutorial",
+            ))
+            .expect("insert branch");
+        let artifact_id: i64 = store
+            .with_connection(|conn| {
+                conn.query_row(
+                    "SELECT id
+                     FROM branch_artifact_versions
+                     WHERE branch_id = ?1
+                     ORDER BY version DESC
+                     LIMIT 1",
+                    rusqlite::params![branch.branch_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("branch artifact id");
+        store
+            .mark_branch_generation_failed(artifact_id, "model output malformed", false, 0)
+            .expect("mark tutorial failed");
+
+        let detail = store
+            .get_branch_detail(branch.branch_id)
+            .expect("branch detail")
+            .expect("detail");
+        let ci_runs = store
+            .list_branch_ci_runs(branch.branch_id, 8)
+            .expect("branch ci runs");
+        let rendered = render_detail_template_with_notices(
+            detail,
+            ci_runs,
+            false,
+            vec![PageNoticeView {
+                tone: "warning".to_string(),
+                message: "The summary generator is unhealthy. New tutorials across the forge may be delayed until it recovers.".to_string(),
+            }],
+        )
+        .expect("render detail template")
+        .render()
+        .expect("render detail html");
+
+        assert!(rendered.contains("The summary generator is unhealthy."));
+        assert!(rendered.contains("Branch Tutorial Generation Failed"));
+        assert!(rendered.contains("This branch tutorial is unavailable because generation failed."));
+    }
+
+    #[test]
+    fn branch_detail_places_diff_after_review_layout() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let branch = store
+            .upsert_branch_record(&branch_upsert_input("feature/full-width-diff", "head-diff"))
+            .expect("insert branch");
+        let artifact_id: i64 = store
+            .with_connection(|conn| {
+                conn.query_row(
+                    "SELECT id
+                     FROM branch_artifact_versions
+                     WHERE branch_id = ?1
+                     ORDER BY version DESC
+                     LIMIT 1",
+                    rusqlite::params![branch.branch_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("branch artifact id");
+        store
+            .mark_branch_generation_ready(
+                artifact_id,
+                r#"{"executive_summary":"summary","steps":[],"media_links":[]}"#,
+                "<p>ok</p>",
+                "head-diff",
+                "diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n",
+            )
+            .expect("mark tutorial ready");
+
+        let detail = store
+            .get_branch_detail(branch.branch_id)
+            .expect("branch detail")
+            .expect("detail");
+        let ci_runs = store
+            .list_branch_ci_runs(branch.branch_id, 8)
+            .expect("branch ci runs");
+        let rendered = render_detail_template(detail, ci_runs, false)
+            .expect("render detail template")
+            .render()
+            .expect("render detail html");
+
+        let review_layout = rendered
+            .find("class=\"review-layout\"")
+            .expect("review layout");
+        let diff_row = rendered
+            .find("class=\"panel diff-panel diff-row\"")
+            .expect("diff row");
+        assert!(diff_row > review_layout);
     }
 
     #[test]

@@ -22,11 +22,13 @@
       .inbox-empty { text-align: center; color: var(--text-muted); padding: 3rem 1rem; }
       .inbox-auth { text-align: center; color: var(--text-muted); padding: 3rem 1rem; }
       .inbox-loading { text-align: center; color: var(--text-muted); padding: 2rem; }
+      .inbox-note { margin: 0 0 1rem; color: var(--text-muted); }
 {% endblock %}
 
 {% block body %}
     <main class="shell">
       <h1>Inbox</h1>
+      <p class="inbox-note">Inbox items stay here until you dismiss them. Branch state is metadata, not cleanup.</p>
 
       <div id="inbox-auth" class="inbox-auth" style="display:none;">
         <p>Sign in with Nostr to view your inbox.</p>
@@ -47,7 +49,7 @@
       </div>
 
       <div id="inbox-empty" class="inbox-empty" style="display:none;">
-        <p>Your inbox is empty. Nice work!</p>
+        <p>Your inbox is empty.</p>
         <p><a href="/news">Back to feed</a></p>
       </div>
     </main>

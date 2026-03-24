@@ -1030,7 +1030,6 @@ impl Store {
                          JOIN branch_records br ON br.id = bav.branch_id
                          WHERE bav.is_current = 1
                            AND bav.status = 'ready'
-                           AND br.state = 'open'
                          ORDER BY bav.version ASC, bav.id ASC",
                     )
                     .context("prepare current branch artifact scan for backfill")?;
@@ -1088,7 +1087,6 @@ impl Store {
                      )
                      WHERE bis.npub = ?1
                        AND bis.state = 'inbox'
-                       AND br.state = 'open'
                      ORDER BY bis.created_at ASC, bis.branch_id ASC
                      LIMIT ?2 OFFSET ?3",
                 )
@@ -1129,10 +1127,8 @@ impl Store {
             conn.query_row(
                 "SELECT COUNT(*)
                  FROM branch_inbox_states bis
-                 JOIN branch_records br ON br.id = bis.branch_id
                  WHERE bis.npub = ?1
-                   AND bis.state = 'inbox'
-                   AND br.state = 'open'",
+                   AND bis.state = 'inbox'",
                 params![npub],
                 |row| row.get(0),
             )
@@ -1211,10 +1207,8 @@ impl Store {
                 .query_row(
                     "SELECT bis.created_at, bis.branch_id
                      FROM branch_inbox_states bis
-                     JOIN branch_records br ON br.id = bis.branch_id
                      WHERE bis.npub = ?1
                        AND bis.state = 'inbox'
-                       AND br.state = 'open'
                        AND bis.branch_id = ?2
                      LIMIT 1",
                     params![npub, branch_id],
@@ -1231,10 +1225,8 @@ impl Store {
                 .query_row(
                     "SELECT bis.branch_id
                      FROM branch_inbox_states bis
-                     JOIN branch_records br ON br.id = bis.branch_id
                      WHERE bis.npub = ?1
                        AND bis.state = 'inbox'
-                       AND br.state = 'open'
                        AND bis.branch_id != ?3
                        AND (
                            bis.created_at < ?2
@@ -1252,10 +1244,8 @@ impl Store {
                 .query_row(
                     "SELECT bis.branch_id
                      FROM branch_inbox_states bis
-                     JOIN branch_records br ON br.id = bis.branch_id
                      WHERE bis.npub = ?1
                        AND bis.state = 'inbox'
-                       AND br.state = 'open'
                        AND bis.branch_id != ?3
                        AND (
                            bis.created_at > ?2
@@ -1273,10 +1263,8 @@ impl Store {
                 .query_row(
                     "SELECT COUNT(*)
                      FROM branch_inbox_states bis
-                     JOIN branch_records br ON br.id = bis.branch_id
                      WHERE bis.npub = ?1
                        AND bis.state = 'inbox'
-                       AND br.state = 'open'
                        AND (
                            bis.created_at < ?2
                            OR (bis.created_at = ?2 AND bis.branch_id <= ?3)
@@ -1290,10 +1278,8 @@ impl Store {
                 .query_row(
                     "SELECT COUNT(*)
                      FROM branch_inbox_states bis
-                     JOIN branch_records br ON br.id = bis.branch_id
                      WHERE bis.npub = ?1
-                       AND bis.state = 'inbox'
-                       AND br.state = 'open'",
+                       AND bis.state = 'inbox'",
                     params![npub],
                     |row| row.get(0),
                 )
@@ -2312,11 +2298,9 @@ fn insert_branch_inbox_rows_for_artifact(
         .query_row(
             "SELECT bav.branch_id
              FROM branch_artifact_versions bav
-             JOIN branch_records br ON br.id = bav.branch_id
              WHERE bav.id = ?1
                AND bav.status = 'ready'
-               AND bav.is_current = 1
-               AND br.state = 'open'",
+               AND bav.is_current = 1",
             params![artifact_id],
             |row| row.get::<_, i64>(0),
         )
@@ -2584,6 +2568,11 @@ fn migrations() -> Vec<Migration> {
             name: "0020_ci_queue_state_and_target_health",
             sql: include_str!("../migrations/0020_ci_queue_state_and_target_health.sql"),
         },
+        Migration {
+            version: 21,
+            name: "0021_restore_branch_closed_inbox",
+            sql: include_str!("../migrations/0021_restore_branch_closed_inbox.sql"),
+        },
     ]
 }
 
@@ -2825,6 +2814,124 @@ mod tests {
                 Ok::<_, anyhow::Error>(())
             })
             .expect("verify queue state migration");
+    }
+
+    #[test]
+    fn branch_closed_inbox_restore_migration_applies_after_legacy_version_20() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let conn = Connection::open(&db_path).expect("open sqlite");
+
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS _pika_news_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );",
+        )
+        .expect("create migrations table");
+
+        for migration in migrations()
+            .into_iter()
+            .filter(|migration| migration.version <= 20)
+        {
+            let tx = conn
+                .unchecked_transaction()
+                .expect("start migration transaction");
+            tx.execute_batch(migration.sql).expect("apply migration");
+            tx.execute(
+                "INSERT INTO _pika_news_migrations(version, name) VALUES (?1, ?2)",
+                params![migration.version, migration.name],
+            )
+            .expect("record migration");
+            tx.commit().expect("commit migration");
+        }
+
+        conn.execute(
+            "INSERT INTO repos(repo, default_branch) VALUES (?1, ?2)",
+            params!["sledtools/pika", "master"],
+        )
+        .expect("insert repo");
+        let repo_id: i64 = conn
+            .query_row(
+                "SELECT id FROM repos WHERE repo = ?1",
+                params!["sledtools/pika"],
+                |row| row.get(0),
+            )
+            .expect("lookup repo id");
+        conn.execute(
+            "INSERT INTO branch_records(
+                repo_id, branch_name, target_branch, title, state, head_sha, merge_base_sha, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                repo_id,
+                "feature/restored",
+                "master",
+                "feature/restored title",
+                "closed",
+                "head-1",
+                "base-1",
+                "2026-03-24T12:00:00Z"
+            ],
+        )
+        .expect("insert branch");
+        let branch_id: i64 = conn
+            .query_row(
+                "SELECT id FROM branch_records WHERE branch_name = ?1",
+                params!["feature/restored"],
+                |row| row.get(0),
+            )
+            .expect("lookup branch id");
+        conn.execute(
+            "INSERT INTO branch_artifact_versions(
+                branch_id, version, source_head_sha, merge_base_sha, status, is_current, created_at, ready_at, updated_at
+             ) VALUES (?1, 1, ?2, ?3, 'ready', 1, ?4, ?4, ?4)",
+            params![branch_id, "head-1", "base-1", "2026-03-24T12:00:00Z"],
+        )
+        .expect("insert branch artifact");
+        let artifact_id: i64 = conn
+            .query_row(
+                "SELECT id FROM branch_artifact_versions WHERE branch_id = ?1",
+                params![branch_id],
+                |row| row.get(0),
+            )
+            .expect("lookup branch artifact id");
+        conn.execute(
+            "INSERT INTO branch_inbox_states(
+                npub, branch_id, artifact_id, state, reason, created_at, updated_at, dismissed_at
+             ) VALUES (?1, ?2, ?3, 'dismissed', 'branch_closed', ?4, ?4, ?4)",
+            params![
+                "npub1reviewer",
+                branch_id,
+                artifact_id,
+                "2026-03-24T12:00:00Z"
+            ],
+        )
+        .expect("insert auto-dismissed inbox row");
+        drop(conn);
+
+        let store = Store::open(&db_path).expect("open store after legacy migrations");
+        store
+            .with_connection(|conn| {
+                let row: (String, String, Option<String>) = conn.query_row(
+                    "SELECT state, reason, dismissed_at
+                     FROM branch_inbox_states
+                     WHERE npub = ?1 AND branch_id = ?2",
+                    params!["npub1reviewer", branch_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+                assert_eq!(row.0, "inbox");
+                assert_eq!(row.1, "generation_ready");
+                assert_eq!(row.2, None);
+                let migration_name: String = conn.query_row(
+                    "SELECT name FROM _pika_news_migrations WHERE version = 21",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(migration_name, "0021_restore_branch_closed_inbox");
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("verify branch inbox restore migration");
     }
 
     #[test]
@@ -3361,6 +3468,72 @@ mod tests {
         assert_eq!(store.dismiss_all_branch_inbox(&npub).unwrap(), 1);
         assert_eq!(store.branch_inbox_count(&npub).unwrap(), 0);
         assert_eq!(store.branch_inbox_count("npub1other").unwrap(), 2);
+    }
+
+    #[test]
+    fn branch_inbox_items_survive_branch_lifecycle_changes_until_dismissed() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        let branch = store
+            .upsert_branch_record(&branch_upsert_input("feature/persistent", "head-1"))
+            .unwrap();
+        let artifact_id = mark_latest_branch_artifact_ready(&store, branch.branch_id, "head-1");
+        let npub = "npub1persistent";
+
+        assert_eq!(
+            store
+                .populate_branch_inbox(artifact_id, &[npub.to_string()])
+                .unwrap(),
+            1
+        );
+        store
+            .mark_branch_closed(branch.branch_id, "npub1trusted")
+            .expect("close branch");
+
+        let items = store.list_branch_inbox(npub, 50, 0).unwrap();
+        assert_eq!(branch_inbox_item_ids(&items), vec![branch.branch_id]);
+        assert_eq!(items[0].state, "closed");
+        assert_eq!(store.branch_inbox_count(npub).unwrap(), 1);
+        assert_eq!(
+            store
+                .branch_inbox_review_context(npub, branch.branch_id)
+                .unwrap(),
+            Some(InboxReviewContext {
+                prev: None,
+                next: None,
+                position: 1,
+                total: 1,
+            })
+        );
+
+        store
+            .dismiss_branch_inbox_items(npub, &[branch.branch_id])
+            .expect("dismiss closed branch inbox item");
+        assert_eq!(store.branch_inbox_count(npub).unwrap(), 0);
+    }
+
+    #[test]
+    fn branch_backfill_includes_closed_ready_branches() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        let branch = store
+            .upsert_branch_record(&branch_upsert_input("feature/closed-backfill", "head-1"))
+            .unwrap();
+        mark_latest_branch_artifact_ready(&store, branch.branch_id, "head-1");
+        store
+            .mark_branch_closed(branch.branch_id, "npub1trusted")
+            .expect("close branch");
+
+        let npub = "npub1late-reviewer";
+        assert_eq!(store.backfill_branch_inbox_for_npub(npub).unwrap(), 1);
+
+        let items = store.list_branch_inbox(npub, 50, 0).unwrap();
+        assert_eq!(branch_inbox_item_ids(&items), vec![branch.branch_id]);
+        assert_eq!(items[0].state, "closed");
     }
 
     #[test]

@@ -17,7 +17,10 @@ use axum::Router;
 use chrono::{DateTime, NaiveDateTime, SecondsFormat, TimeDelta, Utc};
 use futures::stream;
 use hmac::{Hmac, Mac};
-use pikaci::{load_logs, load_logs_metadata, load_run_record, LogKind, RunLogsMetadata, RunRecord};
+use pikaci::{
+    load_logs, load_logs_metadata, load_prepared_outputs_record, load_run_record, LogKind,
+    PreparedOutputsRecord, RunLogsMetadata, RunRecord,
+};
 use pulldown_cmark::{html, Options, Parser};
 use sha2::Sha256;
 use tokio::sync::{broadcast::error::RecvError, Notify};
@@ -651,6 +654,7 @@ struct ForgeBranchLogsResponse {
     lane: CiLaneView,
     pikaci_run: Option<RunRecord>,
     pikaci_log_metadata: Option<RunLogsMetadata>,
+    pikaci_prepared_outputs: Option<PreparedOutputsRecord>,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -675,6 +679,12 @@ struct ForgePikaciLogsResponse {
     job: Option<String>,
     host: Option<String>,
     guest: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct ForgePikaciPreparedOutputsResponse {
+    run_id: String,
+    prepared_outputs: PreparedOutputsRecord,
 }
 
 #[derive(serde::Serialize)]
@@ -1345,6 +1355,10 @@ pub async fn serve(
         .route(
             "/news/api/forge/pikaci/logs/:run_id",
             get(api_forge_pikaci_logs_handler),
+        )
+        .route(
+            "/news/api/forge/pikaci/prepared-outputs/:run_id",
+            get(api_forge_pikaci_prepared_outputs_handler),
         )
         .route(
             "/news/api/forge/nightly/:nightly_run_id",
@@ -3535,13 +3549,13 @@ async fn api_forge_branch_logs_handler(
                 )
                     .into_response();
             };
-            let (pikaci_run, pikaci_log_metadata) = lane
+            let (pikaci_run, pikaci_log_metadata, pikaci_prepared_outputs) = lane
                 .pikaci_run_id
                 .as_deref()
-                .and_then(|pikaci_run_id| {
-                    load_pikaci_run_and_log_metadata(&state.config, pikaci_run_id).ok()
-                })
-                .map_or((None, None), |(run, logs)| (Some(run), Some(logs)));
+                .and_then(|pikaci_run_id| load_pikaci_run_bundle(&state.config, pikaci_run_id).ok())
+                .map_or((None, None, None), |(run, logs, prepared_outputs)| {
+                    (Some(run), Some(logs), prepared_outputs)
+                });
             Json(ForgeBranchLogsResponse {
                 branch_id: detail.branch_id,
                 branch_name: detail.branch_name,
@@ -3549,6 +3563,7 @@ async fn api_forge_branch_logs_handler(
                 lane: map_ci_lane_view(lane, Utc::now()),
                 pikaci_run,
                 pikaci_log_metadata,
+                pikaci_prepared_outputs,
             })
             .into_response()
         }
@@ -3611,6 +3626,33 @@ async fn api_forge_pikaci_logs_handler(
     }
 }
 
+async fn api_forge_pikaci_prepared_outputs_handler(
+    State(state): State<Arc<AppState>>,
+    Path(run_id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    if let Err(resp) = require_auth(&state.auth, &headers) {
+        return resp;
+    }
+    match load_pikaci_prepared_outputs(&state.config, &run_id) {
+        Ok(Some(prepared_outputs)) => Json(ForgePikaciPreparedOutputsResponse {
+            run_id,
+            prepared_outputs,
+        })
+        .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("prepared outputs not found for run `{run_id}`")})),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": err.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
 fn load_pikaci_run(config: &Config, run_id: &str) -> anyhow::Result<RunRecord> {
     let forge_repo = config
         .effective_forge_repo()
@@ -3640,13 +3682,25 @@ fn load_pikaci_logs(
     load_logs(&state_root, run_id, job_id, kind)
 }
 
-fn load_pikaci_run_and_log_metadata(
+fn load_pikaci_prepared_outputs(
     config: &Config,
     run_id: &str,
-) -> anyhow::Result<(RunRecord, RunLogsMetadata)> {
+) -> anyhow::Result<Option<PreparedOutputsRecord>> {
+    let forge_repo = config
+        .effective_forge_repo()
+        .ok_or_else(|| anyhow::anyhow!("forge repo is not configured"))?;
+    let state_root = forge::pikaci_state_root(&forge_repo);
+    load_prepared_outputs_record(&state_root, run_id)
+}
+
+fn load_pikaci_run_bundle(
+    config: &Config,
+    run_id: &str,
+) -> anyhow::Result<(RunRecord, RunLogsMetadata, Option<PreparedOutputsRecord>)> {
     Ok((
         load_pikaci_run(config, run_id)?,
         load_pikaci_logs_metadata(config, run_id)?,
+        load_pikaci_prepared_outputs(config, run_id).ok().flatten(),
     ))
 }
 
@@ -4910,19 +4964,19 @@ mod tests {
 
     use super::{
         api_forge_branch_detail_handler, api_forge_branch_logs_handler,
-        api_forge_branch_resolve_handler, api_inbox_count_handler, api_inbox_list_handler,
-        api_forge_pikaci_logs_handler, api_forge_pikaci_run_handler,
-        auth_challenge_handler, branch_ci_stream_handler, build_mirror_health_status,
-        collect_forge_startup_issues, current_forge_runtime_issues, fail_branch_ci_lane_handler,
-        fail_nightly_lane_handler, inbox_review_handler, load_branch_ci_live_snapshot,
-        load_nightly_live_snapshot, markdown_to_safe_html, next_branch_ci_live_snapshot,
-        next_nightly_live_snapshot, nightly_stream_handler, recover_branch_ci_run_handler,
+        api_forge_branch_resolve_handler, api_forge_pikaci_logs_handler,
+        api_forge_pikaci_prepared_outputs_handler, api_forge_pikaci_run_handler,
+        api_inbox_count_handler, api_inbox_list_handler, auth_challenge_handler,
+        branch_ci_stream_handler, build_mirror_health_status, collect_forge_startup_issues,
+        current_forge_runtime_issues, fail_branch_ci_lane_handler, fail_nightly_lane_handler,
+        inbox_review_handler, load_branch_ci_live_snapshot, load_nightly_live_snapshot,
+        markdown_to_safe_html, next_branch_ci_live_snapshot, next_nightly_live_snapshot,
+        nightly_stream_handler, recover_branch_ci_run_handler,
         render_branch_ci_template_with_notices, render_detail_template,
         render_detail_template_with_notices, render_nightly_template, rerun_branch_ci_lane_handler,
         rerun_nightly_lane_handler, should_backfill_managed_allowlist_entry, verify_signature,
         wake_ci_handler, AppState, CiLiveUpdates, ForgeBranchLogsQuery, ForgeBranchResolveQuery,
-        ForgeHealthState, ForgePikaciLogsQuery, InboxListParams, PageNoticeView,
-        ReviewModeQuery,
+        ForgeHealthState, ForgePikaciLogsQuery, InboxListParams, PageNoticeView, ReviewModeQuery,
     };
     use crate::auth::AuthState;
     use crate::branch_store::{BranchUpsertInput, MirrorStatusRecord, MirrorSyncRunRecord};
@@ -5010,13 +5064,20 @@ mod tests {
         let state_root = crate::forge::pikaci_state_root(&forge_repo);
         let run_dir = state_root.join("runs").join(run_id);
         let job_dir = run_dir.join("jobs").join("job-one");
+        let prepared_outputs_path = run_dir.join("prepared-outputs.json");
         fs::create_dir_all(&job_dir).expect("create pikaci fixture dir");
         let host_log = job_dir.join("host.log");
         let guest_log = job_dir.join("guest.log");
         fs::write(&host_log, "host fixture\n").expect("write host log");
         fs::write(&guest_log, "guest fixture\n").expect("write guest log");
+        fs::write(
+            &prepared_outputs_path,
+            r#"{"schema_version":1,"outputs":[{"node_id":"prepare-pika-core-linux-rust-workspace-build","installable":"path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild","output_name":"ci.x86_64-linux.workspaceBuild","protocol":"nix_store_path_v1","residency":"local_authoritative","consumer":"host_local_symlink_mounts_v1","realized_path":"/nix/store/workspace-build","consumer_request_path":null,"consumer_result_path":null,"consumer_launch_request_path":null,"consumer_transport_request_path":null,"exposures":[],"requested_exposures":[]}]}"#,
+        )
+        .expect("write prepared outputs");
         let run_json = format!(
-            "{{\"run_id\":\"{run_id}\",\"status\":\"passed\",\"rerun_of\":null,\"target_id\":\"pre-merge-pika-rust\",\"target_description\":\"Run staged pika rust\",\"source_root\":\"/tmp/source\",\"snapshot_dir\":\"/tmp/snapshot\",\"git_head\":null,\"git_dirty\":null,\"created_at\":\"2026-03-19T00:00:00Z\",\"finished_at\":\"2026-03-19T00:00:02Z\",\"plan_path\":null,\"prepared_outputs_path\":null,\"prepared_output_consumer\":null,\"prepared_output_mode\":null,\"prepared_output_invocation_mode\":null,\"prepared_output_invocation_wrapper_program\":null,\"prepared_output_launcher_transport_mode\":null,\"prepared_output_launcher_transport_program\":null,\"prepared_output_launcher_transport_host\":null,\"prepared_output_launcher_transport_remote_launcher_program\":null,\"prepared_output_launcher_transport_remote_helper_program\":null,\"prepared_output_launcher_transport_remote_work_dir\":null,\"changed_files\":[],\"filters\":[],\"message\":null,\"prepare_timings\":[],\"jobs\":[{{\"id\":\"job-one\",\"description\":\"job one\",\"status\":\"passed\",\"executor\":\"remote_linux_vm\",\"plan_node_id\":null,\"timeout_secs\":30,\"host_log_path\":\"{}\",\"guest_log_path\":\"{}\",\"started_at\":\"2026-03-19T00:00:01Z\",\"finished_at\":\"2026-03-19T00:00:02Z\",\"exit_code\":0,\"message\":null,\"pre_execution_prepare_duration_ms\":null,\"remote_linux_vm_execution\":null}}]}}",
+            "{{\"run_id\":\"{run_id}\",\"status\":\"passed\",\"rerun_of\":null,\"target_id\":\"pre-merge-pika-rust\",\"target_description\":\"Run staged pika rust\",\"source_root\":\"/tmp/source\",\"snapshot_dir\":\"/tmp/snapshot\",\"git_head\":null,\"git_dirty\":null,\"created_at\":\"2026-03-19T00:00:00Z\",\"finished_at\":\"2026-03-19T00:00:02Z\",\"plan_path\":null,\"prepared_outputs_path\":\"{}\",\"prepared_output_consumer\":null,\"prepared_output_mode\":null,\"prepared_output_invocation_mode\":null,\"prepared_output_invocation_wrapper_program\":null,\"prepared_output_launcher_transport_mode\":null,\"prepared_output_launcher_transport_program\":null,\"prepared_output_launcher_transport_host\":null,\"prepared_output_launcher_transport_remote_launcher_program\":null,\"prepared_output_launcher_transport_remote_helper_program\":null,\"prepared_output_launcher_transport_remote_work_dir\":null,\"changed_files\":[],\"filters\":[],\"message\":null,\"prepare_timings\":[],\"jobs\":[{{\"id\":\"job-one\",\"description\":\"job one\",\"status\":\"passed\",\"executor\":\"remote_linux_vm\",\"plan_node_id\":null,\"timeout_secs\":30,\"host_log_path\":\"{}\",\"guest_log_path\":\"{}\",\"started_at\":\"2026-03-19T00:00:01Z\",\"finished_at\":\"2026-03-19T00:00:02Z\",\"exit_code\":0,\"message\":null,\"pre_execution_prepare_duration_ms\":null,\"remote_linux_vm_execution\":{{\"backend\":\"incus\",\"incus_image\":{{\"project\":\"pika-managed-agents\",\"alias\":\"pikaci/dev\",\"fingerprint\":\"abc123\"}},\"phases\":[]}}}}]}}",
+            prepared_outputs_path.display(),
             host_log.display(),
             guest_log.display(),
         );
@@ -6308,6 +6369,10 @@ mod tests {
             json["pikaci_log_metadata"]["jobs"][0]["host_log_exists"],
             true
         );
+        assert_eq!(
+            json["pikaci_prepared_outputs"]["outputs"][0]["output_name"],
+            "ci.x86_64-linux.workspaceBuild"
+        );
     }
 
     #[tokio::test]
@@ -6333,6 +6398,10 @@ mod tests {
             .expect("read run body");
         let run_json: serde_json::Value = serde_json::from_slice(&run_body).expect("parse run");
         assert_eq!(run_json["run_id"], "pikaci-run-abc");
+        assert_eq!(
+            run_json["jobs"][0]["remote_linux_vm_execution"]["incus_image"]["alias"],
+            "pikaci/dev"
+        );
 
         let logs_response = api_forge_pikaci_logs_handler(
             State(state),
@@ -6354,6 +6423,36 @@ mod tests {
         assert_eq!(logs_json["job"], "job-one");
         assert_eq!(logs_json["host"], "host fixture\n");
         assert_eq!(logs_json["guest"], "guest fixture\n");
+    }
+
+    #[tokio::test]
+    async fn api_forge_pikaci_prepared_outputs_handler_loads_persisted_record() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let config = forge_test_config_with_git_dir(&dir.path().join("pika.git"));
+        write_pikaci_run_fixture(&config, "pikaci-run-prepared");
+        let headers = trusted_headers(&store, TRUSTED_NPUB);
+        let state = test_state(store, config);
+
+        let response = api_forge_pikaci_prepared_outputs_handler(
+            State(state),
+            Path("pikaci-run-prepared".to_string()),
+            headers,
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).expect("parse prepared outputs");
+        assert_eq!(json["run_id"], "pikaci-run-prepared");
+        assert_eq!(
+            json["prepared_outputs"]["outputs"][0]["realized_path"],
+            "/nix/store/workspace-build"
+        );
     }
 
     #[tokio::test]

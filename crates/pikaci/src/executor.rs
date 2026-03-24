@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 
 use crate::model::{
     GuestCommand, JobOutcome, JobSpec, RemoteLinuxVmBackend, RemoteLinuxVmExecutionRecord,
-    RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord, RunStatus, RunnerKind,
+    RemoteLinuxVmImageRecord, RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord, RunStatus, RunnerKind,
 };
 use crate::snapshot::{SnapshotMetadata, materialize_workspace, read_snapshot_metadata};
 
@@ -133,6 +133,7 @@ impl std::error::Error for JobRunnerExecutionError {
 
 struct RemoteLinuxVmPhaseRecorder {
     backend: RemoteLinuxVmBackend,
+    incus_image: Option<RemoteLinuxVmImageRecord>,
     phases: Vec<RemoteLinuxVmPhaseRecord>,
 }
 
@@ -140,8 +141,13 @@ impl RemoteLinuxVmPhaseRecorder {
     fn new(backend: RemoteLinuxVmBackend) -> Self {
         Self {
             backend,
+            incus_image: None,
             phases: Vec::new(),
         }
+    }
+
+    fn set_incus_image(&mut self, image: RemoteLinuxVmImageRecord) {
+        self.incus_image = Some(image);
     }
 
     fn record<T>(
@@ -165,6 +171,7 @@ impl RemoteLinuxVmPhaseRecorder {
     fn finish(self) -> RemoteLinuxVmExecutionRecord {
         RemoteLinuxVmExecutionRecord {
             backend: self.backend,
+            incus_image: self.incus_image,
             phases: self.phases,
         }
     }
@@ -1109,6 +1116,9 @@ fn run_remote_linux_vm_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<J
         phases.record(RemoteLinuxVmPhase::PrepareRuntime, || {
             prepare_remote_linux_vm_runtime(job, ctx, &remote, &ctx.host_log_path)
         })?;
+        if backend == RemoteLinuxVmBackend::Incus {
+            phases.set_incus_image(load_remote_incus_image_record(&remote, &ctx.host_log_path)?);
+        }
 
         append_line(
             &ctx.host_log_path,
@@ -2893,6 +2903,62 @@ fn ensure_remote_incus_image_available(
     );
 }
 
+#[derive(Deserialize)]
+struct RemoteIncusImageShowRecord {
+    fingerprint: String,
+}
+
+fn load_remote_incus_image_record(
+    remote: &RemoteLinuxVmContext,
+    log_path: &Path,
+) -> anyhow::Result<RemoteLinuxVmImageRecord> {
+    let image_alias = remote.incus_image_alias.as_str();
+    let project = remote.incus_project.as_str();
+    let output = run_remote_incus_command(
+        &remote.remote_host,
+        &[
+            "image",
+            "show",
+            "--project",
+            project,
+            image_alias,
+            "--format",
+            "json",
+        ],
+    )
+    .output()
+    .with_context(|| {
+        format!(
+            "load Incus image `{image_alias}` metadata on {}",
+            remote.remote_host
+        )
+    })?;
+    if !output.status.success() {
+        append_line(log_path, &String::from_utf8_lossy(&output.stdout))?;
+        append_line(log_path, &String::from_utf8_lossy(&output.stderr))?;
+        bail!(
+            "failed to load Incus image `{}` metadata from project `{}` on {}",
+            image_alias,
+            project,
+            remote.remote_host
+        );
+    }
+    let decoded: RemoteIncusImageShowRecord =
+        serde_json::from_slice(&output.stdout).context("decode Incus image metadata json")?;
+    append_line(
+        log_path,
+        &format!(
+            "[pikaci] remote Linux VM backend `incus` image `{}` fingerprint={} on {}",
+            image_alias, decoded.fingerprint, remote.remote_host
+        ),
+    )?;
+    Ok(RemoteLinuxVmImageRecord {
+        project: project.to_string(),
+        alias: image_alias.to_string(),
+        fingerprint: Some(decoded.fingerprint),
+    })
+}
+
 fn ensure_remote_incus_runtime(
     job: &JobSpec,
     remote: &RemoteLinuxVmContext,
@@ -3710,7 +3776,8 @@ mod tests {
     };
     use crate::model::{
         GuestCommand, JobSpec, RemoteLinuxVmBackend, RemoteLinuxVmExecutionRecord,
-        RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord, RunStatus, RunnerKind,
+        RemoteLinuxVmImageRecord, RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord, RunStatus,
+        RunnerKind,
     };
     use crate::snapshot::SnapshotMetadata;
 
@@ -3984,6 +4051,11 @@ mod tests {
     fn remote_linux_vm_execution_metadata_round_trips_through_wrapped_errors() {
         let record = RemoteLinuxVmExecutionRecord {
             backend: RemoteLinuxVmBackend::Incus,
+            incus_image: Some(RemoteLinuxVmImageRecord {
+                project: "pika-managed-agents".to_string(),
+                alias: "pikaci/dev".to_string(),
+                fingerprint: Some("abcdef".to_string()),
+            }),
             phases: vec![RemoteLinuxVmPhaseRecord {
                 phase: RemoteLinuxVmPhase::PrepareRuntime,
                 started_at: "2026-03-19T00:00:00Z".to_string(),

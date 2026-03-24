@@ -557,7 +557,8 @@ fn should_default_remote_linux_vm_to_incus() -> bool {
 mod tests {
     use super::{
         GuestCommand, JobSpec, RemoteLinuxVmBackend, RemoteLinuxVmExecutionRecord,
-        RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord, StagedLinuxRustLane, StagedLinuxRustTarget,
+        RemoteLinuxVmImageRecord, RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord,
+        StagedLinuxRustLane, StagedLinuxRustTarget,
     };
     use std::fs;
     use std::path::Path;
@@ -833,6 +834,7 @@ mod tests {
     fn remote_linux_vm_execution_metadata_round_trips_with_stable_phase_names() {
         let record = RemoteLinuxVmExecutionRecord {
             backend: RemoteLinuxVmBackend::Microvm,
+            incus_image: None,
             phases: vec![
                 RemoteLinuxVmPhaseRecord {
                     phase: RemoteLinuxVmPhase::PrepareRuntime,
@@ -856,6 +858,28 @@ mod tests {
 
         let decoded: RemoteLinuxVmExecutionRecord =
             serde_json::from_str(&json).expect("decode metadata");
+        assert_eq!(decoded, record);
+    }
+
+    #[test]
+    fn remote_linux_vm_execution_metadata_serializes_incus_image_identity() {
+        let record = RemoteLinuxVmExecutionRecord {
+            backend: RemoteLinuxVmBackend::Incus,
+            incus_image: Some(RemoteLinuxVmImageRecord {
+                project: "pika-managed-agents".to_string(),
+                alias: "pikaci/dev".to_string(),
+                fingerprint: Some("abc123".to_string()),
+            }),
+            phases: vec![],
+        };
+
+        let json = serde_json::to_value(&record).expect("encode metadata");
+        assert_eq!(json["incus_image"]["project"], "pika-managed-agents");
+        assert_eq!(json["incus_image"]["alias"], "pikaci/dev");
+        assert_eq!(json["incus_image"]["fingerprint"], "abc123");
+
+        let decoded: RemoteLinuxVmExecutionRecord =
+            serde_json::from_value(json).expect("decode metadata");
         assert_eq!(decoded, record);
     }
 
@@ -1466,8 +1490,18 @@ pub struct RemoteLinuxVmPhaseRecord {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct RemoteLinuxVmImageRecord {
+    pub project: String,
+    pub alias: String,
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct RemoteLinuxVmExecutionRecord {
     pub backend: RemoteLinuxVmBackend,
+    #[serde(default)]
+    pub incus_image: Option<RemoteLinuxVmImageRecord>,
     #[serde(default)]
     pub phases: Vec<RemoteLinuxVmPhaseRecord>,
 }

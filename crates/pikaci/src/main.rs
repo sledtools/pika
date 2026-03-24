@@ -4,9 +4,9 @@ use pikaci::{
     GuestCommand, JobSpec, LogKind, RunLifecycleEvent, RunMetadata, RunOptions, RunRecord,
     RunStatus, StagedLinuxRemoteDefaults, StagedLinuxRustLane, StagedLinuxRustTarget,
     fulfill_prepared_output_request, gc_runs, git_changed_files, list_runs, load_logs,
-    load_logs_metadata, load_run_record, record_skipped_run_with_reporter,
-    rerun_jobs_with_metadata_and_reporter, run_jobs_with_metadata_and_reporter,
-    staged_linux_remote_defaults,
+    load_logs_metadata, load_prepared_outputs_record, load_run_record,
+    record_skipped_run_with_reporter, rerun_jobs_with_metadata_and_reporter,
+    run_jobs_with_metadata_and_reporter, staged_linux_remote_defaults,
 };
 use std::path::PathBuf;
 
@@ -48,6 +48,11 @@ enum Command {
         kind: LogKindArg,
         #[arg(long)]
         metadata_json: bool,
+    },
+    PreparedOutputs {
+        run_id: String,
+        #[arg(long)]
+        json: bool,
     },
     Status {
         run_id: String,
@@ -144,6 +149,27 @@ fn main() -> anyhow::Result<()> {
                 }
                 if let Some(guest) = logs.guest {
                     println!("== guest ==\n{guest}");
+                }
+            }
+        }
+        Command::PreparedOutputs { run_id, json } => {
+            let record = load_prepared_outputs_record(&options.state_root, &run_id)?
+                .ok_or_else(|| anyhow!("prepared outputs not found for run `{run_id}`"))?;
+            if json {
+                print_json(&record)?;
+            } else {
+                println!("run_id={run_id}");
+                println!("schema_version={}", record.schema_version);
+                println!("outputs={}", record.outputs.len());
+                for output in record.outputs {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}",
+                        output.node_id,
+                        output.output_name,
+                        output.installable,
+                        prepared_output_consumer_label(output.consumer),
+                        output.realized_path
+                    );
                 }
             }
         }
@@ -1962,9 +1988,10 @@ fn matches_filter(path: &str, pattern: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_status_lines, matches_any_filter, matches_filter, rerun_metadata,
+        Cli, Command, format_status_lines, matches_any_filter, matches_filter, rerun_metadata,
         resolve_state_root, staged_linux_remote_defaults_json, target_spec, target_spec_for_rerun,
     };
+    use clap::Parser;
     use pikaci::{
         JobRecord, PreparedOutputConsumerKind, RemoteLinuxVmBackend, RunLifecycleEvent, RunRecord,
         RunStatus, RunnerKind, StagedLinuxRustLane, StagedLinuxRustTarget,
@@ -2581,6 +2608,20 @@ mod tests {
             message: Some("ok".to_string()),
             pre_execution_prepare_duration_ms: None,
             remote_linux_vm_execution: None,
+        }
+    }
+
+    #[test]
+    fn cli_parses_prepared_outputs_subcommand() {
+        let cli = Cli::try_parse_from(["pikaci", "prepared-outputs", "run-123", "--json"])
+            .expect("parse prepared outputs cli");
+
+        match cli.command {
+            Command::PreparedOutputs { run_id, json } => {
+                assert_eq!(run_id, "run-123");
+                assert!(json);
+            }
+            other => panic!("unexpected command: {other:?}"),
         }
     }
 }

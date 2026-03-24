@@ -470,6 +470,8 @@
         const branchId = {{ branch_id }};
         const reviewMode = {% if review_mode %}true{% else %}false{% endif %};
         const branchCiSummaryEnabled = {% if branch_ci_summary_enabled %}true{% else %}false{% endif %};
+        const branchCiSignalKey = 'pika_news_branch_ci_signal';
+        let branchCiSource = null;
 
         function recoveryButtons() {
           return Array.from(document.querySelectorAll('.ci-wake-btn, .lane-fail-btn, .lane-requeue-btn, .lane-recover-run-btn'));
@@ -524,22 +526,35 @@
           branchCiSummary.innerHTML = payload.html;
         }
 
-        function startBranchCiStream() {
-          if (!branchCiSummary || !branchCiSummaryEnabled || !window.EventSource) return;
-          const source = new EventSource(`/news/branch/${branchId}/ci/stream${reviewMode ? '?review=true' : ''}`);
-          source.addEventListener('ci-update', (event) => {
+        function startBranchCiStream(force) {
+          if (!branchCiSummary || !window.EventSource) return;
+          if (!force && !branchCiSummaryEnabled) return;
+          if (branchCiSource && branchCiSource.readyState !== EventSource.CLOSED) return;
+          branchCiSource = new EventSource(`/news/branch/${branchId}/ci/stream${reviewMode ? '?review=true' : ''}`);
+          branchCiSource.addEventListener('ci-update', (event) => {
             const payload = JSON.parse(event.data || '{}');
             applyBranchCiSummary(payload);
             const activeRoot = branchCiSummary.querySelector('[data-branch-ci-active]');
             if (activeRoot && activeRoot.getAttribute('data-branch-ci-active') !== 'true') {
-              source.close();
+              branchCiSource.close();
+              branchCiSource = null;
             }
           });
-          source.addEventListener('error', () => {
-            if (source.readyState === EventSource.CLOSED) {
-              source.close();
+          branchCiSource.addEventListener('error', () => {
+            if (branchCiSource && branchCiSource.readyState === EventSource.CLOSED) {
+              branchCiSource.close();
+              branchCiSource = null;
             }
           });
+        }
+
+        function handleBranchCiSignal(event) {
+          if (!event || event.key !== branchCiSignalKey || !event.newValue) return;
+          try {
+            const payload = JSON.parse(event.newValue);
+            if (payload.branchId !== branchId) return;
+            startBranchCiStream(true);
+          } catch (_err) {}
         }
 
         async function refreshReviewControls() {
@@ -646,8 +661,9 @@
 
         window.addEventListener('pika-auth', showActions);
         window.addEventListener('pika-auth', refreshReviewControls);
+        window.addEventListener('storage', handleBranchCiSignal);
         showActions();
-        startBranchCiStream();
+        startBranchCiStream(false);
       })();
     </script>
 {% endblock %}

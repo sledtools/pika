@@ -236,6 +236,7 @@
         const reviewNextBtn = document.getElementById('review-next');
         const reviewDismissBtn = document.getElementById('review-dismiss');
         const reviewPosEl = document.getElementById('review-pos');
+        const branchCiSignalKey = 'pika_news_branch_ci_signal';
         let branchCiSource = null;
 
         function rerunButtons() {
@@ -248,6 +249,15 @@
 
         function authToken() {
           return window.pikaAuth && window.pikaAuth.getToken ? window.pikaAuth.getToken() : null;
+        }
+
+        function announceBranchCiSignal() {
+          try {
+            localStorage.setItem(branchCiSignalKey, JSON.stringify({
+              branchId,
+              at: Date.now(),
+            }));
+          } catch (_err) {}
         }
 
         function showRerunButtons() {
@@ -279,6 +289,7 @@
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'request failed');
             button.textContent = 'Lane rerun queued.';
+            announceBranchCiSignal();
             startBranchCiStream(true);
           } catch (err) {
             button.textContent = err.message || String(err);
@@ -317,6 +328,7 @@
                 const data = await res.json().catch(() => ({}));
                 if (!res.ok) throw new Error(data.error || 'request failed');
                 button.textContent = button.dataset.doneLabel || 'Done.';
+                announceBranchCiSignal();
                 startBranchCiStream(true);
               } catch (err) {
                 button.disabled = false;

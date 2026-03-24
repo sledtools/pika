@@ -858,24 +858,26 @@ backend exists:
 Implement a new `pikaci` executor that can:
 
 - create or reuse an Incus VM
-- transfer the workspace snapshot
+- mount the prepared workspace snapshot
 - execute the guest workload
 - collect artifacts and logs
 - tear down or recycle the instance
 
 Current `pika-build` proof status:
 
-- Incus now defaults to the mixed single-host fast path on `pika-build` when
+- Incus now defaults to the staged pre-merge Linux path on `pika-build` when
   `PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST` points at `pika-build` or `localhost`;
   `PIKACI_REMOTE_LINUX_VM_BACKEND=incus|microvm|auto` is now the only supported
   operator override for backend selection
-- `transfer` remains an explicit fallback via `PIKACI_REMOTE_LINUX_VM_INCUS_MODE=transfer`, and
-  the staged runtime wrappers now keep working there instead of assuming the shared host-store
-  mount exists
-- the winning backend shape is still intentionally mixed-mode rather than a whole-workdir share:
+- the steady-state backend shape is now one shared-mount Incus path rather than a mode split:
   sync the snapshot to `pika-build`, share the snapshot plus staged Linux Rust outputs into the
-  guest as readonly `virtiofs` mounts, keep `/artifacts`, `/cargo-home`, and `/cargo-target`
-  guest-local and writable, run the staged wrapper, collect artifacts, and delete the VM
+  guest as readonly `virtiofs` mounts at their final guest paths, keep `/artifacts`,
+  `/cargo-home`, and `/cargo-target` guest-local and writable, run the staged wrapper, collect
+  artifacts, and delete the VM
+- the guest bootstrap contract now lives in the Incus image:
+  the image owns the mounted-path layout and
+  `/run/current-system/sw/bin/pikaci-incus-run` owns the guest env/log/result contract, so
+  `executor.rs` no longer synthesizes those bash launchers per job
 - the Incus executor now preserves the staged-job read-only workspace contract and persists remote
   backend phase metadata even when an Incus execution fails during runtime bring-up
 - running `pikaci` on `pika-build` itself still needs a localhost fast path instead of SSH for the
@@ -889,15 +891,11 @@ Current `pika-build` proof status:
 - `run.json` now records prepare-node timing outside the remote-execution seam, so comparisons can
   separate total wall time from pre-execution prepare work and executor-local phases
 - current measurements on `pika-build` are:
-  - `pika-actionlint` transfer Incus: about `155s` wall, about `102s` pre-execution prepare, about
-    `51.7s` Incus `prepare_runtime`
   - `pika-actionlint` fast-path Incus: about `32s` wall, about `7.9s` pre-execution prepare, about
     `22.2s` Incus `prepare_runtime`
   - `pika-actionlint` microVM: about `21s` wall, about `14.9s` pre-execution prepare, about `5.5s`
     guest wait time, so the current smallest-lane comparison no longer supports the old claim that
     Incus is simply faster than microVM on this host
-  - `pika-doc-contracts` transfer Incus: about `67s` wall, about `8.3s` pre-execution prepare,
-    about `56.3s` Incus `prepare_runtime`
   - `pika-doc-contracts` fast-path Incus: about `40s` wall, about `8.9s` pre-execution prepare,
     about `28.6s` Incus `prepare_runtime`
   - `pika-rust-deps-hygiene` fast-path Incus: about `49s` wall, about `14.1s` pre-execution
@@ -913,7 +911,7 @@ Current `pika-build` proof status:
   follow-up `cargo machete` check needed to ignore CI fixture manifests under `nix/ci`
 - the staged `pre-merge-rmp` parity blocker is now fixed end-to-end: the reduced RMP workspace now
   mirrors the generated template dependency surface closely enough for offline Cargo vendor checks,
-  and both fast-path Incus and `transfer` fallback runs reach a passing `rmp-init-smoke-ci`
+  and the default Incus path reaches a passing `rmp-init-smoke-ci`
 - the remaining Incus parity picture is now closed out:
   - `pre-merge-agent-contracts` is no longer an Incus-default exception:
     the stale host-side deterministic HTTP selectors were removed from the lane

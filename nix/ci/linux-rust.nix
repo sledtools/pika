@@ -91,6 +91,58 @@ let
     export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
   '';
 
+  emitPikaciPayloadManifest = ''
+    had_share_pikaci=0
+    had_target=0
+    had_lib=0
+    if [ -d "$out/share/pikaci" ]; then
+      had_share_pikaci=1
+    fi
+    if [ -d "$out/target" ]; then
+      had_target=1
+    fi
+    if [ -d "$out/lib" ]; then
+      had_lib=1
+    fi
+    mkdir -p "$out/share/pikaci"
+    export PIKACI_PAYLOAD_MANIFEST_OUT="$out"
+    export PIKACI_PAYLOAD_MANIFEST_HAS_SHARE_PIKACI="$had_share_pikaci"
+    export PIKACI_PAYLOAD_MANIFEST_HAS_TARGET="$had_target"
+    export PIKACI_PAYLOAD_MANIFEST_HAS_LIB="$had_lib"
+    ${pkgs.python3}/bin/python3 <<'PY'
+import json
+import os
+from pathlib import Path
+
+out = Path(os.environ["PIKACI_PAYLOAD_MANIFEST_OUT"])
+kind = "staged_linux_workspace_build_v1" if (out / "bin").is_dir() else "staged_linux_workspace_deps_v1"
+entrypoints = []
+bin_dir = out / "bin"
+if bin_dir.is_dir():
+    for child in sorted(bin_dir.iterdir(), key=lambda path: path.name):
+        if child.is_file() or child.is_symlink():
+            entrypoints.append({"name": child.name, "relative_path": f"bin/{child.name}"})
+
+asset_roots = []
+if os.environ.get("PIKACI_PAYLOAD_MANIFEST_HAS_SHARE_PIKACI") == "1":
+    asset_roots.append({"name": "pikaci_share", "relative_path": "share/pikaci"})
+if os.environ.get("PIKACI_PAYLOAD_MANIFEST_HAS_TARGET") == "1":
+    asset_roots.append({"name": "target", "relative_path": "target"})
+if os.environ.get("PIKACI_PAYLOAD_MANIFEST_HAS_LIB") == "1":
+    asset_roots.append({"name": "lib", "relative_path": "lib"})
+
+manifest = {
+    "schema_version": 1,
+    "kind": kind,
+    "entrypoints": entrypoints,
+    "asset_roots": asset_roots,
+}
+(out / "share" / "pikaci" / "payload-manifest.json").write_text(
+    json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+)
+PY
+  '';
+
   pikaFollowupGradleDepsPackage =
     if lane == "pika-followup" && androidSdk != null && androidJdk != null then
       import ./pika-followup-gradle-deps.nix {
@@ -1706,6 +1758,7 @@ rec {
     dummySrc = workspaceDummySrc;
     doCheck = false;
     buildPhaseCargoCommand = laneCompileCommand;
+    postInstall = emitPikaciPayloadManifest;
   });
 
   workspaceBuild = craneLib.mkCargoDerivation (commonArgs // {
@@ -1719,6 +1772,7 @@ rec {
     PIKACI_FOLLOWUP_STAGE_OUTPUTS = if lane == "pika-followup" then "1" else "0";
     doInstallCargoArtifacts = false;
     inherit installPhaseCommand;
+    postInstall = emitPikaciPayloadManifest;
   } // pkgs.lib.optionalAttrs (lane == "pika-followup") {
     mitmCache = pikaFollowupGradleMitmCache;
   });

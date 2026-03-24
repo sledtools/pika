@@ -562,9 +562,6 @@ mod tests {
     };
     use std::fs;
     use std::path::Path;
-    use std::sync::{Mutex, OnceLock};
-
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     fn workspace_root() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -586,15 +583,17 @@ mod tests {
             staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit),
         };
 
-        assert_eq!(
-            spec.staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit)
-        );
-        assert_eq!(spec.runner_kind(), super::RunnerKind::RemoteLinuxVm);
-        assert_eq!(
-            spec.remote_linux_vm_backend(),
-            Some(RemoteLinuxVmBackend::Microvm)
-        );
+        with_remote_linux_vm_envs(None, None, || {
+            assert_eq!(
+                spec.staged_linux_rust_lane(),
+                Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit)
+            );
+            assert_eq!(spec.runner_kind(), super::RunnerKind::RemoteLinuxVm);
+            assert_eq!(
+                spec.remote_linux_vm_backend(),
+                Some(RemoteLinuxVmBackend::Microvm)
+            );
+        });
     }
 
     fn with_remote_linux_vm_backend_env<T>(value: Option<&str>, action: impl FnOnce() -> T) -> T {
@@ -610,10 +609,7 @@ mod tests {
         prepared_output_ssh_host: Option<&str>,
         action: impl FnOnce() -> T,
     ) -> T {
-        let _guard = ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("env lock");
+        let _guard = crate::test_support::env_lock();
         let previous_backend = std::env::var(super::REMOTE_LINUX_VM_BACKEND_ENV).ok();
         let previous_host = std::env::var(super::PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV).ok();
 
@@ -1515,6 +1511,22 @@ pub struct PrepareTimingRecord {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PreparedOutputPayloadPathRecord {
+    pub name: String,
+    pub relative_path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PreparedOutputPayloadManifestRecord {
+    pub schema_version: u32,
+    pub kind: String,
+    #[serde(default)]
+    pub entrypoints: Vec<PreparedOutputPayloadPathRecord>,
+    #[serde(default)]
+    pub asset_roots: Vec<PreparedOutputPayloadPathRecord>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RealizedPreparedOutputRecord {
     pub node_id: String,
     pub installable: String,
@@ -1536,6 +1548,8 @@ pub struct RealizedPreparedOutputRecord {
     pub exposures: Vec<PreparedOutputExposure>,
     #[serde(default)]
     pub requested_exposures: Vec<PreparedOutputExposure>,
+    #[serde(default)]
+    pub payload: Option<PreparedOutputPayloadManifestRecord>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

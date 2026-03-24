@@ -162,13 +162,25 @@ fn main() -> anyhow::Result<()> {
                 println!("schema_version={}", record.schema_version);
                 println!("outputs={}", record.outputs.len());
                 for output in record.outputs {
+                    let payload_kind = output
+                        .payload
+                        .as_ref()
+                        .map(|payload| payload.kind.as_str())
+                        .unwrap_or("-");
+                    let entrypoint_count = output
+                        .payload
+                        .as_ref()
+                        .map(|payload| payload.entrypoints.len())
+                        .unwrap_or(0);
                     println!(
-                        "{}\t{}\t{}\t{}\t{}",
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}",
                         output.node_id,
                         output.output_name,
                         output.installable,
                         prepared_output_consumer_label(output.consumer),
-                        output.realized_path
+                        output.realized_path,
+                        payload_kind,
+                        entrypoint_count
                     );
                 }
             }

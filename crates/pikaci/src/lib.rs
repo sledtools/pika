@@ -10,6 +10,7 @@ pub use model::{
     PreparedOutputFulfillmentResult, PreparedOutputFulfillmentStatus,
     PreparedOutputFulfillmentTransportPathContract, PreparedOutputFulfillmentTransportRequest,
     PreparedOutputInvocationMode, PreparedOutputLauncherTransportMode,
+    PreparedOutputPayloadManifestRecord, PreparedOutputPayloadPathRecord,
     PreparedOutputRemoteExposureRequest, PreparedOutputsRecord, RealizedPreparedOutputRecord,
     RemoteLinuxVmBackend, RemoteLinuxVmExecutionRecord, RemoteLinuxVmImageRecord,
     RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord, RunLifecycleEvent, RunLogsMetadata,
@@ -30,3 +31,43 @@ pub use run::{
     write_prepared_output_fulfillment_result, write_prepared_output_fulfillment_transport_request,
 };
 pub use snapshot::git_changed_files;
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::cell::Cell;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    thread_local! {
+        static ENV_LOCK_DEPTH: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(crate) struct EnvLockGuard {
+        _guard: Option<MutexGuard<'static, ()>>,
+    }
+
+    pub(crate) fn env_lock() -> EnvLockGuard {
+        let guard = ENV_LOCK_DEPTH.with(|depth| {
+            let current = depth.get();
+            depth.set(current + 1);
+            if current == 0 {
+                Some(
+                    ENV_LOCK
+                        .get_or_init(|| Mutex::new(()))
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner()),
+                )
+            } else {
+                None
+            }
+        });
+        EnvLockGuard { _guard: guard }
+    }
+
+    impl Drop for EnvLockGuard {
+        fn drop(&mut self) {
+            ENV_LOCK_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+        }
+    }
+}

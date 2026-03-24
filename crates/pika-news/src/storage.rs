@@ -1030,6 +1030,7 @@ impl Store {
                          JOIN branch_records br ON br.id = bav.branch_id
                          WHERE bav.is_current = 1
                            AND bav.status = 'ready'
+                           AND br.state = 'open'
                          ORDER BY bav.version ASC, bav.id ASC",
                     )
                     .context("prepare current branch artifact scan for backfill")?;
@@ -3512,28 +3513,6 @@ mod tests {
             .dismiss_branch_inbox_items(npub, &[branch.branch_id])
             .expect("dismiss closed branch inbox item");
         assert_eq!(store.branch_inbox_count(npub).unwrap(), 0);
-    }
-
-    #[test]
-    fn branch_backfill_includes_closed_ready_branches() {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let db_path = dir.path().join("pika-news.db");
-        let store = Store::open(&db_path).expect("open store");
-
-        let branch = store
-            .upsert_branch_record(&branch_upsert_input("feature/closed-backfill", "head-1"))
-            .unwrap();
-        mark_latest_branch_artifact_ready(&store, branch.branch_id, "head-1");
-        store
-            .mark_branch_closed(branch.branch_id, "npub1trusted")
-            .expect("close branch");
-
-        let npub = "npub1late-reviewer";
-        assert_eq!(store.backfill_branch_inbox_for_npub(npub).unwrap(), 1);
-
-        let items = store.list_branch_inbox(npub, 50, 0).unwrap();
-        assert_eq!(branch_inbox_item_ids(&items), vec![branch.branch_id]);
-        assert_eq!(items[0].state, "closed");
     }
 
     #[test]

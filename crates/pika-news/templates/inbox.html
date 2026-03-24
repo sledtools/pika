@@ -22,13 +22,13 @@
       .inbox-empty { text-align: center; color: var(--text-muted); padding: 3rem 1rem; }
       .inbox-auth { text-align: center; color: var(--text-muted); padding: 3rem 1rem; }
       .inbox-loading { text-align: center; color: var(--text-muted); padding: 2rem; }
-      .inbox-note { margin: 0 0 1rem; color: var(--text-muted); }
+      .inbox-note { margin: 0 0 1rem; color: var(--text-muted); font-size: 0.92rem; }
 {% endblock %}
 
 {% block body %}
     <main class="shell">
       <h1>Inbox</h1>
-      <p class="inbox-note">Inbox items stay here until you dismiss them. Branch state is metadata, not cleanup.</p>
+      <p class="inbox-note">Items stay here until you dismiss them.</p>
 
       <div id="inbox-auth" class="inbox-auth" style="display:none;">
         <p>Sign in with Nostr to view your inbox.</p>
@@ -133,6 +133,7 @@
           items.forEach(function (item) {
             var reviewId = item.review_id;
             var isBranch = !!item.branch_id;
+            var stateLabel = isBranch ? ('Branch ' + escapeHtml(item.state)) : escapeHtml(item.state);
             var titleText = isBranch
               ? (escapeHtml(item.repo) + ' · branch ' + escapeHtml(item.branch_name || ('#' + reviewId)) + ': ' + escapeHtml(item.title))
               : (escapeHtml(item.repo) + ' · legacy review #' + reviewId + ': ' + escapeHtml(item.title));
@@ -145,7 +146,7 @@
                 '<div class="inbox-item-title"><a href="/news/inbox/review/' + reviewId + '">' +
                   titleText +
                 '</a></div>' +
-                '<div class="inbox-item-meta">Updated ' + escapeHtml(item.updated_at) + ' · ' + escapeHtml(item.state) + '</div>' +
+                '<div class="inbox-item-meta">Updated ' + escapeHtml(item.updated_at) + ' · ' + stateLabel + '</div>' +
               '</div>' +
               '<div class="inbox-item-actions">' +
                 '<button class="review-btn" data-review-id="' + reviewId + '">Review</button>' +

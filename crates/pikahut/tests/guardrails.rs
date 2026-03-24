@@ -854,6 +854,33 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
                 .contains("pikahut::config::find_workspace_root().unwrap_or_else(|_|"),
             "integration_deterministic must resolve workspace root from runtime config before falling back to compile-time paths"
         );
+        assert!(
+            linux_rust.contains("openclaw_stage_dir=\"$root/share/pikaci/openclaw-gateway-e2e\""),
+            "staged OpenClaw gateway wrapper must use the root-owned packaged OpenClaw e2e tree so plugin safety checks do not reject the staged plugin on Incus"
+        );
+        assert!(
+            linux_rust.contains("rm -rf \"$openclaw_e2e_root/lib/openclaw/extensions\"")
+                && linux_rust.contains("mkdir -p \"$openclaw_e2e_root/lib/openclaw/extensions\""),
+            "staged pikachat build must keep the packaged OpenClaw e2e tree free of bundled extensions so the gateway does not auto-discover a duplicate pikachat-openclaw plugin on Incus"
+        );
+        assert!(
+            linux_rust.contains(
+                "export PIKAHUT_OPENCLAW_EXTENSION_SOURCE_ROOT=\"$root/share/pikaci/pikachat-openclaw-extension\""
+            ),
+            "staged OpenClaw gateway wrapper must source the packaged pikachat-openclaw plugin from the standalone share tree so the runtime-local copy is the only loaded plugin on Incus"
+        );
+        assert!(
+            linux_rust.contains("cp \"$out/bin/openclaw\" \"$openclaw_e2e_root/bin/openclaw\""),
+            "staged pikachat build must copy the OpenClaw launcher into the dedicated e2e tree so it resolves package paths relative to the pruned runtime root"
+        );
+        assert!(
+            !linux_rust.contains("mktemp -d /tmp/pikaci-openclaw-package.XXXXXX"),
+            "staged OpenClaw gateway wrapper must not restage the OpenClaw runtime under /tmp, or plugin safety checks will reject the staged plugin on Incus"
+        );
+        assert!(
+            !linux_rust.contains("for entry in \"$root/lib/openclaw/extensions\"/*; do"),
+            "staged OpenClaw gateway wrapper must not restage the full OpenClaw extension tree, or the packaged gateway stalls before health binds on Incus"
+        );
     }
 
     let lane_keeps_pika_core_regression_boundaries = [
@@ -977,74 +1004,27 @@ fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<(
     }
 
     let selector_refs = parse_cli_selector_refs(&recipe.join("\n"));
-    let expected_host_selectors = [
-        "integration_deterministic::agent_http_ensure_local",
-        "integration_deterministic::agent_http_cli_new_local",
-        "integration_deterministic::agent_http_cli_new_idempotent_local",
-        "integration_deterministic::agent_http_cli_new_me_recover_local",
-        "integration_deterministic::agent_launch_provisioning_boundary",
-        "integration_deterministic::agent_launch_provisioning_failure_boundary",
-        "integration_deterministic::agent_launch_first_reply_boundary",
-    ];
-    for selector in expected_host_selectors {
-        assert!(
-            selector_refs.contains(selector),
-            "pre-merge-agent-contracts must keep host-side selector coverage for {selector}"
-        );
-    }
     assert!(
-        agent_filter.contains("crates/pikahut/src/**"),
-        "agent_contracts forge lane paths must include crates/pikahut/src/** while the lane keeps host-side agent selectors"
+        !selector_refs
+            .iter()
+            .any(|selector| selector.starts_with("integration_deterministic::agent_")),
+        "pre-merge-agent-contracts should not keep stale host-side deterministic agent selectors"
     );
     assert!(
-        agent_filter.contains("crates/pikahut/tests/**"),
-        "agent_contracts forge lane paths must include crates/pikahut/tests/** while the lane keeps host-side agent selectors"
+        !agent_filter.contains("crates/pikahut/src/**"),
+        "agent_contracts workflow filter should not keep pikahut source paths after the stale host-side selectors were removed"
     );
     assert!(
-        agent_filter.contains("crates/pikahut/Cargo.toml"),
-        "agent_contracts forge lane paths must include crates/pikahut/Cargo.toml while the lane keeps host-side agent selectors"
+        !agent_filter.contains("crates/pikahut/tests/**"),
+        "agent_contracts workflow filter should not keep pikahut test paths after the stale host-side selectors were removed"
     );
-    let pikahut_manifest = fs::read_to_string(root.join("crates/pikahut/Cargo.toml"))?;
-    if pikahut_manifest.contains("pika-desktop") {
-        assert!(
-            agent_filter.contains("crates/pika-desktop/**"),
-            "agent_contracts workflow filter must include crates/pika-desktop/** while host-side pikahut selectors depend on pika-desktop"
-        );
-    }
-    let integration_deterministic =
-        fs::read_to_string(root.join("crates/pikahut/tests/integration_deterministic.rs"))?;
-    let selected_agent_http_cli_selectors = [
-        "agent_http_cli_new_local",
-        "agent_http_cli_new_idempotent_local",
-        "agent_http_cli_new_me_recover_local",
-    ];
-    let lane_keeps_host_side_pikachat_shellouts = selected_agent_http_cli_selectors
-        .iter()
-        .filter(|selector| {
-            selector_refs.contains(&format!("integration_deterministic::{selector}"))
-        })
-        .map(|selector| extract_rust_function_body(&integration_deterministic, selector))
-        .any(|body| {
-            body.contains("\"run\",") && body.contains("\"-p\",") && body.contains("\"pikachat\",")
-        });
-    if lane_keeps_host_side_pikachat_shellouts {
-        let cli_manifest = fs::read_to_string(root.join("cli/Cargo.toml"))?;
-        for (dependency_name, filter_path) in [
-            ("pika-agent-protocol", "crates/pika-agent-protocol/**"),
-            ("pikachat-sidecar", "crates/pikachat-sidecar/**"),
-            ("hypernote-protocol", "crates/hypernote-protocol/**"),
-        ] {
-            if cli_manifest.contains(dependency_name) {
-                assert!(
-                    agent_filter.contains(filter_path),
-                    "agent_contracts forge lane paths must include {filter_path} while host-side pikachat selectors depend on {dependency_name}"
-                );
-            }
-        }
-    }
     assert!(
-        agent_filter.contains("cli/**"),
-        "agent_contracts forge lane paths must include cli/** while the lane keeps agent_http_cli_new selectors"
+        !agent_filter.contains("crates/pikahut/Cargo.toml"),
+        "agent_contracts workflow filter should not keep pikahut manifest coverage after the stale host-side selectors were removed"
+    );
+    assert!(
+        !agent_filter.contains("cli/**"),
+        "agent_contracts workflow filter should not keep CLI-only paths after the stale host-side selectors were removed"
     );
 
     Ok(())

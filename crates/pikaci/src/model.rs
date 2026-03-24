@@ -187,7 +187,6 @@ pub enum StagedLinuxRustLane {
     AgentContractsMicrovmTests,
     AgentContractsServerAgentApi,
     AgentContractsCoreNip98,
-    AgentContractsDeterministicHttp,
     NotificationsServerPackageTests,
     FixturePikahutClippy,
     FixtureRelaySmoke,
@@ -221,7 +220,6 @@ impl StagedLinuxRustLane {
             Self::AgentContractsMicrovmTests => "agent_contracts_microvm_tests",
             Self::AgentContractsServerAgentApi => "agent_contracts_server_agent_api",
             Self::AgentContractsCoreNip98 => "agent_contracts_core_nip98",
-            Self::AgentContractsDeterministicHttp => "agent_contracts_deterministic_http",
             Self::NotificationsServerPackageTests => "notifications_server_package_tests",
             Self::FixturePikahutClippy => "fixture_pikahut_clippy",
             Self::FixtureRelaySmoke => "fixture_relay_smoke",
@@ -255,10 +253,7 @@ impl StagedLinuxRustLane {
             Self::AgentContractsControlPlaneUnit
             | Self::AgentContractsMicrovmTests
             | Self::AgentContractsServerAgentApi
-            | Self::AgentContractsCoreNip98
-            | Self::AgentContractsDeterministicHttp => {
-                StagedLinuxRustTarget::PreMergeAgentContracts
-            }
+            | Self::AgentContractsCoreNip98 => StagedLinuxRustTarget::PreMergeAgentContracts,
             Self::NotificationsServerPackageTests => StagedLinuxRustTarget::PreMergeNotifications,
             Self::FixturePikahutClippy | Self::FixtureRelaySmoke => {
                 StagedLinuxRustTarget::PreMergeFixtureRust
@@ -336,9 +331,6 @@ impl StagedLinuxRustLane {
             }
             Self::AgentContractsCoreNip98 => {
                 "/staged/linux-rust/workspace-build/bin/run-core-agent-nip98-test"
-            }
-            Self::AgentContractsDeterministicHttp => {
-                "/staged/linux-rust/workspace-build/bin/run-agent-http-deterministic-tests"
             }
             Self::NotificationsServerPackageTests => {
                 "/staged/linux-rust/workspace-build/bin/run-pika-server-package-tests"
@@ -599,24 +591,13 @@ fn forced_remote_linux_vm_backend() -> Option<RemoteLinuxVmBackend> {
     }
 }
 
-fn should_default_remote_linux_vm_to_incus(job: &JobSpec) -> bool {
+fn should_default_remote_linux_vm_to_incus(_job: &JobSpec) -> bool {
     let Ok(remote_host) = std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV) else {
         return false;
     };
     matches!(
         remote_host.as_str(),
         "pika-build" | "localhost" | "127.0.0.1" | "::1"
-    ) && !automatic_incus_default_exclusion(job)
-}
-
-// Keep known-red branch targets off the automatic Incus default, even when the
-// current failure is backend-independent rather than Incus-specific.
-fn automatic_incus_default_exclusion(job: &JobSpec) -> bool {
-    matches!(
-        job.staged_linux_rust_lane()
-            .map(StagedLinuxRustLane::target),
-        Some(StagedLinuxRustTarget::PreMergeAgentContracts)
-            | Some(StagedLinuxRustTarget::PreMergePikachatOpenclawE2e)
     )
 }
 
@@ -844,7 +825,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_contracts_target_does_not_default_to_incus_on_pika_build() {
+    fn agent_contracts_target_defaults_to_incus_on_pika_build() {
         let spec = JobSpec {
             id: "agent-microvm-tests",
             description: "Run pika-agent-microvm tests in a remote Linux VM guest",
@@ -860,13 +841,13 @@ mod tests {
         with_prepared_output_ssh_host_env(Some("pika-build"), || {
             assert_eq!(
                 spec.remote_linux_vm_backend(),
-                Some(RemoteLinuxVmBackend::Microvm)
+                Some(RemoteLinuxVmBackend::Incus)
             );
         });
     }
 
     #[test]
-    fn pikachat_openclaw_target_does_not_default_to_incus_on_pika_build() {
+    fn pikachat_openclaw_target_defaults_to_incus_on_pika_build() {
         let spec = JobSpec {
             id: "openclaw-gateway-e2e",
             description: "Run the heavy OpenClaw gateway end-to-end scenario in a remote Linux VM guest",
@@ -881,7 +862,7 @@ mod tests {
         with_prepared_output_ssh_host_env(Some("pika-build"), || {
             assert_eq!(
                 spec.remote_linux_vm_backend(),
-                Some(RemoteLinuxVmBackend::Microvm)
+                Some(RemoteLinuxVmBackend::Incus)
             );
         });
     }
@@ -962,29 +943,22 @@ mod tests {
     }
 
     #[test]
-    fn agent_contracts_target_can_still_opt_into_incus_explicitly() {
+    fn pikachat_openclaw_target_selector_still_opt_in_matches_away_from_pika_build() {
         let spec = JobSpec {
-            id: "agent-microvm-tests",
-            description: "Run pika-agent-microvm tests in a remote Linux VM guest",
-            timeout_secs: 1800,
+            id: "openclaw-gateway-e2e",
+            description: "Run the heavy OpenClaw gateway end-to-end scenario in a remote Linux VM guest",
+            timeout_secs: 3600,
             writable_workspace: false,
-            guest_command: GuestCommand::ExactCargoTest {
-                package: "pikahut",
-                test_name: "integration_deterministic",
+            guest_command: GuestCommand::ShellCommand {
+                command: "/staged/linux-rust/workspace-build/bin/run-openclaw-gateway-e2e",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsMicrovmTests),
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::OpenclawGatewayE2e),
         };
 
-        with_remote_linux_vm_envs(None, None, Some("pika-build"), || {
-            assert_eq!(
-                spec.remote_linux_vm_backend(),
-                Some(RemoteLinuxVmBackend::Microvm)
-            );
-        });
         with_remote_linux_vm_envs(
-            Some("pre-merge-agent-contracts"),
+            Some("pre_merge_pikachat_openclaw_e2e"),
             None,
-            Some("pika-build"),
+            Some("example-linux-builder"),
             || {
                 assert_eq!(
                     spec.remote_linux_vm_backend(),
@@ -1083,7 +1057,7 @@ mod tests {
 
     #[test]
     fn agent_contract_lane_uses_agent_contracts_workspace_outputs() {
-        let lane = StagedLinuxRustLane::AgentContractsDeterministicHttp;
+        let lane = StagedLinuxRustLane::AgentContractsMicrovmTests;
 
         assert_eq!(
             lane.workspace_deps_output_name(),
@@ -1095,7 +1069,7 @@ mod tests {
         );
         assert_eq!(
             lane.execute_wrapper_command(),
-            "/staged/linux-rust/workspace-build/bin/run-agent-http-deterministic-tests"
+            "/staged/linux-rust/workspace-build/bin/run-agent-microvm-tests"
         );
     }
 

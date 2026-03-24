@@ -18,6 +18,15 @@ that already handles the boring infrastructure problems so we can focus on the a
 This is a living plan. It should be updated as implementation work teaches us more about the real
 constraints, surprises, and sequencing.
 
+Current `pikaci` OpenClaw Incus note:
+
+- the staged OpenClaw e2e runtime must keep the packaged gateway root free of bundled
+  `pikachat-openclaw` extensions
+- the test scenario now copies the plugin into a runtime-local state directory before loading it
+- the packaged wrapper must source that plugin from a standalone packaged tree instead of
+  `/mnt/pikaci-workspace-build/.../lib/openclaw/extensions/...`, or OpenClaw will auto-discover a
+  duplicate plugin from the mounted package root and stall before `/health`
+
 The migration has two tracks:
 
 - first, move the managed per-customer agent platform to Incus
@@ -905,26 +914,30 @@ Current `pika-build` proof status:
 - the staged `pre-merge-rmp` parity blocker is now fixed end-to-end: the reduced RMP workspace now
   mirrors the generated template dependency surface closely enough for offline Cargo vendor checks,
   and both fast-path Incus and `transfer` fallback runs reach a passing `rmp-init-smoke-ci`
-- the current remaining blockers are no longer in the Incus executor dataplane:
-  - `pre-merge-agent-contracts` is still red, but it no longer belongs in the
-    Incus-parity bucket:
-    `cargo test -p pika-agent-microvm --lib` passes again, and the remaining
-    `agent_http_ensure_local` failure now reproduces locally before any guest
-    bootstrap because `pika-server` rejects the request with
-    `missing incus.endpoint; set request.incus.endpoint or PIKA_AGENT_INCUS_ENDPOINT`
-    while that deterministic test still only seeds the legacy mock
-    `PIKA_AGENT_MICROVM_SPAWNER_URL` path
-  - `pre-merge-pikachat-openclaw-e2e` still fails on Incus, but the blocker is
-    now precise:
-    the guest-local Node runtime works, the old `libsimdjson.so.29` and
-    `Cannot find module 'hasown'` crashes are gone, and the staged scenario now
-    proves the real remaining gap is account startup in the packaged gateway
-    path because repeated `pikachat --remote ... publish-kp` attempts fail with
-    `connect to daemon .../daemon.sock` `No such file or directory`
-- because of that, the current honest migration read is:
-  staged Linux on `pika-build` now defaults to Incus for the green branch targets, with two
-  explicit automatic-default exclusions still kept off the Incus path:
-  `pre-merge-agent-contracts` and `pre-merge-pikachat-openclaw-e2e`
+- the remaining Incus parity picture is now closed out:
+  - `pre-merge-agent-contracts` is no longer an Incus-default exception:
+    the stale host-side deterministic HTTP selectors were removed from the lane
+    explicitly and documented as manual-only until they are rewritten against
+    the surviving Incus/OpenClaw contract, the local `just pre-merge-agent-contracts`
+    recipe now includes `pika-agent-control-plane` just like the staged lane,
+    the surviving staged Rust provider-contract surface now passes on Incus on
+    `pika-build`, and the lane rides the normal Incus default again
+  - `pre-merge-pikachat-openclaw-e2e` now passes on the normal default Incus
+    path on `pika-build`:
+    the staged scenario no longer loads the plugin through a symlink whose
+    canonical manifest path resolves back under `/mnt/pikaci-workspace-build`,
+    the packaged OpenClaw E2E tree keeps its bundled `extensions` directory
+    empty so the gateway does not auto-discover a duplicate plugin id, and the
+    scenario's bounded `/health` wait now covers the measured packaged cold
+    start on Incus
+    the remaining inner startup cost was not another plugin safety error:
+    directly loading the runtime-local copied `pikachat-openclaw` plugin with
+    the same Jiti stack the packaged gateway uses took about `66s` in the guest,
+    and a matching preserved-state repro showed the gateway then bound `/health`
+    and launched the `pikachat` daemon normally
+- because of that, the current migration read is:
+  staged pre-merge Linux on `pika-build` now defaults to Incus with no
+  remaining automatic Incus exclusions in the path discussed in this plan
 
 #### Phase C: Validate Performance And Developer Experience
 

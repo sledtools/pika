@@ -192,6 +192,9 @@
         font-size: 0.9rem;
       }
       .review-main { min-width: 0; }
+      .diff-row {
+        margin-top: 1.25rem;
+      }
       .diff-panel { overflow-x: auto; }
       .diff-view-toggle { display: flex; gap: 0.5rem; margin-bottom: 0.85rem; flex-wrap: wrap; }
       .diff-view-toggle button.active { background: var(--link); color: #fff; border-color: var(--link); }
@@ -309,7 +312,7 @@
           {% match error_message %}
           {% when Some with (msg) %}
           <section class="panel">
-            <h2>Generation Error</h2>
+            <h2>Branch Tutorial Generation Failed</h2>
             <p>{{ msg }}</p>
           </section>
           {% when None %}{% endmatch %}
@@ -351,7 +354,11 @@
             {% when None %}
             <section class="panel">
               <h2>Summary</h2>
+              {% if tutorial_status == "failed" %}
+              <p>This branch tutorial is unavailable because generation failed. Check the branch tutorial error above for details.</p>
+              {% else %}
               <p>Summary is not ready yet. Refresh shortly.</p>
+              {% endif %}
             </section>
             {% endmatch %}
 
@@ -366,26 +373,27 @@
             </section>
             {% endif %}
 
-            {% match diff_json %}
-            {% when Some with (json_str) %}
-            <section class="panel diff-panel">
-              <h2>Diff</h2>
-              <div class="diff-view-toggle">
-                <button type="button" class="diff-toggle active" data-style="side">Side by side</button>
-                <button type="button" class="diff-toggle" data-style="line">Unified</button>
-              </div>
-              <div id="diff-container"></div>
-              <script id="diff-data" type="application/json">{{ json_str|safe }}</script>
-            </section>
-            {% when None %}
-            <section class="panel">
-              <h2>Diff</h2>
-              <p class="muted">No diff is available for this branch yet.</p>
-            </section>
-            {% endmatch %}
           </div>
         </div>
       </div>
+
+      {% match diff_json %}
+      {% when Some with (json_str) %}
+      <section class="panel diff-panel diff-row">
+        <h2>Diff</h2>
+        <div class="diff-view-toggle">
+          <button type="button" class="diff-toggle active" data-style="side">Side by side</button>
+          <button type="button" class="diff-toggle" data-style="line">Unified</button>
+        </div>
+        <div id="diff-container"></div>
+        <script id="diff-data" type="application/json">{{ json_str|safe }}</script>
+      </section>
+      {% when None %}
+      <section class="panel diff-row">
+        <h2>Diff</h2>
+        <p class="muted">No diff is available for this branch yet.</p>
+      </section>
+      {% endmatch %}
     </main>
 {% endblock %}
 

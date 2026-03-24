@@ -4071,31 +4071,38 @@ mod tests {
 
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-    fn with_incus_lane_env<T>(value: Option<&str>, action: impl FnOnce() -> T) -> T {
+    fn with_forced_backend<T>(
+        value: Option<RemoteLinuxVmBackend>,
+        action: impl FnOnce() -> T,
+    ) -> T {
         let _guard = ENV_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
             .expect("env lock");
-        let previous = std::env::var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES").ok();
+        let previous = std::env::var("PIKACI_REMOTE_LINUX_VM_BACKEND").ok();
         match value {
-            Some(value) => {
+            Some(RemoteLinuxVmBackend::Incus) => {
                 // SAFETY: tests serialize process environment access with ENV_LOCK.
-                unsafe { std::env::set_var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES", value) };
+                unsafe { std::env::set_var("PIKACI_REMOTE_LINUX_VM_BACKEND", "incus") };
+            }
+            Some(RemoteLinuxVmBackend::Microvm) => {
+                // SAFETY: tests serialize process environment access with ENV_LOCK.
+                unsafe { std::env::set_var("PIKACI_REMOTE_LINUX_VM_BACKEND", "microvm") };
             }
             None => {
                 // SAFETY: tests serialize process environment access with ENV_LOCK.
-                unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES") };
+                unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_BACKEND") };
             }
         }
         let result = action();
         match previous {
             Some(previous) => {
                 // SAFETY: tests serialize process environment access with ENV_LOCK.
-                unsafe { std::env::set_var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES", previous) };
+                unsafe { std::env::set_var("PIKACI_REMOTE_LINUX_VM_BACKEND", previous) };
             }
             None => {
                 // SAFETY: tests serialize process environment access with ENV_LOCK.
-                unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES") };
+                unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_BACKEND") };
             }
         }
         result
@@ -4611,7 +4618,7 @@ mod tests {
 
     #[test]
     fn remote_linux_vm_prepare_artifact_is_none_for_incus_backend() {
-        with_incus_lane_env(Some("pika-actionlint"), || {
+        with_forced_backend(Some(RemoteLinuxVmBackend::Incus), || {
             let root =
                 std::env::temp_dir().join(format!("pikaci-incus-test-{}", uuid::Uuid::new_v4()));
             let ctx = HostContext {

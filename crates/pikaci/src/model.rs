@@ -97,7 +97,6 @@ pub enum RemoteLinuxVmBackend {
     Incus,
 }
 
-const REMOTE_LINUX_VM_INCUS_LANES_ENV: &str = "PIKACI_REMOTE_LINUX_VM_INCUS_LANES";
 const REMOTE_LINUX_VM_BACKEND_ENV: &str = "PIKACI_REMOTE_LINUX_VM_BACKEND";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV: &str = "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST";
 
@@ -206,39 +205,6 @@ pub enum StagedLinuxRustLane {
 }
 
 impl StagedLinuxRustLane {
-    pub fn selector_key(self) -> &'static str {
-        match self {
-            Self::PikaFollowupAndroidTestCompile => "pika_followup_android_test_compile",
-            Self::PikaFollowupPikachatBuild => "pika_followup_pikachat_build",
-            Self::PikaFollowupDesktopCheck => "pika_followup_desktop_check",
-            Self::PikaFollowupActionlint => "pika_followup_actionlint",
-            Self::PikaFollowupDocContracts => "pika_followup_doc_contracts",
-            Self::PikaFollowupRustDepsHygiene => "pika_followup_rust_deps_hygiene",
-            Self::PikaCoreLibAppFlows => "pika_core_lib_app_flows",
-            Self::PikaCoreMessagingE2e => "pika_core_messaging_e2e",
-            Self::AgentContractsControlPlaneUnit => "agent_contracts_control_plane_unit",
-            Self::AgentContractsMicrovmTests => "agent_contracts_microvm_tests",
-            Self::AgentContractsServerAgentApi => "agent_contracts_server_agent_api",
-            Self::AgentContractsCoreNip98 => "agent_contracts_core_nip98",
-            Self::NotificationsServerPackageTests => "notifications_server_package_tests",
-            Self::FixturePikahutClippy => "fixture_pikahut_clippy",
-            Self::FixtureRelaySmoke => "fixture_relay_smoke",
-            Self::RmpInitSmokeCi => "rmp_init_smoke_ci",
-            Self::PikachatPackageTests => "pikachat_package_tests",
-            Self::PikachatSidecarPackageTests => "pikachat_sidecar_package_tests",
-            Self::PikachatDesktopPackageTests => "pikachat_desktop_package_tests",
-            Self::PikachatCliSmokeLocal => "pikachat_cli_smoke_local",
-            Self::PikachatPostRebaseInvalidEvent => "pikachat_post_rebase_invalid_event",
-            Self::PikachatPostRebaseLogoutSession => "pikachat_post_rebase_logout_session",
-            Self::PikachatTypescript => "pikachat_typescript",
-            Self::OpenclawInviteAndChat => "openclaw_invite_and_chat",
-            Self::OpenclawInviteAndChatRustBot => "openclaw_invite_and_chat_rust_bot",
-            Self::OpenclawInviteAndChatDaemon => "openclaw_invite_and_chat_daemon",
-            Self::OpenclawAudioEcho => "openclaw_audio_echo",
-            Self::OpenclawGatewayE2e => "openclaw_gateway_e2e",
-        }
-    }
-
     pub fn target(self) -> StagedLinuxRustTarget {
         match self {
             Self::PikaFollowupAndroidTestCompile
@@ -398,20 +364,6 @@ impl StagedLinuxRustTarget {
         }
     }
 
-    pub fn selector_key(self) -> &'static str {
-        match self {
-            Self::PreMergePikaRust => "pre_merge_pika_rust",
-            Self::PreMergePikaFollowup => "pre_merge_pika_followup",
-            Self::PreMergeAgentContracts => "pre_merge_agent_contracts",
-            Self::PreMergeNotifications => "pre_merge_notifications",
-            Self::PreMergeFixtureRust => "pre_merge_fixture_rust",
-            Self::PreMergeRmp => "pre_merge_rmp",
-            Self::PreMergePikachatRust => "pre_merge_pikachat_rust",
-            Self::PreMergePikachatTypescript => "pre_merge_pikachat_typescript",
-            Self::PreMergePikachatOpenclawE2e => "pre_merge_pikachat_openclaw_e2e",
-        }
-    }
-
     pub fn config(self) -> StagedLinuxRustTargetConfig {
         match self {
             Self::PreMergePikaRust => StagedLinuxRustTargetConfig {
@@ -567,12 +519,12 @@ pub enum PreparedOutputInvocationMode {
     ExternalWrapperCommandV1,
 }
 
-fn select_remote_linux_vm_backend(job: &JobSpec) -> RemoteLinuxVmBackend {
+fn select_remote_linux_vm_backend(_job: &JobSpec) -> RemoteLinuxVmBackend {
     if let Some(forced) = forced_remote_linux_vm_backend() {
         return forced;
     }
 
-    if should_default_remote_linux_vm_to_incus(job) || incus_experiment_selectors_match(job) {
+    if should_default_remote_linux_vm_to_incus() {
         return RemoteLinuxVmBackend::Incus;
     }
 
@@ -591,7 +543,7 @@ fn forced_remote_linux_vm_backend() -> Option<RemoteLinuxVmBackend> {
     }
 }
 
-fn should_default_remote_linux_vm_to_incus(_job: &JobSpec) -> bool {
+fn should_default_remote_linux_vm_to_incus() -> bool {
     let Ok(remote_host) = std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV) else {
         return false;
     };
@@ -599,29 +551,6 @@ fn should_default_remote_linux_vm_to_incus(_job: &JobSpec) -> bool {
         remote_host.as_str(),
         "pika-build" | "localhost" | "127.0.0.1" | "::1"
     )
-}
-
-fn incus_experiment_selectors_match(job: &JobSpec) -> bool {
-    let Some(lane) = job.staged_linux_rust_lane() else {
-        return false;
-    };
-    let target = lane.target();
-    let target_config = target.config();
-    let Ok(raw) = std::env::var(REMOTE_LINUX_VM_INCUS_LANES_ENV) else {
-        return false;
-    };
-    parse_remote_linux_vm_incus_selectors(&raw).any(|selector| {
-        selector.eq_ignore_ascii_case(job.id)
-            || selector.eq_ignore_ascii_case(lane.selector_key())
-            || selector.eq_ignore_ascii_case(target_config.target_id)
-            || selector.eq_ignore_ascii_case(target.selector_key())
-    })
-}
-
-fn parse_remote_linux_vm_incus_selectors(raw: &str) -> impl Iterator<Item = &str> {
-    raw.split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
 }
 
 #[cfg(test)]
@@ -667,20 +596,15 @@ mod tests {
         );
     }
 
-    fn with_incus_lane_env<T>(value: Option<&str>, action: impl FnOnce() -> T) -> T {
-        with_remote_linux_vm_envs(value, None, None, action)
-    }
-
     fn with_remote_linux_vm_backend_env<T>(value: Option<&str>, action: impl FnOnce() -> T) -> T {
-        with_remote_linux_vm_envs(None, value, None, action)
+        with_remote_linux_vm_envs(value, None, action)
     }
 
     fn with_prepared_output_ssh_host_env<T>(value: Option<&str>, action: impl FnOnce() -> T) -> T {
-        with_remote_linux_vm_envs(None, None, value, action)
+        with_remote_linux_vm_envs(None, value, action)
     }
 
     fn with_remote_linux_vm_envs<T>(
-        lane_selectors: Option<&str>,
         forced_backend: Option<&str>,
         prepared_output_ssh_host: Option<&str>,
         action: impl FnOnce() -> T,
@@ -689,20 +613,9 @@ mod tests {
             .get_or_init(|| Mutex::new(()))
             .lock()
             .expect("env lock");
-        let previous_lane = std::env::var(super::REMOTE_LINUX_VM_INCUS_LANES_ENV).ok();
         let previous_backend = std::env::var(super::REMOTE_LINUX_VM_BACKEND_ENV).ok();
         let previous_host = std::env::var(super::PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV).ok();
 
-        match lane_selectors {
-            Some(value) => {
-                // SAFETY: tests serialize process environment access with ENV_LOCK.
-                unsafe { std::env::set_var(super::REMOTE_LINUX_VM_INCUS_LANES_ENV, value) };
-            }
-            None => {
-                // SAFETY: tests serialize process environment access with ENV_LOCK.
-                unsafe { std::env::remove_var(super::REMOTE_LINUX_VM_INCUS_LANES_ENV) };
-            }
-        }
         match forced_backend {
             Some(value) => {
                 // SAFETY: tests serialize process environment access with ENV_LOCK.
@@ -728,16 +641,6 @@ mod tests {
 
         let result = action();
 
-        match previous_lane {
-            Some(previous) => {
-                // SAFETY: tests serialize process environment access with ENV_LOCK.
-                unsafe { std::env::set_var(super::REMOTE_LINUX_VM_INCUS_LANES_ENV, previous) };
-            }
-            None => {
-                // SAFETY: tests serialize process environment access with ENV_LOCK.
-                unsafe { std::env::remove_var(super::REMOTE_LINUX_VM_INCUS_LANES_ENV) };
-            }
-        }
         match previous_backend {
             Some(previous) => {
                 // SAFETY: tests serialize process environment access with ENV_LOCK.
@@ -761,46 +664,6 @@ mod tests {
             }
         }
         result
-    }
-
-    #[test]
-    fn staged_linux_lane_exposes_stable_incus_selector_key() {
-        assert_eq!(
-            StagedLinuxRustLane::PikaFollowupActionlint.selector_key(),
-            "pika_followup_actionlint"
-        );
-        assert_eq!(
-            StagedLinuxRustLane::RmpInitSmokeCi.selector_key(),
-            "rmp_init_smoke_ci"
-        );
-    }
-
-    #[test]
-    fn staged_linux_target_exposes_stable_incus_selector_key() {
-        assert_eq!(
-            StagedLinuxRustTarget::PreMergePikaRust.selector_key(),
-            "pre_merge_pika_rust"
-        );
-        assert_eq!(
-            StagedLinuxRustTarget::PreMergePikachatTypescript.selector_key(),
-            "pre_merge_pikachat_typescript"
-        );
-        assert_eq!(
-            StagedLinuxRustTarget::PreMergePikachatOpenclawE2e.selector_key(),
-            "pre_merge_pikachat_openclaw_e2e"
-        );
-    }
-
-    #[test]
-    fn remote_linux_vm_incus_selector_parser_ignores_empty_entries() {
-        let selectors = super::parse_remote_linux_vm_incus_selectors(
-            " pika-actionlint ,, pika_followup_actionlint ,",
-        )
-        .collect::<Vec<_>>();
-        assert_eq!(
-            selectors,
-            vec!["pika-actionlint", "pika_followup_actionlint"]
-        );
     }
 
     #[test]
@@ -868,7 +731,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_linux_vm_backend_stays_microvm_away_from_pika_build_without_selector() {
+    fn remote_linux_vm_backend_stays_microvm_away_from_pika_build() {
         let spec = JobSpec {
             id: "pika-actionlint",
             description: "Run actionlint in a remote Linux VM guest",
@@ -880,7 +743,7 @@ mod tests {
             staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupActionlint),
         };
 
-        with_remote_linux_vm_envs(None, None, Some("example-linux-builder"), || {
+        with_remote_linux_vm_envs(None, Some("example-linux-builder"), || {
             assert_eq!(
                 spec.remote_linux_vm_backend(),
                 Some(RemoteLinuxVmBackend::Microvm)
@@ -889,7 +752,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_linux_vm_backend_can_select_incus_by_job_id_or_lane_selector() {
+    fn remote_linux_vm_backend_env_can_force_incus_away_from_pika_build() {
         let spec = JobSpec {
             id: "pika-actionlint",
             description: "Run actionlint in a remote Linux VM guest",
@@ -901,71 +764,12 @@ mod tests {
             staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupActionlint),
         };
 
-        with_incus_lane_env(Some("pika-actionlint"), || {
+        with_remote_linux_vm_backend_env(Some("incus"), || {
             assert_eq!(
                 spec.remote_linux_vm_backend(),
                 Some(RemoteLinuxVmBackend::Incus)
             );
         });
-        with_incus_lane_env(Some("pika_followup_actionlint"), || {
-            assert_eq!(
-                spec.remote_linux_vm_backend(),
-                Some(RemoteLinuxVmBackend::Incus)
-            );
-        });
-    }
-
-    #[test]
-    fn remote_linux_vm_backend_can_select_incus_by_target_id_or_target_selector() {
-        let spec = JobSpec {
-            id: "pika-actionlint",
-            description: "Run actionlint in a remote Linux VM guest",
-            timeout_secs: 1800,
-            writable_workspace: false,
-            guest_command: GuestCommand::ShellCommand {
-                command: "actionlint",
-            },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupActionlint),
-        };
-
-        with_incus_lane_env(Some("pre-merge-pika-followup"), || {
-            assert_eq!(
-                spec.remote_linux_vm_backend(),
-                Some(RemoteLinuxVmBackend::Incus)
-            );
-        });
-        with_incus_lane_env(Some("pre_merge_pika_followup"), || {
-            assert_eq!(
-                spec.remote_linux_vm_backend(),
-                Some(RemoteLinuxVmBackend::Incus)
-            );
-        });
-    }
-
-    #[test]
-    fn pikachat_openclaw_target_selector_still_opt_in_matches_away_from_pika_build() {
-        let spec = JobSpec {
-            id: "openclaw-gateway-e2e",
-            description: "Run the heavy OpenClaw gateway end-to-end scenario in a remote Linux VM guest",
-            timeout_secs: 3600,
-            writable_workspace: false,
-            guest_command: GuestCommand::ShellCommand {
-                command: "/staged/linux-rust/workspace-build/bin/run-openclaw-gateway-e2e",
-            },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::OpenclawGatewayE2e),
-        };
-
-        with_remote_linux_vm_envs(
-            Some("pre_merge_pikachat_openclaw_e2e"),
-            None,
-            Some("example-linux-builder"),
-            || {
-                assert_eq!(
-                    spec.remote_linux_vm_backend(),
-                    Some(RemoteLinuxVmBackend::Incus)
-                );
-            },
-        );
     }
 
     #[test]

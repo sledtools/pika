@@ -86,6 +86,7 @@ enum RunOutputArg {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    fail_if_removed_backend_selector_is_set()?;
     let cwd = std::env::current_dir().context("read current directory")?;
     let options = RunOptions {
         source_root: cwd.clone(),
@@ -197,6 +198,18 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn fail_if_removed_backend_selector_is_set() -> anyhow::Result<()> {
+    let Ok(value) = std::env::var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES") else {
+        return Ok(());
+    };
+    if value.trim().is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "PIKACI_REMOTE_LINUX_VM_INCUS_LANES has been removed; use PIKACI_REMOTE_LINUX_VM_BACKEND=incus|microvm|auto"
+    );
 }
 
 fn shell_escape(value: &str) -> String {

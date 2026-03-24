@@ -867,8 +867,8 @@ Current `pika-build` proof status:
 
 - Incus now defaults to the mixed single-host fast path on `pika-build` when
   `PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST` points at `pika-build` or `localhost`;
-  `PIKACI_REMOTE_LINUX_VM_BACKEND=microvm` remains the rollback escape hatch, and
-  `PIKACI_REMOTE_LINUX_VM_INCUS_LANES` still exists as a narrower debug selector
+  `PIKACI_REMOTE_LINUX_VM_BACKEND=incus|microvm|auto` is now the only supported
+  operator override for backend selection
 - `transfer` remains an explicit fallback via `PIKACI_REMOTE_LINUX_VM_INCUS_MODE=transfer`, and
   the staged runtime wrappers now keep working there instead of assuming the shared host-store
   mount exists

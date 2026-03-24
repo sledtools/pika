@@ -4356,72 +4356,14 @@ mod tests {
 
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-    fn with_incus_lane_env<T>(value: Option<&str>, action: impl FnOnce() -> T) -> T {
-        let _guard = ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("env lock");
-        let previous = std::env::var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES").ok();
-        let previous_backend = std::env::var("PIKACI_REMOTE_LINUX_VM_BACKEND").ok();
-        let previous_ssh_host = std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV).ok();
-        match value {
-            Some(value) => {
-                // SAFETY: tests serialize process environment access with ENV_LOCK.
-                unsafe { std::env::set_var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES", value) };
-            }
-            None => {
-                // SAFETY: tests serialize process environment access with ENV_LOCK.
-                unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES") };
-            }
-        }
-        // SAFETY: tests serialize process environment access with ENV_LOCK.
-        unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_BACKEND") };
-        // SAFETY: tests serialize process environment access with ENV_LOCK.
-        unsafe { std::env::remove_var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV) };
-        let result = action();
-        match previous {
-            Some(previous) => {
-                // SAFETY: tests serialize process environment access with ENV_LOCK.
-                unsafe { std::env::set_var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES", previous) };
-            }
-            None => {
-                // SAFETY: tests serialize process environment access with ENV_LOCK.
-                unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES") };
-            }
-        }
-        match previous_backend {
-            Some(previous) => {
-                // SAFETY: tests serialize process environment access with ENV_LOCK.
-                unsafe { std::env::set_var("PIKACI_REMOTE_LINUX_VM_BACKEND", previous) };
-            }
-            None => {
-                // SAFETY: tests serialize process environment access with ENV_LOCK.
-                unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_BACKEND") };
-            }
-        }
-        match previous_ssh_host {
-            Some(previous) => {
-                // SAFETY: tests serialize process environment access with ENV_LOCK.
-                unsafe { std::env::set_var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV, previous) };
-            }
-            None => {
-                // SAFETY: tests serialize process environment access with ENV_LOCK.
-                unsafe { std::env::remove_var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV) };
-            }
-        }
-        result
-    }
-
     fn with_remote_linux_vm_backend_env<T>(value: Option<&str>, action: impl FnOnce() -> T) -> T {
         let _guard = ENV_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
             .expect("env lock");
-        let previous_selector = std::env::var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES").ok();
         let previous_backend = std::env::var("PIKACI_REMOTE_LINUX_VM_BACKEND").ok();
         let previous_ssh_host = std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV).ok();
 
-        unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES") };
         unsafe { std::env::remove_var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV) };
         match value {
             Some(value) => unsafe { std::env::set_var("PIKACI_REMOTE_LINUX_VM_BACKEND", value) },
@@ -4430,12 +4372,6 @@ mod tests {
 
         let result = action();
 
-        match previous_selector {
-            Some(value) => unsafe {
-                std::env::set_var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES", value)
-            },
-            None => unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES") },
-        }
         match previous_backend {
             Some(value) => unsafe { std::env::set_var("PIKACI_REMOTE_LINUX_VM_BACKEND", value) },
             None => unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_BACKEND") },
@@ -4661,7 +4597,7 @@ mod tests {
 
     #[test]
     fn build_run_plan_records_incus_backend_prepare_without_fake_nix_build() {
-        with_incus_lane_env(Some("pika-actionlint"), || {
+        with_remote_linux_vm_backend_env(Some("incus"), || {
             let root =
                 std::env::temp_dir().join(format!("pikaci-plan-test-{}", uuid::Uuid::new_v4()));
             let prepared = sample_prepared_run(&root);

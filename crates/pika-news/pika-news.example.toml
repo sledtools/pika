@@ -1,11 +1,4 @@
 repos = ["sledtools/pika"]
-[forge_repo]
-repo = "sledtools/pika"
-canonical_git_dir = "/var/lib/pika-news/pika.git"
-default_branch = "master"
-mirror_remote = "github"
-mirror_poll_interval_secs = 300
-hook_url = "http://127.0.0.1:8787/news/webhook"
 
 poll_interval_secs = 60
 model = "claude-opus-4-6"
@@ -16,3 +9,11 @@ worker_concurrency = 2
 retry_backoff_secs = 120
 bind_address = "127.0.0.1"
 bind_port = 8787
+
+[forge_repo]
+repo = "sledtools/pika"
+canonical_git_dir = "/var/lib/pika-news/pika.git"
+default_branch = "master"
+mirror_remote = "github"
+mirror_poll_interval_secs = 300
+hook_url = "http://127.0.0.1:8787/news/webhook"

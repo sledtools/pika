@@ -20,141 +20,372 @@
 {% endblock %}
 
 {% block styles %}
-      .shell { max-width: 1040px; margin: 0 auto; padding: 2rem 1rem 3rem; }
+      .branch-page { max-width: 1480px; margin: 0 auto; padding: 2rem 1rem 3rem; }
       .meta { color: var(--text-secondary); font-size: 0.92rem; }
-      .status-row { display: flex; gap: 0.45rem; flex-wrap: wrap; }
-      .status { display: inline-block; border-radius: 999px; border: 1px solid var(--border-light); padding: 0.1rem 0.55rem; font-size: 0.8rem; }
-      .panel { background: var(--surface-solid); border: 1px solid var(--border); border-radius: 14px; padding: 1rem; margin-top: 1rem; }
-      .steps-nav { display: flex; gap: 0.5rem; margin-top: 0.75rem; align-items: center; }
-      .step { display: none; }
-      .step.active { display: block; }
-      .evidence { background: var(--badge-bg-alt); border-radius: 10px; padding: 0.75rem; }
-      .evidence pre { margin: 0.5rem 0; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
-      .diff-panel { overflow-x: auto; }
-      .diff-view-toggle { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
-      .diff-view-toggle button.active { background: var(--link); color: #fff; border-color: var(--link); }
-      .action-row { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 1rem; }
-      .action-btn, .secondary-btn { border-radius: 10px; border: 1px solid var(--input-border); background: var(--btn-bg); color: var(--text); padding: 0.5rem 0.85rem; cursor: pointer; }
+      .muted { color: var(--text-muted); }
+      .panel {
+        background: var(--surface-solid);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 1.1rem 1.15rem;
+      }
+      .branch-hero {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        margin-top: 1rem;
+        background:
+          linear-gradient(135deg, rgba(39, 119, 92, 0.08), rgba(37, 99, 235, 0.05)),
+          var(--surface-solid);
+      }
+      .branch-hero-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+      .branch-kicker {
+        margin: 0 0 0.35rem;
+        color: var(--text-muted);
+        font-size: 0.8rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .branch-hero h1 { margin: 0; font-size: clamp(2rem, 4vw, 2.8rem); line-height: 1.05; }
+      .branch-title {
+        margin: 0.45rem 0 0;
+        max-width: 78ch;
+        color: var(--text-secondary);
+        font-size: 1rem;
+      }
+      .status-row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        border-radius: 999px;
+        border: 1px solid var(--border-light);
+        padding: 0.22rem 0.7rem;
+        font-size: 0.82rem;
+        font-weight: 600;
+        background: var(--badge-bg-row);
+      }
+      .tone-success { border-color: rgba(36, 120, 77, 0.35); background: rgba(36, 120, 77, 0.14); color: #1c6b47; }
+      .tone-warning { border-color: rgba(201, 138, 20, 0.4); background: rgba(201, 138, 20, 0.14); color: #8f5d00; }
+      .tone-danger { border-color: rgba(184, 71, 91, 0.35); background: rgba(184, 71, 91, 0.14); color: #8b1e3f; }
+      .tone-neutral { border-color: var(--border-light); background: var(--badge-bg-row); color: var(--text-secondary); }
+      .branch-meta-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 0.85rem;
+      }
+      .meta-block {
+        padding: 0.85rem 0.95rem;
+        border-radius: 14px;
+        background: var(--badge-bg-row);
+        border: 1px solid var(--border);
+      }
+      .meta-label {
+        display: block;
+        margin-bottom: 0.25rem;
+        color: var(--text-muted);
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .meta-value {
+        display: block;
+        color: var(--text);
+        font-size: 0.92rem;
+        word-break: break-word;
+      }
+      .action-row { display: flex; gap: 0.7rem; flex-wrap: wrap; align-items: center; }
+      .action-btn,
+      .secondary-btn,
+      .ci-link-btn {
+        border-radius: 10px;
+        border: 1px solid var(--input-border);
+        background: var(--btn-bg);
+        color: var(--text);
+        padding: 0.55rem 0.9rem;
+        cursor: pointer;
+        text-decoration: none;
+      }
       .merge-btn { background: var(--accent); border-color: transparent; color: #fff; }
       .danger-btn { background: #8b1e3f; border-color: transparent; color: #fff; }
-      .notice { border-radius: 12px; padding: 0.85rem 1rem; margin-top: 1rem; border: 1px solid var(--border); background: var(--badge-bg-row); }
+      button:disabled { opacity: 0.55; cursor: default; }
+      .notice {
+        border-radius: 12px;
+        padding: 0.85rem 1rem;
+        margin-top: 0.85rem;
+        border: 1px solid var(--border);
+        background: var(--badge-bg-row);
+      }
       .notice.warning { border-color: #d9a441; background: rgba(217, 164, 65, 0.12); }
       .notice.error { border-color: #b8475b; background: rgba(184, 71, 91, 0.12); }
-      .ci-summary { border-radius: 10px; padding: 0.8rem 0.9rem; margin-bottom: 0.9rem; border: 1px solid #b8475b; background: rgba(184, 71, 91, 0.12); }
-      .ci-run { border-top: 1px solid var(--border); padding-top: 0.85rem; margin-top: 0.85rem; }
-      .ci-run:first-child { border-top: none; padding-top: 0; margin-top: 0; }
-      .ci-run pre { overflow-x: auto; background: var(--badge-bg); border-radius: 8px; padding: 0.75rem; font-size: 0.82rem; }
-      .lane-details { border: 1px solid var(--border); border-radius: 10px; padding: 0.55rem 0.7rem; margin-top: 0.75rem; background: var(--badge-bg-row); }
-      .lane-details[open] { background: var(--badge-bg-alt); }
-      .lane-details.lane-failed { border-color: #b8475b; background: rgba(184, 71, 91, 0.09); }
-      .lane-meta-row { display: flex; gap: 0.55rem; align-items: center; flex-wrap: wrap; margin-top: 0.55rem; }
-      .lane-status-badge { display: inline-flex; align-items: center; border-radius: 999px; border: 1px solid transparent; padding: 0.12rem 0.55rem; font-size: 0.76rem; font-weight: 600; line-height: 1.2; text-transform: uppercase; letter-spacing: 0.03em; }
-      .lane-status-badge.status-success { background: rgba(40, 167, 69, 0.12); border-color: rgba(40, 167, 69, 0.35); color: #1f7a3d; }
-      .lane-status-badge.status-failed { background: rgba(184, 71, 91, 0.14); border-color: rgba(184, 71, 91, 0.38); color: #8b1e3f; }
-      .lane-status-badge.status-running { background: rgba(15, 76, 129, 0.12); border-color: rgba(15, 76, 129, 0.34); color: #0f4c81; }
-      .lane-status-badge.status-queued { background: var(--badge-bg); border-color: var(--border-light); color: var(--text-secondary); }
-      .lane-status-badge.status-skipped { background: rgba(217, 164, 65, 0.14); border-color: rgba(217, 164, 65, 0.36); color: #8c6112; }
-      .lane-status-badge.status-neutral { background: var(--badge-bg); border-color: var(--border-light); color: var(--text-secondary); }
-      .failure-hint { color: #8b1e3f; font-weight: 600; }
-      .muted { color: var(--text-muted); }
-      .lane-btn { margin-top: 0.5rem; }
-      .lane-action-row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-top: 0.6rem; }
-      button:disabled { opacity: 0.55; cursor: default; }
+      .summary-stack { display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem; }
+      .ci-summary-card {
+        display: flex;
+        flex-direction: column;
+        gap: 0.9rem;
+      }
+      .ci-summary-head,
+      .ci-summary-run-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+      .ci-summary-head h2 { margin: 0; }
+      .ci-summary-run {
+        border-radius: 14px;
+        border: 1px solid var(--border);
+        padding: 0.95rem;
+        background: rgba(255, 255, 255, 0.35);
+      }
+      .panel h2 { margin-top: 0; margin-bottom: 0.9rem; }
+      .panel pre {
+        margin: 0.75rem 0 0;
+        overflow-x: auto;
+        background: var(--badge-bg);
+        border-radius: 10px;
+        padding: 0.8rem;
+      }
+      .panel code {
+        font-size: 0.85rem;
+        background: var(--badge-bg);
+        padding: 0.08rem 0.28rem;
+        border-radius: 4px;
+      }
+      .panel pre code { background: none; padding: 0; }
+      .steps-nav { display: flex; gap: 0.5rem; margin-bottom: 0.9rem; align-items: center; flex-wrap: wrap; }
+      .step { display: none; }
+      .step.active { display: block; }
+      .evidence {
+        background: var(--badge-bg-alt);
+        border-radius: 12px;
+        padding: 0.8rem;
+      }
+      .evidence pre { margin-top: 0.55rem; white-space: pre-wrap; word-break: break-word; }
+      .review-layout {
+        display: grid;
+        grid-template-columns: minmax(230px, 290px) minmax(0, 1fr);
+        gap: 1.25rem;
+        margin-top: 1rem;
+        align-items: start;
+      }
+      .file-list-sidebar {
+        position: sticky;
+        top: 4.4rem;
+      }
+      .file-list-sidebar h2,
+      .file-list-sidebar p { margin-top: 0; }
+      .file-list-sidebar .d2h-file-list-wrapper {
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      .file-list-placeholder {
+        margin: 0;
+        color: var(--text-muted);
+        font-size: 0.9rem;
+      }
+      .review-main { min-width: 0; }
+      .diff-panel { overflow-x: auto; }
+      .diff-view-toggle { display: flex; gap: 0.5rem; margin-bottom: 0.85rem; flex-wrap: wrap; }
+      .diff-view-toggle button.active { background: var(--link); color: #fff; border-color: var(--link); }
+      .d2h-wrapper { border-radius: 12px; overflow-x: auto; }
       .review-nav-center { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
       .review-nav-pos { font-size: 0.82rem; color: var(--text-muted); }
-      .review-dismiss-btn { background: var(--accent); color: #fff; border: none; padding: 0.35rem 0.8rem; font-size: 0.82rem; cursor: pointer; border-radius: 8px; font-family: inherit; }
+      .review-dismiss-btn {
+        background: var(--accent);
+        color: #fff;
+        border: none;
+        padding: 0.35rem 0.8rem;
+        font-size: 0.82rem;
+        cursor: pointer;
+        border-radius: 8px;
+        font-family: inherit;
+      }
+      @media (prefers-color-scheme: dark) {
+        .tone-success { color: #8bddb3; }
+        .tone-warning { color: #f2cc72; }
+        .tone-danger { color: #f1a2b0; }
+        .d2h-wrapper, .d2h-file-wrapper { background: var(--surface-solid); color: var(--text); }
+        .d2h-file-header { background: var(--badge-bg); color: var(--text); border-bottom-color: var(--border); }
+        .d2h-file-diff .d2h-code-linenumber, .d2h-file-diff .d2h-code-line { color: var(--text); }
+        .d2h-code-side-linenumber, .d2h-code-linenumber {
+          background: var(--badge-bg);
+          border-color: var(--border);
+          color: var(--text-muted);
+        }
+        .d2h-emptyplaceholder, .d2h-code-side-emptyplaceholder {
+          background: var(--badge-bg-alt);
+          border-color: var(--border);
+        }
+        .d2h-del { background: #3c1f1f; }
+        .d2h-ins { background: #1f3c1f; }
+        .d2h-del .d2h-code-side-line del, .d2h-del .d2h-code-line del { background: #5c2f2f; }
+        .d2h-ins .d2h-code-side-line ins, .d2h-ins .d2h-code-line ins { background: #2f5c2f; }
+        .d2h-info { background: var(--badge-bg); color: var(--text-muted); border-color: var(--border); }
+        .d2h-file-list-wrapper { background: var(--surface-solid); border-color: var(--border); }
+        .d2h-file-list-line a { color: var(--link); }
+      }
+      @media (max-width: 1024px) {
+        .review-layout { grid-template-columns: 1fr; }
+        .file-list-sidebar { position: static; }
+      }
 {% endblock %}
 
 {% block body %}
-    <main class="shell">
+    <main class="branch-page">
       <p><a href="/news">Back to feed</a></p>
-      <h1>{{ branch_name }}</h1>
-      <p class="meta">{{ repo }} · branch #{{ branch_id }} · target {{ target_branch }} · updated {{ updated_at }}</p>
-      <div id="branch-ci-live">{{ branch_ci_live_html|safe }}</div>
-      {% match merge_commit_sha %}
-      {% when Some with (merge_commit) %}
-      <p class="meta">merge commit <code>{{ merge_commit }}</code></p>
-      {% when None %}{% endmatch %}
 
-      {% if branch_state == "open" %}
-      <div id="branch-actions" class="action-row" style="display:none;">
-        <button id="merge-branch" type="button" class="action-btn merge-btn">Merge Into {{ target_branch }}</button>
-        <button id="close-branch" type="button" class="action-btn danger-btn">Close Branch</button>
-        <span id="branch-action-status" class="muted"></span>
-      </div>
-      {% endif %}
-
-      {% match error_message %}
-      {% when Some with (msg) %}
-      <section class="panel">
-        <h2>Generation Error</h2>
-        <p>{{ msg }}</p>
-      </section>
-      {% when None %}{% endmatch %}
-
-      {% match executive_html %}
-      {% when Some with (summary_html) %}
-      <section class="panel">
-        <h2>Summary</h2>
-        <div>{{ summary_html|safe }}</div>
-      </section>
-
-      <section class="panel">
-        <h2>Tutorial Steps</h2>
-        {% if steps.is_empty() %}
-        <p>No steps available yet.</p>
-        {% else %}
-        <div class="steps-nav">
-          <button id="prev-step" type="button">Prev</button>
-          <button id="next-step" type="button">Next</button>
-          <span id="step-index"></span>
-        </div>
-        {% for step in steps %}
-        <article class="step" data-step-index="{{ loop.index0 }}">
-          <h3>{{ step.title }}</h3>
-          <p><strong>Intent:</strong> {{ step.intent }}</p>
-          <p><strong>Affected files:</strong> {{ step.affected_files }}</p>
-          <div class="evidence">
-            <strong>Evidence</strong>
-            {% for evidence in step.evidence_snippets %}
-            <pre><code>{{ evidence }}</code></pre>
-            {% endfor %}
+      <section class="panel branch-hero">
+        <div class="branch-hero-head">
+          <div>
+            <p class="branch-kicker">{{ repo }} branch #{{ branch_id }}</p>
+            <h1>{{ branch_name }}</h1>
+            <p class="branch-title">{{ title }}</p>
           </div>
-          <div>{{ step.body_html|safe }}</div>
-        </article>
-        {% endfor %}
-        {% endif %}
-      </section>
-      {% when None %}
-      <section class="panel">
-        <h2>Summary</h2>
-        <p>Summary is not ready yet. Refresh shortly.</p>
-      </section>
-      {% endmatch %}
-
-      {% if media_links.len() > 0 %}
-      <section class="panel">
-        <h2>Media Links</h2>
-        <ul>
-          {% for link in media_links %}
-          <li><a href="{{ link.href }}">{{ link.label }}</a></li>
-          {% endfor %}
-        </ul>
-      </section>
-      {% endif %}
-
-      {% match diff_json %}
-      {% when Some with (json_str) %}
-      <section class="panel diff-panel">
-        <h2>Diff</h2>
-        <div class="diff-view-toggle">
-          <button type="button" class="diff-toggle active" data-style="side">Side by side</button>
-          <button type="button" class="diff-toggle" data-style="line">Unified</button>
+          <div class="status-row">
+            <span class="status tone-neutral">branch: {{ branch_state }}</span>
+            <span class="status {% if tutorial_status == "ready" %}tone-success{% else %}{% if tutorial_status == "failed" %}tone-danger{% else %}tone-warning{% endif %}{% endif %}">tutorial: {{ tutorial_status }}</span>
+            <span class="status {% if ci_status == "success" %}tone-success{% else %}{% if ci_status == "failed" %}tone-danger{% else %}tone-warning{% endif %}{% endif %}">ci: {{ ci_status }}</span>
+          </div>
         </div>
-        <div id="diff-container"></div>
-        <script id="diff-data" type="application/json">{{ json_str|safe }}</script>
+
+        <div class="branch-meta-grid">
+          <div class="meta-block">
+            <span class="meta-label">Target</span>
+            <span class="meta-value"><code>{{ target_branch }}</code></span>
+          </div>
+          <div class="meta-block">
+            <span class="meta-label">Updated</span>
+            <span class="meta-value">{{ updated_at }}</span>
+          </div>
+          <div class="meta-block">
+            <span class="meta-label">Head</span>
+            <span class="meta-value"><code>{{ head_sha }}</code></span>
+          </div>
+          <div class="meta-block">
+            <span class="meta-label">Merge Base</span>
+            <span class="meta-value"><code>{{ merge_base_sha }}</code></span>
+          </div>
+          {% match merge_commit_sha %}
+          {% when Some with (merge_commit) %}
+          <div class="meta-block">
+            <span class="meta-label">Merge Commit</span>
+            <span class="meta-value"><code>{{ merge_commit }}</code></span>
+          </div>
+          {% when None %}{% endmatch %}
+        </div>
+
+        <div class="action-row">
+          <a class="ci-link-btn" href="/news/branch/{{ branch_id }}/ci{% if review_mode %}?review=true{% endif %}">Open CI Details</a>
+          {% if branch_state == "open" %}
+          <div id="branch-actions" class="action-row" style="display:none;">
+            <button id="merge-branch" type="button" class="action-btn merge-btn">Merge Into {{ target_branch }}</button>
+            <button id="close-branch" type="button" class="action-btn danger-btn">Close Branch</button>
+            <span id="branch-action-status" class="muted"></span>
+          </div>
+          {% endif %}
+        </div>
       </section>
-      {% when None %}{% endmatch %}
+
+      <div id="branch-ci-summary" class="summary-stack">{{ branch_ci_summary_html|safe }}</div>
+
+      <div class="review-layout">
+        <aside class="file-list-sidebar">
+          <section class="panel">
+            <h2>Changed Files</h2>
+            <p class="file-list-placeholder" id="file-list-placeholder">Loading changed files from the diff…</p>
+            <div id="file-list-sidebar-content"></div>
+          </section>
+        </aside>
+
+        <div class="review-main">
+          {% match error_message %}
+          {% when Some with (msg) %}
+          <section class="panel">
+            <h2>Generation Error</h2>
+            <p>{{ msg }}</p>
+          </section>
+          {% when None %}{% endmatch %}
+
+          <div class="summary-stack">
+            {% match executive_html %}
+            {% when Some with (summary_html) %}
+            <section class="panel">
+              <h2>Summary</h2>
+              <div>{{ summary_html|safe }}</div>
+            </section>
+
+            <section class="panel">
+              <h2>Tutorial Steps</h2>
+              {% if steps.is_empty() %}
+              <p>No steps available yet.</p>
+              {% else %}
+              <div class="steps-nav">
+                <button id="prev-step" type="button">Prev</button>
+                <button id="next-step" type="button">Next</button>
+                <span id="step-index" class="muted"></span>
+              </div>
+              {% for step in steps %}
+              <article class="step" data-step-index="{{ loop.index0 }}">
+                <h3>{{ step.title }}</h3>
+                <p><strong>Intent:</strong> {{ step.intent }}</p>
+                <p><strong>Affected files:</strong> {{ step.affected_files }}</p>
+                <div class="evidence">
+                  <strong>Evidence</strong>
+                  {% for evidence in step.evidence_snippets %}
+                  <pre><code>{{ evidence }}</code></pre>
+                  {% endfor %}
+                </div>
+                <div>{{ step.body_html|safe }}</div>
+              </article>
+              {% endfor %}
+              {% endif %}
+            </section>
+            {% when None %}
+            <section class="panel">
+              <h2>Summary</h2>
+              <p>Summary is not ready yet. Refresh shortly.</p>
+            </section>
+            {% endmatch %}
+
+            {% if media_links.len() > 0 %}
+            <section class="panel">
+              <h2>Media Links</h2>
+              <ul>
+                {% for link in media_links %}
+                <li><a href="{{ link.href }}">{{ link.label }}</a></li>
+                {% endfor %}
+              </ul>
+            </section>
+            {% endif %}
+
+            {% match diff_json %}
+            {% when Some with (json_str) %}
+            <section class="panel diff-panel">
+              <h2>Diff</h2>
+              <div class="diff-view-toggle">
+                <button type="button" class="diff-toggle active" data-style="side">Side by side</button>
+                <button type="button" class="diff-toggle" data-style="line">Unified</button>
+              </div>
+              <div id="diff-container"></div>
+              <script id="diff-data" type="application/json">{{ json_str|safe }}</script>
+            </section>
+            {% when None %}
+            <section class="panel">
+              <h2>Diff</h2>
+              <p class="muted">No diff is available for this branch yet.</p>
+            </section>
+            {% endmatch %}
+          </div>
+        </div>
+      </div>
     </main>
 {% endblock %}
 
@@ -187,6 +418,8 @@
         const diffDataEl = document.getElementById('diff-data');
         const diffContainer = document.getElementById('diff-container');
         const toggles = Array.from(document.querySelectorAll('.diff-toggle'));
+        const fileListSidebar = document.getElementById('file-list-sidebar-content');
+        const fileListPlaceholder = document.getElementById('file-list-placeholder');
         if (diffDataEl && diffContainer && window.Diff2Html) {
           const diffText = JSON.parse(diffDataEl.textContent || '""');
           let diffMode = 'side-by-side';
@@ -196,7 +429,18 @@
               drawFileList: true,
               matching: 'lines',
               outputFormat: diffMode,
+              highlight: true,
             });
+
+            const fileList = diffContainer.querySelector('.d2h-file-list-wrapper');
+            if (fileList && fileListSidebar) {
+              fileListSidebar.innerHTML = '';
+              fileListSidebar.appendChild(fileList);
+              if (fileListPlaceholder) {
+                fileListPlaceholder.style.display = 'none';
+              }
+            }
+
             toggles.forEach((button) => {
               const style = button.getAttribute('data-style');
               button.classList.toggle('active', style === (diffMode === 'side-by-side' ? 'side' : 'line'));
@@ -210,6 +454,8 @@
             });
           });
           renderDiff();
+        } else if (fileListPlaceholder) {
+          fileListPlaceholder.textContent = 'No diff file list is available.';
         }
 
         const actionWrap = document.getElementById('branch-actions');
@@ -220,14 +466,10 @@
         const reviewNextBtn = document.getElementById('review-next');
         const reviewDismissBtn = document.getElementById('review-dismiss');
         const reviewPosEl = document.getElementById('review-pos');
-        const branchCiLive = document.getElementById('branch-ci-live');
+        const branchCiSummary = document.getElementById('branch-ci-summary');
         const branchId = {{ branch_id }};
         const reviewMode = {% if review_mode %}true{% else %}false{% endif %};
-        const branchCiLiveEnabled = {% if branch_ci_live_enabled %}true{% else %}false{% endif %};
-
-        function rerunButtons() {
-          return Array.from(document.querySelectorAll('.lane-rerun-btn'));
-        }
+        const branchCiSummaryEnabled = {% if branch_ci_summary_enabled %}true{% else %}false{% endif %};
 
         function recoveryButtons() {
           return Array.from(document.querySelectorAll('.ci-wake-btn, .lane-fail-btn, .lane-requeue-btn, .lane-recover-run-btn'));
@@ -239,16 +481,9 @@
 
         function showActions() {
           const canForgeWrite = window.pikaAuth && window.pikaAuth.canForgeWrite ? window.pikaAuth.canForgeWrite() : false;
-          const showRecovery = canForgeWrite && !reviewMode;
           if (actionWrap) {
             actionWrap.style.display = canForgeWrite ? 'flex' : 'none';
           }
-          rerunButtons().forEach((button) => {
-            button.style.display = showRecovery ? '' : 'none';
-          });
-          recoveryButtons().forEach((button) => {
-            button.style.display = showRecovery ? '' : 'none';
-          });
         }
 
         async function branchAction(path, button, busyLabel, doneLabel) {
@@ -283,64 +518,19 @@
             branchAction(`/news/branch/${branchId}/close`, closeBtn, 'Closing branch...', 'Branch closed.');
           });
         }
-        function wireRerunButtons() {
-          rerunButtons().forEach((button) => {
-            if (button.dataset.bound === 'true') return;
-            button.dataset.bound = 'true';
-            button.addEventListener('click', () => {
-              branchAction(
-                `/news/branch/${branchId}/ci/rerun/${button.dataset.laneRunId}`,
-                button,
-                'Queueing lane rerun...',
-                'Lane rerun queued.'
-              );
-            });
-          });
-        }
 
-        function wireRecoveryButtons() {
-          recoveryButtons().forEach((button) => {
-            if (button.dataset.bound === 'true') return;
-            button.dataset.bound = 'true';
-            button.addEventListener('click', async () => {
-              const token = authToken();
-              if (!token) return;
-              const originalLabel = button.textContent;
-              button.disabled = true;
-              button.textContent = button.dataset.busyLabel || 'Working...';
-              try {
-                const res = await fetch(button.dataset.actionPath, {
-                  method: 'POST',
-                  headers: { 'Authorization': 'Bearer ' + token }
-                });
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok) throw new Error(data.error || 'request failed');
-                button.textContent = button.dataset.doneLabel || 'Done.';
-                window.location.reload();
-              } catch (err) {
-                button.disabled = false;
-                button.textContent = originalLabel;
-                if (statusEl) statusEl.textContent = err.message || String(err);
-              }
-            });
-          });
-        }
-
-        function applyBranchCiLive(payload) {
-          if (!branchCiLive || !payload || typeof payload.html !== 'string') return;
-          branchCiLive.innerHTML = payload.html;
-          wireRerunButtons();
-          wireRecoveryButtons();
-          showActions();
+        function applyBranchCiSummary(payload) {
+          if (!branchCiSummary || !payload || typeof payload.html !== 'string') return;
+          branchCiSummary.innerHTML = payload.html;
         }
 
         function startBranchCiStream() {
-          if (!branchCiLive || !branchCiLiveEnabled || !window.EventSource) return;
-          const source = new EventSource(`/news/branch/${branchId}/ci/stream`);
+          if (!branchCiSummary || !branchCiSummaryEnabled || !window.EventSource) return;
+          const source = new EventSource(`/news/branch/${branchId}/ci/stream${reviewMode ? '?review=true' : ''}`);
           source.addEventListener('ci-update', (event) => {
             const payload = JSON.parse(event.data || '{}');
-            applyBranchCiLive(payload);
-            const activeRoot = branchCiLive.querySelector('[data-branch-ci-active]');
+            applyBranchCiSummary(payload);
+            const activeRoot = branchCiSummary.querySelector('[data-branch-ci-active]');
             if (activeRoot && activeRoot.getAttribute('data-branch-ci-active') !== 'true') {
               source.close();
             }
@@ -456,8 +646,6 @@
 
         window.addEventListener('pika-auth', showActions);
         window.addEventListener('pika-auth', refreshReviewControls);
-        wireRerunButtons();
-        wireRecoveryButtons();
         showActions();
         startBranchCiStream();
       })();

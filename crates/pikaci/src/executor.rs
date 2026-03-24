@@ -226,7 +226,6 @@ const REMOTE_LINUX_VM_INCUS_PROFILE_DEFAULT: &str = "pika-agent-dev";
 const REMOTE_LINUX_VM_INCUS_IMAGE_ALIAS_DEFAULT: &str = "pikaci/dev";
 const REMOTE_LINUX_VM_INCUS_READ_ONLY_DISK_IO_BUS: &str = "virtiofs";
 const REMOTE_LINUX_VM_INCUS_RUN_BINARY: &str = "/run/current-system/sw/bin/pikaci-incus-run";
-const REMOTE_LINUX_VM_INCUS_SHARED_NIX_STORE_MOUNT_PATH: &str = "/mnt/pikaci-nix-store";
 const REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH: &str = "/workspace/snapshot";
 const REMOTE_LINUX_VM_INCUS_WORKSPACE_DEPS_MOUNT_PATH: &str = "/staged/linux-rust/workspace-deps";
 const REMOTE_LINUX_VM_INCUS_WORKSPACE_BUILD_MOUNT_PATH: &str = "/staged/linux-rust/workspace-build";
@@ -3067,15 +3066,6 @@ fn configure_remote_incus_devices(
         "pikaci-snapshot",
         &remote.remote_snapshot_dir,
         REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH,
-        true,
-        REMOTE_LINUX_VM_INCUS_READ_ONLY_DISK_IO_BUS,
-        log_path,
-    )?;
-    add_remote_incus_disk_device(
-        remote,
-        "pikaci-nix-store",
-        Path::new("/nix/store"),
-        REMOTE_LINUX_VM_INCUS_SHARED_NIX_STORE_MOUNT_PATH,
         true,
         REMOTE_LINUX_VM_INCUS_READ_ONLY_DISK_IO_BUS,
         log_path,

@@ -907,8 +907,19 @@ Current `pika-build` proof status:
   the reduced `pika-core` and `rmp` lockfiles were stale, the reduced `pika-core` source omitted
   `tests/support` and `config/channels.json`, notifications needed the same bindgen environment as
   the other desktop-linked lanes, the localhost Incus fast path needed to repoint staged-output
-  symlinks plus expose the host `/nix/store` into the guest for staged runtime wrappers, and the
-  follow-up `cargo machete` check needed to ignore CI fixture manifests under `nix/ci`
+  symlinks, and the follow-up `cargo machete` check needed to ignore CI fixture manifests under
+  `nix/ci`
+- the staged Linux runtime no longer depends on a mounted host `/nix/store` seam:
+  the Incus image now carries the runtime libraries the staged Linux lanes actually need,
+  staged wrappers use guest-local interpreters like `/run/current-system/sw/bin/bash` and
+  `/run/current-system/sw/bin/node`, and the runtime env now uses guest-local Nix package paths
+  directly instead of rewriting `/nix/store` through `PIKACI_STAGED_HOST_NIX_STORE_ROOT`
+- that cleanup needed one follow-up fix in validation:
+  the initial guest-local `run-rmp-init-smoke-ci` wrapper was materialized with a non-executable
+  mode because its shebang was not preserved as a real executable script in the realized store;
+  materializing the wrapper via a standalone executable text artifact fixed that, and using the
+  guest's real `${pkgs.postgresql}/bin` path restored `initdb` so the notifications lane stopped
+  relying on a mounted host-store path for Postgres share data
 - the staged `pre-merge-rmp` parity blocker is now fixed end-to-end: the reduced RMP workspace now
   mirrors the generated template dependency surface closely enough for offline Cargo vendor checks,
   and the default Incus path reaches a passing `rmp-init-smoke-ci`
@@ -936,6 +947,8 @@ Current `pika-build` proof status:
 - because of that, the current migration read is:
   staged pre-merge Linux on `pika-build` now defaults to Incus with no
   remaining automatic Incus exclusions in the path discussed in this plan
+  and with the guest runtime owned by the Incus image plus staged payloads,
+  not by an executor-mounted host `/nix/store`
 
 #### Phase C: Validate Performance And Developer Experience
 

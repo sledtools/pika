@@ -41,18 +41,16 @@ let
       export HOME=/home/pikaci
     fi
 
-    export PATH="${pkgs.postgresql}/bin:$PATH"
     export CARGO_TERM_COLOR=never
     export CARGO_HOME=/cargo-home
     export CARGO_TARGET_DIR=/cargo-target
     export CARGO_INCREMENTAL=0
     export XDG_CACHE_HOME="$CARGO_HOME/xdg-cache"
     export XDG_STATE_HOME="/artifacts/xdg-state"
+    export PGSYSCONFDIR=/run/current-system/sw
+    export PGSHAREDIR=/run/current-system/sw/share/postgresql
     export SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt
     export NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt
-    if [ -d /mnt/pikaci-nix-store ]; then
-      export PIKACI_STAGED_HOST_NIX_STORE_ROOT=/mnt/pikaci-nix-store
-    fi
     mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
 
     set +e
@@ -131,6 +129,7 @@ in
 
   documentation.enable = false;
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
+  environment.pathsToLink = [ "/share/postgresql" ];
 
   users.users.pikaci = {
     isNormalUser = true;
@@ -141,6 +140,7 @@ in
   };
 
   environment.systemPackages = with pkgs; [
+    alsa-lib
     bash
     cacert
     cargo
@@ -154,7 +154,11 @@ in
     gnugrep
     gnused
     jq
+    libglvnd
+    libxkbcommon
     linuxHeaders
+    llvmPackages.libclang
+    mesa
     nix
     nodejs_22
     openssl
@@ -164,7 +168,13 @@ in
     python3
     rustc
     util-linux
+    vulkan-loader
     which
+    xorg.libX11
+    xorg.libXcursor
+    xorg.libXi
+    xorg.libXinerama
+    xorg.libXrandr
     pikaciIncusRun
   ];
 
@@ -189,6 +199,7 @@ in
     - workspace snapshots are mounted at /workspace/snapshot
     - staged Linux workspace outputs are mounted under /staged/linux-rust
     - run artifacts are written under /artifacts
+    - runtime tools and shared libraries come from the image at /run/current-system/sw
     - /run/current-system/sw/bin/pikaci-incus-run owns guest job bootstrap
   '';
 

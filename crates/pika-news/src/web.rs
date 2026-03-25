@@ -1,8 +1,7 @@
 use std::collections::BTreeSet;
 use std::convert::Infallible;
 use std::env;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -14,7 +13,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Json, Redirect};
 use axum::routing::{get, post};
 use axum::Router;
-use chrono::{DateTime, NaiveDateTime, SecondsFormat, TimeDelta, Utc};
+use chrono::{DateTime, NaiveDateTime, TimeDelta, Utc};
 use futures::stream;
 use hmac::{Hmac, Mac};
 use pikaci::{
@@ -23,12 +22,12 @@ use pikaci::{
 };
 use pulldown_cmark::{html, Options, Parser};
 use sha2::Sha256;
-use tokio::sync::{broadcast::error::RecvError, Notify};
+use tokio::sync::broadcast::error::RecvError;
 
 use crate::auth::{normalize_npub, AuthState};
 use crate::branch_store::{
-    BranchCiLaneRecord, BranchCiRunRecord, BranchDetailRecord, BranchFeedItem, MirrorStatusRecord,
-    NightlyFeedItem, NightlyLaneRecord, NightlyRunRecord,
+    BranchCiLaneRecord, BranchCiRunRecord, BranchDetailRecord, BranchFeedItem, NightlyFeedItem,
+    NightlyLaneRecord, NightlyRunRecord,
 };
 use crate::ci;
 use crate::ci_state::{
@@ -36,256 +35,22 @@ use crate::ci_state::{
 };
 use crate::config::Config;
 use crate::forge;
+use crate::forge_runtime::{ForgeRuntime, ForgeRuntimeContext, ManualMirrorPassStatus};
 use crate::live::{CiLiveUpdate, CiLiveUpdates};
 use crate::mirror;
 use crate::model;
-use crate::poller;
 use crate::render::is_safe_http_url;
 use crate::storage::{ChatAllowlistEntry, InboxReviewContext, Store};
 use crate::tutorial::TutorialDoc;
-use crate::worker;
 
 #[derive(Clone)]
 struct AppState {
     store: Store,
     config: Config,
-    max_prs: usize,
     auth: Arc<AuthState>,
-    poll_notify: Arc<Notify>,
-    mirror_requested: Arc<AtomicBool>,
-    mirror_running: Arc<AtomicBool>,
     live_updates: CiLiveUpdates,
     webhook_secret: Option<String>,
-    forge_health: Arc<Mutex<ForgeHealthState>>,
-}
-
-fn maybe_start_background_ci_pass(
-    state: Arc<AppState>,
-    notify: Arc<Notify>,
-    ci_running: Arc<AtomicBool>,
-) {
-    if ci_running
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return;
-    }
-
-    tokio::spawn(async move {
-        let state_for_ci = Arc::clone(&state);
-        let scheduler_notify = Arc::clone(&notify);
-        let ci_result = tokio::task::spawn_blocking(move || {
-            ci::schedule_ci_pass_with_updates(
-                &state_for_ci.store,
-                &state_for_ci.config,
-                Some(&state_for_ci.live_updates),
-                Some(scheduler_notify),
-            )
-        })
-        .await;
-
-        match ci_result {
-            Ok(Ok(ci)) => {
-                let should_wake_follow_up = ci_pass_needs_follow_up_wake(&ci);
-                if ci.claimed > 0 || ci.nightlies_scheduled > 0 || ci.retries_recovered > 0 {
-                    eprintln!(
-                        "ci: claimed={} succeeded={} failed={} nightlies_scheduled={} retries_recovered={}",
-                        ci.claimed,
-                        ci.succeeded,
-                        ci.failed,
-                        ci.nightlies_scheduled,
-                        ci.retries_recovered
-                    );
-                }
-                if let Ok(mut health) = state.forge_health.lock() {
-                    let active =
-                        ci.claimed > 0 || ci.nightlies_scheduled > 0 || ci.retries_recovered > 0;
-                    health.ci.mark_success(ci_summary(&ci), active);
-                }
-                ci_running.store(false, Ordering::Release);
-                if should_wake_follow_up {
-                    notify.notify_one();
-                }
-            }
-            Ok(Err(err)) => {
-                eprintln!("pika-news ci runner error: {}", err);
-                if let Ok(mut health) = state.forge_health.lock() {
-                    health.ci.mark_error(err.to_string());
-                }
-                ci_running.store(false, Ordering::Release);
-            }
-            Err(err) => {
-                eprintln!("pika-news ci runner task join error: {}", err);
-                if let Ok(mut health) = state.forge_health.lock() {
-                    health.ci.mark_error(err.to_string());
-                }
-                ci_running.store(false, Ordering::Release);
-            }
-        }
-    });
-}
-
-fn run_scheduled_mirror_pass(state: &AppState) -> anyhow::Result<mirror::MirrorPassResult> {
-    let force_requested = state.mirror_requested.load(Ordering::Acquire);
-    let acquired = state
-        .mirror_running
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok();
-    if !acquired {
-        return Ok(mirror::MirrorPassResult::default());
-    }
-
-    let result = if force_requested {
-        state.mirror_requested.store(false, Ordering::Release);
-        mirror::run_mirror_pass(&state.store, &state.config, "post-mutation")
-    } else {
-        mirror::run_background_mirror_pass(&state.store, &state.config)
-    };
-
-    state.mirror_running.store(false, Ordering::Release);
-    result
-}
-
-fn ci_pass_needs_follow_up_wake(ci: &ci::CiPassResult) -> bool {
-    ci.claimed > 0
-        || ci.succeeded > 0
-        || ci.failed > 0
-        || ci.nightlies_scheduled > 0
-        || ci.retries_recovered > 0
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-struct ForgeHealthIssue {
-    severity: String,
-    code: String,
-    message: String,
-}
-
-#[derive(Clone, Debug, serde::Serialize)]
-struct ForgeSubsystemStatus {
-    state: String,
-    last_checked_at: Option<String>,
-    last_activity_at: Option<String>,
-    last_error_at: Option<String>,
-    summary: Option<String>,
-}
-
-#[derive(Clone, Debug, serde::Serialize)]
-struct ForgeMirrorHealthStatus {
-    state: String,
-    background_enabled: bool,
-    background_interval_secs: Option<u64>,
-    last_success_at: Option<String>,
-    last_failure_at: Option<String>,
-    summary: Option<String>,
-}
-
-#[derive(Clone, Debug, serde::Serialize)]
-struct ForgeHealthSnapshot {
-    enabled: bool,
-    issues: Vec<ForgeHealthIssue>,
-    poller: ForgeSubsystemStatus,
-    generation_worker: ForgeSubsystemStatus,
-    ci: ForgeSubsystemStatus,
-    mirror: ForgeMirrorHealthStatus,
-}
-
-#[derive(Clone, Debug)]
-struct ForgeSubsystemTracker {
-    enabled: bool,
-    state: &'static str,
-    last_checked_at: Option<String>,
-    last_activity_at: Option<String>,
-    last_error_at: Option<String>,
-    summary: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-struct ForgeHealthState {
-    enabled: bool,
-    issues: Vec<ForgeHealthIssue>,
-    poller: ForgeSubsystemTracker,
-    generation_worker: ForgeSubsystemTracker,
-    ci: ForgeSubsystemTracker,
-}
-
-impl ForgeSubsystemTracker {
-    fn new(enabled: bool) -> Self {
-        Self {
-            enabled,
-            state: if enabled { "idle" } else { "disabled" },
-            last_checked_at: None,
-            last_activity_at: None,
-            last_error_at: None,
-            summary: None,
-        }
-    }
-
-    fn mark_success(&mut self, summary: String, active: bool) {
-        if !self.enabled {
-            return;
-        }
-        let now = now_string();
-        self.state = if active { "active" } else { "idle" };
-        self.last_checked_at = Some(now.clone());
-        if active {
-            self.last_activity_at = Some(now);
-        }
-        self.summary = Some(summary);
-    }
-
-    fn mark_error(&mut self, message: String) {
-        if !self.enabled {
-            return;
-        }
-        let now = now_string();
-        self.state = "error";
-        self.last_checked_at = Some(now.clone());
-        self.last_error_at = Some(now);
-        self.summary = Some(message);
-    }
-
-    fn snapshot(&self) -> ForgeSubsystemStatus {
-        ForgeSubsystemStatus {
-            state: self.state.to_string(),
-            last_checked_at: self.last_checked_at.clone(),
-            last_activity_at: self.last_activity_at.clone(),
-            last_error_at: self.last_error_at.clone(),
-            summary: self.summary.clone(),
-        }
-    }
-}
-
-impl ForgeHealthState {
-    fn new(enabled: bool) -> Self {
-        Self {
-            enabled,
-            issues: Vec::new(),
-            poller: ForgeSubsystemTracker::new(enabled),
-            generation_worker: ForgeSubsystemTracker::new(enabled),
-            ci: ForgeSubsystemTracker::new(enabled),
-        }
-    }
-
-    fn replace_issues(&mut self, issues: Vec<ForgeHealthIssue>) {
-        self.issues = issues;
-    }
-
-    fn snapshot(
-        &self,
-        config: &Config,
-        mirror_status: Option<&MirrorStatusRecord>,
-    ) -> ForgeHealthSnapshot {
-        let mirror_runtime = mirror::mirror_runtime_status(config);
-        ForgeHealthSnapshot {
-            enabled: self.enabled,
-            issues: self.issues.clone(),
-            poller: self.poller.snapshot(),
-            generation_worker: self.generation_worker.snapshot(),
-            ci: self.ci.snapshot(),
-            mirror: build_mirror_health_status(&mirror_runtime, mirror_status),
-        }
-    }
+    forge_runtime: Arc<ForgeRuntime>,
 }
 
 #[derive(Template)]
@@ -702,10 +467,6 @@ struct ForgeNightlyDetailResponse {
     lanes: Vec<NightlyLaneView>,
 }
 
-fn now_string() -> String {
-    Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
-}
-
 fn ci_status_tone(status: &str) -> &'static str {
     match status {
         "success" | "passed" | "succeeded" | "ready" => "success",
@@ -754,230 +515,6 @@ fn ci_lane_counts(run: &BranchCiRunRecord) -> (usize, usize, usize) {
     (success_count, active_count, failed_count)
 }
 
-fn forge_issue(severity: &str, code: &str, message: impl Into<String>) -> ForgeHealthIssue {
-    ForgeHealthIssue {
-        severity: severity.to_string(),
-        code: code.to_string(),
-        message: message.into(),
-    }
-}
-
-fn poller_summary(result: &poller::PollResult) -> String {
-    format!(
-        "repos {} · branches {} · queued tutorials {} · queued ci {} · stale closed {}",
-        result.repos_polled,
-        result.branches_seen,
-        result.queued_regenerations,
-        result.queued_ci_runs,
-        result.stale_closed
-    )
-}
-
-fn worker_summary(result: &worker::WorkerPassResult) -> String {
-    format!(
-        "claimed {} · ready {} · failed {} · retry {}",
-        result.claimed, result.ready, result.failed, result.retry_scheduled
-    )
-}
-
-fn ci_summary(result: &ci::CiPassResult) -> String {
-    format!(
-        "claimed {} · succeeded {} · failed {} · nightlies {} · recovered {}",
-        result.claimed,
-        result.succeeded,
-        result.failed,
-        result.nightlies_scheduled,
-        result.retries_recovered
-    )
-}
-
-fn build_mirror_health_status(
-    runtime: &mirror::MirrorRuntimeStatus,
-    status: Option<&MirrorStatusRecord>,
-) -> ForgeMirrorHealthStatus {
-    if !runtime.configured {
-        return ForgeMirrorHealthStatus {
-            state: "disabled".to_string(),
-            background_enabled: false,
-            background_interval_secs: None,
-            last_success_at: None,
-            last_failure_at: None,
-            summary: Some("mirror remote not configured".to_string()),
-        };
-    }
-    if !runtime.background_enabled {
-        return ForgeMirrorHealthStatus {
-            state: "disabled".to_string(),
-            background_enabled: false,
-            background_interval_secs: runtime.background_interval_secs,
-            last_success_at: status.and_then(|s| s.last_success_at.clone()),
-            last_failure_at: status.and_then(|s| s.last_failure_at.clone()),
-            summary: Some("background sync disabled; manual sync only".to_string()),
-        };
-    }
-    if let Some(active_run) = runtime.active_run.as_ref() {
-        let elapsed = active_run
-            .age_secs
-            .map(|age| format!("{age}s"))
-            .unwrap_or_else(|| "unknown".to_string());
-        let trigger = active_run
-            .trigger_source
-            .as_deref()
-            .unwrap_or("unknown trigger");
-        let pid = active_run
-            .pid
-            .map(|value| format!("pid {value}"))
-            .unwrap_or_else(|| "unknown pid".to_string());
-        let summary = if active_run.state == "stale" {
-            format!(
-                "stale mirror run still holds the repo lock ({trigger}, {pid}, elapsed {elapsed})"
-            )
-        } else {
-            format!("mirror sync currently running ({trigger}, {pid}, elapsed {elapsed})")
-        };
-        return ForgeMirrorHealthStatus {
-            state: if active_run.state == "stale" {
-                "error".to_string()
-            } else {
-                "active".to_string()
-            },
-            background_enabled: true,
-            background_interval_secs: runtime.background_interval_secs,
-            last_success_at: status.and_then(|s| s.last_success_at.clone()),
-            last_failure_at: status.and_then(|s| s.last_failure_at.clone()),
-            summary: Some(summary),
-        };
-    }
-    if let Some(status) = status {
-        let state = if matches!(
-            status.current_failure_kind.as_deref(),
-            Some("config" | "stale" | "timeout")
-        ) {
-            "error"
-        } else if matches!(
-            status.current_failure_kind.as_deref(),
-            Some("busy" | "obsolete")
-        ) {
-            "active"
-        } else {
-            "idle"
-        };
-        let summary = match status.current_failure_kind.as_deref() {
-            Some("busy") => Some("another mirror run was already active".to_string()),
-            Some("obsolete") => Some(
-                "another mirror run already completed the needed sync; this trigger was obsolete"
-                    .to_string(),
-            ),
-            Some(kind) => Some(format!("last background attempt failed ({kind})")),
-            None => Some("background sync enabled".to_string()),
-        };
-        return ForgeMirrorHealthStatus {
-            state: state.to_string(),
-            background_enabled: true,
-            background_interval_secs: runtime.background_interval_secs,
-            last_success_at: status.last_success_at.clone(),
-            last_failure_at: status.last_failure_at.clone(),
-            summary,
-        };
-    }
-    ForgeMirrorHealthStatus {
-        state: "idle".to_string(),
-        background_enabled: true,
-        background_interval_secs: runtime.background_interval_secs,
-        last_success_at: None,
-        last_failure_at: None,
-        summary: Some("background sync enabled; no attempts recorded yet".to_string()),
-    }
-}
-
-fn collect_forge_startup_issues(
-    config: &Config,
-    forge_repo: &crate::config::ForgeRepoConfig,
-    webhook_secret: Option<&str>,
-) -> Vec<ForgeHealthIssue> {
-    let mut issues = Vec::new();
-
-    if webhook_secret.is_none() {
-        issues.push(forge_issue(
-            "error",
-            "webhook_secret_missing",
-            format!(
-                "{} is not set. Install hooks and webhook-triggered refresh stay disabled until it is configured.",
-                config.webhook_secret_env
-            ),
-        ));
-    }
-
-    match forge::ensure_canonical_repo(forge_repo) {
-        Ok(()) => {
-            if let Some(secret) = webhook_secret {
-                if let Err(err) = forge::install_hooks(forge_repo, secret) {
-                    issues.push(forge_issue(
-                        "error",
-                        "hook_install_failed",
-                        format!(
-                            "Could not install forge hooks in {}: {}",
-                            forge_repo.canonical_git_dir, err
-                        ),
-                    ));
-                }
-            }
-        }
-        Err(err) => {
-            issues.push(forge_issue(
-                "error",
-                "canonical_repo_unavailable",
-                format!(
-                    "Canonical repo path {} is not usable: {}",
-                    forge_repo.canonical_git_dir, err
-                ),
-            ));
-        }
-    }
-
-    match forge_repo.mirror_remote.as_deref() {
-        None => issues.push(forge_issue(
-            "warning",
-            "mirror_remote_missing",
-            "Mirror remote is not configured. GitHub stays disabled until forge_repo.mirror_remote is set.",
-        )),
-        Some(remote_name) => match forge::mirror_remote_url(forge_repo, remote_name) {
-            Ok(remote_url) => {
-                let token_missing = env::var(&config.github_token_env)
-                    .ok()
-                    .is_none_or(|value| value.trim().is_empty());
-                if remote_url.contains("github.com") && token_missing {
-                    issues.push(forge_issue(
-                        "warning",
-                        "mirror_auth_missing",
-                        format!(
-                            "Mirror remote `{remote_name}` points at GitHub, but {} is not set. Background and manual sync will fail until credentials are available.",
-                            config.github_token_env
-                        ),
-                    ));
-                }
-            }
-            Err(err) => issues.push(forge_issue(
-                "error",
-                "mirror_remote_invalid",
-                format!("Mirror remote `{remote_name}` could not be resolved: {err}"),
-            )),
-        },
-    }
-
-    issues
-}
-
-fn current_forge_runtime_issues(
-    config: &Config,
-    webhook_secret: Option<&str>,
-) -> Vec<ForgeHealthIssue> {
-    let Some(forge_repo) = config.effective_forge_repo() else {
-        return Vec::new();
-    };
-    collect_forge_startup_issues(config, &forge_repo, webhook_secret)
-}
-
 fn push_page_notice(
     notices: &mut Vec<PageNoticeView>,
     seen: &mut BTreeSet<String>,
@@ -993,9 +530,7 @@ fn push_page_notice(
 }
 
 fn branch_page_notices(state: &AppState) -> Vec<PageNoticeView> {
-    let Ok(health) = state.forge_health.lock() else {
-        return Vec::new();
-    };
+    let health = state.forge_runtime.health_snapshot(&state.config, None);
     if !health.enabled {
         return Vec::new();
     }
@@ -1049,9 +584,7 @@ fn branch_page_notices(state: &AppState) -> Vec<PageNoticeView> {
 }
 
 fn nightly_page_notices(state: &AppState) -> Vec<PageNoticeView> {
-    let Ok(health) = state.forge_health.lock() else {
-        return Vec::new();
-    };
+    let health = state.forge_runtime.health_snapshot(&state.config, None);
     if !health.enabled {
         return Vec::new();
     }
@@ -1105,18 +638,11 @@ pub async fn serve(
         eprintln!("warning: failed to canonicalize inbox owners: {}", err);
     }
 
-    let poll_notify = Arc::new(Notify::new());
-    let mirror_requested = Arc::new(AtomicBool::new(false));
-    let mirror_running = Arc::new(AtomicBool::new(false));
     let live_updates = CiLiveUpdates::new(256);
     let webhook_secret = env::var(&config.webhook_secret_env).ok();
-    let forge_mode = config.effective_forge_repo().is_some();
-    let forge_health = Arc::new(Mutex::new(ForgeHealthState::new(forge_mode)));
+    let forge_runtime = Arc::new(ForgeRuntime::new(&config, webhook_secret.as_deref()));
     if let Some(forge_repo) = config.effective_forge_repo() {
-        let startup_issues = current_forge_runtime_issues(&config, webhook_secret.as_deref());
-        if let Ok(mut health) = forge_health.lock() {
-            health.replace_issues(startup_issues.clone());
-        }
+        let startup_issues = forge_runtime.issues();
         for issue in &startup_issues {
             eprintln!(
                 "forge startup {} [{}]: {}",
@@ -1144,135 +670,17 @@ pub async fn serve(
     let state = Arc::new(AppState {
         store,
         config: config.clone(),
-        max_prs,
         auth,
-        poll_notify: Arc::clone(&poll_notify),
-        mirror_requested: Arc::clone(&mirror_requested),
-        mirror_running: Arc::clone(&mirror_running),
         live_updates: live_updates.clone(),
         webhook_secret,
-        forge_health: Arc::clone(&forge_health),
+        forge_runtime: Arc::clone(&forge_runtime),
     });
-
-    let background_state = Arc::clone(&state);
-    let background_notify = Arc::clone(&poll_notify);
-    let background_ci_running = Arc::new(AtomicBool::new(false));
-    tokio::spawn(async move {
-        loop {
-            let state = Arc::clone(&background_state);
-            match tokio::task::spawn_blocking(move || {
-                (
-                    current_forge_runtime_issues(&state.config, state.webhook_secret.as_deref()),
-                    poller::poll_once_limited_with_updates(
-                        &state.store,
-                        &state.config,
-                        state.max_prs,
-                        Some(&state.live_updates),
-                    ),
-                    worker::run_generation_pass(&state.store, &state.config),
-                    run_scheduled_mirror_pass(&state),
-                )
-            })
-            .await
-            {
-                Ok((issues, poll_result, worker_result, mirror_result)) => {
-                    if let Ok(mut health) = background_state.forge_health.lock() {
-                        health.replace_issues(issues);
-                    }
-                    match poll_result {
-                        Ok(pr) => {
-                            if pr.branches_seen > 0
-                                || pr.queued_regenerations > 0
-                                || pr.stale_closed > 0
-                            {
-                                eprintln!(
-                                    "poll: repos={} branches_seen={} queued_tutorials={} queued_ci={} head_changes={} stale_closed={}",
-                                    pr.repos_polled,
-                                    pr.branches_seen,
-                                    pr.queued_regenerations,
-                                    pr.queued_ci_runs,
-                                    pr.head_sha_changes,
-                                    pr.stale_closed
-                                );
-                            }
-                            if let Ok(mut health) = background_state.forge_health.lock() {
-                                let active = pr.queued_regenerations > 0
-                                    || pr.queued_ci_runs > 0
-                                    || pr.head_sha_changes > 0
-                                    || pr.stale_closed > 0;
-                                health.poller.mark_success(poller_summary(&pr), active);
-                            }
-                            if pr.queued_ci_runs > 0 {
-                                background_notify.notify_one();
-                            }
-                        }
-                        Err(err) => {
-                            eprintln!("pika-news background poller error: {}", err);
-                            if let Ok(mut health) = background_state.forge_health.lock() {
-                                health.poller.mark_error(err.to_string());
-                            }
-                        }
-                    }
-                    match worker_result {
-                        Ok(wr) => {
-                            if wr.claimed > 0 {
-                                eprintln!(
-                                    "worker: claimed={} ready={} failed={} retry={}",
-                                    wr.claimed, wr.ready, wr.failed, wr.retry_scheduled
-                                );
-                            }
-                            if let Ok(mut health) = background_state.forge_health.lock() {
-                                let active = wr.claimed > 0
-                                    || wr.ready > 0
-                                    || wr.failed > 0
-                                    || wr.retry_scheduled > 0;
-                                health
-                                    .generation_worker
-                                    .mark_success(worker_summary(&wr), active);
-                            }
-                        }
-                        Err(err) => {
-                            eprintln!("pika-news background worker error: {}", err);
-                            if let Ok(mut health) = background_state.forge_health.lock() {
-                                health.generation_worker.mark_error(err.to_string());
-                            }
-                        }
-                    }
-                    match mirror_result {
-                        Ok(mirror)
-                            if mirror.attempted
-                                && (mirror.status.as_deref() != Some("success")
-                                    || mirror.lagging_ref_count.unwrap_or(0) > 0) =>
-                        {
-                            eprintln!(
-                                "mirror: status={} lagging_refs={}",
-                                mirror.status.as_deref().unwrap_or("unknown"),
-                                mirror.lagging_ref_count.unwrap_or(-1)
-                            );
-                        }
-                        Ok(_) => {}
-                        Err(err) => {
-                            eprintln!("pika-news mirror runner error: {}", err);
-                        }
-                    }
-                }
-                Err(err) => {
-                    eprintln!("pika-news background task join error: {}", err);
-                }
-            }
-            maybe_start_background_ci_pass(
-                Arc::clone(&background_state),
-                Arc::clone(&background_notify),
-                Arc::clone(&background_ci_running),
-            );
-            // Wait for the poll interval OR an early wake-up from a webhook.
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(config.poll_interval_secs)) => {}
-                _ = background_notify.notified() => {
-                    eprintln!("poll: woken by webhook");
-                }
-            }
-        }
+    forge_runtime.start_background(ForgeRuntimeContext {
+        store: state.store.clone(),
+        config: state.config.clone(),
+        max_prs,
+        live_updates: state.live_updates.clone(),
+        webhook_secret: state.webhook_secret.clone(),
     });
 
     let app = Router::new()
@@ -2950,8 +2358,7 @@ async fn merge_handler(
     .await
     {
         Ok(Ok(())) => {
-            state.mirror_requested.store(true, Ordering::Release);
-            state.poll_notify.notify_one();
+            state.forge_runtime.request_mirror();
             Json(serde_json::json!({
                 "status": "ok",
                 "branch_id": branch_id,
@@ -3079,8 +2486,7 @@ async fn close_handler(
     let store = state.store.clone();
     match tokio::task::spawn_blocking(move || store.mark_branch_closed(branch_id, &npub)).await {
         Ok(Ok(())) => {
-            state.mirror_requested.store(true, Ordering::Release);
-            state.poll_notify.notify_one();
+            state.forge_runtime.request_mirror();
             Json(serde_json::json!({
                 "status": "ok",
                 "branch_id": branch_id,
@@ -3115,7 +2521,7 @@ async fn rerun_branch_ci_lane_handler(
     {
         Ok(Ok(Some(rerun_suite_id))) => {
             state.live_updates.branch_changed(branch_id, "rerun_queued");
-            state.poll_notify.notify_one();
+            state.forge_runtime.wake_ci();
             Json(serde_json::json!({
                 "status": "ok",
                 "branch_id": branch_id,
@@ -3157,7 +2563,7 @@ async fn rerun_nightly_lane_handler(
             state
                 .live_updates
                 .nightly_changed(nightly_run_id, "rerun_queued");
-            state.poll_notify.notify_one();
+            state.forge_runtime.wake_ci();
             Json(serde_json::json!({
                 "status": "ok",
                 "nightly_run_id": nightly_run_id,
@@ -3200,7 +2606,7 @@ async fn fail_branch_ci_lane_handler(
     {
         Ok(Ok(Some(()))) => {
             state.live_updates.branch_changed(branch_id, "lane_failed");
-            state.poll_notify.notify_one();
+            state.forge_runtime.wake_ci();
             Json(serde_json::json!({
                 "status": "ok",
                 "branch_id": branch_id,
@@ -3243,7 +2649,7 @@ async fn requeue_branch_ci_lane_handler(
             state
                 .live_updates
                 .branch_changed(branch_id, "lane_requeued");
-            state.poll_notify.notify_one();
+            state.forge_runtime.wake_ci();
             Json(serde_json::json!({
                 "status": "ok",
                 "branch_id": branch_id,
@@ -3285,7 +2691,7 @@ async fn recover_branch_ci_run_handler(
             state
                 .live_updates
                 .branch_changed(branch_id, "run_recovered");
-            state.poll_notify.notify_one();
+            state.forge_runtime.wake_ci();
             Json(serde_json::json!({
                 "status": "ok",
                 "branch_id": branch_id,
@@ -3331,7 +2737,7 @@ async fn fail_nightly_lane_handler(
             state
                 .live_updates
                 .nightly_changed(nightly_run_id, "lane_failed");
-            state.poll_notify.notify_one();
+            state.forge_runtime.wake_ci();
             Json(serde_json::json!({
                 "status": "ok",
                 "nightly_run_id": nightly_run_id,
@@ -3376,7 +2782,7 @@ async fn requeue_nightly_lane_handler(
             state
                 .live_updates
                 .nightly_changed(nightly_run_id, "lane_requeued");
-            state.poll_notify.notify_one();
+            state.forge_runtime.wake_ci();
             Json(serde_json::json!({
                 "status": "ok",
                 "nightly_run_id": nightly_run_id,
@@ -3417,7 +2823,7 @@ async fn recover_nightly_run_handler(
             state
                 .live_updates
                 .nightly_changed(nightly_run_id, "run_recovered");
-            state.poll_notify.notify_one();
+            state.forge_runtime.wake_ci();
             Json(serde_json::json!({
                 "status": "ok",
                 "nightly_run_id": nightly_run_id,
@@ -3450,7 +2856,7 @@ async fn wake_ci_handler(
     if let Err(resp) = require_trusted_auth(&state.auth, &headers) {
         return resp;
     }
-    state.poll_notify.notify_one();
+    state.forge_runtime.wake_ci();
     Json(serde_json::json!({
         "status": "ok",
         "message": "scheduler wake requested"
@@ -4520,7 +3926,7 @@ async fn webhook_handler(
             .into_response();
     }
 
-    state.poll_notify.notify_one();
+    state.forge_runtime.wake_webhook();
     let update_count = String::from_utf8_lossy(&body)
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -4743,21 +4149,14 @@ async fn api_admin_forge_status_handler(
     let store = state.store.clone();
     let mirror_config = state.config.clone();
     let health_config = state.config.clone();
-    let forge_health_state = Arc::clone(&state.forge_health);
     match tokio::task::spawn_blocking(move || mirror::get_mirror_status(&store, &mirror_config))
         .await
     {
         Ok(Ok(mirror_admin)) => {
-            let forge_health = forge_health_state
-                .lock()
-                .map(|health| {
-                    let mirror_status = mirror_admin.detail.as_ref().map(|(status, _)| status);
-                    health.snapshot(&health_config, mirror_status)
-                })
-                .unwrap_or_else(|_| {
-                    ForgeHealthState::new(health_config.effective_forge_repo().is_some())
-                        .snapshot(&health_config, None)
-                });
+            let mirror_status = mirror_admin.detail.as_ref().map(|(status, _)| status);
+            let forge_health = state
+                .forge_runtime
+                .health_snapshot(&health_config, mirror_status);
             let mirror_runtime = mirror_admin.runtime;
             match mirror_admin.detail {
                 Some((mirror_status, mirror_history)) => Json(serde_json::json!({
@@ -4800,28 +4199,8 @@ async fn api_admin_mirror_sync_handler(
 
     let store = state.store.clone();
     let config = state.config.clone();
-    if state
-        .mirror_running
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "error": "mirror sync already running"
-            })),
-        )
-            .into_response();
-    }
-    match tokio::task::spawn_blocking(move || mirror::run_mirror_pass(&store, &config, "manual"))
-        .await
-    {
-        Ok(Ok(result)) if result.attempted => {
-            state.mirror_running.store(false, Ordering::Release);
-            if state.mirror_requested.load(Ordering::Acquire) {
-                state.poll_notify.notify_one();
-            }
-            state.poll_notify.notify_one();
+    match state.forge_runtime.run_manual_mirror_pass(store, config).await {
+        Ok(ManualMirrorPassStatus::Attempted(result)) => {
             Json(serde_json::json!({
                 "attempted": result.attempted,
                 "status": result.status,
@@ -4829,8 +4208,14 @@ async fn api_admin_mirror_sync_handler(
             }))
             .into_response()
         }
-        Ok(Ok(_)) => {
-            state.mirror_running.store(false, Ordering::Release);
+        Ok(ManualMirrorPassStatus::AlreadyRunning) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "mirror sync already running"
+            })),
+        )
+            .into_response(),
+        Ok(ManualMirrorPassStatus::Unavailable) => {
             (
                 StatusCode::CONFLICT,
                 Json(serde_json::json!({
@@ -4839,16 +4224,7 @@ async fn api_admin_mirror_sync_handler(
             )
                 .into_response()
         }
-        Ok(Err(err)) => {
-            state.mirror_running.store(false, Ordering::Release);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": err.to_string()})),
-            )
-                .into_response()
-        }
         Err(err) => {
-            state.mirror_running.store(false, Ordering::Release);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": err.to_string()})),
@@ -5213,7 +4589,7 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use askama::Template;
     use axum::body::to_bytes;
@@ -5221,15 +4597,13 @@ mod tests {
     use axum::http::{header::AUTHORIZATION, HeaderMap, HeaderValue, StatusCode};
     use axum::response::IntoResponse;
     use chrono::{TimeZone, Utc};
-    use tokio::sync::Notify;
 
     use super::{
         api_forge_branch_detail_handler, api_forge_branch_logs_handler,
         api_forge_branch_resolve_handler, api_forge_pikaci_logs_handler,
         api_forge_pikaci_prepared_outputs_handler, api_forge_pikaci_run_handler,
         api_inbox_count_handler, api_inbox_list_handler, api_inbox_mark_reviewed_handler,
-        auth_challenge_handler, branch_ci_stream_handler, build_mirror_health_status,
-        collect_forge_startup_issues, current_forge_runtime_issues, fail_branch_ci_lane_handler,
+        auth_challenge_handler, branch_ci_stream_handler, fail_branch_ci_lane_handler,
         fail_nightly_lane_handler, inbox_review_handler, load_branch_ci_live_snapshot,
         load_nightly_live_snapshot, markdown_to_safe_html, next_branch_ci_live_snapshot,
         next_nightly_live_snapshot, nightly_stream_handler, recover_branch_ci_run_handler,
@@ -5237,13 +4611,17 @@ mod tests {
         render_detail_template_with_notices, render_nightly_template, rerun_branch_ci_lane_handler,
         rerun_nightly_lane_handler, should_backfill_managed_allowlist_entry, verify_signature,
         wake_ci_handler, AppState, CiLiveUpdates, ForgeBranchLogsQuery, ForgeBranchResolveQuery,
-        ForgeHealthState, ForgePikaciLogsQuery, InboxListParams, PageNoticeView, ReviewModeQuery,
+        ForgePikaciLogsQuery, InboxListParams, PageNoticeView, ReviewModeQuery,
     };
     use crate::auth::AuthState;
     use crate::branch_store::{BranchUpsertInput, MirrorStatusRecord, MirrorSyncRunRecord};
     use crate::ci;
     use crate::config::{Config, ForgeRepoConfig};
     use crate::forge;
+    use crate::forge_runtime::{
+        build_mirror_health_status, ci_pass_needs_follow_up_wake, collect_forge_startup_issues,
+        current_forge_runtime_issues, ForgeRuntime,
+    };
     use crate::mirror::MirrorRuntimeStatus;
     use crate::poller;
     use crate::storage::ChatAllowlistEntry;
@@ -5361,13 +4739,9 @@ mod tests {
             )),
             store,
             config,
-            max_prs: 10,
-            poll_notify: Arc::new(Notify::new()),
-            mirror_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            mirror_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             live_updates: CiLiveUpdates::new(live_buffer),
             webhook_secret: None,
-            forge_health: Arc::new(Mutex::new(ForgeHealthState::new(forge_mode))),
+            forge_runtime: Arc::new(ForgeRuntime::blank(forge_mode)),
         })
     }
 
@@ -5390,27 +4764,25 @@ mod tests {
 
     #[test]
     fn ci_follow_up_wake_only_for_material_progress() {
-        assert!(!super::ci_pass_needs_follow_up_wake(
-            &ci::CiPassResult::default()
-        ));
+        assert!(!ci_pass_needs_follow_up_wake(&ci::CiPassResult::default()));
 
-        assert!(super::ci_pass_needs_follow_up_wake(&ci::CiPassResult {
+        assert!(ci_pass_needs_follow_up_wake(&ci::CiPassResult {
             claimed: 1,
             ..Default::default()
         }));
-        assert!(super::ci_pass_needs_follow_up_wake(&ci::CiPassResult {
+        assert!(ci_pass_needs_follow_up_wake(&ci::CiPassResult {
             succeeded: 1,
             ..Default::default()
         }));
-        assert!(super::ci_pass_needs_follow_up_wake(&ci::CiPassResult {
+        assert!(ci_pass_needs_follow_up_wake(&ci::CiPassResult {
             failed: 1,
             ..Default::default()
         }));
-        assert!(super::ci_pass_needs_follow_up_wake(&ci::CiPassResult {
+        assert!(ci_pass_needs_follow_up_wake(&ci::CiPassResult {
             nightlies_scheduled: 1,
             ..Default::default()
         }));
-        assert!(super::ci_pass_needs_follow_up_wake(&ci::CiPassResult {
+        assert!(ci_pass_needs_follow_up_wake(&ci::CiPassResult {
             retries_recovered: 1,
             ..Default::default()
         }));

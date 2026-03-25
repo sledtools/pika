@@ -16,10 +16,7 @@ use axum::Router;
 use chrono::{DateTime, NaiveDateTime, TimeDelta, Utc};
 use futures::stream;
 use hmac::{Hmac, Mac};
-use pikaci::{
-    load_logs, load_run_bundle, load_run_record, LogKind, PreparedOutputsRecord, RunLogsMetadata,
-    RunRecord,
-};
+use pikaci::{LogKind, PreparedOutputsRecord, RunLogsMetadata, RunRecord};
 use pulldown_cmark::{html, Options, Parser};
 use sha2::Sha256;
 use tokio::sync::broadcast::error::RecvError;
@@ -34,7 +31,6 @@ use crate::ci_state::{
     CiLaneExecutionReason, CiLaneFailureKind, CiTargetHealthSnapshot, CiTargetHealthState,
 };
 use crate::config::Config;
-use crate::forge;
 use crate::forge_runtime::{ForgeRuntime, ForgeRuntimeContext, ManualMirrorPassStatus};
 use crate::forge_service::{
     BranchDetailAndRuns, BranchLaneMutationResult, BranchLaneRerunResult, BranchRunRecoveryResult,
@@ -44,6 +40,7 @@ use crate::forge_service::{
 use crate::live::{CiLiveUpdate, CiLiveUpdates};
 use crate::mirror;
 use crate::model;
+use crate::pikaci_store::{require_pikaci_run_store, PikaciRunStore};
 use crate::render::is_safe_http_url;
 use crate::storage::{ChatAllowlistEntry, InboxReviewContext, Store};
 use crate::tutorial::TutorialDoc;
@@ -52,6 +49,7 @@ use crate::tutorial::TutorialDoc;
 struct AppState {
     store: Store,
     config: Config,
+    pikaci_run_store: Option<PikaciRunStore>,
     auth: Arc<AuthState>,
     live_updates: CiLiveUpdates,
     webhook_secret: Option<String>,
@@ -695,6 +693,7 @@ pub async fn serve(
     let state = Arc::new(AppState {
         store,
         config: config.clone(),
+        pikaci_run_store: PikaciRunStore::from_config(&config),
         auth,
         live_updates: live_updates.clone(),
         webhook_secret,
@@ -2610,7 +2609,9 @@ async fn api_forge_branch_logs_handler(
             let (pikaci_run, pikaci_log_metadata, pikaci_prepared_outputs) = lane
                 .pikaci_run_id
                 .as_deref()
-                .and_then(|pikaci_run_id| load_pikaci_run_bundle(&state.config, pikaci_run_id).ok())
+                .and_then(|pikaci_run_id| {
+                    load_pikaci_run_bundle(state.pikaci_run_store.as_ref(), pikaci_run_id).ok()
+                })
                 .map_or((None, None, None), |(run, logs, prepared_outputs)| {
                     (Some(run), Some(logs), prepared_outputs)
                 });
@@ -2642,7 +2643,7 @@ async fn api_forge_pikaci_run_handler(
     if let Err(resp) = require_auth(&state.auth, &headers) {
         return resp;
     }
-    match load_pikaci_run(&state.config, &run_id) {
+    match load_pikaci_run(state.pikaci_run_store.as_ref(), &run_id) {
         Ok(run) => Json(run).into_response(),
         Err(err) => (
             StatusCode::NOT_FOUND,
@@ -2662,7 +2663,7 @@ async fn api_forge_pikaci_logs_handler(
         return resp;
     }
     match load_pikaci_logs(
-        &state.config,
+        state.pikaci_run_store.as_ref(),
         &run_id,
         query.job.as_deref(),
         map_forge_pikaci_log_kind(query.kind),
@@ -2690,7 +2691,7 @@ async fn api_forge_pikaci_prepared_outputs_handler(
     if let Err(resp) = require_auth(&state.auth, &headers) {
         return resp;
     }
-    match load_pikaci_run_bundle(&state.config, &run_id) {
+    match load_pikaci_run_bundle(state.pikaci_run_store.as_ref(), &run_id) {
         Ok((_, _, Some(prepared_outputs))) => Json(ForgePikaciPreparedOutputsResponse {
             run_id,
             prepared_outputs,
@@ -2709,36 +2710,24 @@ async fn api_forge_pikaci_prepared_outputs_handler(
     }
 }
 
-fn load_pikaci_run(config: &Config, run_id: &str) -> anyhow::Result<RunRecord> {
-    let forge_repo = config
-        .effective_forge_repo()
-        .ok_or_else(|| anyhow::anyhow!("forge repo is not configured"))?;
-    let state_root = forge::pikaci_state_root(&forge_repo);
-    load_run_record(&state_root, run_id)
+fn load_pikaci_run(store: Option<&PikaciRunStore>, run_id: &str) -> anyhow::Result<RunRecord> {
+    require_pikaci_run_store(store)?.load_run(run_id)
 }
 
 fn load_pikaci_logs(
-    config: &Config,
+    store: Option<&PikaciRunStore>,
     run_id: &str,
     job_id: Option<&str>,
     kind: LogKind,
 ) -> anyhow::Result<pikaci::Logs> {
-    let forge_repo = config
-        .effective_forge_repo()
-        .ok_or_else(|| anyhow::anyhow!("forge repo is not configured"))?;
-    let state_root = forge::pikaci_state_root(&forge_repo);
-    load_logs(&state_root, run_id, job_id, kind)
+    require_pikaci_run_store(store)?.load_logs(run_id, job_id, kind)
 }
 
 fn load_pikaci_run_bundle(
-    config: &Config,
+    store: Option<&PikaciRunStore>,
     run_id: &str,
 ) -> anyhow::Result<(RunRecord, RunLogsMetadata, Option<PreparedOutputsRecord>)> {
-    let forge_repo = config
-        .effective_forge_repo()
-        .ok_or_else(|| anyhow::anyhow!("forge repo is not configured"))?;
-    let state_root = forge::pikaci_state_root(&forge_repo);
-    let bundle = load_run_bundle(&state_root, run_id)?;
+    let bundle = require_pikaci_run_store(store)?.load_run_bundle(run_id)?;
     Ok((bundle.run, bundle.logs, bundle.prepared_outputs))
 }
 
@@ -4232,6 +4221,8 @@ mod tests {
     use axum::response::IntoResponse;
     use chrono::{TimeZone, Utc};
 
+    use crate::pikaci_store::PikaciRunStore;
+
     use super::{
         api_forge_branch_detail_handler, api_forge_branch_logs_handler,
         api_forge_branch_resolve_handler, api_forge_pikaci_logs_handler,
@@ -4334,14 +4325,18 @@ mod tests {
     }
 
     fn write_pikaci_run_fixture(config: &Config, run_id: &str) {
-        let forge_repo = config.effective_forge_repo().expect("forge repo");
-        let state_root = crate::forge::pikaci_state_root(&forge_repo);
+        let state_root = PikaciRunStore::from_config(config)
+            .expect("pikaci run store")
+            .state_root()
+            .to_path_buf();
         let run_dir = state_root.join("runs").join(run_id);
         let job_dir = run_dir.join("jobs").join("job-one");
         let prepared_outputs_path = run_dir.join("prepared-outputs.json");
         fs::create_dir_all(&job_dir).expect("create pikaci fixture dir");
         let host_log = job_dir.join("host.log");
-        let guest_log = job_dir.join("guest.log");
+        let guest_log = job_dir.join("artifacts").join("guest.log");
+        fs::create_dir_all(guest_log.parent().expect("guest log parent"))
+            .expect("create guest log artifacts dir");
         fs::write(&host_log, "host fixture\n").expect("write host log");
         fs::write(&guest_log, "guest fixture\n").expect("write guest log");
         fs::write(
@@ -4374,6 +4369,7 @@ mod tests {
             live_updates.clone(),
             Arc::clone(&forge_runtime),
         ));
+        let pikaci_run_store = PikaciRunStore::from_config(&config);
         Arc::new(AppState {
             auth: Arc::new(AuthState::new(
                 &bootstrap_admin_npubs,
@@ -4383,6 +4379,7 @@ mod tests {
             store,
             config,
             live_updates,
+            pikaci_run_store,
             webhook_secret: None,
             forge_runtime,
             forge_service,
@@ -5764,8 +5761,9 @@ mod tests {
 
         let config = forge_test_config_with_git_dir(&dir.path().join("pika.git"));
         write_pikaci_run_fixture(&config, "pikaci-run-invalid-prepared");
-        let forge_repo = config.effective_forge_repo().expect("forge repo");
-        let prepared_outputs_path = crate::forge::pikaci_state_root(&forge_repo)
+        let prepared_outputs_path = PikaciRunStore::from_config(&config)
+            .expect("pikaci run store")
+            .state_root()
             .join("runs")
             .join("pikaci-run-invalid-prepared")
             .join("prepared-outputs.json");

@@ -127,12 +127,12 @@ This stack is good at turning one host into a managed VM box. It is not a fleet 
 
 `pikaci` is not merely consuming a generic Linux VM. It is coupled to:
 
-- `microvm.declaredRunner`
-- remote `microvm-run` launch semantics
-- `virtiofs` host-shared directories for workspace, artifacts, cargo caches, and staged outputs
-- host-side runner preparation and remote synchronization
+- backend-specific guest launch contracts
+- backend-specific mounted runtime layout for workspace, artifacts, cargo caches, and staged outputs
+- staged payload contracts that must stay aligned between Nix, executor code, and guest runtime
+- host-side runner preparation, synchronization, and artifact collection
 
-That means `pikaci` migration is a real backend redesign, not a transport change.
+That means `pikaci` migration was a real backend redesign, not a transport change.
 
 ## What We Need From The Target Platform
 
@@ -949,6 +949,9 @@ Current `pika-build` proof status:
   remaining automatic Incus exclusions in the path discussed in this plan
   and with the guest runtime owned by the Incus image plus staged payloads,
   not by an executor-mounted host `/nix/store`
+- staged Linux payloads now also declare their guest mount contract in
+  `share/pikaci/payload-manifest.json`, so the Incus executor no longer
+  hardcodes the staged workspace payload mount layout beyond the snapshot root
 - `pika-news` no longer has to collapse staged `pikaci` runs back into an
   ephemeral temp-worktree `.pikaci` tree:
   structured staged runs can now be pointed at a service-owned persistent

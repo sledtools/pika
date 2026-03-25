@@ -1,4 +1,6 @@
 use super::*;
+use crate::model::{PreparedOutputPayloadManifestRecord, PreparedOutputPayloadMountRecord};
+use std::path::Component;
 
 #[derive(Deserialize)]
 struct RemoteIncusImageShowRecord {
@@ -44,6 +46,15 @@ pub(super) fn build_remote_incus_guest_request(job: &JobSpec) -> IncusGuestReque
         command,
         timeout_secs: job.timeout_secs,
         run_as_root,
+        workspace_dir: REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH.to_string(),
+        cargo_home_dir: REMOTE_LINUX_VM_INCUS_CARGO_HOME_DIR.to_string(),
+        target_dir: REMOTE_LINUX_VM_INCUS_TARGET_DIR.to_string(),
+        xdg_state_home_dir: REMOTE_LINUX_VM_INCUS_XDG_STATE_HOME_DIR.to_string(),
+        home_dir: if run_as_root {
+            "/root".to_string()
+        } else {
+            REMOTE_LINUX_VM_INCUS_NON_ROOT_HOME_DIR.to_string()
+        },
     }
 }
 
@@ -53,7 +64,7 @@ pub(super) fn build_guest_request(job: &JobSpec) -> IncusGuestRequest {
 }
 
 pub(super) fn build_remote_incus_launch_command(
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteIncusContext,
     request_path: &str,
 ) -> String {
     std::iter::once("sudo incus".to_string())
@@ -75,13 +86,13 @@ pub(super) fn build_remote_incus_launch_command(
 }
 
 #[cfg(test)]
-pub(super) fn build_launch_command(remote: &RemoteLinuxVmContext, request_path: &str) -> String {
+pub(super) fn build_launch_command(remote: &RemoteIncusContext, request_path: &str) -> String {
     build_remote_incus_launch_command(remote, request_path)
 }
 
 pub(super) fn build_remote_incus_process_command(
     job: &JobSpec,
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteIncusContext,
     log_path: &Path,
 ) -> anyhow::Result<String> {
     write_remote_incus_json(
@@ -99,27 +110,27 @@ pub(super) fn build_remote_incus_process_command(
 
 pub(super) fn build_spawn_command(
     job: &JobSpec,
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteIncusContext,
     log_path: &Path,
 ) -> anyhow::Result<String> {
     build_remote_incus_process_command(job, remote, log_path)
 }
 
 pub(super) fn ensure_remote_incus_image_available(
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteIncusContext,
     log_path: &Path,
 ) -> anyhow::Result<()> {
     let image_alias = remote.incus_image_alias.as_str();
     let project = remote.incus_project.as_str();
     let output = run_remote_incus_command(
-        &remote.remote_host,
+        &remote.shared.remote_host,
         &["image", "show", "--project", project, image_alias],
     )
     .output()
     .with_context(|| {
         format!(
             "check Incus image `{image_alias}` on {}",
-            remote.remote_host
+            remote.shared.remote_host
         )
     })?;
     if output.status.success() {
@@ -127,7 +138,7 @@ pub(super) fn ensure_remote_incus_image_available(
             log_path,
             &format!(
                 "[pikaci] remote Linux VM backend `incus` image `{}` already available in project `{}` on {}",
-                image_alias, project, remote.remote_host
+                image_alias, project, remote.shared.remote_host
             ),
         )?;
         return Ok(());
@@ -139,26 +150,26 @@ pub(super) fn ensure_remote_incus_image_available(
         "Incus image `{}` is not available in project `{}` on {}; import it first (for example with `./scripts/pikaci-incus-image.sh build-import --remote-host {}`)",
         image_alias,
         project,
-        remote.remote_host,
-        remote.remote_host
+        remote.shared.remote_host,
+        remote.shared.remote_host
     );
 }
 
 pub(super) fn prepare_backend_state(
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteIncusContext,
     log_path: &Path,
 ) -> anyhow::Result<()> {
     ensure_remote_incus_image_available(remote, log_path)
 }
 
 pub(super) fn load_remote_incus_image_record(
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteIncusContext,
     log_path: &Path,
 ) -> anyhow::Result<RemoteLinuxVmImageRecord> {
     let image_alias = remote.incus_image_alias.as_str();
     let project = remote.incus_project.as_str();
     let output = run_remote_incus_command(
-        &remote.remote_host,
+        &remote.shared.remote_host,
         &[
             "image",
             "list",
@@ -173,7 +184,7 @@ pub(super) fn load_remote_incus_image_record(
     .with_context(|| {
         format!(
             "load Incus image `{image_alias}` metadata on {}",
-            remote.remote_host
+            remote.shared.remote_host
         )
     })?;
     if !output.status.success() {
@@ -183,7 +194,7 @@ pub(super) fn load_remote_incus_image_record(
             "failed to load Incus image `{}` metadata from project `{}` on {}",
             image_alias,
             project,
-            remote.remote_host
+            remote.shared.remote_host
         );
     }
     let decoded: Vec<RemoteIncusImageShowRecord> =
@@ -191,14 +202,14 @@ pub(super) fn load_remote_incus_image_record(
     let decoded = select_remote_incus_image_record(decoded, image_alias).with_context(|| {
         format!(
             "Incus image `{}` metadata from project `{}` on {}",
-            image_alias, project, remote.remote_host
+            image_alias, project, remote.shared.remote_host
         )
     })?;
     append_line(
         log_path,
         &format!(
             "[pikaci] remote Linux VM backend `incus` image `{}` fingerprint={} on {}",
-            image_alias, decoded.fingerprint, remote.remote_host
+            image_alias, decoded.fingerprint, remote.shared.remote_host
         ),
     )?;
     Ok(RemoteLinuxVmImageRecord {
@@ -209,7 +220,7 @@ pub(super) fn load_remote_incus_image_record(
 }
 
 pub(super) fn load_image_record(
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteIncusContext,
     log_path: &Path,
 ) -> anyhow::Result<RemoteLinuxVmImageRecord> {
     load_remote_incus_image_record(remote, log_path)
@@ -217,7 +228,7 @@ pub(super) fn load_image_record(
 
 pub(super) fn ensure_remote_incus_runtime(
     job: &JobSpec,
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteIncusContext,
     log_path: &Path,
 ) -> anyhow::Result<()> {
     ensure_remote_incus_image_available(remote, log_path)?;
@@ -226,13 +237,13 @@ pub(super) fn ensure_remote_incus_runtime(
         log_path,
         &format!(
             "[pikaci] configure remote Linux VM backend `incus` on {}",
-            remote.remote_host
+            remote.shared.remote_host
         ),
     )?;
-    reset_remote_linux_vm_artifacts(remote, log_path)?;
+    reset_remote_linux_vm_artifacts(&remote.shared, log_path)?;
 
     run_remote_incus_to_log(
-        &remote.remote_host,
+        &remote.shared.remote_host,
         &[
             "init",
             "--project",
@@ -256,7 +267,7 @@ pub(super) fn ensure_remote_incus_runtime(
     )?;
     configure_remote_incus_devices(job, remote, log_path)?;
     run_remote_incus_to_log(
-        &remote.remote_host,
+        &remote.shared.remote_host,
         &[
             "start",
             "--project",
@@ -271,14 +282,14 @@ pub(super) fn ensure_remote_incus_runtime(
 
 pub(super) fn prepare_runtime(
     job: &JobSpec,
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteIncusContext,
     log_path: &Path,
 ) -> anyhow::Result<()> {
     ensure_remote_incus_runtime(job, remote, log_path)
 }
 
 pub(super) fn delete_remote_incus_instance(
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteIncusContext,
     log_path: &Path,
 ) -> anyhow::Result<()> {
     let command = format!(
@@ -287,14 +298,14 @@ pub(super) fn delete_remote_incus_instance(
         instance = shell_single_quote(&remote.incus_instance_name),
     );
     run_command_to_log(
-        &mut run_ssh_command(&remote.remote_host, &command),
+        &mut run_ssh_command(&remote.shared.remote_host, &command),
         log_path,
         "[pikaci] delete stale remote Linux VM backend `incus` instance",
     )
 }
 
 pub(super) fn build_remote_incus_device_add_args(
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteIncusContext,
     device_name: &str,
     source: &Path,
     guest_path: &str,
@@ -320,7 +331,7 @@ pub(super) fn build_remote_incus_device_add_args(
 
 #[cfg(test)]
 pub(super) fn build_device_add_args(
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteIncusContext,
     device_name: &str,
     source: &Path,
     guest_path: &str,
@@ -331,40 +342,41 @@ pub(super) fn build_device_add_args(
 }
 
 pub(super) fn collect_remote_incus_artifacts(
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteIncusContext,
     ctx: &HostContext,
 ) -> anyhow::Result<()> {
-    copy_remote_incus_file_to_local(remote, "/artifacts/guest.log", &ctx.guest_log_path)?;
     copy_remote_incus_file_to_local(
         remote,
-        "/artifacts/result.json",
+        &format!("{}/guest.log", REMOTE_LINUX_VM_INCUS_ARTIFACTS_DIR),
+        &ctx.guest_log_path,
+    )?;
+    copy_remote_incus_file_to_local(
+        remote,
+        &format!("{}/result.json", REMOTE_LINUX_VM_INCUS_ARTIFACTS_DIR),
         &ctx.job_dir.join("artifacts/result.json"),
     )
 }
 
 pub(super) fn collect_artifacts(
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteIncusContext,
     ctx: &HostContext,
 ) -> anyhow::Result<()> {
     collect_remote_incus_artifacts(remote, ctx)
 }
 
 pub(super) fn cleanup_remote_incus_runtime(
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteIncusContext,
     log_path: &Path,
 ) -> anyhow::Result<()> {
     delete_remote_incus_instance(remote, log_path)
 }
 
-pub(super) fn cleanup_runtime(
-    remote: &RemoteLinuxVmContext,
-    log_path: &Path,
-) -> anyhow::Result<()> {
+pub(super) fn cleanup_runtime(remote: &RemoteIncusContext, log_path: &Path) -> anyhow::Result<()> {
     cleanup_remote_incus_runtime(remote, log_path)
 }
 
 fn write_remote_incus_json<T: Serialize>(
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteIncusContext,
     guest_path: &str,
     value: &T,
     log_path: &Path,
@@ -380,7 +392,7 @@ fn write_remote_incus_json<T: Serialize>(
         shell_single_quote(guest_path),
     );
     let mut child = run_remote_incus_command(
-        &remote.remote_host,
+        &remote.shared.remote_host,
         &[
             "exec",
             "--project",
@@ -396,16 +408,29 @@ fn write_remote_incus_json<T: Serialize>(
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
     .spawn()
-    .with_context(|| format!("spawn Incus guest json writer on {}", remote.remote_host))?;
+    .with_context(|| {
+        format!(
+            "spawn Incus guest json writer on {}",
+            remote.shared.remote_host
+        )
+    })?;
     child
         .stdin
         .take()
         .ok_or_else(|| anyhow!("Incus guest json writer stdin unavailable"))?
         .write_all(&payload)
-        .with_context(|| format!("stream Incus guest json payload to {}", remote.remote_host))?;
-    let output = child
-        .wait_with_output()
-        .with_context(|| format!("wait for Incus guest json writer on {}", remote.remote_host))?;
+        .with_context(|| {
+            format!(
+                "stream Incus guest json payload to {}",
+                remote.shared.remote_host
+            )
+        })?;
+    let output = child.wait_with_output().with_context(|| {
+        format!(
+            "wait for Incus guest json writer on {}",
+            remote.shared.remote_host
+        )
+    })?;
     append_line(log_path, label)?;
     if !output.stdout.is_empty() {
         append_line(log_path, &String::from_utf8_lossy(&output.stdout))?;
@@ -417,11 +442,159 @@ fn write_remote_incus_json<T: Serialize>(
         bail!(
             "write Incus guest json to `{}` on {} failed with status {:?}",
             guest_path,
-            remote.remote_host,
+            remote.shared.remote_host,
             output.status.code()
         );
     }
     Ok(())
+}
+
+fn load_remote_payload_manifest(
+    remote_host: &str,
+    output_root: &Path,
+) -> anyhow::Result<Option<PreparedOutputPayloadManifestRecord>> {
+    let manifest_path = output_root.join("share/pikaci/payload-manifest.json");
+    let output = run_ssh_command(
+        remote_host,
+        &format!(
+            "if test -f {}; then cat {}; fi",
+            shell_single_quote(&manifest_path.display().to_string()),
+            shell_single_quote(&manifest_path.display().to_string())
+        ),
+    )
+    .output()
+    .with_context(|| format!("read remote payload manifest {}", manifest_path.display()))?;
+    if !output.status.success() {
+        bail!(
+            "read remote payload manifest {} from {} failed with {:?}",
+            manifest_path.display(),
+            remote_host,
+            output.status.code()
+        );
+    }
+    if output.stdout.is_empty() {
+        return Ok(None);
+    }
+    let manifest = serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("decode remote payload manifest {}", manifest_path.display()))?;
+    Ok(Some(manifest))
+}
+
+fn resolve_payload_mount_source(output_root: &Path, relative_path: &str) -> PathBuf {
+    if relative_path.is_empty() || relative_path == "." {
+        output_root.to_path_buf()
+    } else {
+        output_root.join(relative_path)
+    }
+}
+
+fn path_has_parent_traversal(path: &Path) -> bool {
+    path.components()
+        .any(|component| matches!(component, Component::ParentDir))
+}
+
+fn validate_declared_payload_mount(
+    output_root: &Path,
+    mount: &PreparedOutputPayloadMountRecord,
+) -> anyhow::Result<()> {
+    if mount.name.trim().is_empty() {
+        bail!(
+            "invalid payload mount for {}: empty mount name",
+            output_root.display()
+        );
+    }
+    let relative_path = Path::new(&mount.relative_path);
+    if relative_path.is_absolute() || path_has_parent_traversal(relative_path) {
+        bail!(
+            "invalid payload mount `{}` for {}: relative_path must stay within the payload root",
+            mount.name,
+            output_root.display()
+        );
+    }
+    let guest_path = Path::new(&mount.guest_path);
+    if !guest_path.is_absolute() || path_has_parent_traversal(guest_path) {
+        bail!(
+            "invalid payload mount `{}` for {}: guest_path must be an absolute normalized path",
+            mount.name,
+            output_root.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn validate_mount_for_test(
+    output_root: &Path,
+    mount: &PreparedOutputPayloadMountRecord,
+) -> anyhow::Result<()> {
+    validate_declared_payload_mount(output_root, mount)
+}
+
+fn sanitize_incus_device_component(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    sanitized.trim_matches('-').to_string()
+}
+
+fn snapshot_mount_record() -> PreparedOutputPayloadMountRecord {
+    PreparedOutputPayloadMountRecord {
+        name: "workspace_snapshot_root".to_string(),
+        relative_path: ".".to_string(),
+        guest_path: REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH.to_string(),
+        read_only: true,
+    }
+}
+
+fn snapshot_mount_device_prefix() -> &'static str {
+    "workspace-snapshot"
+}
+
+fn add_snapshot_mount(remote: &RemoteIncusContext, log_path: &Path) -> anyhow::Result<()> {
+    add_declared_payload_mount(
+        remote,
+        &remote.shared.remote_snapshot_dir,
+        snapshot_mount_device_prefix(),
+        snapshot_mount_record(),
+        log_path,
+    )
+}
+
+#[cfg(test)]
+pub(super) fn build_snapshot_mount_plan_for_test(
+    output_root: &Path,
+) -> (String, PathBuf, PreparedOutputPayloadMountRecord) {
+    let mount = snapshot_mount_record();
+    let source = resolve_payload_mount_source(output_root, &mount.relative_path);
+    (snapshot_mount_device_prefix().to_string(), source, mount)
+}
+
+fn declared_payload_mount_device_name(device_prefix: &str, mount_name: &str) -> String {
+    let prefix = sanitize_incus_device_component(device_prefix);
+    let mount = sanitize_incus_device_component(mount_name);
+    let candidate = format!("pk-{prefix}-{mount}");
+    if candidate.len() <= 20 {
+        return candidate;
+    }
+
+    let digest = hex::encode(&Sha256::digest(candidate.as_bytes())[..4]);
+    let prefix_stub = prefix.chars().take(8).collect::<String>();
+    format!("pk-{prefix_stub}-{digest}")
+}
+
+#[cfg(test)]
+pub(super) fn build_declared_payload_mount_device_name(
+    device_prefix: &str,
+    mount_name: &str,
+) -> String {
+    declared_payload_mount_device_name(device_prefix, mount_name)
 }
 
 fn run_remote_incus_command(remote_host: &str, args: &[&str]) -> Command {
@@ -446,7 +619,7 @@ fn run_remote_incus_to_log(
 }
 
 fn wait_for_remote_incus_instance(
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteIncusContext,
     log_path: &Path,
 ) -> anyhow::Result<()> {
     let command = format!(
@@ -455,7 +628,7 @@ fn wait_for_remote_incus_instance(
         instance = shell_single_quote(&remote.incus_instance_name),
     );
     run_command_to_log(
-        &mut run_ssh_command(&remote.remote_host, &command),
+        &mut run_ssh_command(&remote.shared.remote_host, &command),
         log_path,
         "[pikaci] wait for remote Linux VM backend `incus` instance readiness",
     )
@@ -484,7 +657,7 @@ fn remote_realpath(remote_host: &str, path: &Path) -> anyhow::Result<PathBuf> {
 }
 
 fn add_remote_incus_disk_device(
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteIncusContext,
     device_name: &str,
     source: &Path,
     guest_path: &str,
@@ -492,7 +665,7 @@ fn add_remote_incus_disk_device(
     io_bus: &str,
     log_path: &Path,
 ) -> anyhow::Result<()> {
-    let realized_source = remote_realpath(&remote.remote_host, source)?;
+    let realized_source = remote_realpath(&remote.shared.remote_host, source)?;
     let args = build_remote_incus_device_add_args(
         remote,
         device_name,
@@ -503,57 +676,86 @@ fn add_remote_incus_disk_device(
     );
     let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
     run_remote_incus_to_log(
-        &remote.remote_host,
+        &remote.shared.remote_host,
         &arg_refs,
         log_path,
         &format!("[pikaci] add Incus disk device `{device_name}`"),
     )
 }
 
-fn configure_remote_incus_devices(
-    job: &JobSpec,
-    remote: &RemoteLinuxVmContext,
+fn add_declared_payload_mounts(
+    remote: &RemoteIncusContext,
+    output_root: &Path,
+    device_prefix: &str,
     log_path: &Path,
 ) -> anyhow::Result<()> {
-    if job.writable_workspace {
-        bail!("remote Linux VM backend `incus` does not support writable workspace jobs");
+    let manifest = load_remote_payload_manifest(&remote.shared.remote_host, output_root)?
+        .ok_or_else(|| {
+            anyhow!(
+                "missing payload manifest for staged output {}",
+                output_root.display()
+            )
+        })?;
+    for mount in manifest.mounts {
+        validate_declared_payload_mount(output_root, &mount)?;
+        add_declared_payload_mount(remote, output_root, device_prefix, mount, log_path)?;
     }
+    Ok(())
+}
+
+fn add_declared_payload_mount(
+    remote: &RemoteIncusContext,
+    output_root: &Path,
+    device_prefix: &str,
+    mount: PreparedOutputPayloadMountRecord,
+    log_path: &Path,
+) -> anyhow::Result<()> {
+    let source = resolve_payload_mount_source(output_root, &mount.relative_path);
+    let device_name = declared_payload_mount_device_name(device_prefix, &mount.name);
     add_remote_incus_disk_device(
         remote,
-        "pikaci-snapshot",
-        &remote.remote_snapshot_dir,
-        REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH,
-        true,
-        REMOTE_LINUX_VM_INCUS_READ_ONLY_DISK_IO_BUS,
-        log_path,
-    )?;
-    add_remote_incus_disk_device(
-        remote,
-        "pikaci-workspace-deps",
-        &remote.remote_workspace_deps_dir,
-        REMOTE_LINUX_VM_INCUS_WORKSPACE_DEPS_MOUNT_PATH,
-        true,
-        REMOTE_LINUX_VM_INCUS_READ_ONLY_DISK_IO_BUS,
-        log_path,
-    )?;
-    add_remote_incus_disk_device(
-        remote,
-        "pikaci-workspace-build",
-        &remote.remote_workspace_build_dir,
-        REMOTE_LINUX_VM_INCUS_WORKSPACE_BUILD_MOUNT_PATH,
-        true,
+        &device_name,
+        &source,
+        &mount.guest_path,
+        mount.read_only,
         REMOTE_LINUX_VM_INCUS_READ_ONLY_DISK_IO_BUS,
         log_path,
     )
 }
 
+fn configure_remote_incus_devices(
+    job: &JobSpec,
+    remote: &RemoteIncusContext,
+    log_path: &Path,
+) -> anyhow::Result<()> {
+    if job.writable_workspace {
+        bail!("remote Linux VM backend `incus` does not support writable workspace jobs");
+    }
+    add_snapshot_mount(remote, log_path)?;
+    if job.staged_linux_rust_lane().is_some() {
+        add_declared_payload_mounts(
+            remote,
+            &remote.shared.remote_workspace_deps_dir,
+            "workspace-deps",
+            log_path,
+        )?;
+        add_declared_payload_mounts(
+            remote,
+            &remote.shared.remote_workspace_build_dir,
+            "workspace-build",
+            log_path,
+        )?;
+    }
+    Ok(())
+}
+
 fn copy_remote_incus_file_to_local(
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteIncusContext,
     guest_path: &str,
     local_path: &Path,
 ) -> anyhow::Result<()> {
     let output = run_remote_incus_command(
-        &remote.remote_host,
+        &remote.shared.remote_host,
         &[
             "exec",
             "--project",
@@ -568,14 +770,14 @@ fn copy_remote_incus_file_to_local(
     .with_context(|| {
         format!(
             "read Incus guest path `{guest_path}` from {}",
-            remote.remote_host
+            remote.shared.remote_host
         )
     })?;
     if !output.status.success() {
         bail!(
             "read Incus guest path `{}` from {} failed with {:?}",
             guest_path,
-            remote.remote_host,
+            remote.shared.remote_host,
             output.status.code()
         );
     }

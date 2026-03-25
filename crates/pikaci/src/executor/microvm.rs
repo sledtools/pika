@@ -8,11 +8,11 @@ pub(super) fn guest_runner_config() -> GuestRunnerConfig {
     }
 }
 
-pub(super) fn build_launch_command(remote: &RemoteLinuxVmContext) -> String {
+pub(super) fn build_launch_command(remote: &RemoteMicrovmContext) -> String {
     build_remote_microvm_launch_command(remote)
 }
 
-pub(super) fn build_remote_microvm_launch_command(remote: &RemoteLinuxVmContext) -> String {
+pub(super) fn build_remote_microvm_launch_command(remote: &RemoteMicrovmContext) -> String {
     let runner_dir = shell_single_quote(&remote.remote_runtime_link.display().to_string());
     let vm_dir = shell_single_quote(&remote.remote_runtime_dir.display().to_string());
     let socket_wait = REMOTE_MICROVM_VIRTIOFS_SOCKETS
@@ -57,7 +57,7 @@ pub(super) fn build_remote_microvm_launch_command(remote: &RemoteLinuxVmContext)
 pub(super) fn prepare_backend_state(
     job: &JobSpec,
     ctx: &HostContext,
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteMicrovmContext,
     log_path: &Path,
 ) -> anyhow::Result<()> {
     prepare_runtime(job, ctx, remote, log_path)
@@ -66,17 +66,17 @@ pub(super) fn prepare_backend_state(
 pub(super) fn prepare_runtime(
     job: &JobSpec,
     ctx: &HostContext,
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteMicrovmContext,
     log_path: &Path,
 ) -> anyhow::Result<()> {
     ensure_remote_microvm_runtime(job, ctx, remote, log_path)?;
-    reset_remote_linux_vm_artifacts(remote, log_path)
+    reset_remote_linux_vm_artifacts(&remote.shared, log_path)
 }
 
 pub(super) fn ensure_remote_microvm_runtime(
     job: &JobSpec,
     ctx: &HostContext,
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteMicrovmContext,
     log_path: &Path,
 ) -> anyhow::Result<()> {
     let remote_runner_bin = remote.remote_runtime_link.join("bin").join("microvm-run");
@@ -84,9 +84,9 @@ pub(super) fn ensure_remote_microvm_runtime(
         "test -x {}",
         shell_single_quote(&remote_runner_bin.display().to_string())
     );
-    if run_ssh_command(&remote.remote_host, &already_ready_command)
+    if run_ssh_command(&remote.shared.remote_host, &already_ready_command)
         .status()
-        .with_context(|| format!("check remote runtime on {}", remote.remote_host))?
+        .with_context(|| format!("check remote runtime on {}", remote.shared.remote_host))?
         .success()
     {
         append_line(
@@ -103,6 +103,7 @@ pub(super) fn ensure_remote_microvm_runtime(
     let _installable = materialize_runner_flake(job, ctx)?;
     let flake_hash = runner_flake_content_hash(&local_flake_dir)?;
     let remote_flake_root = remote
+        .shared
         .remote_work_dir
         .join("runner-flakes")
         .join(&flake_hash);
@@ -114,17 +115,17 @@ pub(super) fn ensure_remote_microvm_runtime(
             "[pikaci] stage remote Linux VM backend `microvm` runtime flake {} for `{}` on {}",
             local_flake_dir.display(),
             job.id,
-            remote.remote_host
+            remote.shared.remote_host
         ),
     )?;
     if let Some(metadata) =
-        load_remote_runner_flake_metadata(&remote.remote_host, &remote_flake_metadata)?
+        load_remote_runner_flake_metadata(&remote.shared.remote_host, &remote_flake_metadata)?
     {
         if metadata.content_hash != flake_hash {
             bail!(
                 "remote Linux VM runtime flake metadata mismatch at {} on {} (expected {}, got {})",
                 remote_flake_metadata.display(),
-                remote.remote_host,
+                remote.shared.remote_host,
                 flake_hash,
                 metadata.content_hash
             );
@@ -134,9 +135,14 @@ pub(super) fn ensure_remote_microvm_runtime(
             "test -e {}",
             shell_single_quote(&remote_store_path.display().to_string())
         );
-        if run_ssh_command(&remote.remote_host, &verify_command)
+        if run_ssh_command(&remote.shared.remote_host, &verify_command)
             .status()
-            .with_context(|| format!("check remote runtime store path on {}", remote.remote_host))?
+            .with_context(|| {
+                format!(
+                    "check remote runtime store path on {}",
+                    remote.shared.remote_host
+                )
+            })?
             .success()
         {
             append_line(
@@ -150,7 +156,7 @@ pub(super) fn ensure_remote_microvm_runtime(
             return remote_symlink(
                 &remote_store_path,
                 &remote.remote_runtime_link,
-                &remote.remote_host,
+                &remote.shared.remote_host,
                 log_path,
             );
         }
@@ -158,14 +164,14 @@ pub(super) fn ensure_remote_microvm_runtime(
             "remote Linux VM runtime metadata at {} points to missing store path {} on {}",
             remote_flake_metadata.display(),
             remote_store_path.display(),
-            remote.remote_host
+            remote.shared.remote_host
         );
     }
 
     sync_directory_to_remote(
         &local_flake_dir,
         &remote_flake_dir,
-        &remote.remote_host,
+        &remote.shared.remote_host,
         log_path,
         "remote-linux-vm-runtime-flake",
         true,
@@ -180,15 +186,15 @@ pub(super) fn ensure_remote_microvm_runtime(
         shell_single_quote(&ssh_nix_binary()),
         shell_single_quote(&remote_installable)
     );
-    let output = run_ssh_command(&remote.remote_host, &build_command)
+    let output = run_ssh_command(&remote.shared.remote_host, &build_command)
         .output()
-        .with_context(|| format!("build remote runtime on {}", remote.remote_host))?;
+        .with_context(|| format!("build remote runtime on {}", remote.shared.remote_host))?;
     if !output.status.success() {
         append_line(log_path, &String::from_utf8_lossy(&output.stdout))?;
         append_line(log_path, &String::from_utf8_lossy(&output.stderr))?;
         bail!(
             "remote runtime build failed on {} with {:?}",
-            remote.remote_host,
+            remote.shared.remote_host,
             output.status.code()
         );
     }
@@ -200,7 +206,7 @@ pub(super) fn ensure_remote_microvm_runtime(
         .ok_or_else(|| anyhow!("remote runtime build produced no store path"))?;
     append_line(log_path, stdout.trim_end())?;
     write_remote_json(
-        &remote.remote_host,
+        &remote.shared.remote_host,
         &remote_flake_metadata,
         &RunnerFlakeMetadata {
             schema_version: 1,
@@ -213,43 +219,43 @@ pub(super) fn ensure_remote_microvm_runtime(
     remote_symlink(
         Path::new(remote_store_path),
         &remote.remote_runtime_link,
-        &remote.remote_host,
+        &remote.shared.remote_host,
         log_path,
     )
 }
 
 pub(super) fn collect_remote_microvm_artifacts(
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteMicrovmContext,
     ctx: &HostContext,
 ) -> anyhow::Result<()> {
     copy_remote_file_to_local(
-        &remote.remote_host,
-        &remote.remote_artifacts_dir.join("guest.log"),
+        &remote.shared.remote_host,
+        &remote.shared.remote_artifacts_dir.join("guest.log"),
         &ctx.guest_log_path,
     )?;
     copy_remote_file_to_local(
-        &remote.remote_host,
-        &remote.remote_artifacts_dir.join("result.json"),
+        &remote.shared.remote_host,
+        &remote.shared.remote_artifacts_dir.join("result.json"),
         &ctx.job_dir.join("artifacts/result.json"),
     )
 }
 
 pub(super) fn collect_artifacts(
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteMicrovmContext,
     ctx: &HostContext,
 ) -> anyhow::Result<()> {
     collect_remote_microvm_artifacts(remote, ctx)
 }
 
 pub(super) fn cleanup_remote_microvm_runtime(
-    _remote: &RemoteLinuxVmContext,
+    _remote: &RemoteMicrovmContext,
     _log_path: &Path,
 ) -> anyhow::Result<()> {
     Ok(())
 }
 
 pub(super) fn cleanup_runtime(
-    remote: &RemoteLinuxVmContext,
+    remote: &RemoteMicrovmContext,
     log_path: &Path,
 ) -> anyhow::Result<()> {
     cleanup_remote_microvm_runtime(remote, log_path)

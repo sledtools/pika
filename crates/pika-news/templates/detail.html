@@ -80,32 +80,6 @@
       .tone-warning { border-color: rgba(201, 138, 20, 0.4); background: rgba(201, 138, 20, 0.14); color: #8f5d00; }
       .tone-danger { border-color: rgba(184, 71, 91, 0.35); background: rgba(184, 71, 91, 0.14); color: #8b1e3f; }
       .tone-neutral { border-color: var(--border-light); background: var(--badge-bg-row); color: var(--text-secondary); }
-      .branch-meta-grid {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 0.85rem;
-        max-width: 1360px;
-      }
-      .meta-block {
-        padding: 0.85rem 0.95rem;
-        border-radius: 14px;
-        background: var(--badge-bg-row);
-        border: 1px solid var(--border);
-      }
-      .meta-label {
-        display: block;
-        margin-bottom: 0.25rem;
-        color: var(--text-muted);
-        font-size: 0.78rem;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-      }
-      .meta-value {
-        display: block;
-        color: var(--text);
-        font-size: 0.92rem;
-        word-break: break-word;
-      }
       .action-row { display: flex; gap: 0.7rem; flex-wrap: wrap; align-items: center; }
       .action-btn,
       .secondary-btn,
@@ -200,7 +174,7 @@
       .review-main {
         min-width: 0;
         display: grid;
-        grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+        grid-template-columns: minmax(420px, 560px) minmax(0, 1fr);
         gap: 1.25rem;
       }
       .review-rail,
@@ -266,13 +240,9 @@
         .d2h-file-list-line a { color: var(--link); }
       }
       @media (max-width: 1024px) {
-        .branch-meta-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .review-layout { grid-template-columns: 1fr; }
         .file-list-sidebar { position: static; }
         .review-main { grid-template-columns: 1fr; }
-      }
-      @media (max-width: 720px) {
-        .branch-meta-grid { grid-template-columns: 1fr; }
       }
 {% endblock %}
 
@@ -293,33 +263,6 @@
             <span class="status {% if ci_status == "success" %}tone-success{% else %}{% if ci_status == "failed" %}tone-danger{% else %}tone-warning{% endif %}{% endif %}">ci: {{ ci_status }}</span>
           </div>
         </div>
-
-        <div class="branch-meta-grid">
-          <div class="meta-block">
-            <span class="meta-label">Target</span>
-            <span class="meta-value"><code>{{ target_branch }}</code></span>
-          </div>
-          <div class="meta-block">
-            <span class="meta-label">Updated</span>
-            <span class="meta-value">{{ updated_at }}</span>
-          </div>
-          <div class="meta-block">
-            <span class="meta-label">Head</span>
-            <span class="meta-value"><code>{{ head_sha }}</code></span>
-          </div>
-          <div class="meta-block">
-            <span class="meta-label">Merge Base</span>
-            <span class="meta-value"><code>{{ merge_base_sha }}</code></span>
-          </div>
-          {% match merge_commit_sha %}
-          {% when Some with (merge_commit) %}
-          <div class="meta-block">
-            <span class="meta-label">Merge Commit</span>
-            <span class="meta-value"><code>{{ merge_commit }}</code></span>
-          </div>
-          {% when None %}{% endmatch %}
-        </div>
-
         <div class="action-row">
           <a class="ci-link-btn" href="/news/branch/{{ branch_id }}/ci{% if review_mode %}?review=true{% endif %}">Open CI Details</a>
           {% if branch_state == "open" %}

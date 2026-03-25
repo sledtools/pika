@@ -8310,6 +8310,9 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
         assert!(rendered.contains("Discussion"));
         assert!(rendered.contains("artifact ready"));
         assert!(rendered.contains("Ask about this branch review"));
+        assert!(rendered.contains("id=\"discussion-toggle\""));
+        assert!(rendered.contains("id=\"discussion-sidebar\""));
+        assert!(rendered.contains("id=\"branch-review-shell\""));
         assert!(rendered.contains(&format!("const branchChatArtifactId = {};", artifact_id)));
     }
 

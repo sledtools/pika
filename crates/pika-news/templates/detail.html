@@ -21,9 +21,10 @@
 
 {% block styles %}
       .branch-page {
-        width: min(1880px, calc(100vw - 2rem));
+        width: min(2200px, calc(100vw - 1rem));
+        max-width: none;
         margin: 0 auto;
-        padding: 2rem 1rem 3rem;
+        padding: 2rem 0.5rem 3rem;
       }
       .meta { color: var(--text-secondary); font-size: 0.92rem; }
       .muted { color: var(--text-muted); }
@@ -202,7 +203,14 @@
       .diff-panel { overflow-x: auto; }
       .diff-view-toggle { display: flex; gap: 0.5rem; margin-bottom: 0.85rem; flex-wrap: wrap; }
       .diff-view-toggle button.active { background: var(--link); color: #fff; border-color: var(--link); }
-      .d2h-wrapper { border-radius: 12px; overflow-x: auto; }
+      .d2h-wrapper {
+        border-radius: 12px;
+        overflow-x: auto;
+      }
+      .d2h-file-wrapper,
+      .d2h-diff-table {
+        min-width: min(1800px, calc(100vw - 4rem));
+      }
       .review-nav-center { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
       .review-nav-pos { font-size: 0.82rem; color: var(--text-muted); }
       .review-dismiss-btn {

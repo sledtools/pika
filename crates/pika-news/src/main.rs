@@ -7,6 +7,7 @@ mod cli;
 mod config;
 mod forge;
 mod forge_runtime;
+mod forge_service;
 mod github;
 mod live;
 mod local;

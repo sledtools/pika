@@ -18,6 +18,7 @@ use pikaci::{RunLifecycleEvent, RunStatus};
 use tempfile::TempDir;
 
 use crate::config::{ForgeRepoConfig, DEFAULT_MIRROR_TIMEOUT_SECS};
+use crate::pikaci_store::PikaciRunStore;
 
 #[derive(Debug, Clone)]
 pub struct CanonicalBranch {
@@ -98,22 +99,6 @@ impl Drop for MirrorLockGuard {
     fn drop(&mut self) {
         let _ = self.file.unlock();
     }
-}
-
-pub fn pikaci_state_root(repo: &ForgeRepoConfig) -> PathBuf {
-    let repo_slug = repo
-        .repo
-        .chars()
-        .map(|ch| match ch {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => ch,
-            _ => '-',
-        })
-        .collect::<String>();
-    canonical_git_dir(repo)
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("pikaci-state")
-        .join(repo_slug)
 }
 
 pub fn ensure_canonical_repo(repo: &ForgeRepoConfig) -> anyhow::Result<()> {
@@ -343,9 +328,11 @@ where
     let structured_pikaci_target = structured_pikaci_target_id
         .map(ToOwned::to_owned)
         .or_else(|| staged_pikaci_target_from_command(command));
-    let structured_pikaci_state_root = structured_pikaci_target
-        .as_ref()
-        .map(|_| pikaci_state_root(repo));
+    let structured_pikaci_state_root = structured_pikaci_target.as_ref().map(|_| {
+        PikaciRunStore::from_forge_repo(repo)
+            .state_root()
+            .to_path_buf()
+    });
     let effective_command = if structured_pikaci_target.is_some() {
         ensure_structured_pikaci_output(command)?
     } else {
@@ -1250,6 +1237,7 @@ mod tests {
         write_merge_tree, write_mirror_lock_metadata, MirrorLockMetadata,
     };
     use crate::config::ForgeRepoConfig;
+    use crate::pikaci_store::PikaciRunStore;
 
     fn git<P: AsRef<Path>>(cwd: P, args: &[&str]) {
         let output = Command::new("git")
@@ -1610,10 +1598,13 @@ mod tests {
         assert!(result
             .log
             .contains("[pikaci] job finished: job-one · status=passed"));
-        let state_root = super::pikaci_state_root(&forge_repo);
-        assert!(state_root.join("runs/pikaci-run-123/run.json").is_file());
-        assert!(state_root
-            .join("runs/pikaci-run-123/jobs/job-one/host.log")
+        let run_store = PikaciRunStore::from_forge_repo(&forge_repo);
+        assert!(run_store
+            .run_dir("pikaci-run-123")
+            .join("run.json")
+            .is_file());
+        assert!(run_store
+            .host_log_path("pikaci-run-123", "job-one")
             .is_file());
     }
 
@@ -1679,8 +1670,11 @@ mod tests {
             result.pikaci_target_id.as_deref(),
             Some("pre-merge-pika-rust")
         );
-        let state_root = super::pikaci_state_root(&forge_repo);
-        assert!(state_root.join("runs/pikaci-run-456/run.json").is_file());
+        let run_store = PikaciRunStore::from_forge_repo(&forge_repo);
+        assert!(run_store
+            .run_dir("pikaci-run-456")
+            .join("run.json")
+            .is_file());
     }
 
     #[test]

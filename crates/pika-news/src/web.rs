@@ -4325,16 +4325,13 @@ mod tests {
     }
 
     fn write_pikaci_run_fixture(config: &Config, run_id: &str) {
-        let state_root = PikaciRunStore::from_config(config)
-            .expect("pikaci run store")
-            .state_root()
-            .to_path_buf();
-        let run_dir = state_root.join("runs").join(run_id);
-        let job_dir = run_dir.join("jobs").join("job-one");
-        let prepared_outputs_path = run_dir.join("prepared-outputs.json");
+        let run_store = PikaciRunStore::from_config(config).expect("pikaci run store");
+        let run_dir = run_store.run_dir(run_id);
+        let job_dir = run_store.job_dir(run_id, "job-one");
+        let prepared_outputs_path = run_store.prepared_outputs_path(run_id);
         fs::create_dir_all(&job_dir).expect("create pikaci fixture dir");
-        let host_log = job_dir.join("host.log");
-        let guest_log = job_dir.join("artifacts").join("guest.log");
+        let host_log = run_store.host_log_path(run_id, "job-one");
+        let guest_log = run_store.guest_log_path(run_id, "job-one");
         fs::create_dir_all(guest_log.parent().expect("guest log parent"))
             .expect("create guest log artifacts dir");
         fs::write(&host_log, "host fixture\n").expect("write host log");
@@ -5763,10 +5760,7 @@ mod tests {
         write_pikaci_run_fixture(&config, "pikaci-run-invalid-prepared");
         let prepared_outputs_path = PikaciRunStore::from_config(&config)
             .expect("pikaci run store")
-            .state_root()
-            .join("runs")
-            .join("pikaci-run-invalid-prepared")
-            .join("prepared-outputs.json");
+            .prepared_outputs_path("pikaci-run-invalid-prepared");
         fs::write(&prepared_outputs_path, "{not valid json").expect("corrupt prepared outputs");
         let headers = trusted_headers(&store, TRUSTED_NPUB);
         let state = test_state(store, config);

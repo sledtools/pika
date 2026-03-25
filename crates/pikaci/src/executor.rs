@@ -3661,6 +3661,15 @@ mod tests {
     }
 
     #[test]
+    fn remote_linux_incus_snapshot_mount_uses_declared_mount_contract() {
+        let mount = incus::build_snapshot_mount_for_test();
+        assert_eq!(mount.name, "workspace_snapshot_root");
+        assert_eq!(mount.relative_path, ".");
+        assert_eq!(mount.guest_path, REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH);
+        assert!(mount.read_only);
+    }
+
+    #[test]
     fn declared_payload_mount_device_names_stay_short_and_stable() {
         let name = incus::build_declared_payload_mount_device_name(
             "workspace-build",

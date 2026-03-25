@@ -541,6 +541,20 @@ fn sanitize_incus_device_component(value: &str) -> String {
     sanitized.trim_matches('-').to_string()
 }
 
+fn snapshot_mount_record() -> PreparedOutputPayloadMountRecord {
+    PreparedOutputPayloadMountRecord {
+        name: "workspace_snapshot_root".to_string(),
+        relative_path: ".".to_string(),
+        guest_path: REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH.to_string(),
+        read_only: true,
+    }
+}
+
+#[cfg(test)]
+pub(super) fn build_snapshot_mount_for_test() -> PreparedOutputPayloadMountRecord {
+    snapshot_mount_record()
+}
+
 fn declared_payload_mount_device_name(device_prefix: &str, mount_name: &str) -> String {
     let prefix = sanitize_incus_device_component(device_prefix);
     let mount = sanitize_incus_device_component(mount_name);
@@ -696,13 +710,11 @@ fn configure_remote_incus_devices(
     if job.writable_workspace {
         bail!("remote Linux VM backend `incus` does not support writable workspace jobs");
     }
-    add_remote_incus_disk_device(
+    add_declared_payload_mount(
         remote,
-        "pikaci-snapshot",
         &remote.shared.remote_snapshot_dir,
-        REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH,
-        true,
-        REMOTE_LINUX_VM_INCUS_READ_ONLY_DISK_IO_BUS,
+        "workspace-snapshot",
+        snapshot_mount_record(),
         log_path,
     )?;
     if job.staged_linux_rust_lane().is_some() {

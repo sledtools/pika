@@ -12,13 +12,13 @@ release-commit VERSION:
 release VERSION:
     ./scripts/release-version release "{{ VERSION }}"
 
-# Encrypt Zapstore signing value to `secrets/zapstore-signing.env.age`.
+# Encrypt Zapstore signing value to `secrets/zapstore-signing.sops.yaml`.
 zapstore-encrypt-signing:
     ./scripts/encrypt-zapstore-signing
 
 # Check Zapstore publish inputs for a local APK without publishing events.
 zapstore-check APK:
-    zsp publish --check "{{ APK }}" -r https://github.com/sledtools/pika
+    ./scripts/zapstore-publish --check "{{ APK }}" https://github.com/sledtools/pika
 
 # Publish a local APK artifact to Zapstore.
 zapstore-publish APK:

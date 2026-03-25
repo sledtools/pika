@@ -8,13 +8,16 @@ SECRET_TMP=""
 
 usage() {
   cat <<'USAGE'
-usage: ./scripts/zapstore-publish <apk-path> [repo-url]
+usage: ./scripts/zapstore-publish [--check] <apk-path> [repo-url]
 
 Publishes an APK to Zapstore using the encrypted signing secret.
 
 Arguments:
   apk-path   Path to the APK file to publish
   repo-url   Optional source repository URL (default: https://github.com/sledtools/pika)
+
+Options:
+  --check    Validate the publish inputs without emitting Zapstore events
 
 Security notes:
   - Disables shell xtrace while handling secrets.
@@ -41,6 +44,12 @@ trap cleanup EXIT INT TERM
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   usage
   exit 0
+fi
+
+mode="publish"
+if [ "${1:-}" = "--check" ]; then
+  mode="check"
+  shift
 fi
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
@@ -76,5 +85,9 @@ if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
   printf '::add-mask::%s\n' "$secret"
 fi
 
-SIGN_WITH="$secret" zsp publish -y --skip-preview --quiet "$apk_path" -r "$repo_url"
+if [ "$mode" = "check" ]; then
+  SIGN_WITH="$secret" zsp publish --check "$apk_path" -r "$repo_url"
+else
+  SIGN_WITH="$secret" zsp publish -y --skip-preview --quiet "$apk_path" -r "$repo_url"
+fi
 unset secret

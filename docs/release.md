@@ -81,46 +81,58 @@ gh release view 'pika/v0.3.0'
 
 ### Signing inputs
 
-- Commit only encrypted keystore: `android/pika-release.jks.age`.
-- Commit only encrypted signing env: `secrets/android-signing.env.age`.
-- Commit only encrypted Zapstore signing env: `secrets/zapstore-signing.env.age`.
+- Preferred checked-in repo secret files:
+  - `secrets/android-keystore.jks.sops`
+  - `secrets/android-signing.sops.yaml`
+  - `secrets/zapstore-signing.sops.yaml`
+- Legacy fallback files remain supported during migration:
+  - `android/pika-release.jks.age`
+  - `secrets/android-signing.env.age`
+  - `secrets/zapstore-signing.env.age`
 - Keep plaintext `android/pika-release.jks` out of git.
 - Keep plaintext Zapstore signing env (`secrets/zapstore-signing.env`) out of git.
-- Encrypt all encrypted artifacts to all required recipients (source of truth: `scripts/release-age-recipients`):
+- Repo `sops` creation rules live in `secrets/.sops.yaml`.
+- Encrypt all encrypted artifacts to all required recipients:
   - YubiKey primary: `age1yubikey1q0zhu9e7zrj48zmnpx4fg07c0drt9f57e26uymgxa4h3fczwutzjjp5a6y5`
   - YubiKey backup: `age1yubikey1qtdv7spad78v4yhrtrts6tvv5wc80vw6mah6g64m9cr9l3ryxsf2jdx8gs9`
   - CI release key: `age1kywla84vx7ppelcaugeqvzghcggc3dsmskz7fugk6emdcc02zdqs0vzv93`
 - Do not use the configs host `server` recipient for Pika release artifacts.
 - CI env var required:
-  - `AGE_SECRET_KEY` (decrypts all encrypted artifacts in CI)
+  - GitHub secret `AGE_SECRET_KEY`, mapped to `SOPS_AGE_KEY` in workflows that read repo `sops` files
 - Zapstore encrypted env format:
-  - `ZAPSTORE_SIGN_WITH=nsec1...` (or NIP-46 bunker URL)
+  - YAML key `ZAPSTORE_SIGN_WITH: ...` inside `secrets/zapstore-signing.sops.yaml`
 - Helper command:
   - `just zapstore-encrypt-signing`
   - or include in full bootstrap: `PIKA_ZAPSTORE_SIGN_WITH='nsec1...' ./scripts/init-release-secrets`
 - Publish helper:
-  - `./scripts/zapstore-publish <apk-path> [repo-url]`
+  - `./scripts/zapstore-publish [--check] <apk-path> [repo-url]`
   - used by both `just zapstore-publish` and CI to centralize secret handling
 - Release announcement helper:
-  - `./scripts/post-release-announcement <tag> [repo-url] [zapstore-app-url]`
+  - `./scripts/post-release-announcement [--dry-run] <tag> [repo-url] [zapstore-app-url]`
   - publishes concise kind-1 release announcements to popular relays
 - Optional for local hardware-key decrypt:
   - `PIKA_AGE_IDENTITY_FILE` (defaults to `~/configs/yubikeys/keys.txt`)
+- Day-to-day editing:
+  - `sops secrets/android-signing.sops.yaml`
+  - `sops secrets/zapstore-signing.sops.yaml`
+  - `./scripts/update-repo-secret-keys` after changing recipients in `secrets/.sops.yaml`
 
 ### Rotate `AGE_SECRET_KEY` safely
 
 1. Generate a fresh CI age keypair and capture:
    - private key (`AGE-SECRET-KEY-...`) for GitHub secret `AGE_SECRET_KEY`
-   - public recipient (`age1...`) for `scripts/release-age-recipients`
-2. Re-encrypt all release artifacts to the three recipients in `scripts/release-age-recipients`:
-   - `android/pika-release.jks.age`
-   - `secrets/android-signing.env.age`
-   - `secrets/zapstore-signing.env.age`
-3. Update GitHub Actions repo secret:
+   - public recipient (`age1...`) for `secrets/.sops.yaml`
+2. Update `secrets/.sops.yaml` with the new CI recipient and run:
+   - `./scripts/update-repo-secret-keys`
+3. Re-encrypt or bootstrap the repo release secrets if needed:
+   - `secrets/android-keystore.jks.sops`
+   - `secrets/android-signing.sops.yaml`
+   - `secrets/zapstore-signing.sops.yaml`
+4. Update GitHub Actions repo secret:
    - `gh secret set AGE_SECRET_KEY --repo sledtools/pika --body '<AGE-SECRET-KEY-...>'`
-4. Verify before tagging:
+5. Verify before tagging:
    - local hardware key can decrypt release artifacts
-   - `AGE_SECRET_KEY` can decrypt `secrets/android-signing.env.age` and `secrets/zapstore-signing.env.age`
+   - `SOPS_AGE_KEY` can decrypt `secrets/android-signing.sops.yaml` and `secrets/zapstore-signing.sops.yaml`
 
 ### CI workflow
 
@@ -142,10 +154,12 @@ The workflow enforces both:
 
 Keep both controls enabled.
 
-`publish-zapstore` is gated on `secrets/zapstore-signing.env.age` existing in
-git. It decrypts `ZAPSTORE_SIGN_WITH` via `AGE_SECRET_KEY`, uses centralized
-`scripts/zapstore-publish` handling (xtrace disabled, masking enabled, temp-file
-cleanup), and passes it to `zsp` only for the publish command.
+`publish-zapstore` is gated on a checked-in repo Zapstore signing secret
+existing in git. It decrypts `ZAPSTORE_SIGN_WITH` via the mapped `SOPS_AGE_KEY`,
+uses centralized `scripts/zapstore-publish` handling (xtrace disabled, masking
+enabled, temp-file cleanup), and passes it to `zsp` only for the publish
+command. Use `./scripts/zapstore-publish --check` locally to validate the
+secret/read path without publishing events.
 
 ---
 

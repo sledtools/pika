@@ -172,6 +172,7 @@ jobs:
       - name: Build signed release APK
         env:
           AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
+          SOPS_AGE_KEY: ${{ secrets.AGE_SECRET_KEY }}
         run: nix develop .#default -c just android-release
 
       - uses: actions/upload-artifact@v4
@@ -251,11 +252,11 @@ jobs:
         id: zapstore_secret
         run: |
           set -euo pipefail
-          if [ -f secrets/zapstore-signing.env.age ]; then
+          if [ -f secrets/zapstore-signing.sops.yaml ] || [ -f secrets/zapstore-signing.env.age ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "note: secrets/zapstore-signing.env.age not found; skipping Zapstore publish"
+            echo "note: no repo Zapstore signing secret found; skipping Zapstore publish"
           fi
 
       - uses: useblacksmith/stickydisk@v1
@@ -282,6 +283,7 @@ jobs:
         if: steps.zapstore_secret.outputs.present == 'true'
         env:
           AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
+          SOPS_AGE_KEY: ${{ secrets.AGE_SECRET_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -307,8 +309,8 @@ jobs:
       - name: Ensure announcement signing secret exists
         run: |
           set -euo pipefail
-          if [ ! -f secrets/zapstore-signing.env.age ]; then
-            echo "error: missing secrets/zapstore-signing.env.age (required for release announcement signing)"
+          if [ ! -f secrets/zapstore-signing.sops.yaml ] && [ ! -f secrets/zapstore-signing.env.age ]; then
+            echo "error: missing repo Zapstore signing secret (required for release announcement signing)"
             exit 1
           fi
 
@@ -326,6 +328,7 @@ jobs:
       - name: Publish release announcement (kind 1)
         env:
           AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
+          SOPS_AGE_KEY: ${{ secrets.AGE_SECRET_KEY }}
         run: |
           set -euo pipefail
           set +x

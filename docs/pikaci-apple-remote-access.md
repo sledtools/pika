@@ -64,11 +64,11 @@ gh workflow run apple-mini-validate.yml --repo sledtools/pika --ref master -f la
 
 Those trigger only the Apple mini validation workflow, not the broader `pre-merge.yml` matrix. `lane=sanity` runs the tiny blocking smoke lane (`just apple-host-sanity`, currently `just desktop-ui-test`) on the mini, and `lane=bundle` runs the heavy nightly bundle (`just apple-host-bundle`).
 
-The Apple CI config/secret model now follows the repo's existing `age` pattern:
+The Apple CI config/secret model now follows the repo's checked-in secret pattern:
 
 - Non-secret Apple CI config is checked into [.github/pikaci-apple.env](/Users/justin/code/pika/worktrees/pikaci-mac/.github/pikaci-apple.env).
-- Apple CI secrets are checked into [secrets/pikaci-apple.env.age](/Users/justin/code/pika/worktrees/pikaci-mac/secrets/pikaci-apple.env.age).
-- GitHub workflows decrypt that file via the already-existing generic `AGE_SECRET_KEY` backend secret.
+- Apple CI secrets are checked into `secrets/pikaci-apple.sops.yaml` (with legacy fallback to `secrets/pikaci-apple.env.age` during migration).
+- GitHub workflows map the existing repo secret `AGE_SECRET_KEY` to `SOPS_AGE_KEY` when decrypting `sops` files.
 - The workflows no longer depend on Apple-specific GitHub vars or Apple-specific GitHub secrets.
 - Apple secrets are loaded step-locally via `./scripts/with-pikaci-apple-ci-env`; they are no longer written through `GITHUB_ENV` or `GITHUB_OUTPUT`.
 
@@ -90,12 +90,12 @@ PIKACI_APPLE_SSH_KEY_FILE="$HOME/.ssh/<apple-mini-private-key>" \
 ./scripts/encrypt-pikaci-apple-secrets
 ```
 
-`secrets/pikaci-apple.env.age` must contain:
+`secrets/pikaci-apple.sops.yaml` must contain:
 
 - `PIKACI_APPLE_TAILSCALE_AUTHKEY`
 - `PIKACI_APPLE_SSH_KEY`
 
-The GitHub-side dependency after this change is just the generic repo secret `AGE_SECRET_KEY`.
+The GitHub-side dependency after this change is still the generic repo secret `AGE_SECRET_KEY`; workflows map that value to `SOPS_AGE_KEY`.
 
 It uses a git-backed source contract on the mini: the caller sends an exact git bundle for the requested ref, the mini imports it into a bare mirror under `/Volumes/pikaci-data/pikaci-apple`, materializes a stable prepared worktree under `prepared/<commit>`, and reuses that checkout across repeated runs of the same commit. When the wrapper sees a schema-valid prepared checkout for the exact commit, it skips source upload/import entirely and goes straight to the prepared worktree. `prepare` now builds a stronger Apple-shaped staged state there: it prewarms the Apple dev shell, compiles the Rust/Desktop test binaries, and for the nightly bundle it runs `xcodebuild build-for-testing` via `./tools/ios-ui-test prepare`. `run` then reuses that prepared checkout, executes the requested checked-in `just` recipe (default `apple-host-bundle`), and lets `./tools/ios-ui-test run` switch to `xcodebuild test-without-building` when the prepared iOS outputs exist. The wrapper returns phase timing artifacts to the caller, takes a host-local run lock before touching the shared mirror/target state, honors the checked-in `PIKACI_APPLE_LOCK_TIMEOUT_SEC` when callers load `.github/pikaci-apple.env`, schema-checks the prepared marker before reuse, scrubs run-local `.pikaci` state and stale XCTest logs before each operation, prunes old remote run dirs automatically, and keeps only a bounded number of prepared commit dirs.
 

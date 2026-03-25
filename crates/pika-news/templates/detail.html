@@ -20,7 +20,11 @@
 {% endblock %}
 
 {% block styles %}
-      .branch-page { max-width: 1480px; margin: 0 auto; padding: 2rem 1rem 3rem; }
+      .branch-page {
+        width: min(1880px, calc(100vw - 2rem));
+        margin: 0 auto;
+        padding: 2rem 1rem 3rem;
+      }
       .meta { color: var(--text-secondary); font-size: 0.92rem; }
       .muted { color: var(--text-muted); }
       .panel {

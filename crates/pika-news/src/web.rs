@@ -3549,14 +3549,38 @@ async fn webhook_handler(
             .into_response();
     }
 
-    state.forge_runtime.wake_webhook();
-    let update_count = String::from_utf8_lossy(&body)
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .count();
-    eprintln!("webhook: received {} ref updates", update_count);
+    let (update_count, branch_ref_update_count) = summarize_webhook_ref_updates(&body);
+    if branch_ref_update_count > 0 {
+        state.forge_runtime.request_mirror_from_webhook();
+    } else {
+        state.forge_runtime.wake_webhook();
+    }
+    eprintln!(
+        "webhook: received {} ref updates ({} branch ref updates)",
+        update_count, branch_ref_update_count
+    );
 
     Json(serde_json::json!({"status": "ok"})).into_response()
+}
+
+fn summarize_webhook_ref_updates(payload: &[u8]) -> (usize, usize) {
+    let mut update_count = 0usize;
+    let mut branch_ref_update_count = 0usize;
+    for line in String::from_utf8_lossy(payload).lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        update_count += 1;
+        if line
+            .split_whitespace()
+            .nth(2)
+            .is_some_and(|ref_name| ref_name.starts_with("refs/heads/"))
+        {
+            branch_ref_update_count += 1;
+        }
+    }
+    (update_count, branch_ref_update_count)
 }
 
 fn verify_signature(secret: &str, payload: &[u8], signature_header: &str) -> bool {
@@ -4216,6 +4240,7 @@ mod tests {
 
     use askama::Template;
     use axum::body::to_bytes;
+    use axum::body::Bytes;
     use axum::extract::{Path, Query, State};
     use axum::http::{header::AUTHORIZATION, HeaderMap, HeaderValue, StatusCode};
     use axum::response::IntoResponse;
@@ -4234,8 +4259,9 @@ mod tests {
         next_nightly_live_snapshot, nightly_stream_handler, recover_branch_ci_run_handler,
         render_branch_ci_template_with_notices, render_detail_template,
         render_detail_template_with_notices, render_nightly_template, rerun_branch_ci_lane_handler,
-        rerun_nightly_lane_handler, should_backfill_managed_allowlist_entry, verify_signature,
-        wake_ci_handler, AppState, CiLiveUpdates, ForgeBranchLogsQuery, ForgeBranchResolveQuery,
+        rerun_nightly_lane_handler, should_backfill_managed_allowlist_entry,
+        summarize_webhook_ref_updates, verify_signature, wake_ci_handler, webhook_handler,
+        AppState, CiLiveUpdates, ForgeBranchLogsQuery, ForgeBranchResolveQuery,
         ForgePikaciLogsQuery, InboxListParams, PageNoticeView, ReviewModeQuery,
     };
     use crate::auth::AuthState;
@@ -4830,6 +4856,89 @@ mod tests {
     #[test]
     fn invalid_hex_rejected() {
         assert!(!verify_signature("secret", b"body", "sha256=zzzz"));
+    }
+
+    #[test]
+    fn summarize_webhook_ref_updates_counts_branch_refs() {
+        let payload = b"
+oldsha newsha refs/heads/master
+oldsha newsha refs/tags/v1
+oldsha newsha refs/heads/feature/mirror
+";
+        assert_eq!(summarize_webhook_ref_updates(payload), (3, 2));
+    }
+
+    #[test]
+    fn summarize_webhook_ref_updates_ignores_blank_and_malformed_lines() {
+        let payload = b"
+
+invalid
+oldsha newsha
+oldsha newsha refs/tags/v1
+";
+        assert_eq!(summarize_webhook_ref_updates(payload), (3, 0));
+    }
+
+    #[tokio::test]
+    async fn webhook_branch_ref_updates_request_forced_mirror() {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let mut state = test_state(store, forge_test_config());
+        let secret = "webhook-secret".to_string();
+        Arc::get_mut(&mut state)
+            .expect("unique app state")
+            .webhook_secret = Some(secret.clone());
+
+        let payload = Bytes::from("oldsha newsha refs/heads/master\n");
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("valid hmac key");
+        mac.update(payload.as_ref());
+        let signature = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-pika-signature-256",
+            HeaderValue::from_str(&signature).expect("signature header"),
+        );
+
+        let response = webhook_handler(State(Arc::clone(&state)), headers, payload)
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(state.forge_runtime.mirror_requested_for_test());
+    }
+
+    #[tokio::test]
+    async fn webhook_non_branch_updates_do_not_request_forced_mirror() {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let mut state = test_state(store, forge_test_config());
+        let secret = "webhook-secret".to_string();
+        Arc::get_mut(&mut state)
+            .expect("unique app state")
+            .webhook_secret = Some(secret.clone());
+
+        let payload = Bytes::from("oldsha newsha refs/tags/v1\n");
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("valid hmac key");
+        mac.update(payload.as_ref());
+        let signature = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-pika-signature-256",
+            HeaderValue::from_str(&signature).expect("signature header"),
+        );
+
+        let response = webhook_handler(State(Arc::clone(&state)), headers, payload)
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!state.forge_runtime.mirror_requested_for_test());
     }
 
     #[test]

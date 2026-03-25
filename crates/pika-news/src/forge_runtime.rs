@@ -163,17 +163,27 @@ impl ForgeRuntime {
         self.notify_with_reason(WakeReason::Webhook);
     }
 
+    pub(crate) fn request_mirror_from_webhook(&self) {
+        self.mirror_requested.store(true, Ordering::Release);
+        self.notify_with_reason(WakeReason::Webhook);
+    }
+
     pub(crate) fn request_mirror(&self) {
         self.mirror_requested.store(true, Ordering::Release);
         self.notify_with_reason(WakeReason::MirrorRequested);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mirror_requested_for_test(&self) -> bool {
+        self.mirror_requested.load(Ordering::Acquire)
     }
 
     pub(crate) fn start_background(self: &Arc<Self>, context: ForgeRuntimeContext) {
         let runtime = Arc::clone(self);
         tokio::spawn(async move {
             loop {
+                runtime.maybe_start_background_mirror_pass(context.clone());
                 let iteration_context = context.clone();
-                let iteration_runtime = Arc::clone(&runtime);
                 match tokio::task::spawn_blocking(move || {
                     (
                         current_forge_runtime_issues(
@@ -190,19 +200,14 @@ impl ForgeRuntime {
                             &iteration_context.store,
                             &iteration_context.config,
                         ),
-                        iteration_runtime.run_scheduled_mirror_pass(
-                            &iteration_context.store,
-                            &iteration_context.config,
-                        ),
                     )
                 })
                 .await
                 {
-                    Ok((issues, poll_result, worker_result, mirror_result)) => {
+                    Ok((issues, poll_result, worker_result)) => {
                         runtime.replace_issues(issues);
                         runtime.handle_poll_result(poll_result);
                         runtime.handle_worker_result(worker_result);
-                        runtime.handle_mirror_result(mirror_result);
                     }
                     Err(err) => {
                         eprintln!("pika-news background task join error: {}", err);
@@ -320,6 +325,47 @@ impl ForgeRuntime {
                         health.ci.mark_error(err.to_string());
                     }
                     runtime.ci_running.store(false, Ordering::Release);
+                }
+            }
+        });
+    }
+
+    fn maybe_start_background_mirror_pass(self: &Arc<Self>, context: ForgeRuntimeContext) {
+        let Some(forge_repo) = context.config.effective_forge_repo() else {
+            return;
+        };
+        if forge_repo.mirror_remote.is_none() {
+            return;
+        }
+        let background_enabled = forge_repo.mirror_poll_interval_secs.unwrap_or(0) > 0;
+        let force_requested = self.mirror_requested.load(Ordering::Acquire);
+        if !background_enabled && !force_requested {
+            return;
+        }
+        if self.mirror_running.load(Ordering::Acquire) {
+            return;
+        }
+
+        let runtime = Arc::clone(self);
+        tokio::spawn(async move {
+            let runtime_for_blocking = Arc::clone(&runtime);
+            let mirror_context = context.clone();
+            let mirror_result = tokio::task::spawn_blocking(move || {
+                runtime_for_blocking
+                    .run_scheduled_mirror_pass(&mirror_context.store, &mirror_context.config)
+            })
+            .await;
+
+            match mirror_result {
+                Ok(result) => {
+                    let attempted = result.as_ref().map(|pass| pass.attempted).unwrap_or(false);
+                    runtime.handle_mirror_result(result);
+                    if attempted && runtime.mirror_requested.load(Ordering::Acquire) {
+                        runtime.notify_with_reason(WakeReason::MirrorRequested);
+                    }
+                }
+                Err(err) => {
+                    runtime.handle_mirror_result(Err(err.into()));
                 }
             }
         });
@@ -779,4 +825,44 @@ pub(crate) fn current_forge_runtime_issues(
         return Vec::new();
     };
     collect_forge_startup_issues(config, &forge_repo, webhook_secret)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::Ordering;
+
+    use super::{ForgeRuntime, WakeReason};
+
+    #[test]
+    fn wake_webhook_does_not_force_a_mirror_pass() {
+        let runtime = ForgeRuntime::blank(true);
+
+        runtime.wake_webhook();
+
+        assert!(!runtime.mirror_requested.load(Ordering::Acquire));
+        assert_eq!(runtime.take_wake_reason(), Some(WakeReason::Webhook));
+    }
+
+    #[test]
+    fn webhook_mirror_request_sets_force_flag() {
+        let runtime = ForgeRuntime::blank(true);
+
+        runtime.request_mirror_from_webhook();
+
+        assert!(runtime.mirror_requested.load(Ordering::Acquire));
+        assert_eq!(runtime.take_wake_reason(), Some(WakeReason::Webhook));
+    }
+
+    #[test]
+    fn explicit_mirror_request_uses_mirror_requested_wake_reason() {
+        let runtime = ForgeRuntime::blank(true);
+
+        runtime.request_mirror();
+
+        assert!(runtime.mirror_requested.load(Ordering::Acquire));
+        assert_eq!(
+            runtime.take_wake_reason(),
+            Some(WakeReason::MirrorRequested)
+        );
+    }
 }

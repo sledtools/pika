@@ -4924,7 +4924,7 @@ mod tests {
         let jobs = vec![
             JobSpec {
                 id: "pika-core-lib-app-flows-tests",
-                description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+                description: "Run pika_core lib tests and app_flows integration tests in a remote Linux VM",
                 timeout_secs: 1800,
                 writable_workspace: false,
                 guest_command: GuestCommand::ShellCommand {
@@ -4934,7 +4934,7 @@ mod tests {
             },
             JobSpec {
                 id: "pika-core-messaging-e2e-tests",
-                description: "Run pika_core messaging and group profile integration tests in a vfkit guest",
+                description: "Run pika_core messaging and group profile integration tests in a remote Linux VM",
                 timeout_secs: 1800,
                 writable_workspace: false,
                 guest_command: GuestCommand::ShellCommand {
@@ -5499,7 +5499,7 @@ mod tests {
         let jobs = vec![
             JobSpec {
                 id: "pika-core-lib-app-flows-tests",
-                description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+                description: "Run pika_core lib tests and app_flows integration tests in a remote Linux VM",
                 timeout_secs: 1800,
                 writable_workspace: false,
                 guest_command: GuestCommand::ShellCommand {
@@ -5509,7 +5509,7 @@ mod tests {
             },
             JobSpec {
                 id: "pika-core-messaging-e2e-tests",
-                description: "Run pika_core messaging and group profile integration tests in a vfkit guest",
+                description: "Run pika_core messaging and group profile integration tests in a remote Linux VM",
                 timeout_secs: 1800,
                 writable_workspace: false,
                 guest_command: GuestCommand::ShellCommand {
@@ -6289,7 +6289,7 @@ mod tests {
     fn resolve_run_prepared_output_consumer_kind_enables_staged_subprocess_mode() {
         let jobs = vec![JobSpec {
             id: "pika-core-lib-app-flows-tests",
-            description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+            description: "Run pika_core lib tests and app_flows integration tests in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {
@@ -6319,7 +6319,7 @@ mod tests {
     fn resolve_run_prepared_output_consumer_kind_accepts_other_staged_linux_targets() {
         let jobs = vec![JobSpec {
             id: "agent-control-plane-unit",
-            description: "Run all pika-agent-control-plane unit tests in a vfkit guest",
+            description: "Run all pika-agent-control-plane unit tests in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::PackageUnitTests {
@@ -6349,7 +6349,7 @@ mod tests {
     fn resolve_run_prepared_output_consumer_kind_rejects_low_level_consumer_conflict() {
         let jobs = vec![JobSpec {
             id: "pika-core-lib-app-flows-tests",
-            description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+            description: "Run pika_core lib tests and app_flows integration tests in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {
@@ -6381,7 +6381,7 @@ mod tests {
     fn resolve_run_prepared_output_consumer_kind_uses_recorded_mode_for_reruns() {
         let jobs = vec![JobSpec {
             id: "pika-core-lib-app-flows-tests",
-            description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+            description: "Run pika_core lib tests and app_flows integration tests in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {
@@ -8038,7 +8038,7 @@ EOF
         let staged_jobs = vec![
             JobSpec {
                 id: "pika-core-lib-app-flows-tests",
-                description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+                description: "Run pika_core lib tests and app_flows integration tests in a remote Linux VM",
                 timeout_secs: 1800,
                 writable_workspace: false,
                 guest_command: GuestCommand::ShellCommand {
@@ -8048,7 +8048,7 @@ EOF
             },
             JobSpec {
                 id: "pika-core-messaging-e2e-tests",
-                description: "Run pika_core messaging and group profile integration tests in a vfkit guest",
+                description: "Run pika_core messaging and group profile integration tests in a remote Linux VM",
                 timeout_secs: 1800,
                 writable_workspace: false,
                 guest_command: GuestCommand::ShellCommand {
@@ -8061,7 +8061,7 @@ EOF
             staged_jobs[0].clone(),
             JobSpec {
                 id: "agent-control-plane-unit-local",
-                description: "Run all pika-agent-control-plane unit tests in a vfkit guest",
+                description: "Run all pika-agent-control-plane unit tests in a remote Linux VM",
                 timeout_secs: 1800,
                 writable_workspace: false,
                 guest_command: GuestCommand::PackageUnitTests {
@@ -8094,7 +8094,7 @@ EOF
         let jobs = vec![
             JobSpec {
                 id: "pika-core-lib-app-flows-tests",
-                description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+                description: "Run pika_core lib tests and app_flows integration tests in a remote Linux VM",
                 timeout_secs: 1800,
                 writable_workspace: false,
                 guest_command: GuestCommand::ShellCommand {
@@ -8104,7 +8104,7 @@ EOF
             },
             JobSpec {
                 id: "pika-core-messaging-e2e-tests",
-                description: "Run pika_core messaging and group profile integration tests in a vfkit guest",
+                description: "Run pika_core messaging and group profile integration tests in a remote Linux VM",
                 timeout_secs: 1800,
                 writable_workspace: false,
                 guest_command: GuestCommand::ShellCommand {

@@ -131,11 +131,32 @@ if os.environ.get("PIKACI_PAYLOAD_MANIFEST_HAS_TARGET") == "1":
 if os.environ.get("PIKACI_PAYLOAD_MANIFEST_HAS_LIB") == "1":
     asset_roots.append({"name": "lib", "relative_path": "lib"})
 
+mounts = []
+if kind == "staged_linux_workspace_deps_v1":
+    mounts.append(
+        {
+            "name": "workspace_deps_root",
+            "relative_path": ".",
+            "guest_path": "/staged/linux-rust/workspace-deps",
+            "read_only": True,
+        }
+    )
+elif kind == "staged_linux_workspace_build_v1":
+    mounts.append(
+        {
+            "name": "workspace_build_root",
+            "relative_path": ".",
+            "guest_path": "/staged/linux-rust/workspace-build",
+            "read_only": True,
+        }
+    )
+
 manifest = {
     "schema_version": 1,
     "kind": kind,
     "entrypoints": entrypoints,
     "asset_roots": asset_roots,
+    "mounts": mounts,
 }
 (out / "share" / "pikaci" / "payload-manifest.json").write_text(
     json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"

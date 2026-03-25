@@ -1516,6 +1516,14 @@ pub struct PreparedOutputPayloadPathRecord {
     pub relative_path: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct PreparedOutputPayloadMountRecord {
+    pub name: String,
+    pub relative_path: String,
+    pub guest_path: String,
+    pub read_only: bool,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PreparedOutputPayloadManifestRecord {
     pub schema_version: u32,
@@ -1524,6 +1532,8 @@ pub struct PreparedOutputPayloadManifestRecord {
     pub entrypoints: Vec<PreparedOutputPayloadPathRecord>,
     #[serde(default)]
     pub asset_roots: Vec<PreparedOutputPayloadPathRecord>,
+    #[serde(default)]
+    pub mounts: Vec<PreparedOutputPayloadMountRecord>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -468,7 +468,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
         }),
         "agent-control-plane-unit" => Ok(TargetSpec {
             id: "agent-control-plane-unit",
-            description: "Run all pika-agent-control-plane unit tests in a vfkit guest",
+            description: "Run all pika-agent-control-plane unit tests in a remote Linux VM",
             filters: &[],
             jobs: vec![JobSpec {
                 id: "agent-control-plane-unit",
@@ -483,7 +483,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
         }),
         "agent-microvm-tests" => Ok(TargetSpec {
             id: "agent-microvm-tests",
-            description: "Run pika-agent-microvm tests in a vfkit guest",
+            description: "Run pika-agent-microvm tests in a remote Linux VM",
             filters: &[],
             jobs: vec![JobSpec {
                 id: "agent-microvm-tests",
@@ -513,7 +513,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
         }),
         "server-agent-api-tests" => Ok(TargetSpec {
             id: "server-agent-api-tests",
-            description: "Run pika-server agent_api tests in a vfkit guest",
+            description: "Run pika-server agent_api tests in a remote Linux VM",
             filters: &[],
             jobs: vec![JobSpec {
                 id: "server-agent-api-tests",
@@ -529,7 +529,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
         }),
         "core-agent-nip98-test" => Ok(TargetSpec {
             id: "core-agent-nip98-test",
-            description: "Run pika_core NIP-98 signing contract test in a vfkit guest",
+            description: "Run pika_core NIP-98 signing contract test in a remote Linux VM",
             filters: &[],
             jobs: vec![JobSpec {
                 id: "core-agent-nip98-test",
@@ -1259,7 +1259,7 @@ fn pika_rust_jobs() -> Vec<JobSpec> {
     vec![
         JobSpec {
             id: "pika-core-lib-app-flows-tests",
-            description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+            description: "Run pika_core lib tests and app_flows integration tests in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {
@@ -1269,7 +1269,7 @@ fn pika_rust_jobs() -> Vec<JobSpec> {
         },
         JobSpec {
             id: "pika-core-messaging-e2e-tests",
-            description: "Run pika_core messaging and group profile integration tests in a vfkit guest",
+            description: "Run pika_core messaging and group profile integration tests in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {
@@ -1283,7 +1283,7 @@ fn pika_rust_jobs() -> Vec<JobSpec> {
 fn notification_jobs() -> Vec<JobSpec> {
     vec![JobSpec {
         id: "pika-server-package-tests",
-        description: "Run pika-server package tests with a pikahut postgres fixture in a vfkit guest",
+        description: "Run pika-server package tests with a pikahut postgres fixture in a remote Linux VM",
         timeout_secs: 1800,
         writable_workspace: false,
         guest_command: GuestCommand::ShellCommand {
@@ -1305,7 +1305,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
     vec![
         JobSpec {
             id: "pikachat-package-tests",
-            description: "Run pikachat package tests in a vfkit guest",
+            description: "Run pikachat package tests in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::PackageTests {
@@ -1315,7 +1315,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
         },
         JobSpec {
             id: "pikachat-sidecar-package-tests",
-            description: "Run pikachat-sidecar package tests with deterministic TTS in a vfkit guest",
+            description: "Run pikachat-sidecar package tests with deterministic TTS in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {
@@ -1325,7 +1325,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
         },
         JobSpec {
             id: "pika-desktop-package-tests",
-            description: "Run pika-desktop package tests in a vfkit guest",
+            description: "Run pika-desktop package tests in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::PackageTests {
@@ -1335,7 +1335,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
         },
         JobSpec {
             id: "pikachat-cli-smoke-local",
-            description: "Run the pikahut cli_smoke_local deterministic test in a vfkit guest",
+            description: "Run the pikahut cli_smoke_local deterministic test in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {
@@ -1345,7 +1345,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
         },
         JobSpec {
             id: "pikachat-post-rebase-invalid-event",
-            description: "Run the post_rebase_invalid_event_rejection boundary test in a vfkit guest",
+            description: "Run the post_rebase_invalid_event_rejection boundary test in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {
@@ -1355,7 +1355,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
         },
         JobSpec {
             id: "pikachat-post-rebase-logout-session",
-            description: "Run the post_rebase_logout_session_convergence boundary test in a vfkit guest",
+            description: "Run the post_rebase_logout_session_convergence boundary test in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {
@@ -1365,7 +1365,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
         },
         JobSpec {
             id: "openclaw-invite-and-chat",
-            description: "Run the OpenClaw invite-and-chat scenario in a vfkit guest",
+            description: "Run the OpenClaw invite-and-chat scenario in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {
@@ -1375,7 +1375,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
         },
         JobSpec {
             id: "openclaw-invite-and-chat-rust-bot",
-            description: "Run the OpenClaw invite-and-chat rust bot scenario in a vfkit guest",
+            description: "Run the OpenClaw invite-and-chat rust bot scenario in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {
@@ -1385,7 +1385,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
         },
         JobSpec {
             id: "openclaw-invite-and-chat-daemon",
-            description: "Run the OpenClaw invite-and-chat daemon scenario in a vfkit guest",
+            description: "Run the OpenClaw invite-and-chat daemon scenario in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {
@@ -1395,7 +1395,7 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
         },
         JobSpec {
             id: "openclaw-audio-echo",
-            description: "Run the OpenClaw audio echo scenario in a vfkit guest",
+            description: "Run the OpenClaw audio echo scenario in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {

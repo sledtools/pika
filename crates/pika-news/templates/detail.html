@@ -168,19 +168,14 @@
         padding: 0.8rem;
       }
       .evidence pre { margin-top: 0.55rem; white-space: pre-wrap; word-break: break-word; }
-      .branch-review-shell {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) 0;
-        gap: 1.25rem;
-        margin-top: 1rem;
-        align-items: start;
-        transition: grid-template-columns 180ms ease;
+      .branch-page {
+        --discussion-sidebar-width: clamp(480px, 30vw, 620px);
+        --discussion-sidebar-gap: 1.5rem;
+        transition: max-width 180ms ease, padding-right 180ms ease;
       }
-      .branch-review-shell.discussion-open {
-        grid-template-columns: minmax(0, 1fr) clamp(320px, 24vw, 440px);
-      }
-      .branch-review-content {
-        min-width: 0;
+      .branch-page.discussion-open {
+        max-width: calc(2200px - var(--discussion-sidebar-width) - var(--discussion-sidebar-gap));
+        padding-right: 0.5rem;
       }
       .review-layout {
         display: grid;
@@ -227,8 +222,8 @@
         display: flex;
         flex-direction: column;
         gap: 0.9rem;
-        min-height: min(76vh, 880px);
-        height: min(76vh, 880px);
+        min-height: 100%;
+        height: 100%;
       }
       .discussion-head {
         display: flex;
@@ -238,21 +233,30 @@
       }
       .discussion-head h2 { margin-bottom: 0.35rem; }
       .discussion-sidebar-shell {
+        position: fixed;
+        top: 1.25rem;
+        right: 1.25rem;
+        bottom: 1.25rem;
+        width: var(--discussion-sidebar-width);
+        max-width: calc(100vw - 2rem);
         min-width: 0;
         opacity: 0;
         pointer-events: none;
-        transform: translateX(1rem);
-        overflow: hidden;
+        transform: translateX(calc(100% + var(--discussion-sidebar-gap)));
+        z-index: 40;
         transition: opacity 160ms ease, transform 180ms ease;
       }
-      .branch-review-shell.discussion-open .discussion-sidebar-shell {
+      .branch-page.discussion-open + .discussion-backdrop + .discussion-sidebar-shell {
         opacity: 1;
         pointer-events: auto;
         transform: translateX(0);
       }
       .discussion-sidebar-shell .discussion-panel {
-        position: sticky;
-        top: 4.4rem;
+        position: relative;
+        top: 0;
+        min-height: 0;
+        height: 100%;
+        box-shadow: 0 22px 46px rgba(4, 9, 18, 0.22);
       }
       .discussion-sidebar-head {
         display: flex;
@@ -413,21 +417,21 @@
         .review-layout { grid-template-columns: 1fr; }
         .file-list-sidebar { position: static; }
         .review-main { grid-template-columns: 1fr; }
-        .branch-review-shell,
-        .branch-review-shell.discussion-open {
-          display: block;
+        .branch-page.discussion-open {
+          max-width: none;
+          padding-right: 2rem;
         }
         .discussion-sidebar-shell {
           position: fixed;
           top: 0;
           right: 0;
           bottom: 0;
-          width: min(92vw, 26rem);
+          width: min(94vw, 32rem);
           padding: 1rem 0.75rem 1rem 0;
           z-index: 40;
           transform: translateX(100%);
         }
-        .branch-review-shell.discussion-open .discussion-sidebar-shell {
+        .branch-page.discussion-open + .discussion-backdrop + .discussion-sidebar-shell {
           transform: translateX(0);
         }
         .discussion-sidebar-shell .discussion-panel {
@@ -443,14 +447,14 @@
           backdrop-filter: blur(2px);
           z-index: 30;
         }
-        .branch-review-shell.discussion-open .discussion-backdrop {
+        .branch-page.discussion-open + .discussion-backdrop {
           display: block;
         }
       }
 {% endblock %}
 
 {% block body %}
-    <main class="branch-page">
+    <main id="branch-page" class="branch-page">
       <p><a href="/news">Back to feed</a></p>
 
       <section class="panel branch-hero">
@@ -494,146 +498,142 @@
         </div>
       </section>
 
-      <div id="branch-review-shell" class="branch-review-shell">
-        <div class="branch-review-content">
-          <div class="review-layout">
-            <aside class="file-list-sidebar">
-              <section class="panel">
-                <h2>Changed Files</h2>
-                <p class="file-list-placeholder" id="file-list-placeholder">Loading changed files from the diff…</p>
-                <div id="file-list-sidebar-content"></div>
-              </section>
-            </aside>
-
-            <div class="review-main">
-              <div class="review-rail">
-                <div id="branch-ci-summary" class="summary-stack">{{ branch_ci_summary_html|safe }}</div>
-                {% match executive_html %}
-                {% when Some with (summary_html) %}
-                <section class="panel">
-                  <h2>Summary</h2>
-                  <div>{{ summary_html|safe }}</div>
-                </section>
-                {% when None %}
-                <section class="panel">
-                  <h2>Summary</h2>
-                  {% if tutorial_status == "failed" %}
-                  <p>This branch tutorial is unavailable because generation for this branch head failed. That is separate from any forge-wide generator worker warning.</p>
-                  {% else %}
-                  <p>Summary is not ready yet. Refresh shortly.</p>
-                  {% endif %}
-                </section>
-                {% endmatch %}
-
-                {% if media_links.len() > 0 %}
-                <section class="panel">
-                  <h2>Media Links</h2>
-                  <ul>
-                    {% for link in media_links %}
-                    <li><a href="{{ link.href }}">{{ link.label }}</a></li>
-                    {% endfor %}
-                  </ul>
-                </section>
-                {% endif %}
-              </div>
-
-              <div class="tutorial-column">
-                {% match error_message %}
-                {% when Some with (msg) %}
-                <section class="panel">
-                  <h2>Branch-Specific Tutorial Generation Failed</h2>
-                  <p>This failure is specific to the current branch head.</p>
-                  <p>{{ msg }}</p>
-                </section>
-                {% when None %}{% endmatch %}
-
-                <section class="panel">
-                  <h2>Tutorial Steps</h2>
-                  {% if steps.is_empty() %}
-                  <p>No steps available yet.</p>
-                  {% else %}
-                  <div class="steps-nav">
-                    <button id="prev-step" type="button">Prev</button>
-                    <button id="next-step" type="button">Next</button>
-                    <span id="step-index" class="muted"></span>
-                  </div>
-                  {% for step in steps %}
-                  <article class="step" data-step-index="{{ loop.index0 }}">
-                    <h3>{{ step.title }}</h3>
-                    <p><strong>Intent:</strong> {{ step.intent }}</p>
-                    <p><strong>Affected files:</strong> {{ step.affected_files }}</p>
-                    <div class="evidence">
-                      <strong>Evidence</strong>
-                      {% for evidence in step.evidence_snippets %}
-                      <pre><code>{{ evidence }}</code></pre>
-                      {% endfor %}
-                    </div>
-                    <div>{{ step.body_html|safe }}</div>
-                  </article>
-                  {% endfor %}
-                  {% endif %}
-                </section>
-              </div>
-            </div>
-          </div>
-
-          {% match diff_json %}
-          {% when Some with (json_str) %}
-          <section class="panel diff-panel diff-row">
-            <h2>Diff</h2>
-            <div class="diff-view-toggle">
-              <button type="button" class="diff-toggle active" data-style="side">Side by side</button>
-              <button type="button" class="diff-toggle" data-style="line">Unified</button>
-            </div>
-            <div id="diff-container"></div>
-            <script id="diff-data" type="application/json">{{ json_str|safe }}</script>
-          </section>
-          {% when None %}
-          <section class="panel diff-row">
-            <h2>Diff</h2>
-            <p class="muted">No diff is available for this branch yet.</p>
-          </section>
-          {% endmatch %}
-        </div>
-
-        <div id="discussion-backdrop" class="discussion-backdrop" hidden></div>
-        <aside id="discussion-sidebar" class="discussion-sidebar-shell" aria-hidden="true">
-          <section class="panel discussion-panel">
-            <div class="discussion-sidebar-head">
-              <div class="discussion-head">
-                <div>
-                  <p class="branch-kicker">Branch Review</p>
-                  <h2>Discussion</h2>
-                </div>
-                <span class="status {% if branch_chat_ready %}tone-success{% else %}tone-warning{% endif %}">
-                  {% if branch_chat_ready %}artifact ready{% else %}artifact pending{% endif %}
-                </span>
-              </div>
-              <button id="discussion-close" type="button" class="discussion-close-btn">Hide</button>
-            </div>
-            <p class="discussion-scope muted">Discussion is scoped to the current branch tutorial artifact. New tutorial artifacts start a fresh thread for later review turns.</p>
-            <div id="discussion-disabled" class="discussion-disabled">
-              <strong id="discussion-disabled-title">{% if branch_chat_ready %}Sign in to load branch discussion.{% else %}Discussion opens after tutorial generation.{% endif %}</strong>
-              <span id="discussion-disabled-copy">
-                {% if branch_chat_ready %}
-                Branch discussion is available to approved chat accounts once you sign in.
-                {% else %}
-                This branch does not have a ready tutorial artifact yet, so there is no discussion thread to load.
-                {% endif %}
-              </span>
-            </div>
-            <div id="discussion-main" style="display:none;">
-              <div class="discussion-messages" id="discussion-messages"></div>
-              <div class="discussion-compose" style="margin-top:0.9rem;">
-                <input type="text" id="discussion-input" placeholder="Ask about this branch review..." autocomplete="off" />
-                <button id="discussion-send" type="button">Send</button>
-              </div>
-            </div>
-            <div id="discussion-status" class="discussion-status"></div>
+      <div class="review-layout">
+        <aside class="file-list-sidebar">
+          <section class="panel">
+            <h2>Changed Files</h2>
+            <p class="file-list-placeholder" id="file-list-placeholder">Loading changed files from the diff…</p>
+            <div id="file-list-sidebar-content"></div>
           </section>
         </aside>
+
+        <div class="review-main">
+          <div class="review-rail">
+            <div id="branch-ci-summary" class="summary-stack">{{ branch_ci_summary_html|safe }}</div>
+            {% match executive_html %}
+            {% when Some with (summary_html) %}
+            <section class="panel">
+              <h2>Summary</h2>
+              <div>{{ summary_html|safe }}</div>
+            </section>
+            {% when None %}
+            <section class="panel">
+              <h2>Summary</h2>
+              {% if tutorial_status == "failed" %}
+              <p>This branch tutorial is unavailable because generation for this branch head failed. That is separate from any forge-wide generator worker warning.</p>
+              {% else %}
+              <p>Summary is not ready yet. Refresh shortly.</p>
+              {% endif %}
+            </section>
+            {% endmatch %}
+
+            {% if media_links.len() > 0 %}
+            <section class="panel">
+              <h2>Media Links</h2>
+              <ul>
+                {% for link in media_links %}
+                <li><a href="{{ link.href }}">{{ link.label }}</a></li>
+                {% endfor %}
+              </ul>
+            </section>
+            {% endif %}
+          </div>
+
+          <div class="tutorial-column">
+            {% match error_message %}
+            {% when Some with (msg) %}
+            <section class="panel">
+              <h2>Branch-Specific Tutorial Generation Failed</h2>
+              <p>This failure is specific to the current branch head.</p>
+              <p>{{ msg }}</p>
+            </section>
+            {% when None %}{% endmatch %}
+
+            <section class="panel">
+              <h2>Tutorial Steps</h2>
+              {% if steps.is_empty() %}
+              <p>No steps available yet.</p>
+              {% else %}
+              <div class="steps-nav">
+                <button id="prev-step" type="button">Prev</button>
+                <button id="next-step" type="button">Next</button>
+                <span id="step-index" class="muted"></span>
+              </div>
+              {% for step in steps %}
+              <article class="step" data-step-index="{{ loop.index0 }}">
+                <h3>{{ step.title }}</h3>
+                <p><strong>Intent:</strong> {{ step.intent }}</p>
+                <p><strong>Affected files:</strong> {{ step.affected_files }}</p>
+                <div class="evidence">
+                  <strong>Evidence</strong>
+                  {% for evidence in step.evidence_snippets %}
+                  <pre><code>{{ evidence }}</code></pre>
+                  {% endfor %}
+                </div>
+                <div>{{ step.body_html|safe }}</div>
+              </article>
+              {% endfor %}
+              {% endif %}
+            </section>
+          </div>
+        </div>
       </div>
+
+      {% match diff_json %}
+      {% when Some with (json_str) %}
+      <section class="panel diff-panel diff-row">
+        <h2>Diff</h2>
+        <div class="diff-view-toggle">
+          <button type="button" class="diff-toggle active" data-style="side">Side by side</button>
+          <button type="button" class="diff-toggle" data-style="line">Unified</button>
+        </div>
+        <div id="diff-container"></div>
+        <script id="diff-data" type="application/json">{{ json_str|safe }}</script>
+      </section>
+      {% when None %}
+      <section class="panel diff-row">
+        <h2>Diff</h2>
+        <p class="muted">No diff is available for this branch yet.</p>
+      </section>
+      {% endmatch %}
     </main>
+
+    <div id="discussion-backdrop" class="discussion-backdrop" hidden></div>
+    <aside id="discussion-sidebar" class="discussion-sidebar-shell" aria-hidden="true">
+      <section class="panel discussion-panel">
+        <div class="discussion-sidebar-head">
+          <div class="discussion-head">
+            <div>
+              <p class="branch-kicker">Branch Review</p>
+              <h2>Discussion</h2>
+            </div>
+            <span class="status {% if branch_chat_ready %}tone-success{% else %}tone-warning{% endif %}">
+              {% if branch_chat_ready %}artifact ready{% else %}artifact pending{% endif %}
+            </span>
+          </div>
+          <button id="discussion-close" type="button" class="discussion-close-btn">Hide</button>
+        </div>
+        <p class="discussion-scope muted">Discussion is scoped to the current branch tutorial artifact. New tutorial artifacts start a fresh thread for later review turns.</p>
+        <div id="discussion-disabled" class="discussion-disabled">
+          <strong id="discussion-disabled-title">{% if branch_chat_ready %}Sign in to load branch discussion.{% else %}Discussion opens after tutorial generation.{% endif %}</strong>
+          <span id="discussion-disabled-copy">
+            {% if branch_chat_ready %}
+            Branch discussion is available to approved chat accounts once you sign in.
+            {% else %}
+            This branch does not have a ready tutorial artifact yet, so there is no discussion thread to load.
+            {% endif %}
+          </span>
+        </div>
+        <div id="discussion-main" style="display:none;">
+          <div class="discussion-messages" id="discussion-messages"></div>
+          <div class="discussion-compose" style="margin-top:0.9rem;">
+            <input type="text" id="discussion-input" placeholder="Ask about this branch review..." autocomplete="off" />
+            <button id="discussion-send" type="button">Send</button>
+          </div>
+        </div>
+        <div id="discussion-status" class="discussion-status"></div>
+      </section>
+    </aside>
 {% endblock %}
 
 {% block scripts %}
@@ -720,7 +720,7 @@
         const branchCiSummaryEnabled = {% if branch_ci_summary_enabled %}true{% else %}false{% endif %};
         const branchChatReady = {% if branch_chat_ready %}true{% else %}false{% endif %};
         const branchCiSignalKey = 'pika_news_branch_ci_signal';
-        const reviewShell = document.getElementById('branch-review-shell');
+        const branchPage = document.getElementById('branch-page');
         const discussionToggle = document.getElementById('discussion-toggle');
         const discussionToggleLabel = document.getElementById('discussion-toggle-label');
         const discussionToggleShortcut = document.getElementById('discussion-toggle-shortcut');
@@ -762,8 +762,8 @@
 
         function setDiscussionOpen(nextOpen, options = {}) {
           discussionOpen = !!nextOpen;
-          if (reviewShell) {
-            reviewShell.classList.toggle('discussion-open', discussionOpen);
+          if (branchPage) {
+            branchPage.classList.toggle('discussion-open', discussionOpen);
           }
           updateDiscussionToggleLabel();
           if (discussionOpen && options.focusInput && discussionInput) {
@@ -1155,6 +1155,15 @@
             reviewDismissBtn.addEventListener('click', dismissCurrentReviewItem);
           }
           window.addEventListener('keydown', (event) => {
+            const target = event.target;
+            const typingTarget = target instanceof HTMLElement && (
+              target.tagName === 'INPUT' ||
+              target.tagName === 'TEXTAREA' ||
+              target.isContentEditable
+            );
+            if (typingTarget) {
+              return;
+            }
             if (event.key === '[' && reviewPrevBtn && reviewPrevBtn.dataset.targetId) {
               navigateReview(reviewPrevBtn.dataset.targetId);
             }

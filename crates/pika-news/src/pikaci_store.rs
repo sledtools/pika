@@ -4,7 +4,9 @@ use anyhow::{anyhow, Result};
 use pikaci::{load_logs, load_run_bundle, load_run_record, LogKind, Logs, RunBundle, RunRecord};
 
 #[cfg(test)]
-use pikaci::{JobRecord, PreparedOutputsRecord, RemoteLinuxVmExecutionRecord, RunStatus};
+use pikaci::{
+    JobRecord, PreparedOutputsRecord, RemoteLinuxVmExecutionRecord, RunLifecycleEvent, RunStatus,
+};
 #[cfg(test)]
 use std::fs;
 
@@ -52,6 +54,47 @@ impl TestPikaciJobFixture {
             remote_linux_vm_execution: None,
         }
     }
+
+    pub fn into_job_record_with_logs(
+        self,
+        host_log_path: String,
+        guest_log_path: String,
+    ) -> JobRecord {
+        JobRecord {
+            id: self.id,
+            description: self.description,
+            status: self.status,
+            executor: self.executor,
+            plan_node_id: None,
+            timeout_secs: self.timeout_secs,
+            host_log_path,
+            guest_log_path,
+            started_at: self.started_at,
+            finished_at: self.finished_at,
+            exit_code: self.exit_code,
+            message: self.message,
+            pre_execution_prepare_duration_ms: self.pre_execution_prepare_duration_ms,
+            remote_linux_vm_execution: self.remote_linux_vm_execution,
+        }
+    }
+
+    pub fn into_event_job_record(self) -> JobRecord {
+        self.into_job_record_with_logs("/tmp/host.log".to_string(), "/tmp/guest.log".to_string())
+    }
+
+    pub fn job_started_event(self, run_id: &str) -> RunLifecycleEvent {
+        RunLifecycleEvent::JobStarted {
+            run_id: run_id.to_string(),
+            job: Box::new(self.into_event_job_record()),
+        }
+    }
+
+    pub fn job_finished_event(self, run_id: &str) -> RunLifecycleEvent {
+        RunLifecycleEvent::JobFinished {
+            run_id: run_id.to_string(),
+            job: Box::new(self.into_event_job_record()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -85,6 +128,55 @@ impl TestPikaciRunFixture {
             message: None,
             jobs: Vec::new(),
             prepared_outputs: None,
+        }
+    }
+
+    pub fn into_run_record(self, jobs: Vec<JobRecord>) -> RunRecord {
+        RunRecord {
+            run_id: self.run_id,
+            status: self.status,
+            rerun_of: None,
+            target_id: self.target_id,
+            target_description: self.target_description,
+            source_root: self.source_root,
+            snapshot_dir: self.snapshot_dir,
+            git_head: None,
+            git_dirty: None,
+            created_at: self.created_at,
+            finished_at: self.finished_at,
+            plan_path: None,
+            prepared_outputs_path: None,
+            prepared_output_consumer: None,
+            prepared_output_mode: None,
+            prepared_output_invocation_mode: None,
+            prepared_output_invocation_wrapper_program: None,
+            prepared_output_launcher_transport_mode: None,
+            prepared_output_launcher_transport_program: None,
+            prepared_output_launcher_transport_host: None,
+            prepared_output_launcher_transport_remote_launcher_program: None,
+            prepared_output_launcher_transport_remote_helper_program: None,
+            prepared_output_launcher_transport_remote_work_dir: None,
+            changed_files: Vec::new(),
+            filters: Vec::new(),
+            message: self.message,
+            prepare_timings: Vec::new(),
+            jobs,
+        }
+    }
+
+    pub fn run_started_event(&self) -> RunLifecycleEvent {
+        RunLifecycleEvent::RunStarted {
+            run_id: self.run_id.clone(),
+            created_at: self.created_at.clone(),
+            rerun_of: None,
+            target_id: self.target_id.clone(),
+            target_description: self.target_description.clone(),
+        }
+    }
+
+    pub fn run_finished_event(self) -> RunLifecycleEvent {
+        RunLifecycleEvent::RunFinished {
+            run: Box::new(self.into_run_record(Vec::new())),
         }
     }
 }
@@ -166,56 +258,16 @@ impl PikaciRunStore {
             }
             fs::write(&host_log_path, &job.host_log)?;
             fs::write(&guest_log_path, &job.guest_log)?;
-            jobs.push(JobRecord {
-                id: job.id.clone(),
-                description: job.description.clone(),
-                status: job.status,
-                executor: job.executor.clone(),
-                plan_node_id: None,
-                timeout_secs: job.timeout_secs,
-                host_log_path: host_log_path.display().to_string(),
-                guest_log_path: guest_log_path.display().to_string(),
-                started_at: job.started_at.clone(),
-                finished_at: job.finished_at.clone(),
-                exit_code: job.exit_code,
-                message: job.message.clone(),
-                pre_execution_prepare_duration_ms: job.pre_execution_prepare_duration_ms,
-                remote_linux_vm_execution: job.remote_linux_vm_execution.clone(),
-            });
+            jobs.push(job.clone().into_job_record_with_logs(
+                host_log_path.display().to_string(),
+                guest_log_path.display().to_string(),
+            ));
         }
 
-        let run = RunRecord {
-            run_id: fixture.run_id.clone(),
-            status: fixture.status,
-            rerun_of: None,
-            target_id: fixture.target_id.clone(),
-            target_description: fixture.target_description.clone(),
-            source_root: fixture.source_root.clone(),
-            snapshot_dir: fixture.snapshot_dir.clone(),
-            git_head: None,
-            git_dirty: None,
-            created_at: fixture.created_at.clone(),
-            finished_at: fixture.finished_at.clone(),
-            plan_path: None,
-            prepared_outputs_path: prepared_outputs_path
-                .as_ref()
-                .map(|(path, _)| path.display().to_string()),
-            prepared_output_consumer: None,
-            prepared_output_mode: None,
-            prepared_output_invocation_mode: None,
-            prepared_output_invocation_wrapper_program: None,
-            prepared_output_launcher_transport_mode: None,
-            prepared_output_launcher_transport_program: None,
-            prepared_output_launcher_transport_host: None,
-            prepared_output_launcher_transport_remote_launcher_program: None,
-            prepared_output_launcher_transport_remote_helper_program: None,
-            prepared_output_launcher_transport_remote_work_dir: None,
-            changed_files: Vec::new(),
-            filters: Vec::new(),
-            message: fixture.message.clone(),
-            prepare_timings: Vec::new(),
-            jobs,
-        };
+        let mut run = fixture.clone().into_run_record(jobs);
+        run.prepared_outputs_path = prepared_outputs_path
+            .as_ref()
+            .map(|(path, _)| path.display().to_string());
         fs::write(
             self.run_record_path(&fixture.run_id),
             serde_json::to_vec(&run)?,

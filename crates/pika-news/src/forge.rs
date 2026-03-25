@@ -1228,7 +1228,7 @@ mod tests {
     use std::time::Duration;
 
     use chrono::Utc;
-    use pikaci::{JobRecord, RunLifecycleEvent, RunRecord, RunStatus};
+    use pikaci::RunStatus;
 
     use super::{
         acquire_mirror_lock, close_branch, create_merge_commit, current_branch_head,
@@ -1254,71 +1254,7 @@ mod tests {
         );
     }
 
-    fn fixture_job_event(
-        status: RunStatus,
-        exit_code: Option<i32>,
-        message: Option<&str>,
-    ) -> JobRecord {
-        JobRecord {
-            id: "job-one".to_string(),
-            description: "job one".to_string(),
-            status,
-            executor: "remote_linux_vm".to_string(),
-            plan_node_id: None,
-            timeout_secs: 30,
-            host_log_path: "/tmp/host.log".to_string(),
-            guest_log_path: "/tmp/guest.log".to_string(),
-            started_at: "2026-03-19T00:00:01Z".to_string(),
-            finished_at: match status {
-                RunStatus::Running => None,
-                _ => Some("2026-03-19T00:00:02Z".to_string()),
-            },
-            exit_code,
-            message: message.map(ToOwned::to_owned),
-            pre_execution_prepare_duration_ms: None,
-            remote_linux_vm_execution: None,
-        }
-    }
-
-    fn fixture_run_event(
-        run_id: &str,
-        status: RunStatus,
-        message: Option<&str>,
-        jobs: Vec<JobRecord>,
-    ) -> RunRecord {
-        RunRecord {
-            run_id: run_id.to_string(),
-            status,
-            rerun_of: None,
-            target_id: Some("pre-merge-pika-rust".to_string()),
-            target_description: Some("Run staged pika rust".to_string()),
-            source_root: "/tmp/source".to_string(),
-            snapshot_dir: "/tmp/snapshot".to_string(),
-            git_head: None,
-            git_dirty: None,
-            created_at: "2026-03-19T00:00:00Z".to_string(),
-            finished_at: Some("2026-03-19T00:00:02Z".to_string()),
-            plan_path: None,
-            prepared_outputs_path: None,
-            prepared_output_consumer: None,
-            prepared_output_mode: None,
-            prepared_output_invocation_mode: None,
-            prepared_output_invocation_wrapper_program: None,
-            prepared_output_launcher_transport_mode: None,
-            prepared_output_launcher_transport_program: None,
-            prepared_output_launcher_transport_host: None,
-            prepared_output_launcher_transport_remote_launcher_program: None,
-            prepared_output_launcher_transport_remote_helper_program: None,
-            prepared_output_launcher_transport_remote_work_dir: None,
-            changed_files: Vec::new(),
-            filters: Vec::new(),
-            message: message.map(ToOwned::to_owned),
-            prepare_timings: Vec::new(),
-            jobs,
-        }
-    }
-
-    fn event_line(event: RunLifecycleEvent) -> String {
+    fn event_line(event: pikaci::RunLifecycleEvent) -> String {
         serde_json::to_string(&event).expect("serialize test event")
     }
 
@@ -1608,29 +1544,16 @@ mod tests {
         let scripts_dir = seed.join("scripts");
         fs::create_dir_all(&scripts_dir).expect("create scripts dir");
         let wrapper_path = scripts_dir.join("pikaci-staged-linux-remote.sh");
-        let run_started = event_line(RunLifecycleEvent::RunStarted {
-            run_id: "pikaci-run-123".to_string(),
-            created_at: "2026-03-19T00:00:00Z".to_string(),
-            rerun_of: None,
-            target_id: Some("pre-merge-pika-rust".to_string()),
-            target_description: Some("Run staged pika rust".to_string()),
-        });
-        let job_started = event_line(RunLifecycleEvent::JobStarted {
-            run_id: "pikaci-run-123".to_string(),
-            job: Box::new(fixture_job_event(RunStatus::Running, None, None)),
-        });
-        let job_finished = event_line(RunLifecycleEvent::JobFinished {
-            run_id: "pikaci-run-123".to_string(),
-            job: Box::new(fixture_job_event(RunStatus::Passed, Some(0), None)),
-        });
-        let run_finished = event_line(RunLifecycleEvent::RunFinished {
-            run: Box::new(fixture_run_event(
-                "pikaci-run-123",
-                RunStatus::Passed,
-                None,
-                Vec::new(),
-            )),
-        });
+        let run_started = event_line(fixture.clone().run_started_event());
+        let job_started = event_line(
+            TestPikaciJobFixture::passed_remote_linux("job-one", "job one")
+                .job_started_event("pikaci-run-123"),
+        );
+        let job_finished = event_line(
+            TestPikaciJobFixture::passed_remote_linux("job-one", "job one")
+                .job_finished_event("pikaci-run-123"),
+        );
+        let run_finished = event_line(fixture.clone().run_finished_event());
         fs::write(
             &wrapper_path,
             format!(
@@ -1716,21 +1639,8 @@ EOF\n"
         let scripts_dir = seed.join("scripts");
         fs::create_dir_all(&scripts_dir).expect("create scripts dir");
         let wrapper_path = scripts_dir.join("custom-structured-lane.sh");
-        let run_started = event_line(RunLifecycleEvent::RunStarted {
-            run_id: "pikaci-run-456".to_string(),
-            created_at: "2026-03-19T00:00:00Z".to_string(),
-            rerun_of: None,
-            target_id: Some("pre-merge-pika-rust".to_string()),
-            target_description: Some("Run staged pika rust".to_string()),
-        });
-        let run_finished = event_line(RunLifecycleEvent::RunFinished {
-            run: Box::new(fixture_run_event(
-                "pikaci-run-456",
-                RunStatus::Passed,
-                None,
-                Vec::new(),
-            )),
-        });
+        let run_started = event_line(fixture.clone().run_started_event());
+        let run_finished = event_line(fixture.clone().run_finished_event());
         fs::write(
             &wrapper_path,
             format!(
@@ -1815,28 +1725,33 @@ EOF\n"
     #[test]
     fn structured_pikaci_failure_log_keeps_job_and_run_messages() {
         let job_line = render_pikaci_stdout_line(
-            &event_line(RunLifecycleEvent::JobFinished {
-                run_id: "pikaci-run-123".to_string(),
-                job: Box::new(fixture_job_event(
-                    RunStatus::Failed,
-                    Some(1),
-                    Some("cargo test failed in crate pika_core"),
-                )),
-            }),
+            &event_line(
+                TestPikaciJobFixture {
+                    status: RunStatus::Failed,
+                    exit_code: Some(1),
+                    message: Some("cargo test failed in crate pika_core".to_string()),
+                    ..TestPikaciJobFixture::passed_remote_linux("job-one", "job one")
+                }
+                .job_finished_event("pikaci-run-123"),
+            ),
             Some("pre-merge-pika-rust"),
         );
         assert!(job_line.contains("status=failed"));
         assert!(job_line.contains("cargo test failed in crate pika_core"));
 
         let run_line = render_pikaci_stdout_line(
-            &event_line(RunLifecycleEvent::RunFinished {
-                run: Box::new(fixture_run_event(
-                    "pikaci-run-123",
-                    RunStatus::Failed,
-                    Some("prepared-output helper exited 1"),
-                    Vec::new(),
-                )),
-            }),
+            &event_line(
+                TestPikaciRunFixture {
+                    status: RunStatus::Failed,
+                    message: Some("prepared-output helper exited 1".to_string()),
+                    ..TestPikaciRunFixture::passed(
+                        "pikaci-run-123",
+                        Some("pre-merge-pika-rust"),
+                        Some("Run staged pika rust"),
+                    )
+                }
+                .run_finished_event(),
+            ),
             Some("pre-merge-pika-rust"),
         );
         assert!(run_line.contains("status=failed"));

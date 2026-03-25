@@ -143,6 +143,7 @@ pub struct PendingBranchCiLaneJob {
     pub title: String,
     pub entrypoint: String,
     pub command: Vec<String>,
+    pub structured_pikaci_target_id: Option<String>,
     pub concurrency_group: Option<String>,
 }
 
@@ -204,6 +205,7 @@ pub struct PendingNightlyLaneJob {
     pub source_head_sha: String,
     pub lane_id: String,
     pub command: Vec<String>,
+    pub structured_pikaci_target_id: Option<String>,
     pub concurrency_group: Option<String>,
 }
 
@@ -258,6 +260,7 @@ struct BranchLaneRerunSource {
     title: String,
     entrypoint: String,
     command_json: String,
+    structured_pikaci_target_id: Option<String>,
     concurrency_group: Option<String>,
     ci_target_key: Option<String>,
     status: String,
@@ -282,6 +285,7 @@ struct NightlyLaneRerunSource {
     title: String,
     entrypoint: String,
     command_json: String,
+    structured_pikaci_target_id: Option<String>,
     concurrency_group: Option<String>,
     ci_target_key: Option<String>,
     status: String,
@@ -771,17 +775,19 @@ impl Store {
                         title,
                         entrypoint,
                         command_json,
+                        structured_pikaci_target_id,
                         concurrency_group,
                         ci_target_key,
                         execution_reason,
                         status
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'queued', 'queued')",
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'queued', 'queued')",
                     params![
                         suite_id,
                         lane.id,
                         lane.title,
                         lane.entrypoint,
                         command_json,
+                        lane.staged_linux_target,
                         lane.concurrency_group,
                         ci_target_key,
                     ],
@@ -970,17 +976,19 @@ impl Store {
                         title,
                         entrypoint,
                         command_json,
+                        structured_pikaci_target_id,
                         concurrency_group,
                         ci_target_key,
                         execution_reason,
                         status
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'queued', 'queued')",
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'queued', 'queued')",
                     params![
                         nightly_run_id,
                         lane.id,
                         lane.title,
                         lane.entrypoint,
                         command_json,
+                        lane.staged_linux_target,
                         lane.concurrency_group,
                         ci_target_key,
                     ],
@@ -1010,6 +1018,7 @@ impl Store {
                             lane.title,
                             lane.entrypoint,
                             lane.command_json,
+                            lane.structured_pikaci_target_id,
                             lane.concurrency_group,
                             lane.ci_target_key,
                             lane.status
@@ -1026,9 +1035,10 @@ impl Store {
                             title: row.get(4)?,
                             entrypoint: row.get(5)?,
                             command_json: row.get(6)?,
-                            concurrency_group: row.get(7)?,
-                            ci_target_key: row.get(8)?,
-                            status: row.get(9)?,
+                            structured_pikaci_target_id: row.get(7)?,
+                            concurrency_group: row.get(8)?,
+                            ci_target_key: row.get(9)?,
+                            status: row.get(10)?,
                         })
                     },
                 )
@@ -1073,18 +1083,20 @@ impl Store {
                     title,
                     entrypoint,
                     command_json,
+                    structured_pikaci_target_id,
                     concurrency_group,
                     ci_target_key,
                     execution_reason,
                     status,
                     rerun_of_lane_run_id
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'queued', 'queued', ?8)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'queued', 'queued', ?9)",
                 params![
                     rerun_suite_id,
                     row.lane_id,
                     row.title,
                     row.entrypoint,
                     row.command_json,
+                    row.structured_pikaci_target_id,
                     row.concurrency_group,
                     row.ci_target_key,
                     lane_run_id
@@ -1116,6 +1128,7 @@ impl Store {
                             lane.title,
                             lane.entrypoint,
                             lane.command_json,
+                            lane.structured_pikaci_target_id,
                             lane.concurrency_group,
                             lane.ci_target_key,
                             lane.status
@@ -1133,9 +1146,10 @@ impl Store {
                             title: row.get(5)?,
                             entrypoint: row.get(6)?,
                             command_json: row.get(7)?,
-                            concurrency_group: row.get(8)?,
-                            ci_target_key: row.get(9)?,
-                            status: row.get(10)?,
+                            structured_pikaci_target_id: row.get(8)?,
+                            concurrency_group: row.get(9)?,
+                            ci_target_key: row.get(10)?,
+                            status: row.get(11)?,
                         })
                     },
                 )
@@ -1179,18 +1193,20 @@ impl Store {
                     title,
                     entrypoint,
                     command_json,
+                    structured_pikaci_target_id,
                     concurrency_group,
                     ci_target_key,
                     execution_reason,
                     status,
                     rerun_of_lane_run_id
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'queued', 'queued', ?8)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'queued', 'queued', ?9)",
                 params![
                     rerun_run_id,
                     row.lane_id,
                     row.title,
                     row.entrypoint,
                     row.command_json,
+                    row.structured_pikaci_target_id,
                     row.concurrency_group,
                     row.ci_target_key,
                     lane_run_id
@@ -2147,7 +2163,7 @@ impl Store {
             {
                 let mut stmt = tx
                     .prepare(
-                        "SELECT lane.id, lane.claim_token, lane.branch_ci_run_id, suite.branch_id, suite.source_head_sha, lane.lane_id, lane.title, lane.entrypoint, lane.command_json, lane.concurrency_group, lane.ci_target_key
+                        "SELECT lane.id, lane.claim_token, lane.branch_ci_run_id, suite.branch_id, suite.source_head_sha, lane.lane_id, lane.title, lane.entrypoint, lane.command_json, lane.structured_pikaci_target_id, lane.concurrency_group, lane.ci_target_key
                          FROM branch_ci_run_lanes lane
                          JOIN branch_ci_runs suite ON suite.id = lane.branch_ci_run_id
                          WHERE lane.status = 'queued'
@@ -2159,7 +2175,7 @@ impl Store {
                         let command_json: String = row.get(8)?;
                         let command: Vec<String> =
                             serde_json::from_str(&command_json).unwrap_or_default();
-                        let _ci_target_key: Option<String> = row.get(10)?;
+                        let _ci_target_key: Option<String> = row.get(11)?;
                         Ok(PendingBranchCiLaneJob {
                             lane_run_id: row.get(0)?,
                             claim_token: row.get::<_, i64>(1)? + 1,
@@ -2170,7 +2186,8 @@ impl Store {
                             title: row.get(6)?,
                             entrypoint: row.get(7)?,
                             command,
-                            concurrency_group: row.get(9)?,
+                            structured_pikaci_target_id: row.get(9)?,
+                            concurrency_group: row.get(10)?,
                         })
                     })
                     .context("query queued branch ci lanes")?;
@@ -2393,7 +2410,7 @@ impl Store {
             {
                 let mut stmt = tx
                     .prepare(
-                        "SELECT lane.id, lane.claim_token, lane.nightly_run_id, nightly.source_head_sha, lane.lane_id, lane.command_json, lane.concurrency_group, lane.ci_target_key
+                        "SELECT lane.id, lane.claim_token, lane.nightly_run_id, nightly.source_head_sha, lane.lane_id, lane.command_json, lane.structured_pikaci_target_id, lane.concurrency_group, lane.ci_target_key
                          FROM nightly_run_lanes lane
                          JOIN nightly_runs nightly ON nightly.id = lane.nightly_run_id
                          WHERE lane.status = 'queued'
@@ -2405,7 +2422,7 @@ impl Store {
                         let command_json: String = row.get(5)?;
                         let command: Vec<String> =
                             serde_json::from_str(&command_json).unwrap_or_default();
-                        let _ci_target_key: Option<String> = row.get(7)?;
+                        let _ci_target_key: Option<String> = row.get(8)?;
                         Ok(PendingNightlyLaneJob {
                             lane_run_id: row.get(0)?,
                             claim_token: row.get::<_, i64>(1)? + 1,
@@ -2413,7 +2430,8 @@ impl Store {
                             source_head_sha: row.get(3)?,
                             lane_id: row.get(4)?,
                             command,
-                            concurrency_group: row.get(6)?,
+                            structured_pikaci_target_id: row.get(6)?,
+                            concurrency_group: row.get(7)?,
                         })
                     })
                     .context("query queued nightly lanes")?;
@@ -3712,6 +3730,33 @@ mod tests {
     }
 
     #[test]
+    fn claimed_branch_lane_keeps_structured_pikaci_target_hint() {
+        let store = open_store();
+        let branch = store
+            .upsert_branch_record(&upsert_input("feature/structured", "head-structured"))
+            .expect("insert branch");
+        store
+            .queue_branch_ci_run_for_head(
+                branch.branch_id,
+                "head-structured",
+                &[sample_lane_with_target("pika_rust", "pre-merge-pika-rust")],
+            )
+            .expect("queue branch ci suite");
+
+        let job = store
+            .claim_pending_branch_ci_lane_runs(1, 120)
+            .expect("claim ci job")
+            .into_iter()
+            .next()
+            .expect("branch lane");
+
+        assert_eq!(
+            job.structured_pikaci_target_id.as_deref(),
+            Some("pre-merge-pika-rust")
+        );
+    }
+
+    #[test]
     fn rerun_failed_nightly_lane_creates_new_single_lane_run() {
         let store = open_store();
         let repo_id = store
@@ -3825,6 +3870,43 @@ mod tests {
         );
         assert_eq!(
             nightly.lanes[0].pikaci_target_id.as_deref(),
+            Some("pre-merge-pika-rust")
+        );
+    }
+
+    #[test]
+    fn claimed_nightly_lane_keeps_structured_pikaci_target_hint() {
+        let store = open_store();
+        let repo_id = store
+            .ensure_forge_repo_metadata(
+                "sledtools/pika",
+                "/tmp/pika.git",
+                "master",
+                "ci/forge-lanes.toml",
+            )
+            .expect("ensure repo metadata");
+        store
+            .queue_nightly_run(
+                repo_id,
+                "refs/heads/master",
+                "nightly-structured",
+                "2026-03-17T08:00:00Z",
+                &[sample_lane_with_target(
+                    "nightly_pika",
+                    "pre-merge-pika-rust",
+                )],
+            )
+            .expect("queue nightly");
+
+        let job = store
+            .claim_pending_nightly_lane_runs(1, 120)
+            .expect("claim nightly job")
+            .into_iter()
+            .next()
+            .expect("nightly lane");
+
+        assert_eq!(
+            job.structured_pikaci_target_id.as_deref(),
             Some("pre-merge-pika-rust")
         );
     }

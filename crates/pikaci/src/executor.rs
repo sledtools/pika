@@ -72,6 +72,12 @@ struct IncusGuestRequest {
     command: String,
     timeout_secs: u64,
     run_as_root: bool,
+    workspace_dir: String,
+    artifacts_dir: String,
+    cargo_home_dir: String,
+    target_dir: String,
+    xdg_state_home_dir: String,
+    home_dir: String,
 }
 
 struct GuestFlakePaths<'a> {
@@ -275,7 +281,12 @@ const REMOTE_LINUX_VM_INCUS_PROFILE_DEFAULT: &str = "pika-agent-dev";
 const REMOTE_LINUX_VM_INCUS_IMAGE_ALIAS_DEFAULT: &str = "pikaci/dev";
 const REMOTE_LINUX_VM_INCUS_READ_ONLY_DISK_IO_BUS: &str = "virtiofs";
 const REMOTE_LINUX_VM_INCUS_RUN_BINARY: &str = "/run/current-system/sw/bin/pikaci-incus-run";
+const REMOTE_LINUX_VM_INCUS_ARTIFACTS_DIR: &str = "/artifacts";
 const REMOTE_LINUX_VM_INCUS_GUEST_REQUEST_PATH: &str = "/artifacts/guest-request.json";
+const REMOTE_LINUX_VM_INCUS_CARGO_HOME_DIR: &str = "/cargo-home";
+const REMOTE_LINUX_VM_INCUS_TARGET_DIR: &str = "/cargo-target";
+const REMOTE_LINUX_VM_INCUS_XDG_STATE_HOME_DIR: &str = "/artifacts/xdg-state";
+const REMOTE_LINUX_VM_INCUS_NON_ROOT_HOME_DIR: &str = "/home/pikaci";
 const REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH: &str = "/workspace/snapshot";
 #[cfg(test)]
 const REMOTE_LINUX_VM_INCUS_WORKSPACE_DEPS_MOUNT_PATH: &str = "/staged/linux-rust/workspace-deps";
@@ -3233,20 +3244,23 @@ mod tests {
 
     use super::{
         GuestFlakePaths, HostContext, HostLocalCommandMode, HostLocalDevEnvState,
-        HostLocalEnvironmentRefresh, REMOTE_LINUX_VM_INCUS_GUEST_REQUEST_PATH,
-        REMOTE_LINUX_VM_INCUS_WORKSPACE_BUILD_MOUNT_PATH,
-        REMOTE_LINUX_VM_INCUS_WORKSPACE_DEPS_MOUNT_PATH, REMOTE_MICROVM_VIRTIOFS_SOCKETS,
-        RemoteIncusContext, RemoteLinuxVmSharedContext, RemoteMicrovmContext,
-        attach_remote_linux_vm_execution, build_sync_directory_finalize_command,
-        builders_supports_aarch64_linux, cached_host_local_dev_env_is_usable,
-        ensure_staged_linux_rust_lane_matches_vfkit_guest, guest_runner_config_for,
-        host_local_command_mode, host_local_dev_env_script_path, host_local_dev_env_shell_program,
-        incus, microvm, prepare_host_local_cached_dev_env_with, read_host_local_dev_env_state,
-        remote_linux_vm_execution_from_error, remote_linux_vm_guest_runner_config,
-        remote_linux_vm_prepare_artifact, remote_snapshot_ready_for_use, render_guest_flake,
-        render_local_guest_flake, run_job_on_runner, shell_single_quote,
-        staged_linux_remote_defaults, staged_linux_remote_snapshot_dir, vfkit_socket_path,
-        write_host_local_dev_env_script, write_host_local_dev_env_state,
+        HostLocalEnvironmentRefresh, REMOTE_LINUX_VM_INCUS_ARTIFACTS_DIR,
+        REMOTE_LINUX_VM_INCUS_CARGO_HOME_DIR, REMOTE_LINUX_VM_INCUS_GUEST_REQUEST_PATH,
+        REMOTE_LINUX_VM_INCUS_NON_ROOT_HOME_DIR, REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH,
+        REMOTE_LINUX_VM_INCUS_TARGET_DIR, REMOTE_LINUX_VM_INCUS_WORKSPACE_BUILD_MOUNT_PATH,
+        REMOTE_LINUX_VM_INCUS_WORKSPACE_DEPS_MOUNT_PATH, REMOTE_LINUX_VM_INCUS_XDG_STATE_HOME_DIR,
+        REMOTE_MICROVM_VIRTIOFS_SOCKETS, RemoteIncusContext, RemoteLinuxVmSharedContext,
+        RemoteMicrovmContext, attach_remote_linux_vm_execution,
+        build_sync_directory_finalize_command, builders_supports_aarch64_linux,
+        cached_host_local_dev_env_is_usable, ensure_staged_linux_rust_lane_matches_vfkit_guest,
+        guest_runner_config_for, host_local_command_mode, host_local_dev_env_script_path,
+        host_local_dev_env_shell_program, incus, microvm, prepare_host_local_cached_dev_env_with,
+        read_host_local_dev_env_state, remote_linux_vm_execution_from_error,
+        remote_linux_vm_guest_runner_config, remote_linux_vm_prepare_artifact,
+        remote_snapshot_ready_for_use, render_guest_flake, render_local_guest_flake,
+        run_job_on_runner, shell_single_quote, staged_linux_remote_defaults,
+        staged_linux_remote_snapshot_dir, vfkit_socket_path, write_host_local_dev_env_script,
+        write_host_local_dev_env_state,
     };
     use crate::model::{
         GuestCommand, JobSpec, PreparedOutputPayloadManifestRecord,
@@ -3539,6 +3553,18 @@ mod tests {
         assert_eq!(request.command, "bash --noprofile --norc -lc 'actionlint'");
         assert_eq!(request.timeout_secs, 120);
         assert!(!request.run_as_root);
+        assert_eq!(
+            request.workspace_dir,
+            REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH
+        );
+        assert_eq!(request.artifacts_dir, REMOTE_LINUX_VM_INCUS_ARTIFACTS_DIR);
+        assert_eq!(request.cargo_home_dir, REMOTE_LINUX_VM_INCUS_CARGO_HOME_DIR);
+        assert_eq!(request.target_dir, REMOTE_LINUX_VM_INCUS_TARGET_DIR);
+        assert_eq!(
+            request.xdg_state_home_dir,
+            REMOTE_LINUX_VM_INCUS_XDG_STATE_HOME_DIR
+        );
+        assert_eq!(request.home_dir, REMOTE_LINUX_VM_INCUS_NON_ROOT_HOME_DIR);
 
         let root_request = incus::build_guest_request(&JobSpec {
             id: "android-sdk-probe",
@@ -3551,6 +3577,7 @@ mod tests {
         assert_eq!(root_request.command, "bash --noprofile --norc -lc 'id -u'");
         assert_eq!(root_request.timeout_secs, 45);
         assert!(root_request.run_as_root);
+        assert_eq!(root_request.home_dir, "/root");
     }
 
     #[test]

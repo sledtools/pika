@@ -315,7 +315,7 @@ Current transition status:
 - the canonical `pika-build` host now runs both the existing microVM host stack and the Incus dev lane side by side; it still needs operator one-time setup for the Incus bridge, storage pool, project, and profile before request-scoped Incus provisioning can work
 - the canonical `pika-build` host now also carries only the narrow Incus bridge firewall/input/forward allowances required for guest DHCP, DNS, and outbound relay access; host-only services remain behind the normal host ingress policy instead of trusting all traffic from `incusbr0`
 - the provider now supports trusted TLS client-certificate auth for remote `pika-server -> pika-build:8443` mutations via server-side cert/key path config; the repo-managed `pika-server` Nix module can now inject that canary env and sops-backed cert/key paths for a normal deployed canary
-- Incus readiness now comes from inside the guest via the Incus guest file API against `/workspace/pika-agent/service-ready.json`; `guest_ready=true` is only reported when that marker exists and validates
+- Incus readiness now comes from inside the guest via the Incus guest file API against `/run/pika-cloud/status.json`; `guest_ready=true` is only reported when that lifecycle snapshot exists and validates
 - the first authenticated end-to-end canary now reaches `state=ready` and `startup_phase=ready` for a fresh request-scoped Incus provision against the canonical `pika-build` host
 - Incus backup status, recover, and restore now use a first thin Incus-native operational model:
   state durability lives in the attached custom volume, backup status is the freshness of the latest

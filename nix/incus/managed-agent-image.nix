@@ -113,7 +113,7 @@ in
     - persistent customer state is expected at /mnt/pika-state
     - a baked pika-managed-agent.service starts after cloud-final
     - per-instance bootstrap payloads are written by Incus cloud-init under /workspace/pika-agent
-    - readiness is published at /workspace/pika-agent/service-ready.json
+    - lifecycle status is published at /run/pika-cloud/status.json
       and fetched via the Incus guest file API
   '';
 

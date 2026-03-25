@@ -115,5 +115,5 @@ else
 fi
 
 echo
-echo "== Guest ready marker =="
-remote_incus "file pull --project '$project' '$vm_id'/workspace/pika-agent/service-ready.json -" 2>/dev/null || echo "missing"
+echo "== Guest lifecycle status =="
+remote_incus "file pull --project '$project' '$vm_id'/run/pika-cloud/status.json -" 2>/dev/null || echo "missing"

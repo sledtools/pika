@@ -36,10 +36,10 @@ use crate::nostr_auth::{
 };
 use crate::{RequestContext, State};
 use pika_cloud::{
-    AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams, ManagedOpenClawLaunchAuth,
-    ManagedRuntimeBackupStatus, ManagedRuntimeStatus,
-    ManagedVmProvisionParams as ManagedRuntimeProvisionParams, VmBackupFreshness, VmBackupUnitKind,
-    VmRecoveryPointKind, GUEST_READY_MARKER_PATH,
+    AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams, LifecycleState,
+    ManagedOpenClawLaunchAuth, ManagedRuntimeBackupStatus, ManagedRuntimeStatus,
+    ManagedVmProvisionParams as ManagedRuntimeProvisionParams, RuntimeStatusSnapshot,
+    VmBackupFreshness, VmBackupUnitKind, VmRecoveryPointKind, STATUS_PATH,
 };
 use pika_relay_profiles::default_message_relays;
 
@@ -327,14 +327,26 @@ struct IncusInstanceDetails {
 }
 
 #[derive(Debug, Deserialize)]
-struct IncusGuestReadyMarker {
-    ready: bool,
+struct ManagedGuestLifecycleDetails {
     #[serde(default)]
     agent_kind: Option<String>,
     #[serde(default)]
+    backend_mode: Option<String>,
+    #[serde(default)]
+    service_kind: Option<String>,
+    #[serde(default)]
     probe: Option<String>,
     #[serde(default)]
-    boot_id: Option<String>,
+    service_probe_satisfied: bool,
+    #[serde(default)]
+    failure_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+struct ManagedGuestLifecycleSignal {
+    startup_probe_satisfied: bool,
+    guest_ready: bool,
+    failed: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1327,15 +1339,26 @@ impl IncusManagedRuntimeProvider {
             "Stopping" | "Stopped" | "Frozen" | "Freezing" | "Thawed" => "starting",
             _ => "starting",
         };
-        let guest_ready = if status == "running" {
-            self.guest_ready_signal_satisfied(vm_id, request_id).await
+        let guest_signal = if status == "running" {
+            self.guest_lifecycle_signal(vm_id, request_id).await
         } else {
-            false
+            None
+        };
+        let startup_probe_satisfied = guest_signal
+            .as_ref()
+            .is_some_and(|signal| signal.startup_probe_satisfied);
+        let guest_ready = guest_signal
+            .as_ref()
+            .is_some_and(|signal| signal.guest_ready);
+        let status = if guest_signal.as_ref().is_some_and(|signal| signal.failed) {
+            "failed"
+        } else {
+            status
         };
         Ok(ManagedRuntimeStatus {
             id: vm_id.to_string(),
             status: status.to_string(),
-            startup_probe_satisfied: guest_ready,
+            startup_probe_satisfied,
             guest_ready,
         })
     }
@@ -1811,79 +1834,47 @@ impl IncusManagedRuntimeProvider {
         Ok(cloud_init)
     }
 
-    async fn guest_ready_signal_satisfied(&self, vm_id: &str, request_id: Option<&str>) -> bool {
-        let ready_path = format!("/{}", GUEST_READY_MARKER_PATH);
-        let marker_bytes = match self
+    async fn load_guest_lifecycle_status(
+        &self,
+        vm_id: &str,
+        request_id: Option<&str>,
+    ) -> Option<RuntimeStatusSnapshot> {
+        let status_path = STATUS_PATH.to_string();
+        let status_bytes = match self
             .get_instance_file(
                 vm_id,
-                &ready_path,
+                &status_path,
                 request_id,
-                "load incus guest ready marker",
+                "load incus guest lifecycle status",
             )
             .await
         {
             Ok(Some(bytes)) => bytes,
-            Ok(None) => return false,
+            Ok(None) => return None,
             Err(err) => {
                 tracing::warn!(
                     vm_id = %vm_id,
                     error = %err,
-                    "failed to load incus guest ready marker; reporting guest as not ready"
+                    "failed to load incus guest lifecycle status; reporting guest as not ready"
                 );
-                return false;
+                return None;
             }
         };
-        let marker = match serde_json::from_slice::<IncusGuestReadyMarker>(&marker_bytes) {
-            Ok(marker) => marker,
+        match serde_json::from_slice::<RuntimeStatusSnapshot>(&status_bytes) {
+            Ok(status) => Some(status),
             Err(err) => {
                 tracing::warn!(
                     vm_id = %vm_id,
                     error = %err,
-                    "incus guest ready marker was malformed; reporting guest as not ready"
+                    "incus guest lifecycle status was malformed; reporting guest as not ready"
                 );
-                return false;
+                None
             }
-        };
-        if !marker.ready {
-            return false;
         }
-        let expected_agent_kind = "openclaw";
-        if marker.agent_kind.as_deref() != Some(expected_agent_kind) {
-            tracing::warn!(
-                vm_id = %vm_id,
-                expected_agent_kind,
-                observed_agent_kind = marker.agent_kind.as_deref().unwrap_or("<missing>"),
-                "incus guest ready marker reported a mismatched agent kind; reporting guest as not ready"
-            );
-            return false;
-        }
-        if marker
-            .probe
-            .as_deref()
-            .is_none_or(|probe| probe.trim().is_empty())
-        {
-            tracing::warn!(
-                vm_id = %vm_id,
-                "incus guest ready marker omitted probe detail; reporting guest as not ready"
-            );
-            return false;
-        }
-        let marker_boot_id = match marker
-            .boot_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|boot_id| !boot_id.is_empty())
-        {
-            Some(boot_id) => boot_id,
-            None => {
-                tracing::warn!(
-                    vm_id = %vm_id,
-                    "incus guest ready marker omitted boot_id; reporting guest as not ready"
-                );
-                return false;
-            }
-        };
-        let current_boot_id = match self
+    }
+
+    async fn current_guest_boot_id(&self, vm_id: &str, request_id: Option<&str>) -> Option<String> {
+        match self
             .exec_instance_stdout(
                 vm_id,
                 &["cat", INCUS_GUEST_BOOT_ID_PATH],
@@ -1893,14 +1884,14 @@ impl IncusManagedRuntimeProvider {
             .await
         {
             Ok(bytes) => match String::from_utf8(bytes) {
-                Ok(value) => value.trim().to_string(),
+                Ok(value) => Some(value.trim().to_string()),
                 Err(err) => {
                     tracing::warn!(
                         vm_id = %vm_id,
                         error = %err,
                         "incus guest boot id was not valid utf-8; reporting guest as not ready"
                     );
-                    return false;
+                    None
                 }
             },
             Err(err) => {
@@ -1909,19 +1900,30 @@ impl IncusManagedRuntimeProvider {
                     error = %err,
                     "failed to load incus guest boot id; reporting guest as not ready"
                 );
-                return false;
+                None
             }
-        };
-        if current_boot_id.is_empty() || current_boot_id != marker_boot_id {
-            tracing::warn!(
-                vm_id = %vm_id,
-                marker_boot_id,
-                current_boot_id,
-                "incus guest ready marker boot_id did not match current boot; reporting guest as not ready"
-            );
-            return false;
         }
-        true
+    }
+
+    async fn guest_lifecycle_signal(
+        &self,
+        vm_id: &str,
+        request_id: Option<&str>,
+    ) -> Option<ManagedGuestLifecycleSignal> {
+        let status = self.load_guest_lifecycle_status(vm_id, request_id).await?;
+        let current_boot_id = self.current_guest_boot_id(vm_id, request_id).await?;
+        match managed_guest_lifecycle_signal(&status, &current_boot_id) {
+            Ok(signal) => Some(signal),
+            Err(reason) => {
+                tracing::warn!(
+                    vm_id = %vm_id,
+                    state = ?status.state,
+                    reason,
+                    "incus guest lifecycle status did not satisfy managed guest contract; reporting guest as not ready"
+                );
+                None
+            }
+        }
     }
 
     fn request(
@@ -2749,6 +2751,66 @@ fn unavailable_backup_status(status_copy: impl Into<String>) -> ManagedEnvironme
         reset_requires_confirmation: true,
         status_copy: status_copy.into(),
     }
+}
+
+fn managed_guest_lifecycle_signal(
+    status: &RuntimeStatusSnapshot,
+    current_boot_id: &str,
+) -> Result<ManagedGuestLifecycleSignal, &'static str> {
+    let expected_boot_id = status
+        .boot_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|boot_id| !boot_id.is_empty())
+        .ok_or("missing boot_id")?;
+    let current_boot_id = current_boot_id.trim();
+    if current_boot_id.is_empty() || current_boot_id != expected_boot_id {
+        return Err("boot_id mismatch");
+    }
+
+    let details: ManagedGuestLifecycleDetails = match status.details.clone() {
+        Some(details) => serde_json::from_value(details).map_err(|_| "malformed details")?,
+        None => return Err("missing details"),
+    };
+    if details.agent_kind.as_deref() != Some("openclaw") {
+        return Err("mismatched agent_kind");
+    }
+    if details.backend_mode.as_deref() != Some("native") {
+        return Err("mismatched backend_mode");
+    }
+    if details.service_kind.as_deref() != Some("openclaw_gateway") {
+        return Err("mismatched service_kind");
+    }
+    if matches!(status.state, LifecycleState::Failed)
+        && details
+            .failure_reason
+            .as_deref()
+            .map(str::trim)
+            .filter(|reason| !reason.is_empty())
+            .is_none()
+    {
+        return Err("missing failure_reason");
+    }
+
+    let guest_ready = match status.state {
+        LifecycleState::Ready => details
+            .probe
+            .as_deref()
+            .is_some_and(|probe| !probe.trim().is_empty()),
+        _ => false,
+    };
+    if matches!(status.state, LifecycleState::Ready) && !guest_ready {
+        return Err("missing readiness probe");
+    }
+
+    Ok(ManagedGuestLifecycleSignal {
+        startup_probe_satisfied: details.service_probe_satisfied,
+        guest_ready,
+        failed: matches!(
+            status.state,
+            LifecycleState::Failed | LifecycleState::Completed
+        ),
+    })
 }
 
 fn phase_from_runtime_status(vm: &ManagedRuntimeStatus) -> &'static str {
@@ -4038,6 +4100,7 @@ pub async fn agent_api_healthcheck() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use chrono::NaiveDate;
+    use serde_json::json;
 
     fn test_agent_instance(
         agent_id: &str,
@@ -4062,6 +4125,23 @@ mod tests {
         }
     }
 
+    fn managed_guest_status_snapshot(state: LifecycleState) -> RuntimeStatusSnapshot {
+        RuntimeStatusSnapshot {
+            schema_version: 1,
+            state,
+            updated_at: "2026-03-25T20:00:00Z".to_string(),
+            message: "managed guest lifecycle".to_string(),
+            boot_id: Some("boot-123".to_string()),
+            details: Some(json!({
+                "agent_kind": "openclaw",
+                "backend_mode": "native",
+                "service_kind": "openclaw_gateway",
+                "service_probe_satisfied": true,
+                "probe": "openclaw_gateway_health"
+            })),
+        }
+    }
+
     #[test]
     fn select_visible_agent_row_ignores_legacy_error_row_without_incus_config() {
         let legacy_error = test_agent_instance("agent-legacy", AGENT_PHASE_ERROR, None, None);
@@ -4080,5 +4160,79 @@ mod tests {
             managed_runtime_params_from_row(&legacy_row).expect_err("legacy row must fail closed");
 
         assert!(err.to_string().contains("lacks incus_config"));
+    }
+
+    #[test]
+    fn managed_guest_lifecycle_signal_marks_ready_status_as_ready() {
+        let signal = managed_guest_lifecycle_signal(
+            &managed_guest_status_snapshot(LifecycleState::Ready),
+            "boot-123",
+        )
+        .expect("ready snapshot should validate");
+
+        assert!(signal.startup_probe_satisfied);
+        assert!(signal.guest_ready);
+        assert!(!signal.failed);
+    }
+
+    #[test]
+    fn managed_guest_lifecycle_signal_preserves_service_probe_before_ready() {
+        let signal = managed_guest_lifecycle_signal(
+            &managed_guest_status_snapshot(LifecycleState::Starting),
+            "boot-123",
+        )
+        .expect("starting snapshot should validate");
+
+        assert!(signal.startup_probe_satisfied);
+        assert!(!signal.guest_ready);
+        assert!(!signal.failed);
+    }
+
+    #[test]
+    fn managed_guest_lifecycle_signal_surfaces_guest_failure_while_vm_is_running() {
+        let mut status = managed_guest_status_snapshot(LifecycleState::Failed);
+        status.details = Some(json!({
+            "agent_kind": "openclaw",
+            "backend_mode": "native",
+            "service_kind": "openclaw_gateway",
+            "service_probe_satisfied": true,
+            "probe": "openclaw_gateway_health",
+            "failure_reason": "openclaw_gateway_exited"
+        }));
+
+        let signal = managed_guest_lifecycle_signal(&status, "boot-123")
+            .expect("failed snapshot should validate");
+
+        assert!(signal.startup_probe_satisfied);
+        assert!(!signal.guest_ready);
+        assert!(signal.failed);
+    }
+
+    #[test]
+    fn managed_guest_lifecycle_signal_rejects_boot_id_mismatch() {
+        let err = managed_guest_lifecycle_signal(
+            &managed_guest_status_snapshot(LifecycleState::Ready),
+            "boot-other",
+        )
+        .expect_err("stale boot id should be rejected");
+
+        assert_eq!(err, "boot_id mismatch");
+    }
+
+    #[test]
+    fn managed_guest_lifecycle_signal_rejects_mismatched_guest_details() {
+        let mut status = managed_guest_status_snapshot(LifecycleState::Ready);
+        status.details = Some(json!({
+            "agent_kind": "pikachat",
+            "backend_mode": "native",
+            "service_kind": "openclaw_gateway",
+            "service_probe_satisfied": true,
+            "probe": "openclaw_gateway_health"
+        }));
+
+        let err =
+            managed_guest_lifecycle_signal(&status, "boot-123").expect_err("details must match");
+
+        assert_eq!(err, "mismatched agent_kind");
     }
 }

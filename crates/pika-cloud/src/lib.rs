@@ -121,8 +121,6 @@ pub const GUEST_AUTOSTART_COMMAND: &str = "bash /workspace/pika-agent/start-agen
 pub const GUEST_AUTOSTART_SCRIPT_PATH: &str = "workspace/pika-agent/start-agent.sh";
 pub const GUEST_STARTUP_PLAN_PATH: &str = "workspace/pika-agent/startup-plan.json";
 pub const GUEST_AUTOSTART_IDENTITY_PATH: &str = "workspace/pika-agent/state/identity.json";
-pub const GUEST_READY_MARKER_PATH: &str = "workspace/pika-agent/service-ready.json";
-pub const GUEST_FAILED_MARKER_PATH: &str = "workspace/pika-agent/service-failed.json";
 pub const GUEST_LOG_PATH: &str = "workspace/pika-agent/agent.log";
 pub const GUEST_PID_PATH: &str = "workspace/pika-agent/agent.pid";
 pub const GUEST_OPENCLAW_CONFIG_PATH: &str = "workspace/pika-agent/openclaw/openclaw.json";
@@ -157,8 +155,7 @@ pub struct GuestStartupPlan {
     pub readiness_check: GuestServiceReadinessCheck,
     /// Persisted for debugging/inspection and kept explicit in the startup contract.
     ///
-    /// These paths are fixed to the shared guest layout today. Host-side status handling
-    /// still reads the canonical marker paths directly, so callers must not treat these as
+    /// These paths are fixed to the shared guest layout today, so callers must not treat these as
     /// free-form overrides.
     #[serde(default)]
     pub artifacts: GuestStartupArtifacts,
@@ -312,8 +309,9 @@ pub enum GuestServiceReadinessCheck {
 pub struct GuestStartupArtifacts {
     pub startup_plan_path: String,
     pub identity_seed_path: String,
-    pub ready_marker_path: String,
-    pub failed_marker_path: String,
+    pub status_path: String,
+    pub events_path: String,
+    pub result_path: String,
     pub log_path: String,
     pub pid_path: String,
 }
@@ -323,8 +321,9 @@ impl Default for GuestStartupArtifacts {
         Self {
             startup_plan_path: GUEST_STARTUP_PLAN_PATH.to_string(),
             identity_seed_path: GUEST_AUTOSTART_IDENTITY_PATH.to_string(),
-            ready_marker_path: GUEST_READY_MARKER_PATH.to_string(),
-            failed_marker_path: GUEST_FAILED_MARKER_PATH.to_string(),
+            status_path: STATUS_PATH.to_string(),
+            events_path: EVENTS_PATH.to_string(),
+            result_path: RESULT_PATH.to_string(),
             log_path: GUEST_LOG_PATH.to_string(),
             pid_path: GUEST_PID_PATH.to_string(),
         }
@@ -346,14 +345,19 @@ impl GuestStartupArtifacts {
                 canonical.identity_seed_path.as_str(),
             ),
             (
-                "ready_marker_path",
-                self.ready_marker_path.as_str(),
-                canonical.ready_marker_path.as_str(),
+                "status_path",
+                self.status_path.as_str(),
+                canonical.status_path.as_str(),
             ),
             (
-                "failed_marker_path",
-                self.failed_marker_path.as_str(),
-                canonical.failed_marker_path.as_str(),
+                "events_path",
+                self.events_path.as_str(),
+                canonical.events_path.as_str(),
+            ),
+            (
+                "result_path",
+                self.result_path.as_str(),
+                canonical.result_path.as_str(),
             ),
             (
                 "log_path",
@@ -949,8 +953,9 @@ mod tests {
         let artifacts = GuestStartupArtifacts::default();
         assert_eq!(artifacts.startup_plan_path, GUEST_STARTUP_PLAN_PATH);
         assert_eq!(artifacts.identity_seed_path, GUEST_AUTOSTART_IDENTITY_PATH);
-        assert_eq!(artifacts.ready_marker_path, GUEST_READY_MARKER_PATH);
-        assert_eq!(artifacts.failed_marker_path, GUEST_FAILED_MARKER_PATH);
+        assert_eq!(artifacts.status_path, STATUS_PATH);
+        assert_eq!(artifacts.events_path, EVENTS_PATH);
+        assert_eq!(artifacts.result_path, RESULT_PATH);
         assert_eq!(artifacts.log_path, GUEST_LOG_PATH);
         assert_eq!(artifacts.pid_path, GUEST_PID_PATH);
     }
@@ -1079,15 +1084,15 @@ mod tests {
                 timeout_failure_reason: "timeout_waiting_for_openclaw_health".to_string(),
             },
             artifacts: GuestStartupArtifacts {
-                ready_marker_path: "workspace/custom/service-ready.json".to_string(),
+                status_path: "/run/custom/status.json".to_string(),
                 ..GuestStartupArtifacts::default()
             },
             exit_failure_reason: "openclaw_gateway_exited".to_string(),
         }
         .validate()
         .expect_err("plan should reject non-canonical artifact paths");
-        assert!(err.contains("artifacts.ready_marker_path"));
-        assert!(err.contains(GUEST_READY_MARKER_PATH));
+        assert!(err.contains("artifacts.status_path"));
+        assert!(err.contains(STATUS_PATH));
     }
 
     #[test]

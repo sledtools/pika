@@ -74,6 +74,14 @@ in
     mode = "0400";
   };
 
+  sops.secrets."pikaci_apple_ssh_key" = {
+    format = "yaml";
+    sopsFile = ../../secrets/pika-news.yaml;
+    owner = serviceUser;
+    group = serviceGroup;
+    mode = "0400";
+  };
+
   sops.templates."pika-news-env" = {
     owner = serviceUser;
     group = serviceGroup;
@@ -83,6 +91,12 @@ in
       CLAUDE_CODE_OAUTH_TOKEN=${config.sops.placeholder."pika_news_claude_oauth_token"}
       PIKA_NEWS_WEBHOOK_SECRET=${config.sops.placeholder."pika_news_webhook_secret"}
       RUST_LOG=info
+      PIKACI_APPLE_SSH_KEY_FILE=${config.sops.secrets."pikaci_apple_ssh_key".path}
+      PIKACI_APPLE_SSH_HOST=pika-mini.tail029da2.ts.net
+      PIKACI_APPLE_SSH_USER=mini
+      PIKACI_APPLE_REMOTE_ROOT=/Volumes/pikaci-data/pikaci-apple
+      PIKACI_APPLE_KEEP_RUNS=3
+      PIKACI_APPLE_LOCK_TIMEOUT_SEC=1800
     '';
   };
 

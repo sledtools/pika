@@ -164,7 +164,11 @@ remote_run() {
   }
   trap cleanup_key EXIT INT TERM
   chmod 600 "$tmp_key"
-  printf '%s\n' "$PIKACI_APPLE_SSH_KEY" >"$tmp_key"
+  if [[ -n "${PIKACI_APPLE_SSH_KEY_FILE:-}" ]]; then
+    cp "$PIKACI_APPLE_SSH_KEY_FILE" "$tmp_key"
+  else
+    printf '%s\n' "$PIKACI_APPLE_SSH_KEY" >"$tmp_key"
+  fi
   cat >"$ssh_wrapper" <<EOF
 #!/usr/bin/env bash
 exec ssh \\

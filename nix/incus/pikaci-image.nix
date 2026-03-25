@@ -4,10 +4,7 @@ let
   pikaciIncusRun = pkgs.writeShellScriptBin "pikaci-incus-run" ''
     set -euo pipefail
     export PATH="/run/current-system/sw/bin:$PATH"
-
-    : "''${PIKACI_INCUS_GUEST_COMMAND:?missing PIKACI_INCUS_GUEST_COMMAND}"
-    : "''${PIKACI_INCUS_TIMEOUT_SECS:?missing PIKACI_INCUS_TIMEOUT_SECS}"
-    : "''${PIKACI_INCUS_RUN_AS_ROOT:?missing PIKACI_INCUS_RUN_AS_ROOT}"
+    request_path="''${1:?usage: pikaci-incus-run <request-path>}"
 
     ensure_owned_dir() {
       local path="$1"
@@ -35,12 +32,6 @@ let
     ensure_owned_dir /cargo-target "1000:100"
     cd /workspace/snapshot
 
-    if [ "$PIKACI_INCUS_RUN_AS_ROOT" = "1" ]; then
-      export HOME=/root
-    else
-      export HOME=/home/pikaci
-    fi
-
     export CARGO_TERM_COLOR=never
     export CARGO_HOME=/cargo-home
     export CARGO_TARGET_DIR=/cargo-target
@@ -52,32 +43,92 @@ let
     export SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt
     export NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt
     mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
+    exec ${pkgs.python3}/bin/python3 - "$request_path" <<'PY'
+import json
+import os
+import pathlib
+import subprocess
+import sys
+from datetime import datetime
 
-    set +e
-    if [ "$PIKACI_INCUS_RUN_AS_ROOT" = "1" ]; then
-      timeout "''${PIKACI_INCUS_TIMEOUT_SECS}s" bash --noprofile --norc -lc "''${PIKACI_INCUS_GUEST_COMMAND}"
-    else
-      runuser -u pikaci -m -- timeout "''${PIKACI_INCUS_TIMEOUT_SECS}s" bash --noprofile --norc -lc "''${PIKACI_INCUS_GUEST_COMMAND}"
-    fi
-    code=$?
-    set -e
 
-    status="passed"
-    message="test passed"
-    if [ "$code" -ne 0 ]; then
-      status="failed"
-      message="test command exited with $code"
-    fi
+def finished_at() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
 
-    cat > /artifacts/result.json <<EOF
-    {
-      "status": "$status",
-      "exit_code": $code,
-      "finished_at": "$(date -Iseconds)",
-      "message": "$message"
-    }
-    EOF
-    exit "$code"
+
+def write_result(exit_code: int, message: str) -> None:
+    status = "passed" if exit_code == 0 else "failed"
+    result_path = pathlib.Path("/artifacts/result.json")
+    result_path.write_text(
+        json.dumps(
+            {
+                "status": status,
+                "exit_code": exit_code,
+                "finished_at": finished_at(),
+                "message": message,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+request_path = pathlib.Path(sys.argv[1])
+try:
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+except Exception as exc:
+    print(f"[pikaci] failed to load Incus guest request {request_path}: {exc}", file=sys.stderr)
+    write_result(2, f"failed to load guest request: {exc}")
+    raise SystemExit(2)
+
+if request.get("schema_version") != 1:
+    message = f"unsupported Incus guest request schema_version={request.get('schema_version')!r}"
+    print(f"[pikaci] {message}", file=sys.stderr)
+    write_result(2, message)
+    raise SystemExit(2)
+
+command = request.get("command")
+timeout_secs = request.get("timeout_secs")
+run_as_root = request.get("run_as_root")
+if not isinstance(command, str) or not command:
+    message = "Incus guest request is missing non-empty string field `command`"
+    print(f"[pikaci] {message}", file=sys.stderr)
+    write_result(2, message)
+    raise SystemExit(2)
+if isinstance(timeout_secs, bool) or not isinstance(timeout_secs, int) or timeout_secs <= 0:
+    message = "Incus guest request is missing positive integer field `timeout_secs`"
+    print(f"[pikaci] {message}", file=sys.stderr)
+    write_result(2, message)
+    raise SystemExit(2)
+if not isinstance(run_as_root, bool):
+    message = "Incus guest request is missing boolean field `run_as_root`"
+    print(f"[pikaci] {message}", file=sys.stderr)
+    write_result(2, message)
+    raise SystemExit(2)
+
+command_prefix = [
+    "timeout",
+    f"{timeout_secs}s",
+    "bash",
+    "--noprofile",
+    "--norc",
+    "-lc",
+    command,
+]
+child_env = os.environ.copy()
+if run_as_root:
+    child_env["HOME"] = "/root"
+    child_command = command_prefix
+else:
+    child_env["HOME"] = "/home/pikaci"
+    child_command = ["runuser", "-u", "pikaci", "-m", "--", *command_prefix]
+
+completed = subprocess.run(child_command, env=child_env, check=False)
+message = "test passed" if completed.returncode == 0 else f"test command exited with {completed.returncode}"
+write_result(completed.returncode, message)
+raise SystemExit(completed.returncode)
+PY
   '';
 in
 {

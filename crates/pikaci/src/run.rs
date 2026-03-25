@@ -4865,51 +4865,51 @@ mod tests {
 
     #[test]
     fn build_run_plan_records_incus_backend_prepare_without_fake_nix_build() {
-        with_remote_linux_vm_backend_env(Some("incus"), || {
-            let root =
-                std::env::temp_dir().join(format!("pikaci-plan-test-{}", uuid::Uuid::new_v4()));
-            let prepared = sample_prepared_run(&root);
-            let metadata = RunMetadata {
-                target_id: Some("pre-merge-pika-followup".to_string()),
-                target_description: Some("Run pika follow-up lane".to_string()),
-                ..RunMetadata::default()
-            };
-            let jobs = vec![JobSpec {
-                id: "pika-actionlint",
-                description: "Run actionlint in a remote Linux VM guest",
-                timeout_secs: 1800,
-                writable_workspace: false,
-                guest_command: GuestCommand::ShellCommand {
-                    command: "actionlint",
-                },
-                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupActionlint),
-            }];
+        let _host_guard =
+            EnvVarGuard::set(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV, Some("pika-build"));
+        let _backend_guard = EnvVarGuard::set("PIKACI_REMOTE_LINUX_VM_BACKEND", None);
+        let root = std::env::temp_dir().join(format!("pikaci-plan-test-{}", uuid::Uuid::new_v4()));
+        let prepared = sample_prepared_run(&root);
+        let metadata = RunMetadata {
+            target_id: Some("pre-merge-pika-followup".to_string()),
+            target_description: Some("Run pika follow-up lane".to_string()),
+            ..RunMetadata::default()
+        };
+        let jobs = vec![JobSpec {
+            id: "pika-actionlint",
+            description: "Run actionlint in a remote Linux VM guest",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "actionlint",
+            },
+            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupActionlint),
+        }];
 
-            let snapshot = sample_snapshot_source(&prepared);
-            let plan = build_run_plan(&jobs, &prepared, &snapshot, &metadata).expect("build plan");
-            let prepare = plan
-                .record
-                .nodes
-                .iter()
-                .find_map(|node| match node {
-                    PlanNodeRecord::Prepare { id, prepare, .. }
-                        if id == "prepare-pika-actionlint-runner" =>
-                    {
-                        Some(prepare)
-                    }
-                    _ => None,
-                })
-                .expect("Incus prepare node");
-
-            match prepare {
-                PrepareNode::RemoteLinuxVmBackend { backend } => {
-                    assert_eq!(*backend, RemoteLinuxVmBackend::Incus);
+        let snapshot = sample_snapshot_source(&prepared);
+        let plan = build_run_plan(&jobs, &prepared, &snapshot, &metadata).expect("build plan");
+        let prepare = plan
+            .record
+            .nodes
+            .iter()
+            .find_map(|node| match node {
+                PlanNodeRecord::Prepare { id, prepare, .. }
+                    if id == "prepare-pika-actionlint-runner" =>
+                {
+                    Some(prepare)
                 }
-                other => panic!("expected Incus backend prepare node, got {other:?}"),
-            }
+                _ => None,
+            })
+            .expect("Incus prepare node");
 
-            let _ = fs::remove_dir_all(&root);
-        });
+        match prepare {
+            PrepareNode::RemoteLinuxVmBackend { backend } => {
+                assert_eq!(*backend, RemoteLinuxVmBackend::Incus);
+            }
+            other => panic!("expected Incus backend prepare node, got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

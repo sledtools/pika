@@ -12,6 +12,7 @@ mod github;
 mod live;
 mod local;
 mod mirror;
+mod mirror_store;
 mod model;
 mod pikaci_store;
 mod poller;

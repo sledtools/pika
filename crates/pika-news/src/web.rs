@@ -4254,7 +4254,7 @@ mod tests {
         ForgePikaciLogsQuery, InboxListParams, PageNoticeView, ReviewModeQuery,
     };
     use crate::auth::AuthState;
-    use crate::branch_store::{BranchUpsertInput, MirrorStatusRecord, MirrorSyncRunRecord};
+    use crate::branch_store::BranchUpsertInput;
     use crate::ci;
     use crate::config::{Config, ForgeRepoConfig};
     use crate::forge;
@@ -4264,6 +4264,7 @@ mod tests {
     };
     use crate::forge_service::ForgeService;
     use crate::mirror::MirrorRuntimeStatus;
+    use crate::mirror_store::{MirrorStatusRecord, MirrorSyncRunRecord};
     use crate::poller;
     use crate::storage::ChatAllowlistEntry;
     use crate::storage::Store;

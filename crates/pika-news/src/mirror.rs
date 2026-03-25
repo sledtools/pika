@@ -3,9 +3,9 @@ use std::env;
 use anyhow::Context;
 use chrono::{DateTime, NaiveDateTime, Utc};
 
-use crate::branch_store::{MirrorStatusRecord, MirrorSyncRunInput, MirrorSyncRunRecord};
 use crate::config::Config;
 use crate::forge;
+use crate::mirror_store::{MirrorStatusRecord, MirrorSyncRunInput, MirrorSyncRunRecord};
 use crate::storage::Store;
 
 #[derive(Debug, Default)]

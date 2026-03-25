@@ -66,10 +66,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-printf 'ZAPSTORE_SIGN_WITH: |-\n' >"$tmp_plaintext"
-while IFS= read -r line; do
-  printf '  %s\n' "$line" >>"$tmp_plaintext"
-done <<<"$sign_with"
+sops_secret_write_yaml_file "$tmp_plaintext" "ZAPSTORE_SIGN_WITH" "$sign_with"
 
 recipients=(
   "$RELEASE_SECRET_YUBIKEY_PRIMARY"

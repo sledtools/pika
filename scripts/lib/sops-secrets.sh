@@ -12,12 +12,15 @@ sops_secret_need_cmd() {
 }
 
 sops_secret_prepare_env() {
+  # Keep the old AGE_SECRET_KEY contract working, but prefer explicit sops env.
   if [ -z "${SOPS_AGE_KEY:-}" ] && [ -n "${AGE_SECRET_KEY:-}" ]; then
     export SOPS_AGE_KEY="$AGE_SECRET_KEY"
   elif [ -n "${SOPS_AGE_KEY:-}" ]; then
     export SOPS_AGE_KEY
   fi
 
+  # SOPS_AGE_KEY takes precedence if both are set; this branch only avoids
+  # walking the local fallback chain when the caller already chose a key file.
   if [ -n "${SOPS_AGE_KEY_FILE:-}" ]; then
     export SOPS_AGE_KEY_FILE
     return 0
@@ -105,8 +108,12 @@ sops_secret_encrypt_file() {
   fi
   cmd+=("$input_file")
 
+  # sops encrypt writes ciphertext to stdout for this subcommand, so stage into
+  # a sibling file and only move it into place after a successful exit.
   rm -f "$next_file"
-  if ! "${cmd[@]}" >"$next_file"; then
+  if "${cmd[@]}" >"$next_file"; then
+    :
+  else
     rc=$?
     rm -f "$next_file"
     return "$rc"
@@ -121,6 +128,22 @@ sops_secret_encrypt_yaml_file() {
   local output_file="$2"
   local recipients_csv="${3:-}"
   sops_secret_encrypt_file "$input_file" "$output_file" yaml yaml "$recipients_csv"
+}
+
+sops_secret_write_yaml_file() {
+  local output_file="$1"
+  shift
+
+  : >"$output_file"
+  while [ "$#" -gt 0 ]; do
+    local key="$1"
+    local value="$2"
+    printf '%s: |-\n' "$key" >>"$output_file"
+    while IFS= read -r line; do
+      printf '  %s\n' "$line" >>"$output_file"
+    done <<<"$value"
+    shift 2
+  done
 }
 
 sops_secret_encrypt_binary_file() {

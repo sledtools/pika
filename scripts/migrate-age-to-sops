@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FORCE=0
-KEEP_OLD=0
+KEEP_OLD=1
 
 OLD_KEYSTORE="$ROOT/android/pika-release.jks.age"
 OLD_ANDROID_SIGNING="$ROOT/secrets/android-signing.env.age"
@@ -19,6 +19,7 @@ TMPDIR_MIGRATE=""
 TMP_KEYSTORE=""
 TMP_KEYSTORE_VERIFY=""
 TMP_YAML=""
+TMP_APPLE_ENV=""
 
 # shellcheck source=scripts/lib/release-secrets.sh
 source "$ROOT/scripts/lib/release-secrets.sh"
@@ -27,14 +28,14 @@ source "$ROOT/scripts/lib/sops-secrets.sh"
 
 usage() {
   cat <<'EOF'
-usage: ./scripts/migrate-age-to-sops [--force] [--keep-old]
+usage: ./scripts/migrate-age-to-sops [--force] [--remove-old]
 
 Decrypts the current checked-in .age repo secrets and writes the new sops-based
 repo secret files under secrets/.
 
 Options:
-  --force     overwrite existing sops outputs
-  --keep-old  retain existing .age files after successful migration
+  --force       overwrite existing sops outputs
+  --remove-old  delete the legacy .age files after successful migration
 
 The script verifies each migrated output by decrypting the new file and checking
 that it round-trips to the original secret material.
@@ -58,6 +59,10 @@ while [[ $# -gt 0 ]]; do
       KEEP_OLD=1
       shift
       ;;
+    --remove-old)
+      KEEP_OLD=0
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -73,6 +78,7 @@ TMPDIR_MIGRATE="$(mktemp -d "${TMPDIR:-/tmp}/pika-sops-migrate.XXXXXX")"
 TMP_KEYSTORE="$TMPDIR_MIGRATE/android-keystore.jks"
 TMP_KEYSTORE_VERIFY="$TMPDIR_MIGRATE/android-keystore.verify.jks"
 TMP_YAML="$TMPDIR_MIGRATE/plain.yaml"
+TMP_APPLE_ENV="$TMPDIR_MIGRATE/pikaci-apple.env"
 
 ensure_output_path() {
   local output="$1"
@@ -87,16 +93,7 @@ ensure_output_path() {
 write_yaml_secret() {
   local output="$1"
   shift
-  : >"$TMP_YAML"
-  while [ "$#" -gt 0 ]; do
-    local key="$1"
-    local value="$2"
-    printf '%s: |-\n' "$key" >>"$TMP_YAML"
-    while IFS= read -r line; do
-      printf '  %s\n' "$line" >>"$TMP_YAML"
-    done <<<"$value"
-    shift 2
-  done
+  sops_secret_write_yaml_file "$TMP_YAML" "$@"
   sops_secret_encrypt_yaml_file "$TMP_YAML" "$output"
 }
 
@@ -140,8 +137,9 @@ test "$(sops_secret_read_key "$NEW_ZAPSTORE" "ZAPSTORE_SIGN_WITH")" = "$zapstore
 unset zapstore_sign_with
 
 echo "==> migrating Apple remote env"
-apple_authkey="$(release_secret_read_encrypted_env_value "$OLD_APPLE" "PIKACI_APPLE_TAILSCALE_AUTHKEY")"
-apple_ssh_key="$(release_secret_read_encrypted_env_value "$OLD_APPLE" "PIKACI_APPLE_SSH_KEY")"
+release_secret_decrypt_to_file "$OLD_APPLE" "$TMP_APPLE_ENV"
+apple_authkey="$(release_secret_read_shell_env_value_from_file "$TMP_APPLE_ENV" "PIKACI_APPLE_TAILSCALE_AUTHKEY")"
+apple_ssh_key="$(release_secret_read_shell_env_value_from_file "$TMP_APPLE_ENV" "PIKACI_APPLE_SSH_KEY")"
 if [ -z "$apple_authkey" ] || [ -z "$apple_ssh_key" ]; then
   echo "error: missing Apple keys in $OLD_APPLE" >&2
   exit 1
@@ -159,7 +157,7 @@ if [ "$KEEP_OLD" -eq 0 ]; then
   echo "==> removing old .age files"
   rm -f "$OLD_KEYSTORE" "$OLD_ANDROID_SIGNING" "$OLD_ZAPSTORE" "$OLD_APPLE"
 else
-  echo "note: keeping old .age files because --keep-old was set"
+  echo "note: keeping old .age files; pass --remove-old after verification to delete them"
 fi
 
 echo "ok: wrote $NEW_KEYSTORE"

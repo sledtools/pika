@@ -155,6 +155,20 @@ release_secret_read_encrypted_env_value() {
   printf '%s\n' "$value"
 }
 
+release_secret_read_shell_env_value_from_file() {
+  local env_file="$1"
+  local key="$2"
+
+  (
+    set -euo pipefail
+    # Legacy repo .age env payloads are shell-assignment files produced by our
+    # own helper scripts, so source them to recover the real multiline values.
+    # shellcheck disable=SC1090
+    source "$env_file"
+    printf '%s' "${!key:-}"
+  )
+}
+
 release_secret_load_recipients() {
   local root="$1"
   local ci_recipient_override="${2:-}"

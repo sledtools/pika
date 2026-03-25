@@ -30,6 +30,7 @@ class SopsSecretHelpersTest(unittest.TestCase):
         self.bin_plain = self.dir / "plain.bin"
         self.bin_enc = self.dir / "secret.bin.sops"
         self.bin_out = self.dir / "out.bin"
+        self.apple_secret_env = self.dir / "apple.env"
 
         run(["age-keygen", "-o", str(self.key_file)])
         recipient = run(["age-keygen", "-y", str(self.key_file)]).stdout.strip()
@@ -102,6 +103,80 @@ sops_secret_decrypt_binary "{self.bin_enc}" "{self.bin_out}"
 """
         run(["bash", "-lc", script])
         self.assertEqual(self.bin_out.read_bytes(), self.bin_plain.read_bytes())
+
+    def test_encrypt_failure_returns_nonzero(self) -> None:
+        missing = self.dir / "missing.yaml"
+        out = self.dir / "should-not-exist.sops.yaml"
+        script = f"""
+source "{ROOT / 'scripts/lib/sops-secrets.sh'}"
+SOPS_AGE_RECIPIENTS="$(age-keygen -y "{self.key_file}")"
+sops_secret_encrypt_yaml_file "{missing}" "{out}" "$SOPS_AGE_RECIPIENTS"
+"""
+        proc = subprocess.run(
+            ["bash", "-lc", script],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertFalse(out.exists())
+
+    def test_encrypt_yaml_round_trip(self) -> None:
+        plain = self.dir / "write.yaml"
+        enc = self.dir / "write.sops.yaml"
+        script = f"""
+source "{ROOT / 'scripts/lib/sops-secrets.sh'}"
+SOPS_AGE_RECIPIENTS="$(age-keygen -y "{self.key_file}")"
+sops_secret_write_yaml_file "{plain}" FOO "bar baz" MULTILINE $'line1\\nline2'
+sops_secret_encrypt_yaml_file "{plain}" "{enc}" "$SOPS_AGE_RECIPIENTS"
+SOPS_AGE_KEY_FILE="{self.key_file}"
+sops_secret_read_key "{enc}" MULTILINE
+"""
+        proc = run(["bash", "-lc", script])
+        self.assertEqual(proc.stdout, "line1\nline2")
+
+    def test_missing_key_fails(self) -> None:
+        script = f"""
+source "{ROOT / 'scripts/lib/sops-secrets.sh'}"
+SOPS_AGE_KEY_FILE="{self.key_file}"
+sops_secret_read_key "{self.yaml_enc}" DOES_NOT_EXIST
+"""
+        proc = subprocess.run(
+            ["bash", "-lc", script],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+        )
+        self.assertNotEqual(proc.returncode, 0)
+
+    def test_multiline_shell_escape_round_trip(self) -> None:
+        ssh_key = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc'def\n-----END OPENSSH PRIVATE KEY-----"
+        script = f"""
+value=$(cat <<'EOF'
+{ssh_key}
+EOF
+)
+printf 'PIKACI_APPLE_SSH_KEY=%q\\n' "$value" > "{self.apple_secret_env}"
+# shellcheck disable=SC1090
+source "{self.apple_secret_env}"
+printf '%s' "$PIKACI_APPLE_SSH_KEY"
+"""
+        proc = run(["bash", "-lc", script])
+        self.assertEqual(proc.stdout, ssh_key)
+
+    def test_legacy_shell_env_reader_round_trip(self) -> None:
+        ssh_key = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc'def\n-----END OPENSSH PRIVATE KEY-----"
+        script = f"""
+source "{ROOT / 'scripts/lib/release-secrets.sh'}"
+value=$(cat <<'EOF'
+{ssh_key}
+EOF
+)
+printf 'PIKACI_APPLE_SSH_KEY=%q\\n' "$value" > "{self.apple_secret_env}"
+release_secret_read_shell_env_value_from_file "{self.apple_secret_env}" PIKACI_APPLE_SSH_KEY
+"""
+        proc = run(["bash", "-lc", script])
+        self.assertEqual(proc.stdout, ssh_key)
 
 
 if __name__ == "__main__":

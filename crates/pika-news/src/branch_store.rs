@@ -81,6 +81,7 @@ pub struct BranchDetailRecord {
     pub tutorial_status: String,
     pub tutorial_json: Option<String>,
     pub unified_diff: Option<String>,
+    pub claude_session_id: Option<String>,
     pub error_message: Option<String>,
     pub ci_status: String,
 }
@@ -556,6 +557,7 @@ impl Store {
                         COALESCE(ba_latest.status, 'pending'),
                         ba_current.tutorial_json,
                         ba_current.unified_diff,
+                        ba_current.claude_session_id,
                         ba_latest.error_message,
                         COALESCE(ci.status, 'queued')
                  FROM branch_records br
@@ -598,8 +600,9 @@ impl Store {
                         tutorial_status: row.get(10)?,
                         tutorial_json: row.get(11)?,
                         unified_diff: row.get(12)?,
-                        error_message: row.get(13)?,
-                        ci_status: row.get(14)?,
+                        claude_session_id: row.get(13)?,
+                        error_message: row.get(14)?,
+                        ci_status: row.get(15)?,
                     })
                 },
             )
@@ -1895,6 +1898,7 @@ impl Store {
         html: &str,
         generated_head_sha: &str,
         unified_diff: &str,
+        claude_session_id: Option<&str>,
     ) -> anyhow::Result<bool> {
         self.with_connection(|conn| {
             let tx = conn
@@ -1948,16 +1952,18 @@ impl Store {
                      html = ?2,
                      generated_head_sha = ?3,
                      unified_diff = ?4,
-                     is_current = ?5,
+                     claude_session_id = ?5,
+                     is_current = ?6,
                      ready_at = CURRENT_TIMESTAMP,
                      error_message = NULL,
                      updated_at = CURRENT_TIMESTAMP
-                 WHERE id = ?6",
+                 WHERE id = ?7",
                 params![
                     tutorial_json,
                     html,
                     generated_head_sha,
                     unified_diff,
+                    claude_session_id,
                     if activate { 1 } else { 0 },
                     artifact_id,
                 ],
@@ -4301,6 +4307,7 @@ mod tests {
                 "<p>ok</p>",
                 "head333",
                 "@@ -1 +1 @@",
+                None,
             )
             .expect("mark branch artifact ready");
         store

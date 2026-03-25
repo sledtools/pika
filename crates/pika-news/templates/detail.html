@@ -181,13 +181,108 @@
       .tutorial-column {
         min-width: 0;
       }
+      .tutorial-column {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+      }
       .review-rail {
         display: flex;
         flex-direction: column;
         gap: 1rem;
       }
-      .tutorial-column .panel + .panel {
-        margin-top: 1rem;
+      .discussion-panel {
+        display: flex;
+        flex-direction: column;
+        gap: 0.9rem;
+      }
+      .discussion-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.75rem;
+        align-items: flex-start;
+      }
+      .discussion-head h2 { margin-bottom: 0.35rem; }
+      .discussion-scope {
+        margin: 0;
+        line-height: 1.45;
+      }
+      .discussion-messages {
+        min-height: 13rem;
+        max-height: 24rem;
+        overflow-y: auto;
+        padding: 0.75rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.6rem;
+        border-radius: 12px;
+        background: var(--badge-bg-alt);
+        border: 1px solid var(--border);
+      }
+      .discussion-msg {
+        padding: 0.6rem 0.75rem;
+        border-radius: 12px;
+        font-size: 0.88rem;
+        line-height: 1.45;
+        max-width: 92%;
+        word-wrap: break-word;
+        white-space: pre-wrap;
+      }
+      .discussion-msg.user {
+        background: var(--chat-user-bg);
+        color: var(--chat-user-text);
+        align-self: flex-end;
+      }
+      .discussion-msg.assistant {
+        background: var(--chat-assistant-bg);
+        color: var(--chat-assistant-text);
+        align-self: flex-start;
+      }
+      .discussion-msg pre {
+        overflow-x: auto;
+        background: var(--badge-bg);
+        border-radius: 6px;
+        padding: 0.5rem;
+        margin: 0.4rem 0;
+      }
+      .discussion-msg code { font-size: 0.82rem; }
+      .discussion-msg p { margin: 0.3rem 0; }
+      .discussion-msg p:first-child { margin-top: 0; }
+      .discussion-msg p:last-child { margin-bottom: 0; }
+      .discussion-msg ul, .discussion-msg ol { margin: 0.3rem 0; padding-left: 1.2rem; }
+      .discussion-empty,
+      .discussion-disabled {
+        padding: 1rem;
+        border-radius: 12px;
+        border: 1px dashed var(--border);
+        color: var(--text-muted);
+        background: var(--badge-bg-row);
+        font-size: 0.88rem;
+        line-height: 1.45;
+      }
+      .discussion-disabled strong {
+        display: block;
+        color: var(--text);
+        font-size: 0.92rem;
+        margin-bottom: 0.35rem;
+      }
+      .discussion-compose {
+        display: flex;
+        gap: 0.6rem;
+      }
+      .discussion-compose input {
+        flex: 1;
+        border: 1px solid var(--input-border);
+        border-radius: 10px;
+        padding: 0.55rem 0.7rem;
+        font-size: 0.9rem;
+        background: var(--badge-bg);
+        color: var(--text);
+      }
+      .discussion-status {
+        color: var(--text-muted);
+        font-size: 0.84rem;
+        min-height: 1.2rem;
       }
       .diff-row {
         margin-top: 1.25rem;
@@ -256,6 +351,11 @@
             <p class="branch-kicker">{{ repo }} branch #{{ branch_id }}</p>
             <h1>{{ branch_name }}</h1>
             <p class="branch-title">{{ title }}</p>
+            <p class="muted">Target branch: {{ target_branch }}</p>
+            {% match merge_commit_sha %}
+            {% when Some with (sha) %}
+            <p class="muted">Merge Commit: <code>{{ sha }}</code></p>
+            {% when None %}{% endmatch %}
           </div>
           <div class="status-row">
             <span class="status tone-neutral">branch: {{ branch_state }}</span>
@@ -318,6 +418,37 @@
           </div>
 
           <div class="tutorial-column">
+            <section class="panel discussion-panel">
+              <div class="discussion-head">
+                <div>
+                  <p class="branch-kicker">Branch Review</p>
+                  <h2>Discussion</h2>
+                </div>
+                <span class="status {% if branch_chat_ready %}tone-success{% else %}tone-warning{% endif %}">
+                  {% if branch_chat_ready %}artifact ready{% else %}artifact pending{% endif %}
+                </span>
+              </div>
+              <p class="discussion-scope muted">Discussion is scoped to the current branch tutorial artifact. New tutorial artifacts start a fresh thread for later review turns.</p>
+              <div id="discussion-disabled" class="discussion-disabled">
+                <strong id="discussion-disabled-title">{% if branch_chat_ready %}Sign in to load branch discussion.{% else %}Discussion opens after tutorial generation.{% endif %}</strong>
+                <span id="discussion-disabled-copy">
+                  {% if branch_chat_ready %}
+                  Branch discussion is available to approved chat accounts once you sign in.
+                  {% else %}
+                  This branch does not have a ready tutorial artifact yet, so there is no discussion thread to load.
+                  {% endif %}
+                </span>
+              </div>
+              <div id="discussion-main" style="display:none;">
+                <div class="discussion-messages" id="discussion-messages"></div>
+                <div class="discussion-compose" style="margin-top:0.9rem;">
+                  <input type="text" id="discussion-input" placeholder="Ask about this branch review..." autocomplete="off" />
+                  <button id="discussion-send" type="button">Send</button>
+                </div>
+              </div>
+              <div id="discussion-status" class="discussion-status"></div>
+            </section>
+
             {% match error_message %}
             {% when Some with (msg) %}
             <section class="panel">
@@ -458,7 +589,16 @@
         const branchId = {{ branch_id }};
         const reviewMode = {% if review_mode %}true{% else %}false{% endif %};
         const branchCiSummaryEnabled = {% if branch_ci_summary_enabled %}true{% else %}false{% endif %};
+        const branchChatReady = {% if branch_chat_ready %}true{% else %}false{% endif %};
         const branchCiSignalKey = 'pika_news_branch_ci_signal';
+        const discussionDisabled = document.getElementById('discussion-disabled');
+        const discussionDisabledTitle = document.getElementById('discussion-disabled-title');
+        const discussionDisabledCopy = document.getElementById('discussion-disabled-copy');
+        const discussionMain = document.getElementById('discussion-main');
+        const discussionMessages = document.getElementById('discussion-messages');
+        const discussionInput = document.getElementById('discussion-input');
+        const discussionSend = document.getElementById('discussion-send');
+        const discussionStatus = document.getElementById('discussion-status');
         let branchCiSource = null;
 
         function recoveryButtons() {
@@ -467,6 +607,159 @@
 
         function authToken() {
           return window.pikaAuth && window.pikaAuth.getToken ? window.pikaAuth.getToken() : null;
+        }
+
+        function setDiscussionStatus(message) {
+          if (!discussionStatus) return;
+          discussionStatus.textContent = message || '';
+        }
+
+        function setDiscussionLocked(title, copy) {
+          if (discussionMain) discussionMain.style.display = 'none';
+          if (discussionDisabled) discussionDisabled.style.display = 'block';
+          if (discussionDisabledTitle) discussionDisabledTitle.textContent = title;
+          if (discussionDisabledCopy) discussionDisabledCopy.textContent = copy;
+        }
+
+        function showDiscussionMain() {
+          if (discussionDisabled) discussionDisabled.style.display = 'none';
+          if (discussionMain) discussionMain.style.display = 'block';
+        }
+
+        function addDiscussionMessage(role, content) {
+          if (!discussionMessages) return;
+          const div = document.createElement('div');
+          div.className = 'discussion-msg ' + role;
+          div.textContent = content;
+          discussionMessages.appendChild(div);
+          discussionMessages.scrollTop = discussionMessages.scrollHeight;
+        }
+
+        function renderDiscussionEmptyState() {
+          if (!discussionMessages) return;
+          const empty = document.createElement('div');
+          empty.className = 'discussion-empty';
+          empty.textContent = 'No branch discussion yet. Start the thread with a review question when this artifact is ready.';
+          discussionMessages.appendChild(empty);
+        }
+
+        async function loadBranchDiscussion() {
+          if (!branchChatReady || !discussionMessages) {
+            setDiscussionLocked(
+              'Discussion opens after tutorial generation.',
+              'This branch does not have a ready tutorial artifact yet, so there is no discussion thread to load.'
+            );
+            return;
+          }
+          const token = authToken();
+          if (!token) {
+            setDiscussionLocked(
+              'Sign in to load branch discussion.',
+              'Branch discussion is available to approved chat accounts once you sign in.'
+            );
+            return;
+          }
+          try {
+            const res = await fetch(`/news/branch/${branchId}/chat`, {
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            if (res.status === 401) {
+              if (window.pikaAuth && window.pikaAuth.clear) {
+                window.pikaAuth.clear();
+              }
+              setDiscussionLocked(
+                'Sign in to load branch discussion.',
+                'Your session expired. Sign in again to reopen branch discussion.'
+              );
+              return;
+            }
+            if (res.status === 403) {
+              setDiscussionLocked(
+                'Discussion access unavailable.',
+                'This account can view the branch but does not have branch discussion access.'
+              );
+              return;
+            }
+            if (res.status === 404) {
+              setDiscussionLocked(
+                'Discussion opens after tutorial generation.',
+                'The current branch tutorial artifact does not have a discussion session yet.'
+              );
+              return;
+            }
+            if (!res.ok) throw new Error('failed to load branch discussion');
+            const data = await res.json();
+            showDiscussionMain();
+            discussionMessages.innerHTML = '';
+            if (!data.messages || data.messages.length === 0) {
+              renderDiscussionEmptyState();
+              return;
+            }
+            data.messages.forEach((message) => addDiscussionMessage(message.role, message.content));
+          } catch (err) {
+            setDiscussionLocked(
+              'Unable to load discussion.',
+              err.message || String(err)
+            );
+          }
+        }
+
+        async function sendBranchDiscussion() {
+          if (!discussionInput || !discussionSend) return;
+          const message = discussionInput.value.trim();
+          if (!message) return;
+          const token = authToken();
+          if (!token) {
+            setDiscussionLocked(
+              'Sign in to load branch discussion.',
+              'Branch discussion is available to approved chat accounts once you sign in.'
+            );
+            return;
+          }
+
+          discussionInput.value = '';
+          discussionSend.disabled = true;
+          if (discussionMessages && discussionMessages.querySelector('.discussion-empty')) {
+            discussionMessages.innerHTML = '';
+          }
+          addDiscussionMessage('user', message);
+          setDiscussionStatus('Thinking...');
+
+          try {
+            const res = await fetch(`/news/branch/${branchId}/chat`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + token
+              },
+              body: JSON.stringify({ message })
+            });
+            if (res.status === 401) {
+              if (window.pikaAuth && window.pikaAuth.clear) {
+                window.pikaAuth.clear();
+              }
+              setDiscussionLocked(
+                'Sign in to load branch discussion.',
+                'Your session expired. Sign in again to reopen branch discussion.'
+              );
+              setDiscussionStatus('');
+              return;
+            }
+            if (res.status === 403) {
+              throw new Error('branch discussion access is unavailable for this account');
+            }
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+              throw new Error(data.error || 'failed to send branch discussion message');
+            }
+            setDiscussionStatus('');
+            addDiscussionMessage('assistant', data.content || '');
+          } catch (err) {
+            setDiscussionStatus(err.message || String(err));
+          } finally {
+            discussionSend.disabled = false;
+            if (discussionInput) discussionInput.focus();
+          }
         }
 
         function showActions() {
@@ -506,6 +799,17 @@
         if (closeBtn) {
           closeBtn.addEventListener('click', () => {
             branchAction(`/news/branch/${branchId}/close`, closeBtn, 'Closing branch...', 'Branch closed.');
+          });
+        }
+        if (discussionSend) {
+          discussionSend.addEventListener('click', sendBranchDiscussion);
+        }
+        if (discussionInput) {
+          discussionInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault();
+              sendBranchDiscussion();
+            }
           });
         }
 
@@ -677,8 +981,10 @@
         window.addEventListener('pika-auth', () => {
           markCurrentReviewSeen().finally(refreshReviewControls);
         });
+        window.addEventListener('pika-auth', loadBranchDiscussion);
         window.addEventListener('storage', handleBranchCiSignal);
         showActions();
+        loadBranchDiscussion();
         startBranchCiStream(false);
       })();
     </script>

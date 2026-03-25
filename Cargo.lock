@@ -6241,6 +6241,7 @@ dependencies = [
  "clap",
  "fs2",
  "hex",
+ "pika-cloud",
  "serde",
  "serde_json",
  "sha2",

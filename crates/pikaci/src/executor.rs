@@ -12,6 +12,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, anyhow, bail};
 use chrono::Utc;
 use fs2::FileExt;
+use pika_cloud::{
+    CLOUD_GUEST_LOG_PATH, EVENTS_PATH, GUEST_REQUEST_PATH, IncusGuestRunRequest, RESULT_PATH,
+    STATUS_PATH,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -64,19 +68,6 @@ struct GuestResult {
     exit_code: i32,
     finished_at: String,
     message: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
-struct IncusGuestRequest {
-    schema_version: u32,
-    command: String,
-    timeout_secs: u64,
-    run_as_root: bool,
-    workspace_dir: String,
-    cargo_home_dir: String,
-    target_dir: String,
-    xdg_state_home_dir: String,
-    home_dir: String,
 }
 
 struct GuestFlakePaths<'a> {
@@ -279,10 +270,9 @@ const REMOTE_LINUX_VM_INCUS_IMAGE_ALIAS_DEFAULT: &str = "pikaci/dev";
 const REMOTE_LINUX_VM_INCUS_READ_ONLY_DISK_IO_BUS: &str = "virtiofs";
 const REMOTE_LINUX_VM_INCUS_RUN_BINARY: &str = "/run/current-system/sw/bin/pikaci-incus-run";
 const REMOTE_LINUX_VM_INCUS_ARTIFACTS_DIR: &str = "/artifacts";
-const REMOTE_LINUX_VM_INCUS_GUEST_REQUEST_PATH: &str = "/artifacts/guest-request.json";
 const REMOTE_LINUX_VM_INCUS_CARGO_HOME_DIR: &str = "/cargo-home";
 const REMOTE_LINUX_VM_INCUS_TARGET_DIR: &str = "/cargo-target";
-const REMOTE_LINUX_VM_INCUS_XDG_STATE_HOME_DIR: &str = "/artifacts/xdg-state";
+const REMOTE_LINUX_VM_INCUS_XDG_STATE_HOME_DIR: &str = "/run/pika-cloud/xdg-state";
 const REMOTE_LINUX_VM_INCUS_NON_ROOT_HOME_DIR: &str = "/home/pikaci";
 const REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH: &str = "/workspace/snapshot";
 #[cfg(test)]
@@ -2930,12 +2920,13 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    use pika_cloud::{GUEST_REQUEST_PATH, INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION};
+
     use super::{
         GuestFlakePaths, HostContext, HostLocalCommandMode, HostLocalDevEnvState,
         HostLocalEnvironmentRefresh, REMOTE_LINUX_VM_INCUS_CARGO_HOME_DIR,
-        REMOTE_LINUX_VM_INCUS_GUEST_REQUEST_PATH, REMOTE_LINUX_VM_INCUS_NON_ROOT_HOME_DIR,
-        REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH, REMOTE_LINUX_VM_INCUS_TARGET_DIR,
-        REMOTE_LINUX_VM_INCUS_WORKSPACE_BUILD_MOUNT_PATH,
+        REMOTE_LINUX_VM_INCUS_NON_ROOT_HOME_DIR, REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH,
+        REMOTE_LINUX_VM_INCUS_TARGET_DIR, REMOTE_LINUX_VM_INCUS_WORKSPACE_BUILD_MOUNT_PATH,
         REMOTE_LINUX_VM_INCUS_WORKSPACE_DEPS_MOUNT_PATH, REMOTE_LINUX_VM_INCUS_XDG_STATE_HOME_DIR,
         REMOTE_MICROVM_VIRTIOFS_SOCKETS, RemoteIncusContext, RemoteLinuxVmSharedContext,
         RemoteMicrovmContext, attach_remote_linux_vm_execution,
@@ -3119,10 +3110,7 @@ mod tests {
 
     #[test]
     fn remote_linux_incus_launch_uses_incus_exec_runner() {
-        let command = incus::build_launch_command(
-            &sample_incus_context(),
-            REMOTE_LINUX_VM_INCUS_GUEST_REQUEST_PATH,
-        );
+        let command = incus::build_launch_command(&sample_incus_context(), GUEST_REQUEST_PATH);
 
         assert!(command.contains("sudo incus"));
         assert!(command.contains("'exec'"));
@@ -3138,7 +3126,10 @@ mod tests {
     #[test]
     fn remote_linux_incus_guest_request_captures_command_timeout_and_user() {
         let request = incus::build_guest_request(&sample_shell_job("actionlint"));
-        assert_eq!(request.schema_version, 1);
+        assert_eq!(
+            request.schema_version,
+            INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION
+        );
         assert_eq!(request.command, "bash --noprofile --norc -lc 'actionlint'");
         assert_eq!(request.timeout_secs, 120);
         assert!(!request.run_as_root);

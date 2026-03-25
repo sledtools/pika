@@ -39,10 +39,10 @@ pub(super) fn select_image_fingerprint_from_json(
     Ok(select_remote_incus_image_record(records, image_alias)?.fingerprint)
 }
 
-pub(super) fn build_remote_incus_guest_request(job: &JobSpec) -> IncusGuestRequest {
+pub(super) fn build_remote_incus_guest_request(job: &JobSpec) -> IncusGuestRunRequest {
     let (command, run_as_root) = compiled_guest_command(job);
-    IncusGuestRequest {
-        schema_version: 1,
+    IncusGuestRunRequest {
+        schema_version: pika_cloud::INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION,
         command,
         timeout_secs: job.timeout_secs,
         run_as_root,
@@ -59,7 +59,7 @@ pub(super) fn build_remote_incus_guest_request(job: &JobSpec) -> IncusGuestReque
 }
 
 #[cfg(test)]
-pub(super) fn build_guest_request(job: &JobSpec) -> IncusGuestRequest {
+pub(super) fn build_guest_request(job: &JobSpec) -> IncusGuestRunRequest {
     build_remote_incus_guest_request(job)
 }
 
@@ -97,14 +97,14 @@ pub(super) fn build_remote_incus_process_command(
 ) -> anyhow::Result<String> {
     write_remote_incus_json(
         remote,
-        REMOTE_LINUX_VM_INCUS_GUEST_REQUEST_PATH,
+        GUEST_REQUEST_PATH,
         &build_remote_incus_guest_request(job),
         log_path,
         "[pikaci] write Incus guest request",
     )?;
     Ok(build_remote_incus_launch_command(
         remote,
-        REMOTE_LINUX_VM_INCUS_GUEST_REQUEST_PATH,
+        GUEST_REQUEST_PATH,
     ))
 }
 
@@ -345,24 +345,20 @@ pub(super) fn collect_remote_incus_artifacts(
     remote: &RemoteIncusContext,
     ctx: &HostContext,
 ) -> anyhow::Result<()> {
+    copy_remote_incus_file_to_local(remote, CLOUD_GUEST_LOG_PATH, &ctx.guest_log_path)?;
     copy_remote_incus_file_to_local(
         remote,
-        REMOTE_LINUX_VM_INCUS_GUEST_LOG_PATH,
-        &ctx.guest_log_path,
-    )?;
-    copy_remote_incus_file_to_local(
-        remote,
-        REMOTE_LINUX_VM_INCUS_EVENTS_PATH,
+        EVENTS_PATH,
         &ctx.job_dir.join("artifacts/events.jsonl"),
     )?;
     copy_remote_incus_file_to_local(
         remote,
-        REMOTE_LINUX_VM_INCUS_STATUS_PATH,
+        STATUS_PATH,
         &ctx.job_dir.join("artifacts/status.json"),
     )?;
     copy_remote_incus_file_to_local(
         remote,
-        REMOTE_LINUX_VM_INCUS_RESULT_PATH,
+        RESULT_PATH,
         &ctx.job_dir.join("artifacts/result.json"),
     )
 }

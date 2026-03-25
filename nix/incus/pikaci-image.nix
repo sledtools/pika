@@ -14,6 +14,9 @@ let
     PIKACI_UID = 1000
     USERS_GID = 100
     SYSTEM_BIN = "/run/current-system/sw/bin"
+    INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION = 1
+    LIFECYCLE_SCHEMA_VERSION = 1
+    EVENT_SEQ = 0
 
 
     def finished_at() -> str:
@@ -25,27 +28,31 @@ let
         path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-    def write_status(state_dir: pathlib.Path, state: str, message: str) -> None:
-        write_json(
-            state_dir / "status.json",
-            {
-                "schema_version": 1,
-                "state": state,
-                "updated_at": finished_at(),
-                "message": message,
-            },
-        )
+    def write_status(state_dir: pathlib.Path, state: str, message: str, **fields) -> None:
+        payload = {
+            "schema_version": LIFECYCLE_SCHEMA_VERSION,
+            "state": state,
+            "updated_at": finished_at(),
+            "message": message,
+        }
+        if fields:
+            payload["details"] = fields
+        write_json(state_dir / "status.json", payload)
 
 
     def append_event(events_path: pathlib.Path, kind: str, message: str, **fields) -> None:
+        global EVENT_SEQ
+        EVENT_SEQ += 1
         events_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "schema_version": 1,
+            "schema_version": LIFECYCLE_SCHEMA_VERSION,
+            "seq": EVENT_SEQ,
             "kind": kind,
             "timestamp": finished_at(),
             "message": message,
         }
-        payload.update(fields)
+        if fields:
+            payload["details"] = fields
         with events_path.open("a", encoding="utf-8") as file:
             file.write(json.dumps(payload) + "\n")
 
@@ -121,7 +128,6 @@ let
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     guest_log_path = logs_dir / "guest.log"
     events_path = state_dir / "events.jsonl"
-    write_status(state_dir, "running", "incus guest booted")
     with guest_log_path.open("a", encoding="utf-8") as log_file:
         boot_line = (
             f"[pikaci] incus guest booted at "
@@ -129,10 +135,11 @@ let
         )
         print(boot_line, flush=True)
         print(boot_line, file=log_file, flush=True)
-        append_event(events_path, "boot", "incus guest booted")
+        write_status(state_dir, "booted", "incus guest booted")
+        append_event(events_path, "booted", "incus guest booted")
         try:
             request = json.loads(request_path.read_text(encoding="utf-8"))
-            if request.get("schema_version") != 1:
+            if request.get("schema_version") != INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION:
                 raise ValueError(
                     f"unsupported Incus guest request schema_version={request.get('schema_version')!r}"
                 )
@@ -198,7 +205,20 @@ let
                 child_env["HOME"] = str(home_dir)
                 child_command = ["runuser", "-u", "pikaci", "-m", "--", *command_prefix]
 
-            append_event(events_path, "run", "launching guest command", command=command)
+            write_status(
+                state_dir,
+                "starting",
+                "launching guest command",
+                command=command,
+                run_as_root=run_as_root,
+            )
+            append_event(
+                events_path,
+                "starting",
+                "launching guest command",
+                command=command,
+                run_as_root=run_as_root,
+            )
             completed = subprocess.Popen(
                 child_command,
                 cwd=workspace_dir,
@@ -215,7 +235,19 @@ let
                 if exit_code == 0
                 else f"test command exited with {exit_code}"
             )
-            append_event(events_path, "result", message, exit_code=exit_code)
+            lifecycle_state = "completed" if exit_code == 0 else "failed"
+            write_status(
+                state_dir,
+                lifecycle_state,
+                message,
+                exit_code=exit_code,
+            )
+            append_event(
+                events_path,
+                lifecycle_state,
+                message,
+                exit_code=exit_code,
+            )
             write_result(state_dir, exit_code, message)
             raise SystemExit(exit_code)
         except Exception as exc:
@@ -229,7 +261,8 @@ let
                 file=log_file,
                 flush=True,
             )
-            append_event(events_path, "error", f"Incus guest bootstrap failed: {exc}")
+            write_status(state_dir, "failed", f"Incus guest bootstrap failed: {exc}")
+            append_event(events_path, "failed", f"Incus guest bootstrap failed: {exc}")
             write_result(state_dir, 2, f"Incus guest bootstrap failed: {exc}")
             raise SystemExit(2)
   '';

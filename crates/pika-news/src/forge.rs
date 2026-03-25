@@ -1237,7 +1237,7 @@ mod tests {
         write_merge_tree, write_mirror_lock_metadata, MirrorLockMetadata,
     };
     use crate::config::ForgeRepoConfig;
-    use crate::pikaci_store::PikaciRunStore;
+    use crate::pikaci_store::{PikaciRunStore, TestPikaciJobFixture, TestPikaciRunFixture};
 
     fn git<P: AsRef<Path>>(cwd: P, args: &[&str]) {
         let output = Command::new("git")
@@ -1524,6 +1524,18 @@ mod tests {
     #[test]
     fn staged_pikaci_lane_reports_run_id_and_human_log_summary() {
         let (_root, forge_repo, seed) = setup_repo();
+        let run_store = PikaciRunStore::from_forge_repo(&forge_repo);
+        let mut fixture = TestPikaciRunFixture::passed(
+            "pikaci-run-123",
+            Some("pre-merge-pika-rust"),
+            Some("Run staged pika rust"),
+        );
+        fixture.jobs.push(TestPikaciJobFixture::passed_remote_linux(
+            "job-one", "job one",
+        ));
+        run_store
+            .write_fixture(&fixture)
+            .expect("write persisted run fixture");
         let scripts_dir = seed.join("scripts");
         fs::create_dir_all(&scripts_dir).expect("create scripts dir");
         let wrapper_path = scripts_dir.join("pikaci-staged-linux-remote.sh");
@@ -1536,13 +1548,6 @@ mod tests {
                 "  echo \"unexpected args: $*\" >&2\n",
                 "  exit 99\n",
                 "fi\n",
-                "run_root=\"${PIKACI_STATE_ROOT:?missing-state-root}/runs/pikaci-run-123/jobs/job-one\"\n",
-                "mkdir -p \"$run_root\"\n",
-                "printf 'host log\\n' > \"$run_root/host.log\"\n",
-                "printf 'guest log\\n' > \"$run_root/guest.log\"\n",
-                "cat > \"${PIKACI_STATE_ROOT}/runs/pikaci-run-123/run.json\" <<EOF_RUN\n",
-                "{\"run_id\":\"pikaci-run-123\",\"status\":\"passed\",\"rerun_of\":null,\"target_id\":\"pre-merge-pika-rust\",\"target_description\":\"Run staged pika rust\",\"source_root\":\"/tmp/source\",\"snapshot_dir\":\"/tmp/snapshot\",\"git_head\":null,\"git_dirty\":null,\"created_at\":\"2026-03-19T00:00:00Z\",\"finished_at\":\"2026-03-19T00:00:02Z\",\"plan_path\":null,\"prepared_outputs_path\":null,\"prepared_output_consumer\":null,\"prepared_output_mode\":null,\"prepared_output_invocation_mode\":null,\"prepared_output_invocation_wrapper_program\":null,\"prepared_output_launcher_transport_mode\":null,\"prepared_output_launcher_transport_program\":null,\"prepared_output_launcher_transport_host\":null,\"prepared_output_launcher_transport_remote_launcher_program\":null,\"prepared_output_launcher_transport_remote_helper_program\":null,\"prepared_output_launcher_transport_remote_work_dir\":null,\"changed_files\":[],\"filters\":[],\"message\":null,\"prepare_timings\":[],\"jobs\":[{\"id\":\"job-one\",\"description\":\"job one\",\"status\":\"passed\",\"executor\":\"remote_linux_vm\",\"plan_node_id\":null,\"timeout_secs\":30,\"host_log_path\":\"$run_root/host.log\",\"guest_log_path\":\"$run_root/guest.log\",\"started_at\":\"2026-03-19T00:00:01Z\",\"finished_at\":\"2026-03-19T00:00:02Z\",\"exit_code\":0,\"message\":null,\"pre_execution_prepare_duration_ms\":null,\"remote_linux_vm_execution\":null}]}\n",
-                "EOF_RUN\n",
                 "cat <<'EOF'\n",
                 "{\"event\":\"run_started\",\"run_id\":\"pikaci-run-123\",\"created_at\":\"2026-03-19T00:00:00Z\",\"target_id\":\"pre-merge-pika-rust\",\"target_description\":\"Run staged pika rust\"}\n",
                 "{\"event\":\"job_started\",\"run_id\":\"pikaci-run-123\",\"job\":{\"id\":\"job-one\",\"description\":\"job one\",\"status\":\"running\",\"executor\":\"remote_linux_vm\",\"timeout_secs\":30,\"host_log_path\":\"/tmp/host.log\",\"guest_log_path\":\"/tmp/guest.log\",\"started_at\":\"2026-03-19T00:00:01Z\",\"finished_at\":null,\"exit_code\":null,\"message\":null,\"remote_linux_vm_execution\":null}}\n",
@@ -1598,11 +1603,7 @@ mod tests {
         assert!(result
             .log
             .contains("[pikaci] job finished: job-one · status=passed"));
-        let run_store = PikaciRunStore::from_forge_repo(&forge_repo);
-        assert!(run_store
-            .run_dir("pikaci-run-123")
-            .join("run.json")
-            .is_file());
+        assert!(run_store.run_record_path("pikaci-run-123").is_file());
         assert!(run_store
             .host_log_path("pikaci-run-123", "job-one")
             .is_file());
@@ -1611,6 +1612,15 @@ mod tests {
     #[test]
     fn explicit_structured_pikaci_target_does_not_depend_on_wrapper_name() {
         let (_root, forge_repo, seed) = setup_repo();
+        let run_store = PikaciRunStore::from_forge_repo(&forge_repo);
+        let fixture = TestPikaciRunFixture::passed(
+            "pikaci-run-456",
+            Some("pre-merge-pika-rust"),
+            Some("Run staged pika rust"),
+        );
+        run_store
+            .write_fixture(&fixture)
+            .expect("write persisted run fixture");
         let scripts_dir = seed.join("scripts");
         fs::create_dir_all(&scripts_dir).expect("create scripts dir");
         let wrapper_path = scripts_dir.join("custom-structured-lane.sh");
@@ -1623,13 +1633,6 @@ mod tests {
                 "  echo \"unexpected args: $*\" >&2\n",
                 "  exit 99\n",
                 "fi\n",
-                "run_root=\"${PIKACI_STATE_ROOT:?missing-state-root}/runs/pikaci-run-456/jobs/job-one\"\n",
-                "mkdir -p \"$run_root\"\n",
-                "printf 'host log\\n' > \"$run_root/host.log\"\n",
-                "printf 'guest log\\n' > \"$run_root/guest.log\"\n",
-                "cat > \"${PIKACI_STATE_ROOT}/runs/pikaci-run-456/run.json\" <<EOF_RUN\n",
-                "{\"run_id\":\"pikaci-run-456\",\"status\":\"passed\",\"rerun_of\":null,\"target_id\":\"pre-merge-pika-rust\",\"target_description\":\"Run staged pika rust\",\"source_root\":\"/tmp/source\",\"snapshot_dir\":\"/tmp/snapshot\",\"git_head\":null,\"git_dirty\":null,\"created_at\":\"2026-03-19T00:00:00Z\",\"finished_at\":\"2026-03-19T00:00:02Z\",\"plan_path\":null,\"prepared_outputs_path\":null,\"prepared_output_consumer\":null,\"prepared_output_mode\":null,\"prepared_output_invocation_mode\":null,\"prepared_output_invocation_wrapper_program\":null,\"prepared_output_launcher_transport_mode\":null,\"prepared_output_launcher_transport_program\":null,\"prepared_output_launcher_transport_host\":null,\"prepared_output_launcher_transport_remote_launcher_program\":null,\"prepared_output_launcher_transport_remote_helper_program\":null,\"prepared_output_launcher_transport_remote_work_dir\":null,\"changed_files\":[],\"filters\":[],\"message\":null,\"prepare_timings\":[],\"jobs\":[]}\n",
-                "EOF_RUN\n",
                 "cat <<'EOF'\n",
                 "{\"event\":\"run_started\",\"run_id\":\"pikaci-run-456\",\"created_at\":\"2026-03-19T00:00:00Z\",\"target_id\":\"pre-merge-pika-rust\",\"target_description\":\"Run staged pika rust\"}\n",
                 "{\"event\":\"run_finished\",\"run\":{\"run_id\":\"pikaci-run-456\",\"status\":\"passed\",\"rerun_of\":null,\"target_id\":\"pre-merge-pika-rust\",\"target_description\":\"Run staged pika rust\",\"source_root\":\"/tmp/source\",\"snapshot_dir\":\"/tmp/snapshot\",\"git_head\":null,\"git_dirty\":null,\"created_at\":\"2026-03-19T00:00:00Z\",\"finished_at\":\"2026-03-19T00:00:02Z\",\"plan_path\":null,\"prepared_outputs_path\":null,\"prepared_output_consumer\":null,\"prepared_output_mode\":null,\"prepared_output_invocation_mode\":null,\"prepared_output_invocation_wrapper_program\":null,\"prepared_output_launcher_transport_mode\":null,\"prepared_output_launcher_transport_program\":null,\"prepared_output_launcher_transport_host\":null,\"prepared_output_launcher_transport_remote_launcher_program\":null,\"prepared_output_launcher_transport_remote_helper_program\":null,\"prepared_output_launcher_transport_remote_work_dir\":null,\"changed_files\":[],\"filters\":[],\"message\":null,\"jobs\":[]}}\n",
@@ -1670,11 +1673,7 @@ mod tests {
             result.pikaci_target_id.as_deref(),
             Some("pre-merge-pika-rust")
         );
-        let run_store = PikaciRunStore::from_forge_repo(&forge_repo);
-        assert!(run_store
-            .run_dir("pikaci-run-456")
-            .join("run.json")
-            .is_file());
+        assert!(run_store.run_record_path("pikaci-run-456").is_file());
     }
 
     #[test]

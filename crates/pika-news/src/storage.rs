@@ -720,15 +720,14 @@ impl Store {
     pub fn get_branch_review_artifact_session_id(
         &self,
         branch_id: i64,
+        artifact_id: i64,
     ) -> anyhow::Result<Option<String>> {
         self.with_connection(|conn| {
             conn.query_row(
                 "SELECT claude_session_id
                  FROM branch_artifact_versions
-                 WHERE branch_id = ?1 AND is_current = 1 AND status = 'ready'
-                 ORDER BY version DESC
-                 LIMIT 1",
-                params![branch_id],
+                 WHERE branch_id = ?1 AND id = ?2 AND status = 'ready'",
+                params![branch_id, artifact_id],
                 |row| row.get(0),
             )
             .optional()
@@ -739,23 +738,11 @@ impl Store {
 
     pub fn get_or_create_branch_review_chat_session(
         &self,
-        branch_id: i64,
+        artifact_id: i64,
         npub: &str,
         claude_session_id: &str,
     ) -> anyhow::Result<(i64, Vec<ChatMessage>)> {
         self.with_connection(|conn| {
-            let artifact_id: i64 = conn
-                .query_row(
-                    "SELECT id
-                     FROM branch_artifact_versions
-                     WHERE branch_id = ?1 AND is_current = 1 AND status = 'ready'
-                     ORDER BY version DESC
-                     LIMIT 1",
-                    params![branch_id],
-                    |row| row.get(0),
-                )
-                .context("lookup branch review artifact for chat session")?;
-
             let existing: Option<i64> = conn
                 .query_row(
                     "SELECT id
@@ -4249,7 +4236,11 @@ mod tests {
         mark_latest_branch_artifact_ready(&store, branch.branch_id, "head-1");
 
         let (first_session_id, first_messages) = store
-            .get_or_create_branch_review_chat_session(branch.branch_id, "npub1chat", "sid-v1")
+            .get_or_create_branch_review_chat_session(
+                latest_branch_artifact_id(&store, branch.branch_id),
+                "npub1chat",
+                "sid-v1",
+            )
             .expect("create initial branch chat session");
         assert!(first_messages.is_empty());
         store
@@ -4273,7 +4264,7 @@ mod tests {
             .expect("mark next branch artifact ready");
 
         let (second_session_id, second_messages) = store
-            .get_or_create_branch_review_chat_session(branch.branch_id, "npub1chat", "sid-v2")
+            .get_or_create_branch_review_chat_session(next_artifact_id, "npub1chat", "sid-v2")
             .expect("create second branch chat session");
         assert_ne!(first_session_id, second_session_id);
         assert!(second_messages.is_empty());

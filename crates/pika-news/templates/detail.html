@@ -587,6 +587,7 @@
         const reviewPosEl = document.getElementById('review-pos');
         const branchCiSummary = document.getElementById('branch-ci-summary');
         const branchId = {{ branch_id }};
+        const branchChatArtifactId = {% match branch_chat_artifact_id %}{% when Some with (artifact_id) %}{{ artifact_id }}{% when None %}null{% endmatch %};
         const reviewMode = {% if review_mode %}true{% else %}false{% endif %};
         const branchCiSummaryEnabled = {% if branch_ci_summary_enabled %}true{% else %}false{% endif %};
         const branchChatReady = {% if branch_chat_ready %}true{% else %}false{% endif %};
@@ -644,7 +645,7 @@
         }
 
         async function loadBranchDiscussion() {
-          if (!branchChatReady || !discussionMessages) {
+          if (!branchChatReady || branchChatArtifactId === null || !discussionMessages) {
             setDiscussionLocked(
               'Discussion opens after tutorial generation.',
               'This branch does not have a ready tutorial artifact yet, so there is no discussion thread to load.'
@@ -660,7 +661,7 @@
             return;
           }
           try {
-            const res = await fetch(`/news/branch/${branchId}/chat`, {
+            const res = await fetch(`/news/branch/${branchId}/chat?artifact_id=${branchChatArtifactId}`, {
               headers: { 'Authorization': 'Bearer ' + token }
             });
             if (res.status === 401) {
@@ -717,6 +718,14 @@
             return;
           }
 
+          if (branchChatArtifactId === null) {
+            setDiscussionLocked(
+              'Discussion opens after tutorial generation.',
+              'This branch does not have a stable tutorial artifact id yet, so there is no discussion thread to send to.'
+            );
+            return;
+          }
+
           discussionInput.value = '';
           discussionSend.disabled = true;
           if (discussionMessages && discussionMessages.querySelector('.discussion-empty')) {
@@ -732,7 +741,7 @@
                 'Content-Type': 'application/json',
                 'Authorization': 'Bearer ' + token
               },
-              body: JSON.stringify({ message })
+              body: JSON.stringify({ artifact_id: branchChatArtifactId, message })
             });
             if (res.status === 401) {
               if (window.pikaAuth && window.pikaAuth.clear) {

@@ -207,6 +207,8 @@ The next iteration should converge on these boundaries:
 - persistence split by domain
   not by project history
 
+The current grounded boundary answer lives in [pika-git-pikaci-boundary.md](pika-git-pikaci-boundary.md).
+
 ## Legacy And Naming Direction
 
 We should decide the fate of legacy PR mode explicitly.
@@ -327,26 +329,45 @@ Phase 1 should probably cover these investigations:
 
 ### Workstream 4: Pika Git / Pikaci boundary plan
 
-- map current ownership and responsibility seams
-- define the desired future boundary
-- identify the typed failure and status model needed between them
+- current answer is now written down in [pika-git-pikaci-boundary.md](pika-git-pikaci-boundary.md)
+- key conclusion:
+  - forge owns queue truth, leases, queue reasons, target health, and operator recovery
+  - `pikaci` owns terminal execution, durable run/job records, logs metadata, and lifecycle events
+- next step is implementation cleanup, not more open-ended exploration
 
 ### Workstream 5: Legacy / naming decision
 
 - decide whether legacy PR mode is being isolated or deleted
 - define the rename strategy from `pika-news` to `pika-git`
 
+## Boundary Answer We Have Now
+
+We now have a concrete answer for the `pika-git` ↔ `pikaci` seam.
+
+The short version:
+
+- `pika-git` owns scheduling, leases, queue reasons, target health, and operator-visible CI truth
+- `pikaci` owns run execution, timeout enforcement, run/job records, and structured lifecycle events
+- stale-run correctness should continue to come from forge lease fencing first; executor cancelation is a cleanup path, not the primary safety boundary
+- target health policy stays in forge because only forge sees the whole queue
+
+This means the next cleanup should not try to make `pikaci` into a queue manager.
+
 ## Likely Phase 2 Direction
 
-We should not lock phase 2 yet.
+We still should not over-lock phase 2, but the next extraction order is clearer now.
 
-But the likely implementation direction after phase 1 is:
+Recommended order:
 
-1. restore the branch review UI and CI details shape
-2. add operational recovery tooling in UI and `ph`
-3. extract runtime and service boundaries
-4. introduce typed models and cleaner persistence boundaries
-5. harden anti-stall behavior across `pika-git` and `pikaci`
-6. finish legacy cleanup and naming cleanup
+1. finish the current UX and dogfooding reliability fixes
+2. extract `forge_runtime` first
+   - centralize wake reasons, CI scheduling, mirror scheduling, and forge health
+3. extract `forge_service`
+   - move merge / close / rerun / recover / detail assembly out of handlers
+4. expand typed forge models across the touched paths
+5. split persistence by forge domain
+6. harden the forge/`pikaci` protocol with explicit failure kind and optional cancel/progress additions
+7. finish legacy cleanup and naming cleanup
 
-The exact order should be updated after phase 1 answers the open questions above.
+The main point is that `forge_runtime` should come before `forge_service`, and both should come
+before the rename.

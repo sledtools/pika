@@ -1259,10 +1259,6 @@ impl Store {
                      FROM branch_inbox_states bis
                      WHERE bis.npub = ?1
                        AND bis.state = 'inbox'
-                       AND (
-                           bis.last_reviewed_artifact_id IS NULL
-                           OR bis.last_reviewed_artifact_id != bis.artifact_id
-                       )
                        AND bis.branch_id = ?2
                      LIMIT 1",
                     params![npub, branch_id],
@@ -1281,10 +1277,6 @@ impl Store {
                      FROM branch_inbox_states bis
                      WHERE bis.npub = ?1
                        AND bis.state = 'inbox'
-                       AND (
-                           bis.last_reviewed_artifact_id IS NULL
-                           OR bis.last_reviewed_artifact_id != bis.artifact_id
-                       )
                        AND bis.branch_id != ?3
                        AND (
                            bis.updated_at > ?2
@@ -1304,10 +1296,6 @@ impl Store {
                      FROM branch_inbox_states bis
                      WHERE bis.npub = ?1
                        AND bis.state = 'inbox'
-                       AND (
-                           bis.last_reviewed_artifact_id IS NULL
-                           OR bis.last_reviewed_artifact_id != bis.artifact_id
-                       )
                        AND bis.branch_id != ?3
                        AND (
                            bis.updated_at < ?2
@@ -1328,10 +1316,6 @@ impl Store {
                      WHERE bis.npub = ?1
                        AND bis.state = 'inbox'
                        AND (
-                           bis.last_reviewed_artifact_id IS NULL
-                           OR bis.last_reviewed_artifact_id != bis.artifact_id
-                       )
-                       AND (
                            bis.updated_at > ?2
                            OR (bis.updated_at = ?2 AND bis.branch_id >= ?3)
                        )",
@@ -1345,11 +1329,7 @@ impl Store {
                     "SELECT COUNT(*)
                      FROM branch_inbox_states bis
                      WHERE bis.npub = ?1
-                       AND bis.state = 'inbox'
-                       AND (
-                           bis.last_reviewed_artifact_id IS NULL
-                           OR bis.last_reviewed_artifact_id != bis.artifact_id
-                       )",
+                       AND bis.state = 'inbox'",
                     params![npub],
                     |row| row.get(0),
                 )
@@ -3584,11 +3564,32 @@ mod tests {
 
         assert_eq!(
             store
-                .dismiss_branch_inbox_items(&npub, &[first.branch_id])
+                .mark_branch_inbox_reviewed(&npub, second.branch_id)
                 .unwrap(),
             1
         );
         assert_eq!(store.branch_inbox_count(&npub).unwrap(), 1);
+        let reviewed_ctx = store
+            .branch_inbox_review_context(&npub, second.branch_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reviewed_ctx,
+            InboxReviewContext {
+                prev: None,
+                next: Some(first.branch_id),
+                position: 1,
+                total: 2,
+            }
+        );
+
+        assert_eq!(
+            store
+                .dismiss_branch_inbox_items(&npub, &[first.branch_id])
+                .unwrap(),
+            1
+        );
+        assert_eq!(store.branch_inbox_count(&npub).unwrap(), 0);
         assert_eq!(store.dismiss_all_branch_inbox(&npub).unwrap(), 1);
         assert_eq!(store.branch_inbox_count(&npub).unwrap(), 0);
         assert_eq!(store.branch_inbox_count("npub1other").unwrap(), 2);

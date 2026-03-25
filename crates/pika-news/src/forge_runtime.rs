@@ -6,12 +6,12 @@ use std::time::Duration;
 use chrono::{SecondsFormat, Utc};
 use tokio::sync::Notify;
 
-use crate::branch_store::MirrorStatusRecord;
 use crate::ci;
 use crate::config::{Config, ForgeRepoConfig};
 use crate::forge;
 use crate::live::CiLiveUpdates;
 use crate::mirror;
+use crate::mirror_store::MirrorStatusRecord;
 use crate::poller;
 use crate::storage::Store;
 use crate::worker;

@@ -6,6 +6,7 @@ mod ci_state;
 mod cli;
 mod config;
 mod forge;
+mod forge_runtime;
 mod github;
 mod live;
 mod local;

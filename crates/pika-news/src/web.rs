@@ -2606,15 +2606,16 @@ async fn api_forge_branch_logs_handler(
                 )
                     .into_response();
             };
-            let (pikaci_run, pikaci_log_metadata, pikaci_prepared_outputs) = lane
-                .pikaci_run_id
-                .as_deref()
-                .and_then(|pikaci_run_id| {
-                    load_pikaci_run_bundle(state.pikaci_run_store.as_ref(), pikaci_run_id).ok()
-                })
-                .map_or((None, None, None), |(run, logs, prepared_outputs)| {
-                    (Some(run), Some(logs), prepared_outputs)
-                });
+            let bundle = lane.pikaci_run_id.as_deref().and_then(|pikaci_run_id| {
+                state
+                    .pikaci_run_store
+                    .as_ref()
+                    .and_then(|store| store.load_run_bundle(pikaci_run_id).ok())
+            });
+            let (pikaci_run, pikaci_log_metadata, pikaci_prepared_outputs) = match bundle {
+                Some(bundle) => (Some(bundle.run), Some(bundle.logs), bundle.prepared_outputs),
+                None => (None, None, None),
+            };
             Json(ForgeBranchLogsResponse {
                 branch_id: detail.branch_id,
                 branch_name: detail.branch_name,
@@ -2643,7 +2644,9 @@ async fn api_forge_pikaci_run_handler(
     if let Err(resp) = require_auth(&state.auth, &headers) {
         return resp;
     }
-    match load_pikaci_run(state.pikaci_run_store.as_ref(), &run_id) {
+    match require_pikaci_run_store(state.pikaci_run_store.as_ref())
+        .and_then(|store| store.load_run(&run_id))
+    {
         Ok(run) => Json(run).into_response(),
         Err(err) => (
             StatusCode::NOT_FOUND,
@@ -2662,12 +2665,13 @@ async fn api_forge_pikaci_logs_handler(
     if let Err(resp) = require_auth(&state.auth, &headers) {
         return resp;
     }
-    match load_pikaci_logs(
-        state.pikaci_run_store.as_ref(),
-        &run_id,
-        query.job.as_deref(),
-        map_forge_pikaci_log_kind(query.kind),
-    ) {
+    match require_pikaci_run_store(state.pikaci_run_store.as_ref()).and_then(|store| {
+        store.load_logs(
+            &run_id,
+            query.job.as_deref(),
+            map_forge_pikaci_log_kind(query.kind),
+        )
+    }) {
         Ok(logs) => Json(ForgePikaciLogsResponse {
             run_id,
             job: query.job,
@@ -2691,44 +2695,29 @@ async fn api_forge_pikaci_prepared_outputs_handler(
     if let Err(resp) = require_auth(&state.auth, &headers) {
         return resp;
     }
-    match load_pikaci_run_bundle(state.pikaci_run_store.as_ref(), &run_id) {
-        Ok((_, _, Some(prepared_outputs))) => Json(ForgePikaciPreparedOutputsResponse {
-            run_id,
-            prepared_outputs,
-        })
-        .into_response(),
-        Ok((_, _, None)) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": format!("prepared outputs not found for run `{run_id}`")})),
-        )
+    match require_pikaci_run_store(state.pikaci_run_store.as_ref())
+        .and_then(|store| store.load_run_bundle(&run_id))
+    {
+        Ok(bundle) => match bundle.prepared_outputs {
+            Some(prepared_outputs) => Json(ForgePikaciPreparedOutputsResponse {
+                run_id,
+                prepared_outputs,
+            })
             .into_response(),
+            None => (
+                StatusCode::NOT_FOUND,
+                Json(
+                    serde_json::json!({"error": format!("prepared outputs not found for run `{run_id}`")}),
+                ),
+            )
+                .into_response(),
+        },
         Err(err) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": err.to_string()})),
         )
             .into_response(),
     }
-}
-
-fn load_pikaci_run(store: Option<&PikaciRunStore>, run_id: &str) -> anyhow::Result<RunRecord> {
-    require_pikaci_run_store(store)?.load_run(run_id)
-}
-
-fn load_pikaci_logs(
-    store: Option<&PikaciRunStore>,
-    run_id: &str,
-    job_id: Option<&str>,
-    kind: LogKind,
-) -> anyhow::Result<pikaci::Logs> {
-    require_pikaci_run_store(store)?.load_logs(run_id, job_id, kind)
-}
-
-fn load_pikaci_run_bundle(
-    store: Option<&PikaciRunStore>,
-    run_id: &str,
-) -> anyhow::Result<(RunRecord, RunLogsMetadata, Option<PreparedOutputsRecord>)> {
-    let bundle = require_pikaci_run_store(store)?.load_run_bundle(run_id)?;
-    Ok((bundle.run, bundle.logs, bundle.prepared_outputs))
 }
 
 fn map_forge_pikaci_log_kind(kind: ForgePikaciLogKind) -> LogKind {

@@ -129,14 +129,15 @@ jobs:
           echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
           ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
 
-      - name: Install age for Apple remote shadow lanes
+      - name: Install repo secret tools for Apple remote shadow lanes
         if: matrix.uses_apple_remote
-        run: nix --extra-experimental-features 'nix-command flakes' profile install nixpkgs#age
+        run: nix --extra-experimental-features 'nix-command flakes' profile install nixpkgs#age nixpkgs#sops
 
       - name: Join Tailscale for Apple remote shadow lanes
         if: matrix.uses_apple_remote
         env:
           AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
+          SOPS_AGE_KEY: ${{ secrets.AGE_SECRET_KEY }}
         run: |
           "$GITHUB_WORKSPACE/scripts/with-pikaci-apple-ci-env" --secret-set tailscale \
             "$GITHUB_WORKSPACE/scripts/pikaci-apple-github-step" tailscale-up \
@@ -155,6 +156,7 @@ jobs:
         if: matrix.uses_apple_remote
         env:
           AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
+          SOPS_AGE_KEY: ${{ secrets.AGE_SECRET_KEY }}
           FORGE_GITHUB_CI_REPO_ROOT: ${{ env.SHADOW_REPO_ROOT }}
         run: |
           "$GITHUB_WORKSPACE/scripts/with-pikaci-apple-ci-env" --secret-set ssh \
@@ -263,14 +265,15 @@ jobs:
           echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
           ssh-add - <<<"$PIKA_BUILD_SSH_KEY"
 
-      - name: Install age for Apple remote shadow lanes
+      - name: Install repo secret tools for Apple remote shadow lanes
         if: matrix.uses_apple_remote
-        run: nix --extra-experimental-features 'nix-command flakes' profile install nixpkgs#age
+        run: nix --extra-experimental-features 'nix-command flakes' profile install nixpkgs#age nixpkgs#sops
 
       - name: Join Tailscale for Apple remote shadow lanes
         if: matrix.uses_apple_remote
         env:
           AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
+          SOPS_AGE_KEY: ${{ secrets.AGE_SECRET_KEY }}
         run: |
           ./scripts/with-pikaci-apple-ci-env --secret-set tailscale \
             ./scripts/pikaci-apple-github-step tailscale-up \
@@ -287,6 +290,7 @@ jobs:
         if: matrix.uses_apple_remote
         env:
           AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
+          SOPS_AGE_KEY: ${{ secrets.AGE_SECRET_KEY }}
         run: |
           ./scripts/with-pikaci-apple-ci-env --secret-set ssh \
             python3 "$GITHUB_WORKSPACE/scripts/forge-github-ci-shim.py" run \

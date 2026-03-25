@@ -2,7 +2,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENCRYPTED_SIGNING_ENV="$ROOT/secrets/zapstore-signing.env.age"
+SOPS_SIGNING_FILE="$ROOT/secrets/zapstore-signing.sops.yaml"
+AGE_SIGNING_FILE="$ROOT/secrets/zapstore-signing.env.age"
+# shellcheck source=scripts/lib/sops-secrets.sh
+source "$ROOT/scripts/lib/sops-secrets.sh"
 # shellcheck source=scripts/lib/release-secrets.sh
 source "$ROOT/scripts/lib/release-secrets.sh"
 
@@ -11,9 +14,12 @@ if [ -n "${ZAPSTORE_SIGN_WITH:-}" ]; then
   exit 0
 fi
 
-release_secret_require_file "$ENCRYPTED_SIGNING_ENV" "encrypted Zapstore signing env" "create it via ./scripts/encrypt-zapstore-signing"
-
-sign_with="$(release_secret_read_encrypted_env_value "$ENCRYPTED_SIGNING_ENV" "ZAPSTORE_SIGN_WITH")"
+if [ -f "$SOPS_SIGNING_FILE" ]; then
+  sign_with="$(sops_secret_read_key "$SOPS_SIGNING_FILE" "ZAPSTORE_SIGN_WITH")"
+else
+  release_secret_require_file "$AGE_SIGNING_FILE" "encrypted Zapstore signing env" "create it via ./scripts/encrypt-zapstore-signing or migrate to secrets/zapstore-signing.sops.yaml"
+  sign_with="$(release_secret_read_encrypted_env_value "$AGE_SIGNING_FILE" "ZAPSTORE_SIGN_WITH")"
+fi
 
 if [ -z "$sign_with" ]; then
   echo "error: encrypted signing env is missing ZAPSTORE_SIGN_WITH" >&2

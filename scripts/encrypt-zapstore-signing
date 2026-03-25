@@ -2,7 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUTPUT_ENCRYPTED="$ROOT/secrets/zapstore-signing.env.age"
+OUTPUT_ENCRYPTED="$ROOT/secrets/zapstore-signing.sops.yaml"
+# shellcheck source=scripts/lib/sops-secrets.sh
+source "$ROOT/scripts/lib/sops-secrets.sh"
 # shellcheck source=scripts/lib/release-secrets.sh
 source "$ROOT/scripts/lib/release-secrets.sh"
 
@@ -10,7 +12,7 @@ usage() {
   cat <<'USAGE'
 usage: ./scripts/encrypt-zapstore-signing
 
-Encrypts `secrets/zapstore-signing.env.age` with:
+Encrypts `secrets/zapstore-signing.sops.yaml` with:
   - YubiKey primary recipient
   - YubiKey backup recipient
   - CI recipient (from PIKA_CI_AGE_RECIPIENT or repo defaults)
@@ -38,6 +40,7 @@ fi
 
 release_secret_load_recipients "$ROOT"
 release_secret_validate_age_recipient "$RELEASE_SECRET_CI_RECIPIENT" "CI recipient"
+sops_secret_need_cmd sops
 
 sign_with="${PIKA_ZAPSTORE_SIGN_WITH:-}"
 if [ -z "$sign_with" ]; then
@@ -57,7 +60,21 @@ fi
 mkdir -p "$ROOT/secrets"
 umask 077
 
-release_secret_encrypt_env_value "$OUTPUT_ENCRYPTED" "ZAPSTORE_SIGN_WITH" "$sign_with"
+tmp_plaintext="$(mktemp "$ROOT/secrets/.zapstore-signing.XXXXXX.yaml")"
+cleanup() {
+  rm -f "$tmp_plaintext"
+}
+trap cleanup EXIT INT TERM
+
+sops_secret_write_yaml_file "$tmp_plaintext" "ZAPSTORE_SIGN_WITH" "$sign_with"
+
+recipients=(
+  "$RELEASE_SECRET_YUBIKEY_PRIMARY"
+  "$RELEASE_SECRET_YUBIKEY_BACKUP"
+  "$RELEASE_SECRET_CI_RECIPIENT"
+)
+recipients_csv="$(IFS=,; printf '%s' "${recipients[*]}")"
+sops_secret_encrypt_yaml_file "$tmp_plaintext" "$OUTPUT_ENCRYPTED" "$recipients_csv"
 
 unset sign_with
 

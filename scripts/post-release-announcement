@@ -8,7 +8,7 @@ DEFAULT_ZAPSTORE_APP_URL="https://zapstore.dev/apps/naddr1qqfkxmmd9e482um5d9hx6m
 
 usage() {
   cat <<'USAGE'
-usage: ./scripts/post-release-announcement <tag> [repo-url] [zapstore-app-url]
+usage: ./scripts/post-release-announcement [--dry-run] <tag> [repo-url] [zapstore-app-url]
 
 Publishes a kind-1 Nostr release announcement for a Git tag release.
 
@@ -19,6 +19,9 @@ Arguments:
 
 Environment:
   PIKA_ANNOUNCE_RELAYS  Space-delimited relay list override
+
+Options:
+  --dry-run  Build and sign the release announcement without publishing to relays
 USAGE
 }
 
@@ -32,6 +35,12 @@ need_cmd() {
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   usage
   exit 0
+fi
+
+dry_run=0
+if [ "${1:-}" = "--dry-run" ]; then
+  dry_run=1
+  shift
 fi
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
@@ -89,6 +98,12 @@ event_id="$(printf '%s' "$event_json" | jq -r '.id // empty')"
 if [ -z "$event_id" ]; then
   echo "error: failed to derive announcement event id from nak output" >&2
   exit 1
+fi
+
+if [ "$dry_run" -eq 1 ]; then
+  echo "ok: dry-run release announcement prepared event_id=$event_id"
+  unset sign_with
+  exit 0
 fi
 
 printf '%s\n' "$event_json" | NOSTR_SECRET_KEY="$sign_with" nak -q event "${relays[@]}" >/dev/null

@@ -47,12 +47,14 @@ esac
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PUBLIC_ENV_FILE="$ROOT/.github/pikaci-apple.env"
-SECRET_ENV_FILE="$ROOT/secrets/pikaci-apple.env.age"
+SOPS_SECRET_FILE="$ROOT/secrets/pikaci-apple.sops.yaml"
+AGE_SECRET_FILE="$ROOT/secrets/pikaci-apple.env.age"
+# shellcheck source=scripts/lib/sops-secrets.sh
+source "$ROOT/scripts/lib/sops-secrets.sh"
 # shellcheck source=scripts/lib/release-secrets.sh
 source "$ROOT/scripts/lib/release-secrets.sh"
 
 release_secret_require_file "$PUBLIC_ENV_FILE" "Apple mini public CI env" "commit .github/pikaci-apple.env"
-release_secret_require_file "$SECRET_ENV_FILE" "encrypted Apple mini CI env" "create it via ./scripts/encrypt-pikaci-apple-secrets"
 
 tmp_secret_env="$(mktemp "${TMPDIR:-/tmp}/pikaci-apple-env.XXXXXX")"
 cleanup() {
@@ -62,7 +64,17 @@ trap cleanup EXIT INT TERM
 
 # shellcheck disable=SC1090
 source "$PUBLIC_ENV_FILE"
-release_secret_decrypt_to_file "$SECRET_ENV_FILE" "$tmp_secret_env"
+
+if [ -f "$SOPS_SECRET_FILE" ]; then
+  {
+    printf 'PIKACI_APPLE_TAILSCALE_AUTHKEY=%q\n' "$(sops_secret_read_key "$SOPS_SECRET_FILE" "PIKACI_APPLE_TAILSCALE_AUTHKEY")"
+    printf 'PIKACI_APPLE_SSH_KEY=%q\n' "$(sops_secret_read_key "$SOPS_SECRET_FILE" "PIKACI_APPLE_SSH_KEY")"
+  } >"$tmp_secret_env"
+else
+  release_secret_require_file "$AGE_SECRET_FILE" "encrypted Apple mini CI env" "create it via ./scripts/encrypt-pikaci-apple-secrets"
+  release_secret_decrypt_to_file "$AGE_SECRET_FILE" "$tmp_secret_env"
+fi
+
 # shellcheck disable=SC1090
 source "$tmp_secret_env"
 
@@ -74,7 +86,7 @@ require_value() {
     exit 1
   fi
   if [[ "$value" == REPLACE_* ]]; then
-    echo "error: $key still has placeholder value; update secrets/pikaci-apple.env.age via ./scripts/encrypt-pikaci-apple-secrets" >&2
+    echo "error: $key still has placeholder value; update the Apple repo secret via ./scripts/encrypt-pikaci-apple-secrets or sops secrets/pikaci-apple.sops.yaml" >&2
     exit 1
   fi
 }
@@ -106,7 +118,7 @@ if [[ "$secret_set" == "all" || "$secret_set" == "tailscale" ]]; then
   require_value "PIKACI_APPLE_TAILSCALE_AUTHKEY" "${PIKACI_APPLE_TAILSCALE_AUTHKEY:-}"
   if [[ "${PIKACI_APPLE_TAILSCALE_AUTHKEY:-}" != tskey-auth-* ]]; then
     echo "error: PIKACI_APPLE_TAILSCALE_AUTHKEY must be a tailscale auth key (expected prefix tskey-auth-)" >&2
-    echo "hint: update secrets/pikaci-apple.env.age via ./scripts/encrypt-pikaci-apple-secrets using an auth key from the tailnet auth keys page" >&2
+    echo "hint: update the Apple repo secret using an auth key from the tailnet auth keys page" >&2
     exit 1
   fi
   mask_value "${PIKACI_APPLE_TAILSCALE_AUTHKEY:-}"

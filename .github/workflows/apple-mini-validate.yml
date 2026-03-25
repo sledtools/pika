@@ -31,8 +31,8 @@ jobs:
 
       - uses: nixbuild/nix-quick-install-action@v30
 
-      - name: Install age
-        run: nix --extra-experimental-features 'nix-command flakes' profile install nixpkgs#age
+      - name: Install repo secret tools
+        run: nix --extra-experimental-features 'nix-command flakes' profile install nixpkgs#age nixpkgs#sops
 
       - name: Resolve Apple lane
         id: lane
@@ -55,6 +55,7 @@ jobs:
       - name: Join Tailscale
         env:
           AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
+          SOPS_AGE_KEY: ${{ secrets.AGE_SECRET_KEY }}
         run: |
           ./scripts/with-pikaci-apple-ci-env --secret-set tailscale \
             ./scripts/pikaci-apple-github-step tailscale-up \
@@ -64,6 +65,7 @@ jobs:
         id: remote
         env:
           AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
+          SOPS_AGE_KEY: ${{ secrets.AGE_SECRET_KEY }}
         run: |
           ./scripts/with-pikaci-apple-ci-env --secret-set ssh \
             ./scripts/pikaci-apple-github-step remote-run \

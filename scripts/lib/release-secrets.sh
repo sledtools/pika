@@ -32,7 +32,17 @@ release_secret_require_file() {
 }
 
 release_secret_identity_file_for_read() {
-  printf '%s\n' "${PIKA_AGE_IDENTITY_FILE:-$PIKA_RELEASE_AGE_IDENTITY_FILE_DEFAULT}"
+  if [ -n "${PIKA_AGE_IDENTITY_FILE:-}" ]; then
+    printf '%s\n' "$PIKA_AGE_IDENTITY_FILE"
+    return 0
+  fi
+
+  if [ -f "$PIKA_RELEASE_AGE_IDENTITY_FILE_PRIMARY_DEFAULT" ]; then
+    printf '%s\n' "$PIKA_RELEASE_AGE_IDENTITY_FILE_PRIMARY_DEFAULT"
+    return 0
+  fi
+
+  printf '%s\n' "$PIKA_RELEASE_AGE_IDENTITY_FILE_DEFAULT"
 }
 
 release_secret_identity_file_for_init() {
@@ -61,7 +71,7 @@ release_secret_require_identity_file() {
 }
 
 release_secret_missing_identity_error() {
-  echo "error: set AGE_SECRET_KEY or provide PIKA_AGE_IDENTITY_FILE (default: $PIKA_RELEASE_AGE_IDENTITY_FILE_DEFAULT)" >&2
+  echo "error: set AGE_SECRET_KEY or provide PIKA_AGE_IDENTITY_FILE (default search: $PIKA_RELEASE_AGE_IDENTITY_FILE_PRIMARY_DEFAULT, then $PIKA_RELEASE_AGE_IDENTITY_FILE_DEFAULT)" >&2
 }
 
 _release_secret_decrypt_to_stdout_with_secret_key() {
@@ -153,6 +163,20 @@ release_secret_read_encrypted_env_value() {
   )"
 
   printf '%s\n' "$value"
+}
+
+release_secret_read_shell_env_value_from_file() {
+  local env_file="$1"
+  local key="$2"
+
+  (
+    set -euo pipefail
+    # Legacy repo .age env payloads are shell-assignment files produced by our
+    # own helper scripts, so source them to recover the real multiline values.
+    # shellcheck disable=SC1090
+    source "$env_file"
+    printf '%s' "${!key:-}"
+  )
 }
 
 release_secret_load_recipients() {

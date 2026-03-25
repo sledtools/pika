@@ -559,6 +559,15 @@
             const res = await fetch(`/news/api/inbox/neighbors/${branchId}`, {
               headers: { 'Authorization': 'Bearer ' + token }
             });
+            if (res.status === 404) {
+              reviewPrevBtn.disabled = true;
+              reviewNextBtn.disabled = true;
+              reviewDismissBtn.disabled = false;
+              reviewPrevBtn.dataset.targetId = '';
+              reviewNextBtn.dataset.targetId = '';
+              reviewPosEl.textContent = 'Reviewed';
+              return;
+            }
             if (res.status === 401 || res.status === 403) {
               reviewPrevBtn.disabled = true;
               reviewNextBtn.disabled = true;
@@ -582,6 +591,18 @@
           }
         }
 
+        async function markCurrentReviewSeen() {
+          if (!reviewMode) return;
+          const token = authToken();
+          if (!token) return;
+          try {
+            await fetch(`/news/api/inbox/reviewed/${branchId}`, {
+              method: 'POST',
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+          } catch (_err) {}
+        }
+
         async function dismissCurrentReviewItem() {
           const token = authToken();
           if (!token) return;
@@ -590,9 +611,14 @@
             const neighborsRes = await fetch(`/news/api/inbox/neighbors/${branchId}`, {
               headers: { 'Authorization': 'Bearer ' + token }
             });
-            if (!neighborsRes.ok) throw new Error('failed to load review neighbors');
-            const neighbors = await neighborsRes.json();
-            const nextTarget = neighbors.next || neighbors.prev;
+            let nextTarget = null;
+            if (neighborsRes.status === 404) {
+              nextTarget = null;
+            } else {
+              if (!neighborsRes.ok) throw new Error('failed to load review neighbors');
+              const neighbors = await neighborsRes.json();
+              nextTarget = neighbors.next || neighbors.prev;
+            }
 
             const dismissRes = await fetch('/news/api/inbox/dismiss', {
               method: 'POST',
@@ -644,11 +670,13 @@
               dismissCurrentReviewItem();
             }
           });
-          refreshReviewControls();
+          markCurrentReviewSeen().finally(refreshReviewControls);
         }
 
         window.addEventListener('pika-auth', showActions);
-        window.addEventListener('pika-auth', refreshReviewControls);
+        window.addEventListener('pika-auth', () => {
+          markCurrentReviewSeen().finally(refreshReviewControls);
+        });
         window.addEventListener('storage', handleBranchCiSignal);
         showActions();
         startBranchCiStream(false);

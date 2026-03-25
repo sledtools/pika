@@ -28,7 +28,7 @@
 {% block body %}
     <main class="shell">
       <h1>Inbox</h1>
-      <p class="inbox-note">Inbox items stay here until you dismiss them. Branch state is metadata, not cleanup.</p>
+      <p class="inbox-note">Inbox items stay here until you dismiss them. Opening a branch marks the current head as reviewed; new commits make it reviewable again.</p>
 
       <div id="inbox-auth" class="inbox-auth" style="display:none;">
         <p>Sign in with Nostr to view your inbox.</p>
@@ -71,6 +71,7 @@
 
         var currentPage = 1;
         var totalItems = 0;
+        var reviewNeededItems = 0;
 
         function getToken() {
           return window.pikaAuth && window.pikaAuth.getToken();
@@ -112,6 +113,7 @@
             hide(loadingEl);
             currentPage = data.page;
             totalItems = data.total;
+            reviewNeededItems = data.review_needed || data.total;
 
             if (data.items.length === 0 && currentPage === 1) {
               show(emptyEl);
@@ -145,7 +147,7 @@
                 '<div class="inbox-item-title"><a href="/news/inbox/review/' + reviewId + '">' +
                   titleText +
                 '</a></div>' +
-                '<div class="inbox-item-meta">Updated ' + escapeHtml(item.updated_at) + ' · ' + escapeHtml(item.state) + '</div>' +
+                '<div class="inbox-item-meta">Updated ' + escapeHtml(item.updated_at) + ' · ' + escapeHtml(item.state) + ' · ' + (item.needs_review ? 'needs review' : 'reviewed') + '</div>' +
               '</div>' +
               '<div class="inbox-item-actions">' +
                 '<button class="review-btn" data-review-id="' + reviewId + '">Review</button>' +
@@ -178,7 +180,7 @@
 
         function updatePagination() {
           var totalPages = Math.ceil(totalItems / 50) || 1;
-          pageInfoEl.textContent = 'Page ' + currentPage + ' of ' + totalPages + ' (' + totalItems + ' items)';
+          pageInfoEl.textContent = 'Page ' + currentPage + ' of ' + totalPages + ' (' + totalItems + ' active, ' + reviewNeededItems + ' need review)';
           pagePrevBtn.disabled = currentPage <= 1;
           pageNextBtn.disabled = currentPage >= totalPages;
         }

@@ -821,6 +821,8 @@ impl Store {
                             .unwrap_or_else(|| "pending".to_string()),
                         reason: row.get(8)?,
                         inbox_created_at: row.get(9)?,
+                        needs_review: true,
+                        last_reviewed_at: None,
                     })
                 })
                 .context("query inbox")?;
@@ -1074,7 +1076,14 @@ impl Store {
                             br.updated_at,
                             COALESCE(ba_latest.status, 'pending'),
                             bis.reason,
-                            bis.created_at
+                            bis.created_at,
+                            CASE
+                                WHEN bis.last_reviewed_artifact_id IS NULL
+                                  OR bis.last_reviewed_artifact_id != bis.artifact_id
+                                THEN 1
+                                ELSE 0
+                            END AS needs_review,
+                            bis.last_reviewed_at
                      FROM branch_inbox_states bis
                      JOIN branch_records br ON br.id = bis.branch_id
                      JOIN repos r ON r.id = br.repo_id
@@ -1087,7 +1096,7 @@ impl Store {
                      )
                      WHERE bis.npub = ?1
                        AND bis.state = 'inbox'
-                     ORDER BY bis.created_at ASC, bis.branch_id ASC
+                     ORDER BY needs_review DESC, bis.updated_at DESC, bis.branch_id DESC
                      LIMIT ?2 OFFSET ?3",
                 )
                 .context("prepare branch inbox query")?;
@@ -1110,6 +1119,8 @@ impl Store {
                             .unwrap_or_else(|| "pending".to_string()),
                         reason: row.get(7)?,
                         inbox_created_at: row.get(8)?,
+                        needs_review: row.get(9)?,
+                        last_reviewed_at: row.get(10)?,
                     })
                 })
                 .context("query branch inbox")?;
@@ -1128,11 +1139,50 @@ impl Store {
                 "SELECT COUNT(*)
                  FROM branch_inbox_states bis
                  WHERE bis.npub = ?1
-                   AND bis.state = 'inbox'",
+                   AND bis.state = 'inbox'
+                   AND (
+                       bis.last_reviewed_artifact_id IS NULL
+                       OR bis.last_reviewed_artifact_id != bis.artifact_id
+                   )",
                 params![npub],
                 |row| row.get(0),
             )
             .context("count branch inbox")
+        })
+    }
+
+    pub fn branch_inbox_total(&self, npub: &str) -> anyhow::Result<i64> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*)
+                 FROM branch_inbox_states bis
+                 WHERE bis.npub = ?1
+                   AND bis.state = 'inbox'",
+                params![npub],
+                |row| row.get(0),
+            )
+            .context("count total branch inbox")
+        })
+    }
+
+    pub fn mark_branch_inbox_reviewed(&self, npub: &str, branch_id: i64) -> anyhow::Result<usize> {
+        self.with_connection(|conn| {
+            let rows = conn
+                .execute(
+                    "UPDATE branch_inbox_states
+                     SET last_reviewed_artifact_id = artifact_id,
+                         last_reviewed_at = CURRENT_TIMESTAMP
+                     WHERE npub = ?1
+                       AND branch_id = ?2
+                       AND state = 'inbox'
+                       AND (
+                           last_reviewed_artifact_id IS NULL
+                           OR last_reviewed_artifact_id != artifact_id
+                       )",
+                    params![npub, branch_id],
+                )
+                .context("mark branch inbox reviewed")?;
+            Ok(rows)
         })
     }
 
@@ -1205,10 +1255,14 @@ impl Store {
         self.with_connection(|conn| {
             let current = conn
                 .query_row(
-                    "SELECT bis.created_at, bis.branch_id
+                    "SELECT bis.updated_at, bis.branch_id
                      FROM branch_inbox_states bis
                      WHERE bis.npub = ?1
                        AND bis.state = 'inbox'
+                       AND (
+                           bis.last_reviewed_artifact_id IS NULL
+                           OR bis.last_reviewed_artifact_id != bis.artifact_id
+                       )
                        AND bis.branch_id = ?2
                      LIMIT 1",
                     params![npub, branch_id],
@@ -1227,12 +1281,16 @@ impl Store {
                      FROM branch_inbox_states bis
                      WHERE bis.npub = ?1
                        AND bis.state = 'inbox'
+                       AND (
+                           bis.last_reviewed_artifact_id IS NULL
+                           OR bis.last_reviewed_artifact_id != bis.artifact_id
+                       )
                        AND bis.branch_id != ?3
                        AND (
-                           bis.created_at < ?2
-                           OR (bis.created_at = ?2 AND bis.branch_id < ?3)
+                           bis.updated_at > ?2
+                           OR (bis.updated_at = ?2 AND bis.branch_id > ?3)
                        )
-                     ORDER BY bis.created_at DESC, bis.branch_id DESC
+                     ORDER BY bis.updated_at ASC, bis.branch_id ASC
                      LIMIT 1",
                     params![npub, created_at, current_branch_id],
                     |row| row.get(0),
@@ -1246,12 +1304,16 @@ impl Store {
                      FROM branch_inbox_states bis
                      WHERE bis.npub = ?1
                        AND bis.state = 'inbox'
+                       AND (
+                           bis.last_reviewed_artifact_id IS NULL
+                           OR bis.last_reviewed_artifact_id != bis.artifact_id
+                       )
                        AND bis.branch_id != ?3
                        AND (
-                           bis.created_at > ?2
-                           OR (bis.created_at = ?2 AND bis.branch_id > ?3)
+                           bis.updated_at < ?2
+                           OR (bis.updated_at = ?2 AND bis.branch_id < ?3)
                        )
-                     ORDER BY bis.created_at ASC, bis.branch_id ASC
+                     ORDER BY bis.updated_at DESC, bis.branch_id DESC
                      LIMIT 1",
                     params![npub, created_at, current_branch_id],
                     |row| row.get(0),
@@ -1266,8 +1328,12 @@ impl Store {
                      WHERE bis.npub = ?1
                        AND bis.state = 'inbox'
                        AND (
-                           bis.created_at < ?2
-                           OR (bis.created_at = ?2 AND bis.branch_id <= ?3)
+                           bis.last_reviewed_artifact_id IS NULL
+                           OR bis.last_reviewed_artifact_id != bis.artifact_id
+                       )
+                       AND (
+                           bis.updated_at > ?2
+                           OR (bis.updated_at = ?2 AND bis.branch_id >= ?3)
                        )",
                     params![npub, created_at, current_branch_id],
                     |row| row.get(0),
@@ -1279,7 +1345,11 @@ impl Store {
                     "SELECT COUNT(*)
                      FROM branch_inbox_states bis
                      WHERE bis.npub = ?1
-                       AND bis.state = 'inbox'",
+                       AND bis.state = 'inbox'
+                       AND (
+                           bis.last_reviewed_artifact_id IS NULL
+                           OR bis.last_reviewed_artifact_id != bis.artifact_id
+                       )",
                     params![npub],
                     |row| row.get(0),
                 )
@@ -1719,6 +1789,8 @@ pub struct InboxItem {
     pub generation_status: String,
     pub reason: String,
     pub inbox_created_at: String,
+    pub needs_review: bool,
+    pub last_reviewed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -1914,6 +1986,8 @@ struct BranchInboxStateRow {
     created_at: String,
     updated_at: String,
     dismissed_at: Option<String>,
+    last_reviewed_artifact_id: Option<i64>,
+    last_reviewed_at: Option<String>,
 }
 
 fn merge_inbox_state_alias(
@@ -2057,7 +2131,8 @@ fn merge_branch_inbox_state_alias(
 ) -> anyhow::Result<usize> {
     let mut stmt = conn
         .prepare(
-            "SELECT branch_id, artifact_id, state, reason, created_at, updated_at, dismissed_at
+            "SELECT branch_id, artifact_id, state, reason, created_at, updated_at, dismissed_at,
+                    last_reviewed_artifact_id, last_reviewed_at
              FROM branch_inbox_states
              WHERE npub = ?1
              ORDER BY branch_id ASC",
@@ -2073,6 +2148,8 @@ fn merge_branch_inbox_state_alias(
                 created_at: row.get(4)?,
                 updated_at: row.get(5)?,
                 dismissed_at: row.get(6)?,
+                last_reviewed_artifact_id: row.get(7)?,
+                last_reviewed_at: row.get(8)?,
             })
         })
         .context("query source branch inbox state rows")?;
@@ -2085,7 +2162,8 @@ fn merge_branch_inbox_state_alias(
     for source in &source_rows {
         let existing = conn
             .query_row(
-                "SELECT branch_id, artifact_id, state, reason, created_at, updated_at, dismissed_at
+                "SELECT branch_id, artifact_id, state, reason, created_at, updated_at, dismissed_at,
+                        last_reviewed_artifact_id, last_reviewed_at
                  FROM branch_inbox_states
                  WHERE npub = ?1 AND branch_id = ?2",
                 params![to_npub, source.branch_id],
@@ -2098,6 +2176,8 @@ fn merge_branch_inbox_state_alias(
                         created_at: row.get(4)?,
                         updated_at: row.get(5)?,
                         dismissed_at: row.get(6)?,
+                        last_reviewed_artifact_id: row.get(7)?,
+                        last_reviewed_at: row.get(8)?,
                     })
                 },
             )
@@ -2113,8 +2193,10 @@ fn merge_branch_inbox_state_alias(
                      reason = ?3,
                      created_at = ?4,
                      updated_at = ?5,
-                     dismissed_at = ?6
-                 WHERE npub = ?7 AND branch_id = ?8",
+                     dismissed_at = ?6,
+                     last_reviewed_artifact_id = ?7,
+                     last_reviewed_at = ?8
+                 WHERE npub = ?9 AND branch_id = ?10",
                 params![
                     merged.artifact_id,
                     merged.state,
@@ -2122,8 +2204,10 @@ fn merge_branch_inbox_state_alias(
                     merged.created_at,
                     merged.updated_at,
                     merged.dismissed_at,
+                    merged.last_reviewed_artifact_id,
+                    merged.last_reviewed_at,
                     to_npub,
-                    merged.branch_id
+                    merged.branch_id,
                 ],
             )
             .context("update merged destination branch inbox state row")?;
@@ -2170,6 +2254,14 @@ fn merge_branch_inbox_state_rows(
             } else {
                 None
             },
+            last_reviewed_artifact_id: max(
+                existing.last_reviewed_artifact_id,
+                incoming.last_reviewed_artifact_id,
+            ),
+            last_reviewed_at: max(
+                existing.last_reviewed_at.clone(),
+                incoming.last_reviewed_at.clone(),
+            ),
         };
     }
 
@@ -2198,6 +2290,14 @@ fn merge_branch_inbox_state_rows(
         created_at: min(existing.created_at.clone(), incoming.created_at.clone()),
         updated_at: max(existing.updated_at.clone(), incoming.updated_at.clone()),
         dismissed_at,
+        last_reviewed_artifact_id: max(
+            existing.last_reviewed_artifact_id,
+            incoming.last_reviewed_artifact_id,
+        ),
+        last_reviewed_at: max(
+            existing.last_reviewed_at.clone(),
+            incoming.last_reviewed_at.clone(),
+        ),
     }
 }
 
@@ -2330,8 +2430,7 @@ fn insert_branch_inbox_rows_for_artifact(
                     "UPDATE branch_inbox_states
                      SET artifact_id = ?1,
                          state = 'inbox',
-                         reason = 'generation_ready',
-                         created_at = CURRENT_TIMESTAMP,
+                         reason = 'new_commits',
                          updated_at = CURRENT_TIMESTAMP,
                          dismissed_at = NULL
                      WHERE npub = ?2 AND branch_id = ?3",
@@ -2344,7 +2443,7 @@ fn insert_branch_inbox_rows_for_artifact(
                 conn.execute(
                     "INSERT INTO branch_inbox_states(
                         npub, branch_id, artifact_id, state, reason, created_at, updated_at
-                     ) VALUES (?1, ?2, ?3, 'inbox', 'generation_ready', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                     ) VALUES (?1, ?2, ?3, 'inbox', 'new_commits', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
                     params![npub, branch_id, artifact_id],
                 )
                 .context("insert branch inbox row")?;
@@ -2573,6 +2672,11 @@ fn migrations() -> Vec<Migration> {
             name: "0021_restore_branch_closed_inbox",
             sql: include_str!("../migrations/0021_restore_branch_closed_inbox.sql"),
         },
+        Migration {
+            version: 22,
+            name: "0022_branch_inbox_review_progress",
+            sql: include_str!("../migrations/0022_branch_inbox_review_progress.sql"),
+        },
     ]
 }
 
@@ -2722,6 +2826,26 @@ mod tests {
 
     fn branch_inbox_item_ids(items: &[InboxItem]) -> Vec<i64> {
         items.iter().map(|item| item.review_id).collect()
+    }
+
+    fn branch_inbox_state(
+        store: &Store,
+        npub: &str,
+        branch_id: i64,
+    ) -> Option<(i64, String, Option<i64>, Option<String>)> {
+        store
+            .with_connection(|conn| {
+                conn.query_row(
+                    "SELECT artifact_id, state, last_reviewed_artifact_id, last_reviewed_at
+                     FROM branch_inbox_states
+                     WHERE npub = ?1 AND branch_id = ?2",
+                    params![npub, branch_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()
+                .map_err(Into::into)
+            })
+            .expect("query branch inbox state")
     }
 
     #[test]
@@ -3425,10 +3549,10 @@ mod tests {
         let items = store.list_branch_inbox(&npub, 50, 0).unwrap();
         assert_eq!(
             branch_inbox_item_ids(&items),
-            vec![first.branch_id, second.branch_id]
+            vec![second.branch_id, first.branch_id]
         );
-        assert_eq!(items[0].branch_name.as_deref(), Some("feature/one"));
-        assert_eq!(items[1].branch_name.as_deref(), Some("feature/two"));
+        assert_eq!(items[0].branch_name.as_deref(), Some("feature/two"));
+        assert_eq!(items[1].branch_name.as_deref(), Some("feature/one"));
         assert_eq!(store.branch_inbox_count(&npub).unwrap(), 2);
 
         let first_ctx = store
@@ -3438,9 +3562,9 @@ mod tests {
         assert_eq!(
             first_ctx,
             InboxReviewContext {
-                prev: None,
-                next: Some(second.branch_id),
-                position: 1,
+                prev: Some(second.branch_id),
+                next: None,
+                position: 2,
                 total: 2,
             }
         );
@@ -3451,9 +3575,9 @@ mod tests {
         assert_eq!(
             second_ctx,
             InboxReviewContext {
-                prev: Some(first.branch_id),
-                next: None,
-                position: 2,
+                prev: None,
+                next: Some(first.branch_id),
+                position: 1,
                 total: 2,
             }
         );
@@ -3495,6 +3619,7 @@ mod tests {
         let items = store.list_branch_inbox(npub, 50, 0).unwrap();
         assert_eq!(branch_inbox_item_ids(&items), vec![branch.branch_id]);
         assert_eq!(items[0].state, "closed");
+        assert!(items[0].needs_review);
         assert_eq!(store.branch_inbox_count(npub).unwrap(), 1);
         assert_eq!(
             store
@@ -3512,6 +3637,35 @@ mod tests {
             .dismiss_branch_inbox_items(npub, &[branch.branch_id])
             .expect("dismiss closed branch inbox item");
         assert_eq!(store.branch_inbox_count(npub).unwrap(), 0);
+    }
+
+    #[test]
+    fn merged_branch_stays_in_inbox_until_user_dismisses_it() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        let branch = store
+            .upsert_branch_record(&branch_upsert_input("feature/merged-persistent", "head-1"))
+            .unwrap();
+        let artifact_id = mark_latest_branch_artifact_ready(&store, branch.branch_id, "head-1");
+        let npub = "npub1merged";
+
+        assert_eq!(
+            store
+                .populate_branch_inbox(artifact_id, &[npub.to_string()])
+                .unwrap(),
+            1
+        );
+        store
+            .mark_branch_merged(branch.branch_id, "npub1trusted", "merge-sha-1")
+            .expect("merge branch");
+
+        let items = store.list_branch_inbox(npub, 50, 0).unwrap();
+        assert_eq!(branch_inbox_item_ids(&items), vec![branch.branch_id]);
+        assert_eq!(items[0].state, "merged");
+        assert!(items[0].needs_review);
+        assert_eq!(store.branch_inbox_count(npub).unwrap(), 1);
     }
 
     #[test]
@@ -3553,6 +3707,22 @@ mod tests {
         let items = store.list_branch_inbox(npub, 50, 0).unwrap();
         assert_eq!(branch_inbox_item_ids(&items), vec![branch.branch_id]);
         assert_eq!(items[0].review_id, branch.branch_id);
+        assert!(items[0].needs_review);
+
+        assert_eq!(
+            store
+                .mark_branch_inbox_reviewed(npub, branch.branch_id)
+                .unwrap(),
+            1
+        );
+        let reviewed_items = store.list_branch_inbox(npub, 50, 0).unwrap();
+        assert_eq!(reviewed_items.len(), 1);
+        assert!(!reviewed_items[0].needs_review);
+        assert_eq!(store.branch_inbox_count(npub).unwrap(), 0);
+        let (_, _, reviewed_artifact_id, reviewed_at) =
+            branch_inbox_state(&store, npub, branch.branch_id).expect("reviewed state");
+        assert_eq!(reviewed_artifact_id, Some(first_artifact_id));
+        assert!(reviewed_at.is_some());
 
         store
             .dismiss_branch_inbox_items(npub, &[branch.branch_id])
@@ -3576,7 +3746,42 @@ mod tests {
         );
         let items = store.list_branch_inbox(npub, 50, 0).unwrap();
         assert_eq!(branch_inbox_item_ids(&items), vec![branch.branch_id]);
+        assert!(items[0].needs_review);
         assert_eq!(store.branch_inbox_count(npub).unwrap(), 1);
+    }
+
+    #[test]
+    fn dismiss_is_per_user_and_review_progress_is_stable() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        let branch = store
+            .upsert_branch_record(&branch_upsert_input("feature/per-user", "head-1"))
+            .unwrap();
+        let artifact_id = mark_latest_branch_artifact_ready(&store, branch.branch_id, "head-1");
+        let alice = "npub1alice";
+        let bob = "npub1bob";
+
+        store
+            .populate_branch_inbox(artifact_id, &[alice.to_string(), bob.to_string()])
+            .unwrap();
+        assert_eq!(
+            store
+                .mark_branch_inbox_reviewed(alice, branch.branch_id)
+                .unwrap(),
+            1
+        );
+        assert_eq!(store.branch_inbox_count(alice).unwrap(), 0);
+        assert_eq!(store.branch_inbox_count(bob).unwrap(), 1);
+
+        store
+            .dismiss_branch_inbox_items(alice, &[branch.branch_id])
+            .unwrap();
+        assert!(store.list_branch_inbox(alice, 50, 0).unwrap().is_empty());
+        let bob_items = store.list_branch_inbox(bob, 50, 0).unwrap();
+        assert_eq!(branch_inbox_item_ids(&bob_items), vec![branch.branch_id]);
+        assert!(bob_items[0].needs_review);
     }
 
     #[test]

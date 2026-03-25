@@ -36,6 +36,11 @@ use crate::ci_state::{
 use crate::config::Config;
 use crate::forge;
 use crate::forge_runtime::{ForgeRuntime, ForgeRuntimeContext, ManualMirrorPassStatus};
+use crate::forge_service::{
+    BranchDetailAndRuns, BranchLaneMutationResult, BranchLaneRerunResult, BranchRunRecoveryResult,
+    CloseBranchResult, ForgeService, ForgeServiceError, MergeBranchResult,
+    NightlyLaneMutationResult, NightlyLaneRerunResult, NightlyRunRecoveryResult,
+};
 use crate::live::{CiLiveUpdate, CiLiveUpdates};
 use crate::mirror;
 use crate::model;
@@ -51,6 +56,7 @@ struct AppState {
     live_updates: CiLiveUpdates,
     webhook_secret: Option<String>,
     forge_runtime: Arc<ForgeRuntime>,
+    forge_service: Arc<ForgeService>,
 }
 
 #[derive(Template)]
@@ -529,6 +535,19 @@ fn push_page_notice(
     }
 }
 
+fn map_forge_service_error(err: ForgeServiceError) -> (StatusCode, String) {
+    match err {
+        ForgeServiceError::NotFound(message) => (StatusCode::NOT_FOUND, message),
+        ForgeServiceError::Conflict(message) => (StatusCode::CONFLICT, message),
+        ForgeServiceError::Internal(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
+    }
+}
+
+fn forge_service_json_error(err: ForgeServiceError) -> axum::response::Response {
+    let (status, message) = map_forge_service_error(err);
+    (status, Json(serde_json::json!({ "error": message }))).into_response()
+}
+
 fn branch_page_notices(state: &AppState) -> Vec<PageNoticeView> {
     let health = state.forge_runtime.health_snapshot(&state.config, None);
     if !health.enabled {
@@ -641,6 +660,12 @@ pub async fn serve(
     let live_updates = CiLiveUpdates::new(256);
     let webhook_secret = env::var(&config.webhook_secret_env).ok();
     let forge_runtime = Arc::new(ForgeRuntime::new(&config, webhook_secret.as_deref()));
+    let forge_service = Arc::new(ForgeService::new(
+        store.clone(),
+        config.clone(),
+        live_updates.clone(),
+        Arc::clone(&forge_runtime),
+    ));
     if let Some(forge_repo) = config.effective_forge_repo() {
         let startup_issues = forge_runtime.issues();
         for issue in &startup_issues {
@@ -674,6 +699,7 @@ pub async fn serve(
         live_updates: live_updates.clone(),
         webhook_secret,
         forge_runtime: Arc::clone(&forge_runtime),
+        forge_service,
     });
     forge_runtime.start_background(ForgeRuntimeContext {
         store: state.store.clone(),
@@ -904,32 +930,20 @@ async fn nightly_handler(
     State(state): State<Arc<AppState>>,
     Path(nightly_run_id): Path<i64>,
 ) -> impl IntoResponse {
-    let store = state.store.clone();
-    let nightly =
-        match tokio::task::spawn_blocking(move || store.get_nightly_run(nightly_run_id)).await {
-            Ok(Ok(Some(run))) => run,
-            Ok(Ok(None)) => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    format!("nightly run {} not found", nightly_run_id),
-                )
-                    .into_response();
-            }
-            Ok(Err(err)) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("failed to query nightly run: {}", err),
-                )
-                    .into_response();
-            }
-            Err(err) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("nightly detail worker task failed: {}", err),
-                )
-                    .into_response();
-            }
-        };
+    let nightly = match state.forge_service.nightly_run(nightly_run_id).await {
+        Ok(Some(run)) => run,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                format!("nightly run {} not found", nightly_run_id),
+            )
+                .into_response();
+        }
+        Err(err) => {
+            let (status, message) = map_forge_service_error(err);
+            return (status, message).into_response();
+        }
+    };
     let template = render_nightly_template_with_notices(nightly, nightly_page_notices(&state));
     match template.render() {
         Ok(rendered) => Html(rendered).into_response(),
@@ -953,18 +967,24 @@ async fn branch_ci_page_handler(
     Path(branch_id): Path<i64>,
     Query(query): Query<ReviewModeQuery>,
 ) -> impl IntoResponse {
-    let (detail, ci_runs) =
-        match load_branch_detail_and_runs(Arc::clone(&state), branch_id, 8).await {
-            Ok(Some(result)) => result,
-            Ok(None) => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    format!("branch {} not found", branch_id),
-                )
-                    .into_response();
-            }
-            Err((status, message)) => return (status, message).into_response(),
-        };
+    let BranchDetailAndRuns { detail, ci_runs } = match state
+        .forge_service
+        .branch_detail_and_runs(branch_id, 8)
+        .await
+    {
+        Ok(Some(result)) => result,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                format!("branch {} not found", branch_id),
+            )
+                .into_response();
+        }
+        Err(err) => {
+            let (status, message) = map_forge_service_error(err);
+            return (status, message).into_response();
+        }
+    };
 
     match render_branch_ci_template_with_notices(
         detail,
@@ -1026,18 +1046,24 @@ async fn detail_page(
     branch_id: i64,
     review_mode: bool,
 ) -> axum::response::Response {
-    let (detail, ci_runs) =
-        match load_branch_detail_and_runs(Arc::clone(&state), branch_id, 8).await {
-            Ok(Some(result)) => result,
-            Ok(None) => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    format!("branch {} not found", branch_id),
-                )
-                    .into_response();
-            }
-            Err((status, message)) => return (status, message).into_response(),
-        };
+    let BranchDetailAndRuns { detail, ci_runs } = match state
+        .forge_service
+        .branch_detail_and_runs(branch_id, 8)
+        .await
+    {
+        Ok(Some(result)) => result,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                format!("branch {} not found", branch_id),
+            )
+                .into_response();
+        }
+        Err(err) => {
+            let (status, message) = map_forge_service_error(err);
+            return (status, message).into_response();
+        }
+    };
 
     match render_detail_template_with_notices(
         detail,
@@ -1061,55 +1087,6 @@ async fn detail_page(
     }
 }
 
-async fn load_branch_detail_and_runs(
-    state: Arc<AppState>,
-    branch_id: i64,
-    run_limit: usize,
-) -> Result<Option<(BranchDetailRecord, Vec<BranchCiRunRecord>)>, (StatusCode, String)> {
-    let detail_store = state.store.clone();
-    let runs_store = state.store.clone();
-    let detail = match tokio::task::spawn_blocking(move || {
-        detail_store.get_branch_detail(branch_id)
-    })
-    .await
-    {
-        Ok(Ok(Some(record))) => record,
-        Ok(Ok(None)) => return Ok(None),
-        Ok(Err(err)) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to query branch detail: {}", err),
-            ));
-        }
-        Err(err) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("detail worker task failed: {}", err),
-            ));
-        }
-    };
-    let ci_runs = match tokio::task::spawn_blocking(move || {
-        runs_store.list_branch_ci_runs(branch_id, run_limit)
-    })
-    .await
-    {
-        Ok(Ok(runs)) => runs,
-        Ok(Err(err)) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to query branch ci runs: {}", err),
-            ));
-        }
-        Err(err) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("ci worker task failed: {}", err),
-            ));
-        }
-    };
-    Ok(Some((detail, ci_runs)))
-}
-
 struct BranchCiLiveSnapshot {
     html: String,
     active: bool,
@@ -1130,26 +1107,15 @@ async fn load_branch_ci_summary_snapshot(
     branch_id: i64,
     review_mode: bool,
 ) -> Result<Option<BranchCiSummarySnapshot>, (StatusCode, String)> {
-    let detail_store = state.store.clone();
-    let runs_store = state.store.clone();
-    let detail = match tokio::task::spawn_blocking(move || {
-        detail_store.get_branch_detail(branch_id)
-    })
-    .await
+    let BranchDetailAndRuns { detail, ci_runs } = match state
+        .forge_service
+        .branch_detail_and_runs(branch_id, 8)
+        .await
     {
-        Ok(Ok(Some(record))) => record,
-        Ok(Ok(None)) => return Ok(None),
-        Ok(Err(err)) => return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
-        Err(err) => return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
+        Ok(Some(result)) => result,
+        Ok(None) => return Ok(None),
+        Err(err) => return Err(map_forge_service_error(err)),
     };
-    let ci_runs =
-        match tokio::task::spawn_blocking(move || runs_store.list_branch_ci_runs(branch_id, 8))
-            .await
-        {
-            Ok(Ok(runs)) => runs,
-            Ok(Err(err)) => return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
-            Err(err) => return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
-        };
     let html =
         render_branch_ci_summary_html(&detail, &ci_runs, &branch_page_notices(&state), review_mode)
             .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
@@ -1161,26 +1127,15 @@ async fn load_branch_ci_live_snapshot(
     state: Arc<AppState>,
     branch_id: i64,
 ) -> Result<Option<BranchCiLiveSnapshot>, (StatusCode, String)> {
-    let detail_store = state.store.clone();
-    let runs_store = state.store.clone();
-    let detail = match tokio::task::spawn_blocking(move || {
-        detail_store.get_branch_detail(branch_id)
-    })
-    .await
+    let BranchDetailAndRuns { detail, ci_runs } = match state
+        .forge_service
+        .branch_detail_and_runs(branch_id, 8)
+        .await
     {
-        Ok(Ok(Some(record))) => record,
-        Ok(Ok(None)) => return Ok(None),
-        Ok(Err(err)) => return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
-        Err(err) => return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
+        Ok(Some(result)) => result,
+        Ok(None) => return Ok(None),
+        Err(err) => return Err(map_forge_service_error(err)),
     };
-    let ci_runs =
-        match tokio::task::spawn_blocking(move || runs_store.list_branch_ci_runs(branch_id, 8))
-            .await
-        {
-            Ok(Ok(runs)) => runs,
-            Ok(Err(err)) => return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
-            Err(err) => return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
-        };
     let html = render_branch_ci_live_html(&detail, &ci_runs, &branch_page_notices(&state))
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     let active = branch_ci_runs_are_active(&ci_runs);
@@ -1191,14 +1146,11 @@ async fn load_nightly_live_snapshot(
     state: Arc<AppState>,
     nightly_run_id: i64,
 ) -> Result<Option<NightlyLiveSnapshot>, (StatusCode, String)> {
-    let store = state.store.clone();
-    let nightly =
-        match tokio::task::spawn_blocking(move || store.get_nightly_run(nightly_run_id)).await {
-            Ok(Ok(Some(run))) => run,
-            Ok(Ok(None)) => return Ok(None),
-            Ok(Err(err)) => return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
-            Err(err) => return Err((StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
-        };
+    let nightly = match state.forge_service.nightly_run(nightly_run_id).await {
+        Ok(Some(run)) => run,
+        Ok(None) => return Ok(None),
+        Err(err) => return Err(map_forge_service_error(err)),
+    };
     let html = render_nightly_live_html(&nightly, &nightly_page_notices(&state))
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     let active = nightly_run_is_active(&nightly);
@@ -2255,127 +2207,17 @@ async fn merge_handler(
         Ok(npub) => npub,
         Err(resp) => return resp,
     };
-    let Some(forge_repo) = state.config.effective_forge_repo() else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "forge repo is not configured"})),
-        )
-            .into_response();
-    };
-
-    let store = state.store.clone();
-    let target = match tokio::task::spawn_blocking(move || {
-        store.get_branch_action_target(branch_id)
-    })
-    .await
-    {
-        Ok(Ok(Some(target))) => target,
-        Ok(Ok(None)) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "branch not found"})),
-            )
-                .into_response();
-        }
-        Ok(Err(err)) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": err.to_string()})),
-            )
-                .into_response();
-        }
-        Err(err) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": err.to_string()})),
-            )
-                .into_response();
-        }
-    };
-    if target.branch_state != "open" {
-        return (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": "only open branches can be merged"})),
-        )
-            .into_response();
-    }
-
-    let current_head = match forge::current_branch_head(&forge_repo, &target.branch_name) {
-        Ok(Some(head)) => head,
-        Ok(None) => {
-            return (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({"error": "branch ref no longer exists"})),
-            )
-                .into_response();
-        }
-        Err(err) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": err.to_string()})),
-            )
-                .into_response();
-        }
-    };
-    if current_head != target.head_sha {
-        return (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": "branch head changed; refresh before merging"})),
-        )
-            .into_response();
-    }
-
-    let merge_outcome = match tokio::task::spawn_blocking({
-        let forge_repo = forge_repo.clone();
-        let branch_name = target.branch_name.clone();
-        let expected_head = target.head_sha.clone();
-        move || forge::merge_branch(&forge_repo, &branch_name, &expected_head)
-    })
-    .await
-    {
-        Ok(Ok(outcome)) => outcome,
-        Ok(Err(err)) => {
-            return (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({"error": err.to_string()})),
-            )
-                .into_response();
-        }
-        Err(err) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": err.to_string()})),
-            )
-                .into_response();
-        }
-    };
-
-    let merge_commit_sha = merge_outcome.merge_commit_sha.clone();
-    let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || {
-        store.mark_branch_merged(branch_id, &npub, &merge_commit_sha)
-    })
-    .await
-    {
-        Ok(Ok(())) => {
-            state.forge_runtime.request_mirror();
-            Json(serde_json::json!({
-                "status": "ok",
-                "branch_id": branch_id,
-                "merge_commit_sha": merge_outcome.merge_commit_sha
-            }))
-            .into_response()
-        }
-        Ok(Err(err)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
+    match state.forge_service.merge_branch(branch_id, &npub).await {
+        Ok(MergeBranchResult {
+            branch_id,
+            merge_commit_sha,
+        }) => Json(serde_json::json!({
+            "status": "ok",
+            "branch_id": branch_id,
+            "merge_commit_sha": merge_commit_sha
+        }))
+        .into_response(),
+        Err(err) => forge_service_json_error(err),
     }
 }
 
@@ -2388,122 +2230,14 @@ async fn close_handler(
         Ok(npub) => npub,
         Err(resp) => return resp,
     };
-    let Some(forge_repo) = state.config.effective_forge_repo() else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "forge repo is not configured"})),
-        )
-            .into_response();
-    };
-
-    let store = state.store.clone();
-    let target = match tokio::task::spawn_blocking(move || {
-        store.get_branch_action_target(branch_id)
-    })
-    .await
-    {
-        Ok(Ok(Some(target))) => target,
-        Ok(Ok(None)) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "branch not found"})),
-            )
-                .into_response();
-        }
-        Ok(Err(err)) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": err.to_string()})),
-            )
-                .into_response();
-        }
-        Err(err) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": err.to_string()})),
-            )
-                .into_response();
-        }
-    };
-    if target.branch_state != "open" {
-        return (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": "only open branches can be closed"})),
-        )
-            .into_response();
-    }
-
-    let current_head = match forge::current_branch_head(&forge_repo, &target.branch_name) {
-        Ok(Some(head)) => head,
-        Ok(None) => {
-            return (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({"error": "branch ref no longer exists"})),
-            )
-                .into_response();
-        }
-        Err(err) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": err.to_string()})),
-            )
-                .into_response();
-        }
-    };
-    if current_head != target.head_sha {
-        return (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": "branch head changed; refresh before closing"})),
-        )
-            .into_response();
-    }
-
-    let close_outcome = match tokio::task::spawn_blocking({
-        let forge_repo = forge_repo.clone();
-        let branch_name = target.branch_name.clone();
-        let expected_head = target.head_sha.clone();
-        move || forge::close_branch(&forge_repo, &branch_name, &expected_head)
-    })
-    .await
-    {
-        Ok(Ok(outcome)) => outcome,
-        Ok(Err(err)) => {
-            return (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({"error": err.to_string()})),
-            )
-                .into_response();
-        }
-        Err(err) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": err.to_string()})),
-            )
-                .into_response();
-        }
-    };
-
-    let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || store.mark_branch_closed(branch_id, &npub)).await {
-        Ok(Ok(())) => {
-            state.forge_runtime.request_mirror();
-            Json(serde_json::json!({
-                "status": "ok",
-                "branch_id": branch_id,
-                "deleted": close_outcome.deleted
-            }))
-            .into_response()
-        }
-        Ok(Err(err)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
+    match state.forge_service.close_branch(branch_id, &npub).await {
+        Ok(CloseBranchResult { branch_id, deleted }) => Json(serde_json::json!({
+            "status": "ok",
+            "branch_id": branch_id,
+            "deleted": deleted
+        }))
+        .into_response(),
+        Err(err) => forge_service_json_error(err),
     }
 }
 
@@ -2515,35 +2249,26 @@ async fn rerun_branch_ci_lane_handler(
     if let Err(resp) = require_trusted_auth(&state.auth, &headers) {
         return resp;
     }
-    let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || store.rerun_branch_ci_lane(branch_id, lane_run_id))
+    match state
+        .forge_service
+        .rerun_branch_ci_lane(branch_id, lane_run_id)
         .await
     {
-        Ok(Ok(Some(rerun_suite_id))) => {
-            state.live_updates.branch_changed(branch_id, "rerun_queued");
-            state.forge_runtime.wake_ci();
-            Json(serde_json::json!({
-                "status": "ok",
-                "branch_id": branch_id,
-                "rerun_suite_id": rerun_suite_id
-            }))
-            .into_response()
-        }
-        Ok(Ok(None)) => (
+        Ok(Some(BranchLaneRerunResult {
+            branch_id,
+            rerun_suite_id,
+        })) => Json(serde_json::json!({
+            "status": "ok",
+            "branch_id": branch_id,
+            "rerun_suite_id": rerun_suite_id
+        }))
+        .into_response(),
+        Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "branch lane not found"})),
         )
             .into_response(),
-        Ok(Err(err)) => (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
+        Err(err) => forge_service_json_error(err),
     }
 }
 
@@ -2555,37 +2280,26 @@ async fn rerun_nightly_lane_handler(
     if let Err(resp) = require_trusted_auth(&state.auth, &headers) {
         return resp;
     }
-    let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || store.rerun_nightly_lane(nightly_run_id, lane_run_id))
+    match state
+        .forge_service
+        .rerun_nightly_lane(nightly_run_id, lane_run_id)
         .await
     {
-        Ok(Ok(Some(rerun_run_id))) => {
-            state
-                .live_updates
-                .nightly_changed(nightly_run_id, "rerun_queued");
-            state.forge_runtime.wake_ci();
-            Json(serde_json::json!({
-                "status": "ok",
-                "nightly_run_id": nightly_run_id,
-                "rerun_run_id": rerun_run_id
-            }))
-            .into_response()
-        }
-        Ok(Ok(None)) => (
+        Ok(Some(NightlyLaneRerunResult {
+            nightly_run_id,
+            rerun_run_id,
+        })) => Json(serde_json::json!({
+            "status": "ok",
+            "nightly_run_id": nightly_run_id,
+            "rerun_run_id": rerun_run_id
+        }))
+        .into_response(),
+        Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "nightly lane not found"})),
         )
             .into_response(),
-        Ok(Err(err)) => (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
+        Err(err) => forge_service_json_error(err),
     }
 }
 
@@ -2598,38 +2312,28 @@ async fn fail_branch_ci_lane_handler(
         Ok(npub) => npub,
         Err(resp) => return resp,
     };
-    let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || {
-        store.fail_branch_ci_lane(branch_id, lane_run_id, &npub)
-    })
-    .await
+    match state
+        .forge_service
+        .fail_branch_ci_lane(branch_id, lane_run_id, &npub)
+        .await
     {
-        Ok(Ok(Some(()))) => {
-            state.live_updates.branch_changed(branch_id, "lane_failed");
-            state.forge_runtime.wake_ci();
-            Json(serde_json::json!({
-                "status": "ok",
-                "branch_id": branch_id,
-                "lane_run_id": lane_run_id,
-                "lane_status": "failed"
-            }))
-            .into_response()
-        }
-        Ok(Ok(None)) => (
+        Ok(Some(BranchLaneMutationResult {
+            branch_id,
+            lane_run_id,
+            lane_status,
+        })) => Json(serde_json::json!({
+            "status": "ok",
+            "branch_id": branch_id,
+            "lane_run_id": lane_run_id,
+            "lane_status": lane_status
+        }))
+        .into_response(),
+        Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "branch lane not found"})),
         )
             .into_response(),
-        Ok(Err(err)) => (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
+        Err(err) => forge_service_json_error(err),
     }
 }
 
@@ -2641,38 +2345,28 @@ async fn requeue_branch_ci_lane_handler(
     if let Err(resp) = require_trusted_auth(&state.auth, &headers) {
         return resp;
     }
-    let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || store.requeue_branch_ci_lane(branch_id, lane_run_id))
+    match state
+        .forge_service
+        .requeue_branch_ci_lane(branch_id, lane_run_id)
         .await
     {
-        Ok(Ok(Some(()))) => {
-            state
-                .live_updates
-                .branch_changed(branch_id, "lane_requeued");
-            state.forge_runtime.wake_ci();
-            Json(serde_json::json!({
-                "status": "ok",
-                "branch_id": branch_id,
-                "lane_run_id": lane_run_id,
-                "lane_status": "queued"
-            }))
-            .into_response()
-        }
-        Ok(Ok(None)) => (
+        Ok(Some(BranchLaneMutationResult {
+            branch_id,
+            lane_run_id,
+            lane_status,
+        })) => Json(serde_json::json!({
+            "status": "ok",
+            "branch_id": branch_id,
+            "lane_run_id": lane_run_id,
+            "lane_status": lane_status
+        }))
+        .into_response(),
+        Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "branch lane not found"})),
         )
             .into_response(),
-        Ok(Err(err)) => (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
+        Err(err) => forge_service_json_error(err),
     }
 }
 
@@ -2684,37 +2378,28 @@ async fn recover_branch_ci_run_handler(
     if let Err(resp) = require_trusted_auth(&state.auth, &headers) {
         return resp;
     }
-    let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || store.recover_branch_ci_run(branch_id, run_id)).await
+    match state
+        .forge_service
+        .recover_branch_ci_run(branch_id, run_id)
+        .await
     {
-        Ok(Ok(Some(recovered_lane_count))) => {
-            state
-                .live_updates
-                .branch_changed(branch_id, "run_recovered");
-            state.forge_runtime.wake_ci();
-            Json(serde_json::json!({
-                "status": "ok",
-                "branch_id": branch_id,
-                "run_id": run_id,
-                "recovered_lane_count": recovered_lane_count
-            }))
-            .into_response()
-        }
-        Ok(Ok(None)) => (
+        Ok(Some(BranchRunRecoveryResult {
+            branch_id,
+            run_id,
+            recovered_lane_count,
+        })) => Json(serde_json::json!({
+            "status": "ok",
+            "branch_id": branch_id,
+            "run_id": run_id,
+            "recovered_lane_count": recovered_lane_count
+        }))
+        .into_response(),
+        Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "branch run not found"})),
         )
             .into_response(),
-        Ok(Err(err)) => (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
+        Err(err) => forge_service_json_error(err),
     }
 }
 
@@ -2727,40 +2412,28 @@ async fn fail_nightly_lane_handler(
         Ok(npub) => npub,
         Err(resp) => return resp,
     };
-    let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || {
-        store.fail_nightly_lane(nightly_run_id, lane_run_id, &npub)
-    })
-    .await
+    match state
+        .forge_service
+        .fail_nightly_lane(nightly_run_id, lane_run_id, &npub)
+        .await
     {
-        Ok(Ok(Some(()))) => {
-            state
-                .live_updates
-                .nightly_changed(nightly_run_id, "lane_failed");
-            state.forge_runtime.wake_ci();
-            Json(serde_json::json!({
-                "status": "ok",
-                "nightly_run_id": nightly_run_id,
-                "lane_run_id": lane_run_id,
-                "lane_status": "failed"
-            }))
-            .into_response()
-        }
-        Ok(Ok(None)) => (
+        Ok(Some(NightlyLaneMutationResult {
+            nightly_run_id,
+            lane_run_id,
+            lane_status,
+        })) => Json(serde_json::json!({
+            "status": "ok",
+            "nightly_run_id": nightly_run_id,
+            "lane_run_id": lane_run_id,
+            "lane_status": lane_status
+        }))
+        .into_response(),
+        Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "nightly lane not found"})),
         )
             .into_response(),
-        Ok(Err(err)) => (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
+        Err(err) => forge_service_json_error(err),
     }
 }
 
@@ -2772,40 +2445,28 @@ async fn requeue_nightly_lane_handler(
     if let Err(resp) = require_trusted_auth(&state.auth, &headers) {
         return resp;
     }
-    let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || {
-        store.requeue_nightly_lane(nightly_run_id, lane_run_id)
-    })
-    .await
+    match state
+        .forge_service
+        .requeue_nightly_lane(nightly_run_id, lane_run_id)
+        .await
     {
-        Ok(Ok(Some(()))) => {
-            state
-                .live_updates
-                .nightly_changed(nightly_run_id, "lane_requeued");
-            state.forge_runtime.wake_ci();
-            Json(serde_json::json!({
-                "status": "ok",
-                "nightly_run_id": nightly_run_id,
-                "lane_run_id": lane_run_id,
-                "lane_status": "queued"
-            }))
-            .into_response()
-        }
-        Ok(Ok(None)) => (
+        Ok(Some(NightlyLaneMutationResult {
+            nightly_run_id,
+            lane_run_id,
+            lane_status,
+        })) => Json(serde_json::json!({
+            "status": "ok",
+            "nightly_run_id": nightly_run_id,
+            "lane_run_id": lane_run_id,
+            "lane_status": lane_status
+        }))
+        .into_response(),
+        Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "nightly lane not found"})),
         )
             .into_response(),
-        Ok(Err(err)) => (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
+        Err(err) => forge_service_json_error(err),
     }
 }
 
@@ -2817,35 +2478,26 @@ async fn recover_nightly_run_handler(
     if let Err(resp) = require_trusted_auth(&state.auth, &headers) {
         return resp;
     }
-    let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || store.recover_nightly_run(nightly_run_id)).await {
-        Ok(Ok(Some(recovered_lane_count))) => {
-            state
-                .live_updates
-                .nightly_changed(nightly_run_id, "run_recovered");
-            state.forge_runtime.wake_ci();
-            Json(serde_json::json!({
-                "status": "ok",
-                "nightly_run_id": nightly_run_id,
-                "recovered_lane_count": recovered_lane_count
-            }))
-            .into_response()
-        }
-        Ok(Ok(None)) => (
+    match state
+        .forge_service
+        .recover_nightly_run(nightly_run_id)
+        .await
+    {
+        Ok(Some(NightlyRunRecoveryResult {
+            nightly_run_id,
+            recovered_lane_count,
+        })) => Json(serde_json::json!({
+            "status": "ok",
+            "nightly_run_id": nightly_run_id,
+            "recovered_lane_count": recovered_lane_count
+        }))
+        .into_response(),
+        Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "nightly run not found"})),
         )
             .into_response(),
-        Ok(Err(err)) => (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
+        Err(err) => forge_service_json_error(err),
     }
 }
 
@@ -2856,7 +2508,7 @@ async fn wake_ci_handler(
     if let Err(resp) = require_trusted_auth(&state.auth, &headers) {
         return resp;
     }
-    state.forge_runtime.wake_ci();
+    state.forge_service.wake_ci();
     Json(serde_json::json!({
         "status": "ok",
         "message": "scheduler wake requested"
@@ -2880,36 +2532,24 @@ async fn api_forge_branch_resolve_handler(
         )
             .into_response();
     }
-    let repo = state
-        .config
-        .effective_forge_repo()
-        .map(|repo| repo.repo)
-        .unwrap_or_else(|| "sledtools/pika".to_string());
-    let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || store.find_branch_by_name(&repo, &branch_name)).await
+    match state
+        .forge_service
+        .resolve_branch_by_name(&branch_name)
+        .await
     {
-        Ok(Ok(Some(branch))) => Json(ForgeBranchResolveResponse {
+        Ok(Some(branch)) => Json(ForgeBranchResolveResponse {
             branch_id: branch.branch_id,
             repo: branch.repo,
             branch_name: branch.branch_name,
             branch_state: branch.branch_state,
         })
         .into_response(),
-        Ok(Ok(None)) => (
+        Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "branch not found"})),
         )
             .into_response(),
-        Ok(Err(err)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
+        Err(err) => forge_service_json_error(err),
     }
 }
 
@@ -2921,8 +2561,12 @@ async fn api_forge_branch_detail_handler(
     if let Err(resp) = require_auth(&state.auth, &headers) {
         return resp;
     }
-    match load_branch_detail_and_runs(Arc::clone(&state), branch_id, 8).await {
-        Ok(Some((detail, ci_runs))) => Json(ForgeBranchDetailResponse {
+    match state
+        .forge_service
+        .branch_detail_and_runs(branch_id, 8)
+        .await
+    {
+        Ok(Some(BranchDetailAndRuns { detail, ci_runs })) => Json(ForgeBranchDetailResponse {
             branch: map_forge_branch_summary(detail),
             ci_runs: ci_runs
                 .into_iter()
@@ -2935,9 +2579,7 @@ async fn api_forge_branch_detail_handler(
             Json(serde_json::json!({"error": "branch not found"})),
         )
             .into_response(),
-        Err((status, message)) => {
-            (status, Json(serde_json::json!({"error": message}))).into_response()
-        }
+        Err(err) => forge_service_json_error(err),
     }
 }
 
@@ -2950,8 +2592,12 @@ async fn api_forge_branch_logs_handler(
     if let Err(resp) = require_auth(&state.auth, &headers) {
         return resp;
     }
-    match load_branch_detail_and_runs(Arc::clone(&state), branch_id, 8).await {
-        Ok(Some((detail, ci_runs))) => {
+    match state
+        .forge_service
+        .branch_detail_and_runs(branch_id, 8)
+        .await
+    {
+        Ok(Some(BranchDetailAndRuns { detail, ci_runs })) => {
             let Some((run_id, lane)) =
                 select_branch_log_lane(&ci_runs, query.lane.as_deref(), query.lane_run_id)
             else {
@@ -2984,9 +2630,7 @@ async fn api_forge_branch_logs_handler(
             Json(serde_json::json!({"error": "branch not found"})),
         )
             .into_response(),
-        Err((status, message)) => {
-            (status, Json(serde_json::json!({"error": message}))).into_response()
-        }
+        Err(err) => forge_service_json_error(err),
     }
 }
 
@@ -3114,9 +2758,8 @@ async fn api_forge_nightly_detail_handler(
     if let Err(resp) = require_auth(&state.auth, &headers) {
         return resp;
     }
-    let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || store.get_nightly_run(nightly_run_id)).await {
-        Ok(Ok(Some(run))) => Json(ForgeNightlyDetailResponse {
+    match state.forge_service.nightly_run(nightly_run_id).await {
+        Ok(Some(run)) => Json(ForgeNightlyDetailResponse {
             nightly_run_id: run.nightly_run_id,
             repo: run.repo,
             scheduled_for: run.scheduled_for,
@@ -3131,21 +2774,12 @@ async fn api_forge_nightly_detail_handler(
             lanes: run.lanes.into_iter().map(map_nightly_lane_view).collect(),
         })
         .into_response(),
-        Ok(Ok(None)) => (
+        Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "nightly run not found"})),
         )
             .into_response(),
-        Ok(Err(err)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": err.to_string()})),
-        )
-            .into_response(),
+        Err(err) => forge_service_json_error(err),
     }
 }
 
@@ -4622,6 +4256,7 @@ mod tests {
         build_mirror_health_status, ci_pass_needs_follow_up_wake, collect_forge_startup_issues,
         current_forge_runtime_issues, ForgeRuntime,
     };
+    use crate::forge_service::ForgeService;
     use crate::mirror::MirrorRuntimeStatus;
     use crate::poller;
     use crate::storage::ChatAllowlistEntry;
@@ -4731,6 +4366,14 @@ mod tests {
         let bootstrap_admin_npubs = config.effective_bootstrap_admin_npubs();
         let legacy_allowed_npubs = config.allowed_npubs.clone();
         let forge_mode = config.effective_forge_repo().is_some();
+        let live_updates = CiLiveUpdates::new(live_buffer);
+        let forge_runtime = Arc::new(ForgeRuntime::blank(forge_mode));
+        let forge_service = Arc::new(ForgeService::new(
+            store.clone(),
+            config.clone(),
+            live_updates.clone(),
+            Arc::clone(&forge_runtime),
+        ));
         Arc::new(AppState {
             auth: Arc::new(AuthState::new(
                 &bootstrap_admin_npubs,
@@ -4739,9 +4382,10 @@ mod tests {
             )),
             store,
             config,
-            live_updates: CiLiveUpdates::new(live_buffer),
+            live_updates,
             webhook_secret: None,
-            forge_runtime: Arc::new(ForgeRuntime::blank(forge_mode)),
+            forge_runtime,
+            forge_service,
         })
     }
 

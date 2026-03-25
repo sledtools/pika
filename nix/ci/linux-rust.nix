@@ -16,6 +16,11 @@ let
       extensions = [ "rust-src" ];
     }
   );
+  guestSystemBin = "/run/current-system/sw/bin";
+  guestBash = "${guestSystemBin}/bash";
+  guestBashShebang = "#!${guestBash}";
+  guestNode = "${guestSystemBin}/node";
+  guestPython = "${guestSystemBin}/python3";
 
   lanePname =
     if lane == "pika-core" then
@@ -77,13 +82,65 @@ let
 
   followupGradle = if androidJdk != null then pkgs.gradle.override { java = androidJdk; } else pkgs.gradle;
   stagedRuntimeEnv = ''
-    host_store_root="''${PIKACI_STAGED_HOST_NIX_STORE_ROOT:-/nix/store}"
+    export PATH="${pkgs.postgresql}/bin:${guestSystemBin}:$PATH"
     staged_runtime_ld="${pkgs.lib.makeLibraryPath commonArgs.buildInputs}"
-    staged_runtime_ld="''${staged_runtime_ld//\/nix\/store/$host_store_root}"
-    staged_postgres_bin="${pkgs.postgresql}/bin"
-    staged_postgres_bin="''${staged_postgres_bin//\/nix\/store/$host_store_root}"
-    export PATH="$staged_postgres_bin:$PATH"
+    if [ -d /run/opengl-driver/lib ]; then
+      staged_runtime_ld="/run/opengl-driver/lib:$staged_runtime_ld"
+    fi
     export LD_LIBRARY_PATH="$staged_runtime_ld''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
+  '';
+
+  emitPikaciPayloadManifest = ''
+    had_share_pikaci=0
+    had_target=0
+    had_lib=0
+    if [ -d "$out/share/pikaci" ]; then
+      had_share_pikaci=1
+    fi
+    if [ -d "$out/target" ]; then
+      had_target=1
+    fi
+    if [ -d "$out/lib" ]; then
+      had_lib=1
+    fi
+    mkdir -p "$out/share/pikaci"
+    export PIKACI_PAYLOAD_MANIFEST_OUT="$out"
+    export PIKACI_PAYLOAD_MANIFEST_HAS_SHARE_PIKACI="$had_share_pikaci"
+    export PIKACI_PAYLOAD_MANIFEST_HAS_TARGET="$had_target"
+    export PIKACI_PAYLOAD_MANIFEST_HAS_LIB="$had_lib"
+    ${pkgs.python3}/bin/python3 <<'PY'
+import json
+import os
+from pathlib import Path
+
+out = Path(os.environ["PIKACI_PAYLOAD_MANIFEST_OUT"])
+kind = "staged_linux_workspace_build_v1" if (out / "bin").is_dir() else "staged_linux_workspace_deps_v1"
+entrypoints = []
+bin_dir = out / "bin"
+if bin_dir.is_dir():
+    for child in sorted(bin_dir.iterdir(), key=lambda path: path.name):
+        if child.is_file() or child.is_symlink():
+            entrypoints.append({"name": child.name, "relative_path": f"bin/{child.name}"})
+
+asset_roots = []
+if os.environ.get("PIKACI_PAYLOAD_MANIFEST_HAS_SHARE_PIKACI") == "1":
+    asset_roots.append({"name": "pikaci_share", "relative_path": "share/pikaci"})
+if os.environ.get("PIKACI_PAYLOAD_MANIFEST_HAS_TARGET") == "1":
+    asset_roots.append({"name": "target", "relative_path": "target"})
+if os.environ.get("PIKACI_PAYLOAD_MANIFEST_HAS_LIB") == "1":
+    asset_roots.append({"name": "lib", "relative_path": "lib"})
+
+manifest = {
+    "schema_version": 1,
+    "kind": kind,
+    "entrypoints": entrypoints,
+    "asset_roots": asset_roots,
+}
+(out / "share" / "pikaci" / "payload-manifest.json").write_text(
+    json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+)
+PY
   '';
 
   pikaFollowupGradleDepsPackage =
@@ -573,27 +630,27 @@ let
             }
 
             write_wrapper "$out/bin/run-pika-android-test-compile" \
-              "#!${pkgs.bash}/bin/bash" \
+              "${guestBashShebang}" \
               "set -euo pipefail" \
               "cat \"\$(cd \"\$(dirname \"\$0\")/..\" && pwd)/share/pikaci/pika-followup-pika-android-test-compile.ok\""
             write_wrapper "$out/bin/run-pika-followup-pikachat-build" \
-              "#!${pkgs.bash}/bin/bash" \
+              "${guestBashShebang}" \
               "set -euo pipefail" \
               "cat \"\$(cd \"\$(dirname \"\$0\")/..\" && pwd)/share/pikaci/pika-followup-pikachat-build.ok\""
             write_wrapper "$out/bin/run-pika-desktop-check" \
-              "#!${pkgs.bash}/bin/bash" \
+              "${guestBashShebang}" \
               "set -euo pipefail" \
               "cat \"\$(cd \"\$(dirname \"\$0\")/..\" && pwd)/share/pikaci/pika-followup-pika-desktop-check.ok\""
             write_wrapper "$out/bin/run-pika-actionlint" \
-              "#!${pkgs.bash}/bin/bash" \
+              "${guestBashShebang}" \
               "set -euo pipefail" \
               "cat \"\$(cd \"\$(dirname \"\$0\")/..\" && pwd)/share/pikaci/pika-followup-actionlint.ok\""
             write_wrapper "$out/bin/run-pika-doc-contracts" \
-              "#!${pkgs.bash}/bin/bash" \
+              "${guestBashShebang}" \
               "set -euo pipefail" \
               "cat \"\$(cd \"\$(dirname \"\$0\")/..\" && pwd)/share/pikaci/pika-followup-doc-contracts.ok\""
             write_wrapper "$out/bin/run-pika-rust-deps-hygiene" \
-              "#!${pkgs.bash}/bin/bash" \
+              "${guestBashShebang}" \
               "set -euo pipefail" \
               "cat \"\$(cd \"\$(dirname \"\$0\")/..\" && pwd)/share/pikaci/pika-followup-rust-deps-hygiene.ok\""
           fi
@@ -924,7 +981,7 @@ let
         ''}
 
         cat >"$out/bin/run-pika-core-test-manifest" <<'EOF'
-        #!${pkgs.bash}/bin/bash
+        ${guestBashShebang}
         set -euo pipefail
 
         if [ "$#" -ne 1 ]; then
@@ -954,19 +1011,19 @@ let
         done <"$manifest"
         EOF
         cat >"$out/bin/run-pika-core-lib-tests" <<'EOF'
-        #!${pkgs.bash}/bin/bash
+        ${guestBashShebang}
         set -euo pipefail
         exec "$(dirname "$0")/run-pika-core-test-manifest" pika-core-lib-tests.manifest
         EOF
         cat >"$out/bin/run-pika-core-lib-app-flows-tests" <<'EOF'
-        #!${pkgs.bash}/bin/bash
+        ${guestBashShebang}
         set -euo pipefail
         root="$(dirname "$0")"
         "$root/run-pika-core-test-manifest" pika-core-lib-tests.manifest
         exec "$root/run-pika-core-test-manifest" pika-core-lib-app-flows.manifest
         EOF
         cat >"$out/bin/run-pika-core-messaging-e2e-tests" <<'EOF'
-        #!${pkgs.bash}/bin/bash
+        ${guestBashShebang}
         set -euo pipefail
         exec "$(dirname "$0")/run-pika-core-test-manifest" pika-core-messaging-e2e.manifest
         EOF
@@ -1038,7 +1095,7 @@ let
           fi
 
           cat >"$out/bin/run-pika-server-package-tests" <<'EOF'
-          #!${pkgs.bash}/bin/bash
+          ${guestBashShebang}
           set -euo pipefail
 
           root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
@@ -1124,7 +1181,7 @@ let
           ''}
 
           cat >"$out/bin/run-pikahut-clippy" <<'EOF'
-          #!${pkgs.bash}/bin/bash
+          ${guestBashShebang}
           set -euo pipefail
 
           root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
@@ -1139,7 +1196,7 @@ let
           chmod +x "$out/bin/run-pikahut-clippy"
 
           cat >"$out/bin/run-fixture-relay-smoke" <<'EOF'
-          #!${pkgs.bash}/bin/bash
+          ${guestBashShebang}
           set -euo pipefail
 
           root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
@@ -1157,7 +1214,7 @@ let
 
           "$bin" up --profile relay --background --state-dir "$state_dir" --relay-port 0 >/dev/null
           "$bin" wait --state-dir "$state_dir" --timeout 30
-          "$bin" status --state-dir "$state_dir" --json | ${pkgs.python3}/bin/python3 -c \
+          "$bin" status --state-dir "$state_dir" --json | ${guestPython} -c \
             "import json,sys; d=json.load(sys.stdin); assert d.get('relay_url'), f'relay_url missing: {d}'"
           EOF
           chmod +x "$out/bin/run-fixture-relay-smoke"
@@ -1237,55 +1294,62 @@ let
           cp "$cargoVendorDir/config.toml" "$out/share/pikaci/rmp-vendor/upstream-config.toml"
           cp -RL "$vendor_store_dir" "$out/share/pikaci/rmp-vendor/vendor"
 
-          cp ${pkgs.writeShellScript "run-rmp-init-smoke-ci" ''
-            set -euo pipefail
+          install -Dm555 ${
+            pkgs.writeTextFile {
+              name = "run-rmp-init-smoke-ci";
+              executable = true;
+              text = ''
+                ${guestBashShebang}
+                set -euo pipefail
 
-            root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
-            bin="$root/bin/rmp"
-            tmp="$(mktemp -d "''${TMPDIR:-/tmp}/rmp-init-smoke-ci.XXXXXX")"
-            cargo_home="$(mktemp -d "''${TMPDIR:-/tmp}/rmp-cargo-home.XXXXXX")"
-            target="$tmp/target"
-            cleanup() {
-              rm -rf "$tmp" "$cargo_home"
+                root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
+                bin="$root/bin/rmp"
+                tmp="$(mktemp -d "''${TMPDIR:-/tmp}/rmp-init-smoke-ci.XXXXXX")"
+                cargo_home="$(mktemp -d "''${TMPDIR:-/tmp}/rmp-cargo-home.XXXXXX")"
+                target="$tmp/target"
+                cleanup() {
+                  rm -rf "$tmp" "$cargo_home"
+                }
+                trap cleanup EXIT
+
+                vendor_dir="$root/share/pikaci/rmp-vendor/vendor"
+                cat >"$cargo_home/config.toml" <<CFG
+                [source.crates-io]
+                replace-with = "pikaci-rmp-vendor"
+
+                [source.pikaci-rmp-vendor]
+                directory = "$vendor_dir"
+
+                [net]
+                offline = true
+                CFG
+
+                check_generated_project() {
+                  local project_dir="$1"
+                  shift || true
+                  (
+                    cd "$project_dir"
+                    CARGO_HOME="$cargo_home" \
+                    CARGO_NET_OFFLINE=true \
+                    CARGO_TARGET_DIR="$target" \
+                    cargo check --offline "$@" >/dev/null
+                  )
+                }
+
+                "$bin" init "$tmp/rmp-mobile-no-iced" --yes --org 'com.example' --no-iced --json >/dev/null
+                check_generated_project "$tmp/rmp-mobile-no-iced"
+                "$bin" init "$tmp/rmp-all" --yes --org 'com.example' --json >/dev/null
+                check_generated_project "$tmp/rmp-all"
+                "$bin" init "$tmp/rmp-android" --yes --org 'com.example' --no-ios --json >/dev/null
+                check_generated_project "$tmp/rmp-android"
+                "$bin" init "$tmp/rmp-ios" --yes --org 'com.example' --no-android --json >/dev/null
+                check_generated_project "$tmp/rmp-ios"
+                "$bin" init "$tmp/rmp-iced" --yes --org 'com.example' --no-ios --no-android --iced --json >/dev/null
+                check_generated_project "$tmp/rmp-iced" -p rmp-iced_core_desktop_iced
+                echo "ok: rmp init ci smoke passed"
+              '';
             }
-            trap cleanup EXIT
-
-            vendor_dir="$root/share/pikaci/rmp-vendor/vendor"
-            cat >"$cargo_home/config.toml" <<CFG
-[source.crates-io]
-replace-with = "pikaci-rmp-vendor"
-
-[source.pikaci-rmp-vendor]
-directory = "$vendor_dir"
-
-[net]
-offline = true
-CFG
-
-            check_generated_project() {
-              local project_dir="$1"
-              shift || true
-              (
-                cd "$project_dir"
-                CARGO_HOME="$cargo_home" \
-                CARGO_NET_OFFLINE=true \
-                CARGO_TARGET_DIR="$target" \
-                cargo check --offline "$@" >/dev/null
-              )
-            }
-
-            "$bin" init "$tmp/rmp-mobile-no-iced" --yes --org 'com.example' --no-iced --json >/dev/null
-            check_generated_project "$tmp/rmp-mobile-no-iced"
-            "$bin" init "$tmp/rmp-all" --yes --org 'com.example' --json >/dev/null
-            check_generated_project "$tmp/rmp-all"
-            "$bin" init "$tmp/rmp-android" --yes --org 'com.example' --no-ios --json >/dev/null
-            check_generated_project "$tmp/rmp-android"
-            "$bin" init "$tmp/rmp-ios" --yes --org 'com.example' --no-android --json >/dev/null
-            check_generated_project "$tmp/rmp-ios"
-            "$bin" init "$tmp/rmp-iced" --yes --org 'com.example' --no-ios --no-android --iced --json >/dev/null
-            check_generated_project "$tmp/rmp-iced" -p rmp-iced_core_desktop_iced
-            echo "ok: rmp init ci smoke passed"
-          ''} "$out/bin/run-rmp-init-smoke-ci"
+          } "$out/bin/run-rmp-init-smoke-ci"
         ''
       else if lane == "pikachat" then
         ''
@@ -1394,12 +1458,12 @@ CFG
           rm -rf "$openclaw_e2e_root/lib/openclaw/extensions"
           mkdir -p "$openclaw_e2e_root/lib/openclaw/extensions"
           cat >"$out/bin/openclaw" <<'EOF'
-          #!${pkgs.bash}/bin/bash
+          ${guestBashShebang}
           set -euo pipefail
 
           root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
           export OPENCLAW_NIX_MODE="''${OPENCLAW_NIX_MODE:-1}"
-          exec /run/current-system/sw/bin/node "$root/lib/openclaw/dist/index.js" "$@"
+          exec ${guestNode} "$root/lib/openclaw/dist/index.js" "$@"
           EOF
           chmod +x "$out/bin/openclaw"
           mkdir -p "$openclaw_e2e_root/bin"
@@ -1412,7 +1476,7 @@ CFG
           ''}
 
           cat >"$out/bin/run-staged-test-manifest" <<'EOF'
-          #!${pkgs.bash}/bin/bash
+          ${guestBashShebang}
           set -euo pipefail
 
           if [ "$#" -lt 1 ]; then
@@ -1436,7 +1500,7 @@ CFG
           done <"$manifest"
           EOF
           cat >"$out/bin/run-pikahut-integration-deterministic" <<'EOF'
-          #!${pkgs.bash}/bin/bash
+          ${guestBashShebang}
           set -euo pipefail
 
           if [ "$#" -ne 1 ]; then
@@ -1464,68 +1528,68 @@ CFG
             --nocapture
           EOF
           cat >"$out/bin/run-pikachat-package-tests" <<'EOF'
-          #!${pkgs.bash}/bin/bash
+          ${guestBashShebang}
           set -euo pipefail
           exec "$(dirname "$0")/run-staged-test-manifest" pikachat-package-tests.manifest --nocapture
           EOF
           cat >"$out/bin/run-pikachat-sidecar-package-tests" <<'EOF'
-          #!${pkgs.bash}/bin/bash
+          ${guestBashShebang}
           set -euo pipefail
           export PIKACHAT_TTS_FIXTURE=1
           exec "$(dirname "$0")/run-staged-test-manifest" pikachat-sidecar-package-tests.manifest --nocapture
           EOF
           cat >"$out/bin/run-pika-desktop-package-tests" <<'EOF'
-          #!${pkgs.bash}/bin/bash
+          ${guestBashShebang}
           set -euo pipefail
           exec "$(dirname "$0")/run-staged-test-manifest" pika-desktop-package-tests.manifest --nocapture
           EOF
           cat >"$out/bin/run-pikachat-cli-smoke-local" <<'EOF'
-          #!${pkgs.bash}/bin/bash
+          ${guestBashShebang}
           set -euo pipefail
           exec "$(dirname "$0")/run-pikahut-integration-deterministic" cli_smoke_local
           EOF
           cat >"$out/bin/run-pikachat-post-rebase-invalid-event" <<'EOF'
-          #!${pkgs.bash}/bin/bash
+          ${guestBashShebang}
           set -euo pipefail
           exec "$(dirname "$0")/run-pikahut-integration-deterministic" post_rebase_invalid_event_rejection_boundary
           EOF
           cat >"$out/bin/run-pikachat-post-rebase-logout-session" <<'EOF'
-          #!${pkgs.bash}/bin/bash
+          ${guestBashShebang}
           set -euo pipefail
           exec "$(dirname "$0")/run-pikahut-integration-deterministic" post_rebase_logout_session_convergence_boundary
           EOF
           cat >"$out/bin/run-pikachat-typescript" <<'EOF'
-          #!${pkgs.bash}/bin/bash
+          ${guestBashShebang}
           set -euo pipefail
 
           if [ -f /workspace/snapshot/Cargo.toml ]; then
             cd /workspace/snapshot
           fi
-          export PIKACHAT_TYPESCRIPT_CI_NPM_BIN="${pkgs.nodejs_22}/bin/npm"
+          export PIKACHAT_TYPESCRIPT_CI_NPM_BIN="${guestSystemBin}/npm"
           exec ./scripts/pikachat-typescript-ci.sh
           EOF
           cat >"$out/bin/run-openclaw-invite-and-chat" <<'EOF'
-          #!${pkgs.bash}/bin/bash
+          ${guestBashShebang}
           set -euo pipefail
           exec "$(dirname "$0")/run-pikahut-integration-deterministic" openclaw_scenario_invite_and_chat
           EOF
           cat >"$out/bin/run-openclaw-invite-and-chat-rust-bot" <<'EOF'
-          #!${pkgs.bash}/bin/bash
+          ${guestBashShebang}
           set -euo pipefail
           exec "$(dirname "$0")/run-pikahut-integration-deterministic" openclaw_scenario_invite_and_chat_rust_bot
           EOF
           cat >"$out/bin/run-openclaw-invite-and-chat-daemon" <<'EOF'
-          #!${pkgs.bash}/bin/bash
+          ${guestBashShebang}
           set -euo pipefail
           exec "$(dirname "$0")/run-pikahut-integration-deterministic" openclaw_scenario_invite_and_chat_daemon
           EOF
           cat >"$out/bin/run-openclaw-audio-echo" <<'EOF'
-          #!${pkgs.bash}/bin/bash
+          ${guestBashShebang}
           set -euo pipefail
           exec "$(dirname "$0")/run-pikahut-integration-deterministic" openclaw_scenario_audio_echo
           EOF
           cat >"$out/bin/run-openclaw-gateway-e2e" <<'EOF'
-          #!${pkgs.bash}/bin/bash
+          ${guestBashShebang}
           set -euo pipefail
 
           root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
@@ -1634,7 +1698,7 @@ CFG
         }
 
         cat >"$out/bin/run-staged-test-manifest" <<'EOF'
-        #!${pkgs.bash}/bin/bash
+        ${guestBashShebang}
         set -euo pipefail
 
         if [ "$#" -lt 1 ]; then
@@ -1658,25 +1722,25 @@ CFG
         done <"$manifest"
         EOF
         cat >"$out/bin/run-agent-control-plane-unit-tests" <<'EOF'
-        #!${pkgs.bash}/bin/bash
+        ${guestBashShebang}
         set -euo pipefail
         exec "$(dirname "$0")/run-staged-test-manifest" agent-control-plane-unit.manifest --nocapture
         EOF
         cat >"$out/bin/run-agent-microvm-tests" <<'EOF'
-        #!${pkgs.bash}/bin/bash
+        ${guestBashShebang}
         set -euo pipefail
         root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
         export PIKACI_OPENCLAW_EXTENSION_SOURCE_ROOT="$root/share/pikaci/pikachat-openclaw-extension"
         exec "$(dirname "$0")/run-staged-test-manifest" agent-microvm-tests.manifest --nocapture
         EOF
         cat >"$out/bin/run-server-agent-api-tests" <<'EOF'
-        #!${pkgs.bash}/bin/bash
+        ${guestBashShebang}
         set -euo pipefail
         export DATABASE_URL="''${DATABASE_URL:-postgres://pikaci@127.0.0.1:1/pikaci}"
         exec "$(dirname "$0")/run-staged-test-manifest" server-agent-api-tests.manifest agent_api::tests --nocapture
         EOF
         cat >"$out/bin/run-core-agent-nip98-test" <<'EOF'
-        #!${pkgs.bash}/bin/bash
+        ${guestBashShebang}
         set -euo pipefail
         exec "$(dirname "$0")/run-staged-test-manifest" core-agent-nip98-test.manifest core::agent::tests::run_agent_flow_signs_requests_with_nip98_authorization --exact --nocapture
         EOF
@@ -1694,6 +1758,7 @@ rec {
     dummySrc = workspaceDummySrc;
     doCheck = false;
     buildPhaseCargoCommand = laneCompileCommand;
+    postInstall = emitPikaciPayloadManifest;
   });
 
   workspaceBuild = craneLib.mkCargoDerivation (commonArgs // {
@@ -1707,6 +1772,7 @@ rec {
     PIKACI_FOLLOWUP_STAGE_OUTPUTS = if lane == "pika-followup" then "1" else "0";
     doInstallCargoArtifacts = false;
     inherit installPhaseCommand;
+    postInstall = emitPikaciPayloadManifest;
   } // pkgs.lib.optionalAttrs (lane == "pika-followup") {
     mitmCache = pikaFollowupGradleMitmCache;
   });

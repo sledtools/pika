@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Instant;
 
-use anyhow::{Context, anyhow};
+use anyhow::{Context, anyhow, bail};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -31,10 +31,10 @@ use crate::model::{
     PreparedOutputFulfillmentStatus, PreparedOutputFulfillmentTransportPathContract,
     PreparedOutputFulfillmentTransportRequest, PreparedOutputHandoff,
     PreparedOutputHandoffProtocol, PreparedOutputInvocationMode,
-    PreparedOutputLauncherTransportMode, PreparedOutputRemoteExposureRequest,
-    PreparedOutputResidency, PreparedOutputsRecord, RealizedPreparedOutputRecord,
-    RunLifecycleEvent, RunLogsMetadata, RunPlanRecord, RunRecord, RunStatus, RunnerKind,
-    StagedLinuxRustLane, StagedLinuxRustTarget,
+    PreparedOutputLauncherTransportMode, PreparedOutputPayloadManifestRecord,
+    PreparedOutputRemoteExposureRequest, PreparedOutputResidency, PreparedOutputsRecord,
+    RealizedPreparedOutputRecord, RunLifecycleEvent, RunLogsMetadata, RunPlanRecord, RunRecord,
+    RunStatus, RunnerKind, StagedLinuxRustLane, StagedLinuxRustTarget,
 };
 use crate::snapshot::{
     SnapshotProfile, compute_source_fingerprint_with_profile, create_snapshot_with_profile,
@@ -889,6 +889,145 @@ pub fn load_logs_metadata(
         status: run.status,
         jobs,
     })
+}
+
+pub fn load_prepared_outputs_record(
+    state_root: &Path,
+    run_id: &str,
+) -> anyhow::Result<Option<PreparedOutputsRecord>> {
+    let run = load_run_record(state_root, run_id)?;
+    let path = run
+        .prepared_outputs_path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            state_root
+                .join("runs")
+                .join(run_id)
+                .join("prepared-outputs.json")
+        });
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    let record =
+        serde_json::from_slice(&bytes).with_context(|| format!("decode {}", path.display()))?;
+    Ok(Some(record))
+}
+
+pub fn load_prepared_outputs(
+    state_root: &Path,
+    run_id: &str,
+) -> anyhow::Result<PreparedOutputsRecord> {
+    load_prepared_outputs_record(state_root, run_id)?
+        .ok_or_else(|| anyhow!("prepared outputs not found for run `{run_id}`"))
+}
+
+const PREPARED_OUTPUT_PAYLOAD_MANIFEST_RELATIVE_PATH: &str = "share/pikaci/payload-manifest.json";
+
+fn load_prepared_output_payload_manifest(
+    realized_path: &Path,
+) -> anyhow::Result<Option<PreparedOutputPayloadManifestRecord>> {
+    let path = realized_path.join(PREPARED_OUTPUT_PAYLOAD_MANIFEST_RELATIVE_PATH);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    let manifest =
+        serde_json::from_slice(&bytes).with_context(|| format!("decode {}", path.display()))?;
+    Ok(Some(manifest))
+}
+
+fn load_remote_prepared_output_payload_manifest(
+    transport_program: Option<&Path>,
+    remote_host: &str,
+    realized_path: &Path,
+) -> anyhow::Result<Option<PreparedOutputPayloadManifestRecord>> {
+    let manifest_path = realized_path.join(PREPARED_OUTPUT_PAYLOAD_MANIFEST_RELATIVE_PATH);
+    let transport_program = transport_program.map(Path::to_path_buf).unwrap_or_else(|| {
+        PathBuf::from(
+            std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV)
+                .unwrap_or_else(|_| "/usr/bin/ssh".to_string()),
+        )
+    });
+    let output = Command::new(&transport_program)
+        .arg(remote_host)
+        .arg("cat")
+        .arg(&manifest_path)
+        .output()
+        .with_context(|| format!("read remote {}", manifest_path.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.contains("No such file or directory") {
+            return Ok(None);
+        }
+        let detail = if stderr.is_empty() {
+            format!("ssh exited with {}", output.status)
+        } else {
+            stderr
+        };
+        bail!(
+            "read remote {} via {}: {detail}",
+            manifest_path.display(),
+            remote_host
+        );
+    }
+    if output.stdout.is_empty() {
+        return Ok(None);
+    }
+    let manifest = serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("decode remote {}", manifest_path.display()))?;
+    Ok(Some(manifest))
+}
+
+fn load_prepared_output_payload_manifest_for_record(
+    run_dir: &Path,
+    installable: &str,
+    realized_path: &Path,
+    residency: PreparedOutputResidency,
+    invocation: PreparedOutputInvocationConfig<'_>,
+) -> anyhow::Result<Option<PreparedOutputPayloadManifestRecord>> {
+    if let Some(manifest) = load_prepared_output_payload_manifest(realized_path)? {
+        return Ok(Some(manifest));
+    }
+    let Some(remote) =
+        staged_linux_rust_remote_realization(run_dir, installable, residency, invocation)?
+    else {
+        return Ok(None);
+    };
+    load_remote_prepared_output_payload_manifest(
+        invocation.launcher_transport_program,
+        &remote.remote_host,
+        realized_path,
+    )
+}
+
+fn load_prepared_output_payload_manifest_best_effort(
+    run_dir: &Path,
+    installable: &str,
+    realized_path: &Path,
+    residency: PreparedOutputResidency,
+    invocation: PreparedOutputInvocationConfig<'_>,
+    log_paths: &[PathBuf],
+) -> Option<PreparedOutputPayloadManifestRecord> {
+    match load_prepared_output_payload_manifest_for_record(
+        run_dir,
+        installable,
+        realized_path,
+        residency,
+        invocation,
+    ) {
+        Ok(payload) => payload,
+        Err(err) => {
+            let _ = append_log_line_many(
+                log_paths,
+                &format!(
+                    "[pikaci] warning: failed to load payload metadata for {}: {err:#}",
+                    realized_path.display()
+                ),
+            );
+            None
+        }
+    }
 }
 
 pub fn load_run_record(state_root: &Path, run_id: &str) -> anyhow::Result<RunRecord> {
@@ -3535,6 +3674,8 @@ fn record_failed_prepared_output_handoff(
     materialization: &PreparedOutputMaterialization<'_>,
     handoff: &PreparedOutputHandoff,
     failure: &PreparedOutputConsumerFailure,
+    run_dir: &Path,
+    invocation: PreparedOutputInvocationConfig<'_>,
 ) -> anyhow::Result<()> {
     upsert_prepared_output_record(
         prepared_outputs_path,
@@ -3552,6 +3693,15 @@ fn record_failed_prepared_output_handoff(
             consumer_transport_request_path: failure.consumer_transport_request_path.clone(),
             exposures: Vec::new(),
             requested_exposures: failure.requested_exposures.clone(),
+            payload: load_prepared_output_payload_manifest_for_record(
+                run_dir,
+                materialization.installable,
+                materialization.realized_path,
+                materialization.residency,
+                invocation,
+            )
+            .ok()
+            .flatten(),
         },
     )
 }
@@ -3963,6 +4113,8 @@ fn run_prepare_nodes(
                                 &materialization,
                                 handoff,
                                 &err,
+                                run_dir,
+                                invocation,
                             )
                         {
                             message = format!(
@@ -3989,6 +4141,14 @@ fn run_prepare_nodes(
                                 .consumer_transport_request_path,
                             exposures: consumer_result.exposures,
                             requested_exposures: consumer_result.requested_exposures,
+                            payload: load_prepared_output_payload_manifest_best_effort(
+                                run_dir,
+                                installable,
+                                &output_path,
+                                *residency,
+                                invocation,
+                                log_paths,
+                            ),
                         },
                     )
                     .map_err(|err| format!("{err:#}"))?;
@@ -4293,10 +4453,10 @@ fn run_host_setup_commands(
 
 #[cfg(test)]
 mod tests {
+    use crate::test_support::EnvLockGuard;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
-    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     use super::{
         FulfillRequestCliPreparedOutputConsumer, HostLocalSnapshotCacheState,
@@ -4322,10 +4482,11 @@ mod tests {
         load_logs_metadata, load_prepared_output_fulfillment_launch_request,
         load_prepared_output_fulfillment_result,
         load_prepared_output_fulfillment_transport_request, load_prepared_output_request,
-        mark_prepare_failure, parallel_execute_cap_for_jobs, parse_bool_env_flag, prepare_run,
-        prepare_snapshot_source, prepared_output_fulfillment_launcher_program,
-        read_host_local_snapshot_cache_state, ready_execute_job_positions,
-        record_failed_prepared_output_handoff, resolve_prepared_output_fulfillment_program,
+        load_prepared_outputs_record, mark_prepare_failure, parallel_execute_cap_for_jobs,
+        parse_bool_env_flag, prepare_run, prepare_snapshot_source,
+        prepared_output_fulfillment_launcher_program, read_host_local_snapshot_cache_state,
+        ready_execute_job_positions, record_failed_prepared_output_handoff,
+        resolve_prepared_output_fulfillment_program,
         resolve_run_prepared_output_consumer_kind_for_mode,
         resolve_run_prepared_output_invocation_mode,
         resolve_run_prepared_output_invocation_wrapper_program,
@@ -4354,35 +4515,10 @@ mod tests {
     };
     use crate::snapshot::{SnapshotProfile, compute_source_fingerprint_with_profile};
 
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
     fn with_remote_linux_vm_backend_env<T>(value: Option<&str>, action: impl FnOnce() -> T) -> T {
-        let _guard = ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("env lock");
-        let previous_backend = std::env::var("PIKACI_REMOTE_LINUX_VM_BACKEND").ok();
-        let previous_ssh_host = std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV).ok();
-
-        unsafe { std::env::remove_var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV) };
-        match value {
-            Some(value) => unsafe { std::env::set_var("PIKACI_REMOTE_LINUX_VM_BACKEND", value) },
-            None => unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_BACKEND") },
-        }
-
-        let result = action();
-
-        match previous_backend {
-            Some(value) => unsafe { std::env::set_var("PIKACI_REMOTE_LINUX_VM_BACKEND", value) },
-            None => unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_BACKEND") },
-        }
-        match previous_ssh_host {
-            Some(value) => unsafe {
-                std::env::set_var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV, value)
-            },
-            None => unsafe { std::env::remove_var(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV) },
-        }
-        result
+        let _backend_guard = EnvVarGuard::set("PIKACI_REMOTE_LINUX_VM_BACKEND", value);
+        let _ssh_host_guard = EnvVarGuard::set(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV, None);
+        action()
     }
 
     #[test]
@@ -4591,6 +4727,138 @@ mod tests {
         assert_eq!(metadata.jobs[0].id, "job-one");
         assert!(metadata.jobs[0].host_log_exists);
         assert!(metadata.jobs[0].guest_log_exists);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn load_prepared_outputs_record_returns_none_when_run_has_no_record() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-prepared-output-load-missing-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let run_dir = root.join("runs").join("20260319T000000Z-abcd1234");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        write_run_record(
+            &run_dir,
+            &RunRecord {
+                run_id: "20260319T000000Z-abcd1234".to_string(),
+                status: RunStatus::Passed,
+                rerun_of: None,
+                target_id: Some("pre-merge-pika-rust".to_string()),
+                target_description: Some("test".to_string()),
+                source_root: "/tmp/source".to_string(),
+                snapshot_dir: "/tmp/snapshot".to_string(),
+                git_head: None,
+                git_dirty: None,
+                created_at: "2026-03-19T00:00:00Z".to_string(),
+                finished_at: Some("2026-03-19T00:00:05Z".to_string()),
+                plan_path: None,
+                prepared_outputs_path: None,
+                prepared_output_consumer: None,
+                prepared_output_mode: None,
+                prepared_output_invocation_mode: None,
+                prepared_output_invocation_wrapper_program: None,
+                prepared_output_launcher_transport_mode: None,
+                prepared_output_launcher_transport_program: None,
+                prepared_output_launcher_transport_host: None,
+                prepared_output_launcher_transport_remote_launcher_program: None,
+                prepared_output_launcher_transport_remote_helper_program: None,
+                prepared_output_launcher_transport_remote_work_dir: None,
+                changed_files: vec![],
+                filters: vec![],
+                message: None,
+                prepare_timings: vec![],
+                jobs: vec![],
+            },
+        )
+        .expect("write run record");
+
+        let loaded =
+            load_prepared_outputs_record(&root, "20260319T000000Z-abcd1234").expect("load record");
+        assert!(loaded.is_none());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn load_prepared_outputs_record_reads_run_record_path() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-prepared-output-load-present-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let run_dir = root.join("runs").join("20260319T000000Z-abcd1234");
+        let external_dir = root.join("external");
+        let prepared_outputs_path = external_dir.join("prepared-outputs.json");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        fs::create_dir_all(&external_dir).expect("create external dir");
+        write_run_record(
+            &run_dir,
+            &RunRecord {
+                run_id: "20260319T000000Z-abcd1234".to_string(),
+                status: RunStatus::Passed,
+                rerun_of: None,
+                target_id: Some("pre-merge-pika-rust".to_string()),
+                target_description: Some("test".to_string()),
+                source_root: "/tmp/source".to_string(),
+                snapshot_dir: "/tmp/snapshot".to_string(),
+                git_head: None,
+                git_dirty: None,
+                created_at: "2026-03-19T00:00:00Z".to_string(),
+                finished_at: Some("2026-03-19T00:00:05Z".to_string()),
+                plan_path: None,
+                prepared_outputs_path: Some(prepared_outputs_path.display().to_string()),
+                prepared_output_consumer: None,
+                prepared_output_mode: None,
+                prepared_output_invocation_mode: None,
+                prepared_output_invocation_wrapper_program: None,
+                prepared_output_launcher_transport_mode: None,
+                prepared_output_launcher_transport_program: None,
+                prepared_output_launcher_transport_host: None,
+                prepared_output_launcher_transport_remote_launcher_program: None,
+                prepared_output_launcher_transport_remote_helper_program: None,
+                prepared_output_launcher_transport_remote_work_dir: None,
+                changed_files: vec![],
+                filters: vec![],
+                message: None,
+                prepare_timings: vec![],
+                jobs: vec![],
+            },
+        )
+        .expect("write run record");
+        write_json(
+            prepared_outputs_path.clone(),
+            &PreparedOutputsRecord {
+                schema_version: 1,
+                outputs: vec![RealizedPreparedOutputRecord {
+                    node_id: "prepare-pika-core-linux-rust-workspace-build".to_string(),
+                    installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild".to_string(),
+                    output_name: "ci.x86_64-linux.workspaceBuild".to_string(),
+                    protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+                    residency: PreparedOutputResidency::LocalAuthoritative,
+                    consumer: PreparedOutputConsumerKind::HostLocalSymlinkMountsV1,
+                    realized_path: "/nix/store/workspace-build".to_string(),
+                    consumer_request_path: None,
+                    consumer_result_path: None,
+                    consumer_launch_request_path: None,
+                    consumer_transport_request_path: None,
+                    exposures: vec![],
+                    requested_exposures: vec![],
+                    payload: None,
+                }],
+            },
+        )
+        .expect("write prepared outputs");
+
+        let loaded = load_prepared_outputs_record(&root, "20260319T000000Z-abcd1234")
+            .expect("load record")
+            .expect("prepared outputs present");
+        assert_eq!(loaded.schema_version, 1);
+        assert_eq!(loaded.outputs.len(), 1);
+        assert_eq!(
+            loaded.outputs[0].realized_path,
+            "/nix/store/workspace-build"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -5351,6 +5619,7 @@ mod tests {
                     access: PreparedOutputExposureAccess::ReadOnly,
                 }],
                 requested_exposures: Vec::new(),
+                payload: None,
             },
         )
         .expect("write prepared output record");
@@ -5437,6 +5706,8 @@ mod tests {
             &materialization,
             &handoff,
             &failure,
+            &root,
+            PreparedOutputInvocationConfig::default(),
         )
         .expect("record failed handoff");
 
@@ -7973,18 +8244,12 @@ EOF
     struct EnvVarGuard {
         key: &'static str,
         previous: Option<String>,
-        _lock: Option<MutexGuard<'static, ()>>,
+        _lock: EnvLockGuard,
     }
 
     impl EnvVarGuard {
         fn set(key: &'static str, value: Option<&str>) -> Self {
-            static ENV_VAR_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-            let lock = (key == "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY").then(|| {
-                ENV_VAR_LOCK
-                    .get_or_init(|| Mutex::new(()))
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner())
-            });
+            let lock = crate::test_support::env_lock();
             let previous = std::env::var(key).ok();
             match value {
                 Some(value) => unsafe { std::env::set_var(key, value) },

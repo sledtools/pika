@@ -858,24 +858,26 @@ backend exists:
 Implement a new `pikaci` executor that can:
 
 - create or reuse an Incus VM
-- transfer the workspace snapshot
+- mount the prepared workspace snapshot
 - execute the guest workload
 - collect artifacts and logs
 - tear down or recycle the instance
 
 Current `pika-build` proof status:
 
-- Incus now defaults to the mixed single-host fast path on `pika-build` when
+- Incus now defaults to the staged pre-merge Linux path on `pika-build` when
   `PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST` points at `pika-build` or `localhost`;
   `PIKACI_REMOTE_LINUX_VM_BACKEND=incus|microvm|auto` is now the only supported
   operator override for backend selection
-- `transfer` remains an explicit fallback via `PIKACI_REMOTE_LINUX_VM_INCUS_MODE=transfer`, and
-  the staged runtime wrappers now keep working there instead of assuming the shared host-store
-  mount exists
-- the winning backend shape is still intentionally mixed-mode rather than a whole-workdir share:
+- the steady-state backend shape is now one shared-mount Incus path rather than a mode split:
   sync the snapshot to `pika-build`, share the snapshot plus staged Linux Rust outputs into the
-  guest as readonly `virtiofs` mounts, keep `/artifacts`, `/cargo-home`, and `/cargo-target`
-  guest-local and writable, run the staged wrapper, collect artifacts, and delete the VM
+  guest as readonly `virtiofs` mounts at their final guest paths, keep `/artifacts`,
+  `/cargo-home`, and `/cargo-target` guest-local and writable, run the staged wrapper, collect
+  artifacts, and delete the VM
+- the guest bootstrap contract now lives in the Incus image:
+  the image owns the mounted-path layout and
+  `/run/current-system/sw/bin/pikaci-incus-run` owns the guest env/log/result contract, so
+  `executor.rs` no longer synthesizes those bash launchers per job
 - the Incus executor now preserves the staged-job read-only workspace contract and persists remote
   backend phase metadata even when an Incus execution fails during runtime bring-up
 - running `pikaci` on `pika-build` itself still needs a localhost fast path instead of SSH for the
@@ -889,15 +891,11 @@ Current `pika-build` proof status:
 - `run.json` now records prepare-node timing outside the remote-execution seam, so comparisons can
   separate total wall time from pre-execution prepare work and executor-local phases
 - current measurements on `pika-build` are:
-  - `pika-actionlint` transfer Incus: about `155s` wall, about `102s` pre-execution prepare, about
-    `51.7s` Incus `prepare_runtime`
   - `pika-actionlint` fast-path Incus: about `32s` wall, about `7.9s` pre-execution prepare, about
     `22.2s` Incus `prepare_runtime`
   - `pika-actionlint` microVM: about `21s` wall, about `14.9s` pre-execution prepare, about `5.5s`
     guest wait time, so the current smallest-lane comparison no longer supports the old claim that
     Incus is simply faster than microVM on this host
-  - `pika-doc-contracts` transfer Incus: about `67s` wall, about `8.3s` pre-execution prepare,
-    about `56.3s` Incus `prepare_runtime`
   - `pika-doc-contracts` fast-path Incus: about `40s` wall, about `8.9s` pre-execution prepare,
     about `28.6s` Incus `prepare_runtime`
   - `pika-rust-deps-hygiene` fast-path Incus: about `49s` wall, about `14.1s` pre-execution
@@ -909,11 +907,22 @@ Current `pika-build` proof status:
   the reduced `pika-core` and `rmp` lockfiles were stale, the reduced `pika-core` source omitted
   `tests/support` and `config/channels.json`, notifications needed the same bindgen environment as
   the other desktop-linked lanes, the localhost Incus fast path needed to repoint staged-output
-  symlinks plus expose the host `/nix/store` into the guest for staged runtime wrappers, and the
-  follow-up `cargo machete` check needed to ignore CI fixture manifests under `nix/ci`
+  symlinks, and the follow-up `cargo machete` check needed to ignore CI fixture manifests under
+  `nix/ci`
+- the staged Linux runtime no longer depends on a mounted host `/nix/store` seam:
+  the Incus image now carries the runtime libraries the staged Linux lanes actually need,
+  staged wrappers use guest-local interpreters like `/run/current-system/sw/bin/bash` and
+  `/run/current-system/sw/bin/node`, and the runtime env now uses guest-local Nix package paths
+  directly instead of rewriting `/nix/store` through `PIKACI_STAGED_HOST_NIX_STORE_ROOT`
+- that cleanup needed one follow-up fix in validation:
+  the initial guest-local `run-rmp-init-smoke-ci` wrapper was materialized with a non-executable
+  mode because its shebang was not preserved as a real executable script in the realized store;
+  materializing the wrapper via a standalone executable text artifact fixed that, and using the
+  guest's real `${pkgs.postgresql}/bin` path restored `initdb` so the notifications lane stopped
+  relying on a mounted host-store path for Postgres share data
 - the staged `pre-merge-rmp` parity blocker is now fixed end-to-end: the reduced RMP workspace now
   mirrors the generated template dependency surface closely enough for offline Cargo vendor checks,
-  and both fast-path Incus and `transfer` fallback runs reach a passing `rmp-init-smoke-ci`
+  and the default Incus path reaches a passing `rmp-init-smoke-ci`
 - the remaining Incus parity picture is now closed out:
   - `pre-merge-agent-contracts` is no longer an Incus-default exception:
     the stale host-side deterministic HTTP selectors were removed from the lane
@@ -938,6 +947,18 @@ Current `pika-build` proof status:
 - because of that, the current migration read is:
   staged pre-merge Linux on `pika-build` now defaults to Incus with no
   remaining automatic Incus exclusions in the path discussed in this plan
+  and with the guest runtime owned by the Incus image plus staged payloads,
+  not by an executor-mounted host `/nix/store`
+- `pika-news` no longer has to collapse staged `pikaci` runs back into an
+  ephemeral temp-worktree `.pikaci` tree:
+  structured staged runs can now be pointed at a service-owned persistent
+  state root, and the forge API can reload the resulting `RunRecord`,
+  per-job log metadata, prepared-output realizations, and host/guest log
+  content by `pikaci_run_id` after the temporary source worktree is removed
+- staged Linux runs now expose their artifact contract machine-readably:
+  `RunRecord` keeps the prepared-output record path, each remote Linux VM job
+  keeps explicit Incus image identity (`project`, `alias`, `fingerprint`), and
+  both surfaces can be reloaded through `pikaci` and `pika-news` by run id
 
 #### Phase C: Validate Performance And Developer Experience
 

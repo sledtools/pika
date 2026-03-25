@@ -557,13 +557,11 @@ fn should_default_remote_linux_vm_to_incus() -> bool {
 mod tests {
     use super::{
         GuestCommand, JobSpec, RemoteLinuxVmBackend, RemoteLinuxVmExecutionRecord,
-        RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord, StagedLinuxRustLane, StagedLinuxRustTarget,
+        RemoteLinuxVmImageRecord, RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord,
+        StagedLinuxRustLane, StagedLinuxRustTarget,
     };
     use std::fs;
     use std::path::Path;
-    use std::sync::{Mutex, OnceLock};
-
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     fn workspace_root() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -585,15 +583,17 @@ mod tests {
             staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit),
         };
 
-        assert_eq!(
-            spec.staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit)
-        );
-        assert_eq!(spec.runner_kind(), super::RunnerKind::RemoteLinuxVm);
-        assert_eq!(
-            spec.remote_linux_vm_backend(),
-            Some(RemoteLinuxVmBackend::Microvm)
-        );
+        with_remote_linux_vm_envs(None, None, || {
+            assert_eq!(
+                spec.staged_linux_rust_lane(),
+                Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit)
+            );
+            assert_eq!(spec.runner_kind(), super::RunnerKind::RemoteLinuxVm);
+            assert_eq!(
+                spec.remote_linux_vm_backend(),
+                Some(RemoteLinuxVmBackend::Microvm)
+            );
+        });
     }
 
     fn with_remote_linux_vm_backend_env<T>(value: Option<&str>, action: impl FnOnce() -> T) -> T {
@@ -609,10 +609,7 @@ mod tests {
         prepared_output_ssh_host: Option<&str>,
         action: impl FnOnce() -> T,
     ) -> T {
-        let _guard = ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("env lock");
+        let _guard = crate::test_support::env_lock();
         let previous_backend = std::env::var(super::REMOTE_LINUX_VM_BACKEND_ENV).ok();
         let previous_host = std::env::var(super::PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV).ok();
 
@@ -833,6 +830,7 @@ mod tests {
     fn remote_linux_vm_execution_metadata_round_trips_with_stable_phase_names() {
         let record = RemoteLinuxVmExecutionRecord {
             backend: RemoteLinuxVmBackend::Microvm,
+            incus_image: None,
             phases: vec![
                 RemoteLinuxVmPhaseRecord {
                     phase: RemoteLinuxVmPhase::PrepareRuntime,
@@ -856,6 +854,28 @@ mod tests {
 
         let decoded: RemoteLinuxVmExecutionRecord =
             serde_json::from_str(&json).expect("decode metadata");
+        assert_eq!(decoded, record);
+    }
+
+    #[test]
+    fn remote_linux_vm_execution_metadata_serializes_incus_image_identity() {
+        let record = RemoteLinuxVmExecutionRecord {
+            backend: RemoteLinuxVmBackend::Incus,
+            incus_image: Some(RemoteLinuxVmImageRecord {
+                project: "pika-managed-agents".to_string(),
+                alias: "pikaci/dev".to_string(),
+                fingerprint: Some("abc123".to_string()),
+            }),
+            phases: vec![],
+        };
+
+        let json = serde_json::to_value(&record).expect("encode metadata");
+        assert_eq!(json["incus_image"]["project"], "pika-managed-agents");
+        assert_eq!(json["incus_image"]["alias"], "pikaci/dev");
+        assert_eq!(json["incus_image"]["fingerprint"], "abc123");
+
+        let decoded: RemoteLinuxVmExecutionRecord =
+            serde_json::from_value(json).expect("decode metadata");
         assert_eq!(decoded, record);
     }
 
@@ -1466,8 +1486,18 @@ pub struct RemoteLinuxVmPhaseRecord {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct RemoteLinuxVmImageRecord {
+    pub project: String,
+    pub alias: String,
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct RemoteLinuxVmExecutionRecord {
     pub backend: RemoteLinuxVmBackend,
+    #[serde(default)]
+    pub incus_image: Option<RemoteLinuxVmImageRecord>,
     #[serde(default)]
     pub phases: Vec<RemoteLinuxVmPhaseRecord>,
 }
@@ -1478,6 +1508,22 @@ pub struct PrepareTimingRecord {
     pub started_at: String,
     pub finished_at: String,
     pub duration_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PreparedOutputPayloadPathRecord {
+    pub name: String,
+    pub relative_path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PreparedOutputPayloadManifestRecord {
+    pub schema_version: u32,
+    pub kind: String,
+    #[serde(default)]
+    pub entrypoints: Vec<PreparedOutputPayloadPathRecord>,
+    #[serde(default)]
+    pub asset_roots: Vec<PreparedOutputPayloadPathRecord>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1502,6 +1548,8 @@ pub struct RealizedPreparedOutputRecord {
     pub exposures: Vec<PreparedOutputExposure>,
     #[serde(default)]
     pub requested_exposures: Vec<PreparedOutputExposure>,
+    #[serde(default)]
+    pub payload: Option<PreparedOutputPayloadManifestRecord>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

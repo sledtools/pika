@@ -4,10 +4,11 @@ use pikaci::{
     GuestCommand, JobSpec, LogKind, RunLifecycleEvent, RunMetadata, RunOptions, RunRecord,
     RunStatus, StagedLinuxRemoteDefaults, StagedLinuxRustLane, StagedLinuxRustTarget,
     fulfill_prepared_output_request, gc_runs, git_changed_files, list_runs, load_logs,
-    load_logs_metadata, load_run_record, record_skipped_run_with_reporter,
-    rerun_jobs_with_metadata_and_reporter, run_jobs_with_metadata_and_reporter,
-    staged_linux_remote_defaults,
+    load_logs_metadata, load_prepared_outputs_record, load_run_record,
+    record_skipped_run_with_reporter, rerun_jobs_with_metadata_and_reporter,
+    run_jobs_with_metadata_and_reporter, staged_linux_remote_defaults,
 };
+use std::path::PathBuf;
 
 struct TargetSpec {
     id: &'static str,
@@ -20,6 +21,8 @@ struct TargetSpec {
 #[command(name = "pikaci")]
 #[command(about = "Wave 1 local-first CI runner for Pika")]
 struct Cli {
+    #[arg(long, global = true)]
+    state_root: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -45,6 +48,11 @@ enum Command {
         kind: LogKindArg,
         #[arg(long)]
         metadata_json: bool,
+    },
+    PreparedOutputs {
+        run_id: String,
+        #[arg(long)]
+        json: bool,
     },
     Status {
         run_id: String,
@@ -90,7 +98,7 @@ fn main() -> anyhow::Result<()> {
     let cwd = std::env::current_dir().context("read current directory")?;
     let options = RunOptions {
         source_root: cwd.clone(),
-        state_root: cwd.join(".pikaci"),
+        state_root: resolve_state_root(&cwd, cli.state_root),
     };
 
     match cli.command {
@@ -141,6 +149,39 @@ fn main() -> anyhow::Result<()> {
                 }
                 if let Some(guest) = logs.guest {
                     println!("== guest ==\n{guest}");
+                }
+            }
+        }
+        Command::PreparedOutputs { run_id, json } => {
+            let record = load_prepared_outputs_record(&options.state_root, &run_id)?
+                .ok_or_else(|| anyhow!("prepared outputs not found for run `{run_id}`"))?;
+            if json {
+                print_json(&record)?;
+            } else {
+                println!("run_id={run_id}");
+                println!("schema_version={}", record.schema_version);
+                println!("outputs={}", record.outputs.len());
+                for output in record.outputs {
+                    let payload_kind = output
+                        .payload
+                        .as_ref()
+                        .map(|payload| payload.kind.as_str())
+                        .unwrap_or("-");
+                    let entrypoint_count = output
+                        .payload
+                        .as_ref()
+                        .map(|payload| payload.entrypoints.len())
+                        .unwrap_or(0);
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        output.node_id,
+                        output.output_name,
+                        output.installable,
+                        prepared_output_consumer_label(output.consumer),
+                        output.realized_path,
+                        payload_kind,
+                        entrypoint_count
+                    );
                 }
             }
         }
@@ -198,6 +239,12 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn resolve_state_root(cwd: &std::path::Path, configured: Option<PathBuf>) -> PathBuf {
+    configured
+        .or_else(|| std::env::var_os("PIKACI_STATE_ROOT").map(PathBuf::from))
+        .unwrap_or_else(|| cwd.join(".pikaci"))
 }
 
 fn fail_if_removed_backend_selector_is_set() -> anyhow::Result<()> {
@@ -1953,9 +2000,10 @@ fn matches_filter(path: &str, pattern: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_status_lines, matches_any_filter, matches_filter, rerun_metadata,
-        staged_linux_remote_defaults_json, target_spec, target_spec_for_rerun,
+        Cli, Command, format_status_lines, matches_any_filter, matches_filter, rerun_metadata,
+        resolve_state_root, staged_linux_remote_defaults_json, target_spec, target_spec_for_rerun,
     };
+    use clap::Parser;
     use pikaci::{
         JobRecord, PreparedOutputConsumerKind, RemoteLinuxVmBackend, RunLifecycleEvent, RunRecord,
         RunStatus, RunnerKind, StagedLinuxRustLane, StagedLinuxRustTarget,
@@ -1972,6 +2020,24 @@ mod tests {
             ".github/**"
         ));
         assert!(!matches_filter("docs/agent-ci.md", "rust/**"));
+    }
+
+    #[test]
+    fn resolve_state_root_defaults_to_dot_pikaci_under_cwd() {
+        let cwd = std::path::Path::new("/tmp/pika");
+        assert_eq!(resolve_state_root(cwd, None), cwd.join(".pikaci"));
+    }
+
+    #[test]
+    fn resolve_state_root_prefers_explicit_override() {
+        let cwd = std::path::Path::new("/tmp/pika");
+        assert_eq!(
+            resolve_state_root(
+                cwd,
+                Some(std::path::PathBuf::from("/var/lib/pika-news/pikaci"))
+            ),
+            std::path::PathBuf::from("/var/lib/pika-news/pikaci")
+        );
     }
 
     #[test]
@@ -2554,6 +2620,20 @@ mod tests {
             message: Some("ok".to_string()),
             pre_execution_prepare_duration_ms: None,
             remote_linux_vm_execution: None,
+        }
+    }
+
+    #[test]
+    fn cli_parses_prepared_outputs_subcommand() {
+        let cli = Cli::try_parse_from(["pikaci", "prepared-outputs", "run-123", "--json"])
+            .expect("parse prepared outputs cli");
+
+        match cli.command {
+            Command::PreparedOutputs { run_id, json } => {
+                assert_eq!(run_id, "run-123");
+                assert!(json);
+            }
+            other => panic!("unexpected command: {other:?}"),
         }
     }
 }

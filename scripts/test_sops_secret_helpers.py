@@ -178,6 +178,42 @@ release_secret_read_shell_env_value_from_file "{self.apple_secret_env}" PIKACI_A
         proc = run(["bash", "-lc", script])
         self.assertEqual(proc.stdout, ssh_key)
 
+    def test_release_secret_prefers_primary_identity_file(self) -> None:
+        primary = self.dir / "primary.txt"
+        fallback = self.dir / "keys.txt"
+        primary.write_text("primary\n", encoding="utf-8")
+        fallback.write_text("fallback\n", encoding="utf-8")
+        script = f"""
+source "{ROOT / 'scripts/lib/release-secrets.sh'}"
+PIKA_RELEASE_AGE_IDENTITY_FILE_PRIMARY_DEFAULT="{primary}"
+PIKA_RELEASE_AGE_IDENTITY_FILE_DEFAULT="{fallback}"
+release_secret_identity_file_for_read
+"""
+        proc = run(["bash", "-lc", script])
+        self.assertEqual(proc.stdout.strip(), str(primary))
+
+    def test_sops_encrypt_uses_repo_config_by_default(self) -> None:
+        config = self.dir / ".sops.yaml"
+        secret = self.dir / "secret.sops.yaml"
+        plain = self.dir / "repo-secret.yaml"
+        recipient = run(["age-keygen", "-y", str(self.key_file)]).stdout.strip()
+        config.write_text(
+            "creation_rules:\n"
+            f"  - path_regex: .*\\.sops\\.yaml$\n"
+            f"    age: [{recipient}]\n",
+            encoding="utf-8",
+        )
+        plain.write_text("FOO: bar\n", encoding="utf-8")
+        script = f"""
+source "{ROOT / 'scripts/lib/sops-secrets.sh'}"
+PIKA_SOPS_CONFIG_FILE="{config}"
+SOPS_AGE_KEY_FILE="{self.key_file}"
+sops_secret_encrypt_yaml_file "{plain}" "{secret}"
+sops_secret_read_key "{secret}" FOO
+"""
+        proc = run(["bash", "-lc", script])
+        self.assertEqual(proc.stdout.strip(), "bar")
+
 
 if __name__ == "__main__":
     unittest.main()

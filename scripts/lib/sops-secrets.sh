@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PIKA_SOPS_ROOT_DEFAULT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PIKA_SOPS_CONFIG_FILE_DEFAULT="$PIKA_SOPS_ROOT_DEFAULT/secrets/.sops.yaml"
 PIKA_SOPS_AGE_KEY_FILE_DEFAULT="$HOME/configs/yubikeys/keys.txt"
 PIKA_SOPS_AGE_KEY_FILE_PRIMARY_DEFAULT="$HOME/configs/yubikeys/yubikey-primary.txt"
 
@@ -8,6 +10,25 @@ sops_secret_need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "error: missing command: $1" >&2
     return 1
+  fi
+}
+
+sops_secret_prepare_config() {
+  local use_default_config="${1:-1}"
+
+  if [ -n "${SOPS_CONFIG:-}" ]; then
+    export SOPS_CONFIG
+    return 0
+  fi
+
+  if [ "$use_default_config" -eq 0 ]; then
+    return 0
+  fi
+
+  if [ -n "${PIKA_SOPS_CONFIG_FILE:-}" ] && [ -f "${PIKA_SOPS_CONFIG_FILE}" ]; then
+    export SOPS_CONFIG="$PIKA_SOPS_CONFIG_FILE"
+  elif [ -f "$PIKA_SOPS_CONFIG_FILE_DEFAULT" ]; then
+    export SOPS_CONFIG="$PIKA_SOPS_CONFIG_FILE_DEFAULT"
   fi
 }
 
@@ -67,6 +88,7 @@ sops_secret_read_key() {
   local key="$2"
 
   sops_secret_need_cmd sops
+  sops_secret_prepare_config 1
   sops_secret_prepare_env
   sops decrypt --extract "[\"${key}\"]" "$encrypted_file"
 }
@@ -76,6 +98,7 @@ sops_secret_decrypt_binary() {
   local output_file="$2"
 
   sops_secret_need_cmd sops
+  sops_secret_prepare_config 1
   sops_secret_prepare_env
   sops decrypt \
     --input-type binary \
@@ -95,6 +118,11 @@ sops_secret_encrypt_file() {
   local -a cmd
 
   sops_secret_need_cmd sops
+  if [ -n "$recipients_csv" ]; then
+    sops_secret_prepare_config 0
+  else
+    sops_secret_prepare_config 1
+  fi
   sops_secret_prepare_env
 
   cmd=(
@@ -157,6 +185,7 @@ sops_secret_updatekeys() {
   local file="$1"
 
   sops_secret_need_cmd sops
+  sops_secret_prepare_config 1
   sops_secret_prepare_env
   sops updatekeys -y "$file"
 }

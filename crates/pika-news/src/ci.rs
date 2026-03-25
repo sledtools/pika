@@ -397,6 +397,7 @@ fn execute_branch_job(
         forge_repo,
         &job.source_head_sha,
         &job.command,
+        job.structured_pikaci_target_id.as_deref(),
         heartbeat_interval,
         || store.heartbeat_branch_ci_lane_run(job.lane_run_id, job.claim_token, lease_secs),
         |event| {
@@ -482,6 +483,7 @@ fn execute_nightly_job(
         forge_repo,
         &job.source_head_sha,
         &job.command,
+        job.structured_pikaci_target_id.as_deref(),
         heartbeat_interval,
         || store.heartbeat_nightly_lane_run(job.lane_run_id, job.claim_token, lease_secs),
         |event| {

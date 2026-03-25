@@ -328,6 +328,7 @@ pub fn run_ci_command_for_head_with_heartbeat<F, G>(
     repo: &ForgeRepoConfig,
     head_sha: &str,
     command: &[String],
+    structured_pikaci_target_id: Option<&str>,
     heartbeat_interval: Duration,
     mut heartbeat: F,
     mut on_event: G,
@@ -339,12 +340,14 @@ where
     if command.is_empty() {
         bail!("ci command is empty");
     }
-    let structured_pikaci_target = staged_pikaci_target_from_command(command);
+    let structured_pikaci_target = structured_pikaci_target_id
+        .map(ToOwned::to_owned)
+        .or_else(|| staged_pikaci_target_from_command(command));
     let structured_pikaci_state_root = structured_pikaci_target
         .as_ref()
         .map(|_| pikaci_state_root(repo));
     let effective_command = if structured_pikaci_target.is_some() {
-        ensure_structured_pikaci_output(command)
+        ensure_structured_pikaci_output(command)?
     } else {
         command.to_vec()
     };
@@ -1134,14 +1137,22 @@ fn staged_pikaci_target_from_command(command: &[String]) -> Option<String> {
     command.get(2).cloned()
 }
 
-fn ensure_structured_pikaci_output(command: &[String]) -> Vec<String> {
-    if command.iter().any(|arg| arg == "--output") {
-        return command.to_vec();
+fn ensure_structured_pikaci_output(command: &[String]) -> anyhow::Result<Vec<String>> {
+    if let Some(output_index) = command.iter().position(|arg| arg == "--output") {
+        let Some(output_value) = command.get(output_index + 1) else {
+            bail!("structured pikaci command passed `--output` without a value");
+        };
+        if output_value != "jsonl" {
+            bail!(
+                "structured pikaci command must use `--output jsonl`, got `--output {output_value}`"
+            );
+        }
+        return Ok(command.to_vec());
     }
     let mut structured = command.to_vec();
     structured.push("--output".to_string());
     structured.push("jsonl".to_string());
-    structured
+    Ok(structured)
 }
 
 fn parse_pikaci_execution_event(line: &str) -> Option<CiExecutionEvent> {
@@ -1511,6 +1522,7 @@ mod tests {
             &forge_repo,
             &head_sha,
             &["/definitely/missing/pika-ci-command".to_string()],
+            None,
             Duration::from_secs(1),
             || Ok(()),
             |_| Ok(()),
@@ -1573,6 +1585,7 @@ mod tests {
                 "run".to_string(),
                 "pre-merge-pika-rust".to_string(),
             ],
+            Some("pre-merge-pika-rust"),
             Duration::from_secs(1),
             || Ok(()),
             |event| {
@@ -1602,6 +1615,101 @@ mod tests {
         assert!(state_root
             .join("runs/pikaci-run-123/jobs/job-one/host.log")
             .is_file());
+    }
+
+    #[test]
+    fn explicit_structured_pikaci_target_does_not_depend_on_wrapper_name() {
+        let (_root, forge_repo, seed) = setup_repo();
+        let scripts_dir = seed.join("scripts");
+        fs::create_dir_all(&scripts_dir).expect("create scripts dir");
+        let wrapper_path = scripts_dir.join("custom-structured-lane.sh");
+        fs::write(
+            &wrapper_path,
+            concat!(
+                "#!/usr/bin/env bash\n",
+                "set -euo pipefail\n",
+                "if [[ \"$1\" != \"run\" || \"$2\" != \"pre-merge-pika-rust\" || \"$3\" != \"--output\" || \"$4\" != \"jsonl\" ]]; then\n",
+                "  echo \"unexpected args: $*\" >&2\n",
+                "  exit 99\n",
+                "fi\n",
+                "run_root=\"${PIKACI_STATE_ROOT:?missing-state-root}/runs/pikaci-run-456/jobs/job-one\"\n",
+                "mkdir -p \"$run_root\"\n",
+                "printf 'host log\\n' > \"$run_root/host.log\"\n",
+                "printf 'guest log\\n' > \"$run_root/guest.log\"\n",
+                "cat > \"${PIKACI_STATE_ROOT}/runs/pikaci-run-456/run.json\" <<EOF_RUN\n",
+                "{\"run_id\":\"pikaci-run-456\",\"status\":\"passed\",\"rerun_of\":null,\"target_id\":\"pre-merge-pika-rust\",\"target_description\":\"Run staged pika rust\",\"source_root\":\"/tmp/source\",\"snapshot_dir\":\"/tmp/snapshot\",\"git_head\":null,\"git_dirty\":null,\"created_at\":\"2026-03-19T00:00:00Z\",\"finished_at\":\"2026-03-19T00:00:02Z\",\"plan_path\":null,\"prepared_outputs_path\":null,\"prepared_output_consumer\":null,\"prepared_output_mode\":null,\"prepared_output_invocation_mode\":null,\"prepared_output_invocation_wrapper_program\":null,\"prepared_output_launcher_transport_mode\":null,\"prepared_output_launcher_transport_program\":null,\"prepared_output_launcher_transport_host\":null,\"prepared_output_launcher_transport_remote_launcher_program\":null,\"prepared_output_launcher_transport_remote_helper_program\":null,\"prepared_output_launcher_transport_remote_work_dir\":null,\"changed_files\":[],\"filters\":[],\"message\":null,\"prepare_timings\":[],\"jobs\":[]}\n",
+                "EOF_RUN\n",
+                "cat <<'EOF'\n",
+                "{\"event\":\"run_started\",\"run_id\":\"pikaci-run-456\",\"created_at\":\"2026-03-19T00:00:00Z\",\"target_id\":\"pre-merge-pika-rust\",\"target_description\":\"Run staged pika rust\"}\n",
+                "{\"event\":\"run_finished\",\"run\":{\"run_id\":\"pikaci-run-456\",\"status\":\"passed\",\"rerun_of\":null,\"target_id\":\"pre-merge-pika-rust\",\"target_description\":\"Run staged pika rust\",\"source_root\":\"/tmp/source\",\"snapshot_dir\":\"/tmp/snapshot\",\"git_head\":null,\"git_dirty\":null,\"created_at\":\"2026-03-19T00:00:00Z\",\"finished_at\":\"2026-03-19T00:00:02Z\",\"plan_path\":null,\"prepared_outputs_path\":null,\"prepared_output_consumer\":null,\"prepared_output_mode\":null,\"prepared_output_invocation_mode\":null,\"prepared_output_invocation_wrapper_program\":null,\"prepared_output_launcher_transport_mode\":null,\"prepared_output_launcher_transport_program\":null,\"prepared_output_launcher_transport_host\":null,\"prepared_output_launcher_transport_remote_launcher_program\":null,\"prepared_output_launcher_transport_remote_helper_program\":null,\"prepared_output_launcher_transport_remote_work_dir\":null,\"changed_files\":[],\"filters\":[],\"message\":null,\"jobs\":[]}}\n",
+                "EOF\n"
+            ),
+        )
+        .expect("write fake wrapper");
+        let mut perms = fs::metadata(&wrapper_path)
+            .expect("wrapper metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&wrapper_path, perms).expect("set wrapper perms");
+        git(&seed, &["add", "scripts/custom-structured-lane.sh"]);
+        git(&seed, &["commit", "-m", "add custom structured wrapper"]);
+        git(&seed, &["push", "origin", "master"]);
+
+        let head_sha = current_branch_head(&forge_repo, "master")
+            .expect("resolve master head")
+            .expect("master head");
+        let result = run_ci_command_for_head_with_heartbeat(
+            &forge_repo,
+            &head_sha,
+            &[
+                "./scripts/custom-structured-lane.sh".to_string(),
+                "run".to_string(),
+                "pre-merge-pika-rust".to_string(),
+            ],
+            Some("pre-merge-pika-rust"),
+            Duration::from_secs(1),
+            || Ok(()),
+            |_| Ok(()),
+        )
+        .expect("run structured lane with explicit metadata");
+
+        assert!(result.success);
+        assert_eq!(result.pikaci_run_id.as_deref(), Some("pikaci-run-456"));
+        assert_eq!(
+            result.pikaci_target_id.as_deref(),
+            Some("pre-merge-pika-rust")
+        );
+        let state_root = super::pikaci_state_root(&forge_repo);
+        assert!(state_root.join("runs/pikaci-run-456/run.json").is_file());
+    }
+
+    #[test]
+    fn explicit_structured_pikaci_target_rejects_non_jsonl_output() {
+        let (_root, forge_repo, _seed) = setup_repo();
+        let head_sha = current_branch_head(&forge_repo, "master")
+            .expect("resolve master head")
+            .expect("master head");
+
+        let err = run_ci_command_for_head_with_heartbeat(
+            &forge_repo,
+            &head_sha,
+            &[
+                "./scripts/custom-structured-lane.sh".to_string(),
+                "run".to_string(),
+                "pre-merge-pika-rust".to_string(),
+                "--output".to_string(),
+                "json".to_string(),
+            ],
+            Some("pre-merge-pika-rust"),
+            Duration::from_secs(1),
+            || Ok(()),
+            |_| Ok(()),
+        )
+        .expect_err("non-jsonl structured command should fail");
+
+        assert!(err
+            .to_string()
+            .contains("structured pikaci command must use `--output jsonl`"));
     }
 
     #[test]

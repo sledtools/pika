@@ -2790,6 +2790,11 @@ fn migrations() -> Vec<Migration> {
             name: "0023_branch_chat",
             sql: include_str!("../migrations/0023_branch_chat.sql"),
         },
+        Migration {
+            version: 24,
+            name: "0024_ci_lane_structured_pikaci_target",
+            sql: include_str!("../migrations/0024_ci_lane_structured_pikaci_target.sql"),
+        },
     ]
 }
 

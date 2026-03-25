@@ -19,7 +19,7 @@ futures = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
 nostr-sdk = { workspace = true, features = ["nip59"] }
-pika-agent-control-plane = { path = "../pika-agent-control-plane" }
+pika-cloud = { path = "../pika-cloud" }
 pika-relay-profiles = { path = "../pika-relay-profiles" }
 rand = { workspace = true }
 reqwest = { workspace = true, features = ["json", "native-tls", "rustls-tls"] }

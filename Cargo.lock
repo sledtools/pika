@@ -5932,35 +5932,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "pika-agent-control-plane"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "pika-agent-microvm"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "nostr-sdk",
- "pika-agent-control-plane",
- "pika-test-utils",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
 name = "pika-agent-protocol"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "rand 0.8.5",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "pika-cloud"
+version = "0.1.0"
+dependencies = [
  "serde",
  "serde_json",
 ]
@@ -6102,7 +6087,7 @@ dependencies = [
  "hmac",
  "ipnet",
  "nostr-sdk",
- "pika-agent-control-plane",
+ "pika-cloud",
  "pika-relay-profiles",
  "pika-test-utils",
  "rand 0.8.5",
@@ -6170,7 +6155,7 @@ dependencies = [
  "nostr-connect",
  "nostr-sdk",
  "paranoid-android",
- "pika-agent-control-plane",
+ "pika-cloud",
  "pika-marmot-runtime",
  "pika-media",
  "pika-relay-profiles",
@@ -6206,8 +6191,8 @@ dependencies = [
  "mdk-storage-traits",
  "nostr-blossom",
  "nostr-sdk",
- "pika-agent-control-plane",
  "pika-agent-protocol",
+ "pika-cloud",
  "pika-marmot-runtime",
  "pika-relay-profiles",
  "pika-test-utils",
@@ -9031,28 +9016,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "vm-spawner"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "chrono",
- "futures",
- "nostr-sdk",
- "pika-agent-control-plane",
- "pika-agent-microvm",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-tungstenite 0.26.2",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
 
 [[package]]
 name = "walkdir"

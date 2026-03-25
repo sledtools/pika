@@ -1,3 +1,25 @@
+pub mod lifecycle;
+pub mod mount;
+pub mod paths;
+pub mod policy;
+pub mod spec;
+
+pub use lifecycle::{
+    LIFECYCLE_SCHEMA_VERSION, LifecycleEvent, LifecycleState, RuntimeResultStatus,
+    RuntimeStatusSnapshot, RuntimeTerminalResult,
+};
+pub use mount::{MountKind, MountMode, RuntimeMount};
+pub use paths::{
+    ARTIFACTS_DIR, EVENTS_PATH, GUEST_LOG_PATH as CLOUD_GUEST_LOG_PATH, GUEST_REQUEST_PATH,
+    LOGS_DIR, RESULT_PATH, RUNTIME_STATE_DIR, RuntimePaths, STATUS_PATH,
+};
+pub use policy::{
+    OutputCollectionMode, OutputCollectionPolicy, RestartPolicy, RetentionPolicy, RuntimePolicies,
+};
+pub use spec::{
+    IncusRuntimeConfig, RuntimeBootstrap, RuntimeIdentity, RuntimeResources, RuntimeSpec,
+};
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -355,12 +377,12 @@ impl AgentProvisionRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SpawnerCreateVmRequest {
-    pub guest_autostart: SpawnerGuestAutostartRequest,
+pub struct ManagedVmCreateRequest {
+    pub guest_autostart: ManagedVmGuestAutostartRequest,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SpawnerGuestAutostartRequest {
+pub struct ManagedVmGuestAutostartRequest {
     pub command: String,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
@@ -370,9 +392,9 @@ pub struct SpawnerGuestAutostartRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SpawnerVmResponse {
+pub struct ManagedRuntimeStatus {
     pub id: String,
-    #[serde(default = "default_spawner_vm_status")]
+    #[serde(default = "default_managed_runtime_status")]
     pub status: String,
     #[serde(default)]
     #[serde(alias = "guest_service_ready")]
@@ -381,7 +403,7 @@ pub struct SpawnerVmResponse {
     pub guest_ready: bool,
 }
 
-fn default_spawner_vm_status() -> String {
+fn default_managed_runtime_status() -> String {
     "running".to_string()
 }
 
@@ -418,7 +440,7 @@ pub struct VmBackupStatusRecord {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SpawnerVmBackupStatus {
+pub struct ManagedRuntimeBackupStatus {
     pub vm_id: String,
     pub backup_unit_kind: VmBackupUnitKind,
     pub backup_target: String,
@@ -433,7 +455,7 @@ pub struct SpawnerVmBackupStatus {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SpawnerOpenClawLaunchAuth {
+pub struct ManagedOpenClawLaunchAuth {
     pub vm_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gateway_auth_token: Option<String>,
@@ -838,9 +860,9 @@ mod tests {
     }
 
     #[test]
-    fn spawner_create_vm_request_requires_guest_autostart() {
+    fn managed_vm_create_request_requires_guest_autostart() {
         let json = json!({});
-        assert!(serde_json::from_value::<SpawnerCreateVmRequest>(json).is_err());
+        assert!(serde_json::from_value::<ManagedVmCreateRequest>(json).is_err());
     }
 
     #[test]
@@ -859,8 +881,8 @@ mod tests {
     }
 
     #[test]
-    fn spawner_vm_backup_status_round_trips() {
-        let status = SpawnerVmBackupStatus {
+    fn managed_runtime_backup_status_round_trips() {
+        let status = ManagedRuntimeBackupStatus {
             vm_id: "vm-00000000".to_string(),
             backup_unit_kind: VmBackupUnitKind::PersistentStateVolume,
             backup_target: "default/vm-00000000-state".to_string(),
@@ -871,14 +893,14 @@ mod tests {
             observed_at: Some("2026-03-18T12:00:00Z".to_string()),
         };
         let encoded = serde_json::to_string(&status).expect("encode backup status");
-        let decoded: SpawnerVmBackupStatus =
+        let decoded: ManagedRuntimeBackupStatus =
             serde_json::from_str(&encoded).expect("decode backup status");
         assert_eq!(decoded, status);
     }
 
     #[test]
-    fn spawner_vm_response_accepts_legacy_guest_service_ready_field() {
-        let decoded: SpawnerVmResponse = serde_json::from_value(serde_json::json!({
+    fn managed_runtime_status_accepts_legacy_guest_service_ready_field() {
+        let decoded: ManagedRuntimeStatus = serde_json::from_value(serde_json::json!({
             "id": "vm-123",
             "status": "running",
             "guest_service_ready": true,
@@ -921,7 +943,7 @@ mod tests {
             artifacts: GuestStartupArtifacts::default(),
             exit_failure_reason: "openclaw_gateway_exited".to_string(),
         };
-        let request = SpawnerGuestAutostartRequest {
+        let request = ManagedVmGuestAutostartRequest {
             command: GUEST_AUTOSTART_COMMAND.to_string(),
             env: BTreeMap::from([("PIKA_OWNER_PUBKEY".to_string(), "owner".to_string())]),
             files: BTreeMap::from([(GUEST_STARTUP_PLAN_PATH.to_string(), "{}".to_string())]),
@@ -929,7 +951,7 @@ mod tests {
         };
 
         let encoded = serde_json::to_string(&request).expect("encode request");
-        let decoded: SpawnerGuestAutostartRequest =
+        let decoded: ManagedVmGuestAutostartRequest =
             serde_json::from_str(&encoded).expect("decode request");
 
         assert_eq!(decoded, request);
@@ -938,7 +960,7 @@ mod tests {
 
     #[test]
     fn guest_autostart_request_rejects_missing_startup_plan() {
-        let err = serde_json::from_value::<SpawnerGuestAutostartRequest>(serde_json::json!({
+        let err = serde_json::from_value::<ManagedVmGuestAutostartRequest>(serde_json::json!({
             "command": GUEST_AUTOSTART_COMMAND,
             "env": {},
             "files": {}

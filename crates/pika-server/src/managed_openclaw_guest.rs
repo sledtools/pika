@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
 use nostr_sdk::prelude::PublicKey;
-use pika_agent_control_plane::{
+use pika_cloud::{
     GuestOpenclawDaemonBackend, GuestServiceBackendMode, GuestServiceKind, GuestServiceLaunch,
-    GuestServiceReadinessCheck, GuestStartupArtifacts, GuestStartupPlan, SpawnerCreateVmRequest,
-    SpawnerGuestAutostartRequest, GUEST_AUTOSTART_COMMAND, GUEST_AUTOSTART_IDENTITY_PATH,
+    GuestServiceReadinessCheck, GuestStartupArtifacts, GuestStartupPlan, ManagedVmCreateRequest,
+    ManagedVmGuestAutostartRequest, GUEST_AUTOSTART_COMMAND, GUEST_AUTOSTART_IDENTITY_PATH,
     GUEST_AUTOSTART_SCRIPT_PATH, GUEST_OPENCLAW_CONFIG_PATH, GUEST_OPENCLAW_EXTENSION_ROOT,
     GUEST_STARTUP_PLAN_PATH,
 };
@@ -26,7 +26,7 @@ pub struct ManagedVmCreateInput<'a> {
     pub bot_pubkey_hex: &'a str,
 }
 
-pub fn build_create_vm_request(input: ManagedVmCreateInput<'_>) -> SpawnerCreateVmRequest {
+pub fn build_managed_vm_create_request(input: ManagedVmCreateInput<'_>) -> ManagedVmCreateRequest {
     let startup_plan = guest_startup_plan();
     let mut env = BTreeMap::new();
     env.insert("PIKA_OWNER_PUBKEY".to_string(), input.owner_pubkey.to_hex());
@@ -63,8 +63,8 @@ pub fn build_create_vm_request(input: ManagedVmCreateInput<'_>) -> SpawnerCreate
     );
     files.extend(openclaw_extension_files());
 
-    SpawnerCreateVmRequest {
-        guest_autostart: SpawnerGuestAutostartRequest {
+    ManagedVmCreateRequest {
+        guest_autostart: ManagedVmGuestAutostartRequest {
             command: GUEST_AUTOSTART_COMMAND.to_string(),
             env,
             files,

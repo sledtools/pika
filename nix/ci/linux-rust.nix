@@ -845,8 +845,7 @@ PY
       else
         ''
         export PIKACI_AGENT_CONTRACTS_TEST_EXECUTABLES="$TMPDIR/agent-contracts-test-executables.tsv"
-        export PIKACI_AGENT_CONTROL_PLANE_UNIT_MANIFEST="$TMPDIR/agent-control-plane-unit.manifest"
-        export PIKACI_AGENT_MICROVM_TESTS_MANIFEST="$TMPDIR/agent-microvm-tests.manifest"
+        export PIKACI_AGENT_CLOUD_UNIT_MANIFEST="$TMPDIR/pika-cloud-unit.manifest"
         export PIKACI_SERVER_AGENT_API_TESTS_MANIFEST="$TMPDIR/server-agent-api-tests.manifest"
         export PIKACI_CORE_AGENT_NIP98_TEST_MANIFEST="$TMPDIR/core-agent-nip98-test.manifest"
         cargoJobs="''${CARGO_BUILD_JOBS:-''${NIX_BUILD_CORES:-}}"
@@ -874,14 +873,8 @@ PY
         }
 
         cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
-        cargo test --locked -j "$cargoJobs" -p pika-agent-control-plane \
+        cargo test --locked -j "$cargoJobs" -p pika-cloud \
           --lib \
-          --no-run \
-          --message-format json-render-diagnostics >"$cargoBuildLog"
-        capture_artifacts "$cargoBuildLog"
-
-        cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
-        cargo test --locked -j "$cargoJobs" -p pika-agent-microvm \
           --no-run \
           --message-format json-render-diagnostics >"$cargoBuildLog"
         capture_artifacts "$cargoBuildLog"
@@ -930,8 +923,7 @@ PY
           sort -u -o "$manifest_path" "$manifest_path"
         }
 
-        manifest_from_targets "$PIKACI_AGENT_CONTROL_PLANE_UNIT_MANIFEST" pika_agent_control_plane
-        manifest_from_targets "$PIKACI_AGENT_MICROVM_TESTS_MANIFEST" pika_agent_microvm
+        manifest_from_targets "$PIKACI_AGENT_CLOUD_UNIT_MANIFEST" pika_cloud
         manifest_from_targets "$PIKACI_SERVER_AGENT_API_TESTS_MANIFEST" pika-server
         manifest_from_targets "$PIKACI_CORE_AGENT_NIP98_TEST_MANIFEST" pika_core
       '';
@@ -1653,12 +1645,9 @@ PY
         ''
         target_root="''${CARGO_TARGET_DIR:-target}"
         mkdir -p "$out/bin" "$out/share/pikaci" "$out/target"
-        cp "$PIKACI_AGENT_CONTROL_PLANE_UNIT_MANIFEST" "$out/share/pikaci/agent-control-plane-unit.manifest"
-        cp "$PIKACI_AGENT_MICROVM_TESTS_MANIFEST" "$out/share/pikaci/agent-microvm-tests.manifest"
+        cp "$PIKACI_AGENT_CLOUD_UNIT_MANIFEST" "$out/share/pikaci/pika-cloud-unit.manifest"
         cp "$PIKACI_SERVER_AGENT_API_TESTS_MANIFEST" "$out/share/pikaci/server-agent-api-tests.manifest"
         cp "$PIKACI_CORE_AGENT_NIP98_TEST_MANIFEST" "$out/share/pikaci/core-agent-nip98-test.manifest"
-        cp -R "$src/pikachat-openclaw/openclaw/extensions/pikachat-openclaw" \
-          "$out/share/pikaci/pikachat-openclaw-extension"
 
         copy_target_relative() {
           local relative="$1"
@@ -1674,8 +1663,7 @@ PY
 
         staged_runtime_manifest="$TMPDIR/agent-contracts-staged-runtime.manifest"
         cat \
-          "$PIKACI_AGENT_CONTROL_PLANE_UNIT_MANIFEST" \
-          "$PIKACI_AGENT_MICROVM_TESTS_MANIFEST" \
+          "$PIKACI_AGENT_CLOUD_UNIT_MANIFEST" \
           "$PIKACI_SERVER_AGENT_API_TESTS_MANIFEST" \
           "$PIKACI_CORE_AGENT_NIP98_TEST_MANIFEST" \
           | sort -u >"$staged_runtime_manifest"
@@ -1742,17 +1730,10 @@ PY
           "$root/target/$relative" "$@"
         done <"$manifest"
         EOF
-        cat >"$out/bin/run-agent-control-plane-unit-tests" <<'EOF'
+        cat >"$out/bin/run-pika-cloud-unit-tests" <<'EOF'
         ${guestBashShebang}
         set -euo pipefail
-        exec "$(dirname "$0")/run-staged-test-manifest" agent-control-plane-unit.manifest --nocapture
-        EOF
-        cat >"$out/bin/run-agent-microvm-tests" <<'EOF'
-        ${guestBashShebang}
-        set -euo pipefail
-        root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
-        export PIKACI_OPENCLAW_EXTENSION_SOURCE_ROOT="$root/share/pikaci/pikachat-openclaw-extension"
-        exec "$(dirname "$0")/run-staged-test-manifest" agent-microvm-tests.manifest --nocapture
+        exec "$(dirname "$0")/run-staged-test-manifest" pika-cloud-unit.manifest --nocapture
         EOF
         cat >"$out/bin/run-server-agent-api-tests" <<'EOF'
         ${guestBashShebang}
@@ -1767,8 +1748,7 @@ PY
         EOF
         chmod +x \
           "$out/bin/run-staged-test-manifest" \
-          "$out/bin/run-agent-control-plane-unit-tests" \
-          "$out/bin/run-agent-microvm-tests" \
+          "$out/bin/run-pika-cloud-unit-tests" \
           "$out/bin/run-server-agent-api-tests" \
           "$out/bin/run-core-agent-nip98-test"
       '';

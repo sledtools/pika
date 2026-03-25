@@ -6,8 +6,7 @@ members = [
   "cli",
   "crates/pikaci",
   "crates/pika-agent-protocol",
-  "crates/pika-agent-control-plane",
-  "crates/pika-agent-microvm",
+  "crates/pika-cloud",
   "crates/pika-relay-profiles",
   "crates/pika-marmot-runtime",
   "crates/hypernote-protocol",
@@ -23,7 +22,6 @@ members = [
   "crates/ph",
   "crates/pika-test-utils",
   "crates/pikahut",
-  "crates/vm-spawner",
 ]
 
 [workspace.dependencies]

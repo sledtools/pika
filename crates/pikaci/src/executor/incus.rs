@@ -347,12 +347,22 @@ pub(super) fn collect_remote_incus_artifacts(
 ) -> anyhow::Result<()> {
     copy_remote_incus_file_to_local(
         remote,
-        &format!("{}/guest.log", REMOTE_LINUX_VM_INCUS_ARTIFACTS_DIR),
+        REMOTE_LINUX_VM_INCUS_GUEST_LOG_PATH,
         &ctx.guest_log_path,
     )?;
     copy_remote_incus_file_to_local(
         remote,
-        &format!("{}/result.json", REMOTE_LINUX_VM_INCUS_ARTIFACTS_DIR),
+        REMOTE_LINUX_VM_INCUS_EVENTS_PATH,
+        &ctx.job_dir.join("artifacts/events.jsonl"),
+    )?;
+    copy_remote_incus_file_to_local(
+        remote,
+        REMOTE_LINUX_VM_INCUS_STATUS_PATH,
+        &ctx.job_dir.join("artifacts/status.json"),
+    )?;
+    copy_remote_incus_file_to_local(
+        remote,
+        REMOTE_LINUX_VM_INCUS_RESULT_PATH,
         &ctx.job_dir.join("artifacts/result.json"),
     )
 }

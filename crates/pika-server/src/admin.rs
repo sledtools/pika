@@ -358,22 +358,18 @@ fn admin_app_state_label(
     }
 }
 
-fn admin_startup_phase_label(
-    phase: Option<pika_agent_control_plane::AgentStartupPhase>,
-) -> &'static str {
+fn admin_startup_phase_label(phase: Option<pika_cloud::AgentStartupPhase>) -> &'static str {
     match phase {
         None => "not_started",
-        Some(pika_agent_control_plane::AgentStartupPhase::Requested) => "requested",
-        Some(pika_agent_control_plane::AgentStartupPhase::ProvisioningVm) => "provisioning_vm",
-        Some(pika_agent_control_plane::AgentStartupPhase::BootingGuest) => "booting_guest",
-        Some(pika_agent_control_plane::AgentStartupPhase::WaitingForServiceReady) => {
-            "waiting_for_service_ready"
-        }
-        Some(pika_agent_control_plane::AgentStartupPhase::WaitingForKeypackagePublish) => {
+        Some(pika_cloud::AgentStartupPhase::Requested) => "requested",
+        Some(pika_cloud::AgentStartupPhase::ProvisioningVm) => "provisioning_vm",
+        Some(pika_cloud::AgentStartupPhase::BootingGuest) => "booting_guest",
+        Some(pika_cloud::AgentStartupPhase::WaitingForServiceReady) => "waiting_for_service_ready",
+        Some(pika_cloud::AgentStartupPhase::WaitingForKeypackagePublish) => {
             "waiting_for_keypackage_publish"
         }
-        Some(pika_agent_control_plane::AgentStartupPhase::Ready) => "ready",
-        Some(pika_agent_control_plane::AgentStartupPhase::Failed) => "failed",
+        Some(pika_cloud::AgentStartupPhase::Ready) => "ready",
+        Some(pika_cloud::AgentStartupPhase::Failed) => "failed",
     }
 }
 

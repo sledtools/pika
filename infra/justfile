@@ -512,22 +512,6 @@ build-deploy:
 
     echo "==> pika-build deployed!"
 
-# Deploy microVM host stack on pika-build (alias for build-deploy)
-build-deploy-microvms:
-    just build-deploy
-
-# Open SSH tunnel to vm-spawner localhost API
-build-vmspawner-tunnel:
-    ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 8080:127.0.0.1:8080 pika-build
-
-# Tail vm-spawner logs on the pika-build microVM host.
-build-vmspawner-logs:
-    ssh pika-build "journalctl -u vm-spawner -f"
-
-# Tail the guest agent log for a specific VM on the pika-build microVM host.
-build-guest-logs vm_id:
-    ssh pika-build 'LOG=/var/lib/microvms/{{vm_id}}/workspace/pika-agent/agent.log; if [ ! -f "$LOG" ]; then echo "missing guest log: $LOG" >&2; exit 1; fi; tail -n 200 -F "$LOG"'
-
 # SSH into pika-build
 build-ssh:
     ssh pika-build

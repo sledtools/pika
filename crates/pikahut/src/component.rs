@@ -400,8 +400,6 @@ impl Server {
             .env("NOTIFICATION_PORT", port.to_string());
 
         for (key, val) in [
-            env_or("PIKA_AGENT_MICROVM_KIND", "openclaw"),
-            env_or("PIKA_AGENT_MICROVM_SPAWNER_URL", "http://127.0.0.1:1"),
             env_or(
                 "PIKA_ADMIN_BOOTSTRAP_NPUBS",
                 "npub1u8lnhlw5usp3t9vmpz60ejpyt649z33hu82wc2hpv6m5xdqmuxhs46turz",

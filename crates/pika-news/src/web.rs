@@ -18,8 +18,8 @@ use chrono::{DateTime, NaiveDateTime, SecondsFormat, TimeDelta, Utc};
 use futures::stream;
 use hmac::{Hmac, Mac};
 use pikaci::{
-    load_logs, load_logs_metadata, load_prepared_outputs_record, load_run_record, LogKind,
-    PreparedOutputsRecord, RunLogsMetadata, RunRecord,
+    load_logs, load_run_bundle, load_run_record, LogKind, PreparedOutputsRecord, RunLogsMetadata,
+    RunRecord,
 };
 use pulldown_cmark::{html, Options, Parser};
 use sha2::Sha256;
@@ -3640,13 +3640,13 @@ async fn api_forge_pikaci_prepared_outputs_handler(
     if let Err(resp) = require_auth(&state.auth, &headers) {
         return resp;
     }
-    match load_pikaci_prepared_outputs(&state.config, &run_id) {
-        Ok(Some(prepared_outputs)) => Json(ForgePikaciPreparedOutputsResponse {
+    match load_pikaci_run_bundle(&state.config, &run_id) {
+        Ok((_, _, Some(prepared_outputs))) => Json(ForgePikaciPreparedOutputsResponse {
             run_id,
             prepared_outputs,
         })
         .into_response(),
-        Ok(None) => (
+        Ok((_, _, None)) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": format!("prepared outputs not found for run `{run_id}`")})),
         )
@@ -3667,14 +3667,6 @@ fn load_pikaci_run(config: &Config, run_id: &str) -> anyhow::Result<RunRecord> {
     load_run_record(&state_root, run_id)
 }
 
-fn load_pikaci_logs_metadata(config: &Config, run_id: &str) -> anyhow::Result<RunLogsMetadata> {
-    let forge_repo = config
-        .effective_forge_repo()
-        .ok_or_else(|| anyhow::anyhow!("forge repo is not configured"))?;
-    let state_root = forge::pikaci_state_root(&forge_repo);
-    load_logs_metadata(&state_root, run_id, None)
-}
-
 fn load_pikaci_logs(
     config: &Config,
     run_id: &str,
@@ -3688,26 +3680,16 @@ fn load_pikaci_logs(
     load_logs(&state_root, run_id, job_id, kind)
 }
 
-fn load_pikaci_prepared_outputs(
-    config: &Config,
-    run_id: &str,
-) -> anyhow::Result<Option<PreparedOutputsRecord>> {
-    let forge_repo = config
-        .effective_forge_repo()
-        .ok_or_else(|| anyhow::anyhow!("forge repo is not configured"))?;
-    let state_root = forge::pikaci_state_root(&forge_repo);
-    load_prepared_outputs_record(&state_root, run_id)
-}
-
 fn load_pikaci_run_bundle(
     config: &Config,
     run_id: &str,
 ) -> anyhow::Result<(RunRecord, RunLogsMetadata, Option<PreparedOutputsRecord>)> {
-    Ok((
-        load_pikaci_run(config, run_id)?,
-        load_pikaci_logs_metadata(config, run_id)?,
-        load_pikaci_prepared_outputs(config, run_id).ok().flatten(),
-    ))
+    let forge_repo = config
+        .effective_forge_repo()
+        .ok_or_else(|| anyhow::anyhow!("forge repo is not configured"))?;
+    let state_root = forge::pikaci_state_root(&forge_repo);
+    let bundle = load_run_bundle(&state_root, run_id)?;
+    Ok((bundle.run, bundle.logs, bundle.prepared_outputs))
 }
 
 fn map_forge_pikaci_log_kind(kind: ForgePikaciLogKind) -> LogKind {
@@ -6713,6 +6695,87 @@ mod tests {
             json["pikaci_prepared_outputs"]["outputs"][0]["output_name"],
             "ci.x86_64-linux.workspaceBuild"
         );
+    }
+
+    #[tokio::test]
+    async fn api_forge_branch_logs_keeps_run_metadata_when_prepared_outputs_are_invalid() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let branch = store
+            .upsert_branch_record(&branch_upsert_input(
+                "feature/api-pikaci-invalid-prepared",
+                "head-pikaci-invalid-prepared",
+            ))
+            .expect("insert branch");
+        store
+            .queue_branch_ci_run_for_head(
+                branch.branch_id,
+                "head-pikaci-invalid-prepared",
+                &[crate::ci_manifest::ForgeLane {
+                    id: "pika-rust".to_string(),
+                    title: "check-pika-rust".to_string(),
+                    entrypoint: "./scripts/pikaci-staged-linux-remote.sh run pre-merge-pika-rust"
+                        .to_string(),
+                    command: vec![
+                        "./scripts/pikaci-staged-linux-remote.sh".to_string(),
+                        "run".to_string(),
+                        "pre-merge-pika-rust".to_string(),
+                    ],
+                    paths: vec![],
+                    concurrency_group: None,
+                    staged_linux_target: Some("pre-merge-pika-rust".to_string()),
+                }],
+            )
+            .expect("queue ci");
+        let job = store
+            .claim_pending_branch_ci_lane_runs(1, 120)
+            .expect("claim lane")
+            .into_iter()
+            .next()
+            .expect("lane");
+        store
+            .record_branch_ci_lane_pikaci_run(
+                job.lane_run_id,
+                job.claim_token,
+                "pikaci-run-invalid-prepared",
+                Some("pre-merge-pika-rust"),
+            )
+            .expect("record pikaci run");
+        store
+            .finish_branch_ci_lane_run(job.lane_run_id, job.claim_token, "success", "ok")
+            .expect("finish lane");
+
+        let config = forge_test_config_with_git_dir(&dir.path().join("pika.git"));
+        write_pikaci_run_fixture(&config, "pikaci-run-invalid-prepared");
+        let forge_repo = config.effective_forge_repo().expect("forge repo");
+        let prepared_outputs_path = crate::forge::pikaci_state_root(&forge_repo)
+            .join("runs")
+            .join("pikaci-run-invalid-prepared")
+            .join("prepared-outputs.json");
+        fs::write(&prepared_outputs_path, "{not valid json").expect("corrupt prepared outputs");
+        let headers = trusted_headers(&store, TRUSTED_NPUB);
+        let state = test_state(store, config);
+
+        let response = api_forge_branch_logs_handler(
+            State(state),
+            Path(branch.branch_id),
+            Query(ForgeBranchLogsQuery {
+                lane: Some("pika-rust".to_string()),
+                lane_run_id: None,
+            }),
+            headers,
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("parse json");
+        assert_eq!(json["pikaci_run"]["run_id"], "pikaci-run-invalid-prepared");
+        assert_eq!(json["pikaci_log_metadata"]["jobs"][0]["id"], "job-one");
+        assert!(json["pikaci_prepared_outputs"].is_null());
     }
 
     #[tokio::test]

@@ -1659,6 +1659,14 @@ pub struct RunLogsMetadata {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RunBundle {
+    pub run: RunRecord,
+    pub logs: RunLogsMetadata,
+    #[serde(default)]
+    pub prepared_outputs: Option<PreparedOutputsRecord>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum RunLifecycleEvent {
     RunStarted {

@@ -33,8 +33,8 @@ use crate::model::{
     PreparedOutputHandoffProtocol, PreparedOutputInvocationMode,
     PreparedOutputLauncherTransportMode, PreparedOutputPayloadManifestRecord,
     PreparedOutputRemoteExposureRequest, PreparedOutputResidency, PreparedOutputsRecord,
-    RealizedPreparedOutputRecord, RunLifecycleEvent, RunLogsMetadata, RunPlanRecord, RunRecord,
-    RunStatus, RunnerKind, StagedLinuxRustLane, StagedLinuxRustTarget,
+    RealizedPreparedOutputRecord, RunBundle, RunLifecycleEvent, RunLogsMetadata, RunPlanRecord,
+    RunRecord, RunStatus, RunnerKind, StagedLinuxRustLane, StagedLinuxRustTarget,
 };
 use crate::snapshot::{
     SnapshotProfile, compute_source_fingerprint_with_profile, create_snapshot_with_profile,
@@ -874,21 +874,7 @@ pub fn load_logs_metadata(
     job_id: Option<&str>,
 ) -> anyhow::Result<RunLogsMetadata> {
     let run = load_run_record(state_root, run_id)?;
-    let jobs = if let Some(job_id) = job_id {
-        let job = run
-            .jobs
-            .iter()
-            .find(|job| job.id == job_id)
-            .ok_or_else(|| anyhow!("job `{job_id}` not found in run `{run_id}`"))?;
-        vec![job_log_metadata(job)]
-    } else {
-        run.jobs.iter().map(job_log_metadata).collect()
-    };
-    Ok(RunLogsMetadata {
-        run_id: run.run_id,
-        status: run.status,
-        jobs,
-    })
+    run_logs_metadata_for_run(&run, job_id)
 }
 
 pub fn load_prepared_outputs_record(
@@ -896,8 +882,17 @@ pub fn load_prepared_outputs_record(
     run_id: &str,
 ) -> anyhow::Result<Option<PreparedOutputsRecord>> {
     let run = load_run_record(state_root, run_id)?;
+    load_prepared_outputs_record_for_run(state_root, run_id, &run)
+}
+
+fn load_prepared_outputs_record_for_run(
+    state_root: &Path,
+    run_id: &str,
+    run: &RunRecord,
+) -> anyhow::Result<Option<PreparedOutputsRecord>> {
     let path = run
         .prepared_outputs_path
+        .as_ref()
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             state_root
@@ -922,6 +917,23 @@ pub fn load_prepared_outputs(
         .ok_or_else(|| anyhow!("prepared outputs not found for run `{run_id}`"))
 }
 
+pub fn load_run_bundle(state_root: &Path, run_id: &str) -> anyhow::Result<RunBundle> {
+    let run = load_run_record(state_root, run_id)?;
+    let logs = run_logs_metadata_for_run(&run, None)?;
+    let prepared_outputs = match load_prepared_outputs_record_for_run(state_root, run_id, &run) {
+        Ok(record) => record,
+        Err(err) => {
+            eprintln!("warning: failed to load prepared outputs for run `{run_id}`: {err}");
+            None
+        }
+    };
+    Ok(RunBundle {
+        run,
+        logs,
+        prepared_outputs,
+    })
+}
+
 const PREPARED_OUTPUT_PAYLOAD_MANIFEST_RELATIVE_PATH: &str = "share/pikaci/payload-manifest.json";
 
 fn load_prepared_output_payload_manifest(
@@ -935,6 +947,27 @@ fn load_prepared_output_payload_manifest(
     let manifest =
         serde_json::from_slice(&bytes).with_context(|| format!("decode {}", path.display()))?;
     Ok(Some(manifest))
+}
+
+fn run_logs_metadata_for_run(
+    run: &RunRecord,
+    job_id: Option<&str>,
+) -> anyhow::Result<RunLogsMetadata> {
+    let jobs = if let Some(job_id) = job_id {
+        let job = run
+            .jobs
+            .iter()
+            .find(|job| job.id == job_id)
+            .ok_or_else(|| anyhow!("job `{job_id}` not found in run `{}`", run.run_id))?;
+        vec![job_log_metadata(job)]
+    } else {
+        run.jobs.iter().map(job_log_metadata).collect()
+    };
+    Ok(RunLogsMetadata {
+        run_id: run.run_id.clone(),
+        status: run.status,
+        jobs,
+    })
 }
 
 fn load_remote_prepared_output_payload_manifest(
@@ -4863,6 +4896,187 @@ mod tests {
             loaded.outputs[0].realized_path,
             "/nix/store/workspace-build"
         );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn load_run_bundle_reads_run_logs_and_prepared_outputs() {
+        let root =
+            std::env::temp_dir().join(format!("pikaci-run-bundle-test-{}", uuid::Uuid::new_v4()));
+        let run_dir = root.join("runs").join("20260319T000000Z-abcd1234");
+        let job_dir = run_dir.join("jobs").join("job-one");
+        let prepared_outputs_path = run_dir.join("prepared-outputs.json");
+        fs::create_dir_all(&job_dir).expect("create job dir");
+        let host_log_path = job_dir.join("host.log");
+        let guest_log_path = job_dir.join("guest.log");
+        fs::write(&host_log_path, "host\n").expect("write host log");
+        fs::write(&guest_log_path, "guest\n").expect("write guest log");
+        write_run_record(
+            &run_dir,
+            &RunRecord {
+                run_id: "20260319T000000Z-abcd1234".to_string(),
+                status: RunStatus::Passed,
+                rerun_of: None,
+                target_id: Some("pre-merge-pika-rust".to_string()),
+                target_description: Some("test".to_string()),
+                source_root: "/tmp/source".to_string(),
+                snapshot_dir: "/tmp/snapshot".to_string(),
+                git_head: None,
+                git_dirty: None,
+                created_at: "2026-03-19T00:00:00Z".to_string(),
+                finished_at: Some("2026-03-19T00:00:05Z".to_string()),
+                plan_path: None,
+                prepared_outputs_path: None,
+                prepared_output_consumer: None,
+                prepared_output_mode: None,
+                prepared_output_invocation_mode: None,
+                prepared_output_invocation_wrapper_program: None,
+                prepared_output_launcher_transport_mode: None,
+                prepared_output_launcher_transport_program: None,
+                prepared_output_launcher_transport_host: None,
+                prepared_output_launcher_transport_remote_launcher_program: None,
+                prepared_output_launcher_transport_remote_helper_program: None,
+                prepared_output_launcher_transport_remote_work_dir: None,
+                changed_files: vec![],
+                filters: vec![],
+                message: None,
+                prepare_timings: vec![],
+                jobs: vec![JobRecord {
+                    id: "job-one".to_string(),
+                    description: "job".to_string(),
+                    status: RunStatus::Passed,
+                    executor: "host_local".to_string(),
+                    plan_node_id: None,
+                    timeout_secs: 30,
+                    host_log_path: host_log_path.display().to_string(),
+                    guest_log_path: guest_log_path.display().to_string(),
+                    started_at: "2026-03-19T00:00:00Z".to_string(),
+                    finished_at: Some("2026-03-19T00:00:05Z".to_string()),
+                    exit_code: Some(0),
+                    message: None,
+                    pre_execution_prepare_duration_ms: None,
+                    remote_linux_vm_execution: None,
+                }],
+            },
+        )
+        .expect("write run record");
+        write_json(
+            prepared_outputs_path,
+            &PreparedOutputsRecord {
+                schema_version: 1,
+                outputs: vec![RealizedPreparedOutputRecord {
+                    node_id: "prepare-pika-core-linux-rust-workspace-build".to_string(),
+                    installable: "path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild".to_string(),
+                    output_name: "ci.x86_64-linux.workspaceBuild".to_string(),
+                    protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+                    residency: PreparedOutputResidency::LocalAuthoritative,
+                    consumer: PreparedOutputConsumerKind::HostLocalSymlinkMountsV1,
+                    realized_path: "/nix/store/workspace-build".to_string(),
+                    consumer_request_path: None,
+                    consumer_result_path: None,
+                    consumer_launch_request_path: None,
+                    consumer_transport_request_path: None,
+                    exposures: vec![],
+                    requested_exposures: vec![],
+                    payload: None,
+                }],
+            },
+        )
+        .expect("write prepared outputs");
+
+        let bundle =
+            super::load_run_bundle(&root, "20260319T000000Z-abcd1234").expect("load bundle");
+
+        assert_eq!(bundle.run.run_id, "20260319T000000Z-abcd1234");
+        assert_eq!(bundle.logs.run_id, "20260319T000000Z-abcd1234");
+        assert_eq!(bundle.logs.jobs.len(), 1);
+        assert!(bundle.logs.jobs[0].host_log_exists);
+        assert!(bundle.logs.jobs[0].guest_log_exists);
+        let prepared_outputs = bundle
+            .prepared_outputs
+            .expect("prepared outputs should be present");
+        assert_eq!(prepared_outputs.schema_version, 1);
+        assert_eq!(prepared_outputs.outputs.len(), 1);
+        assert_eq!(
+            prepared_outputs.outputs[0].realized_path,
+            "/nix/store/workspace-build"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn load_run_bundle_treats_invalid_prepared_outputs_as_best_effort() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-run-bundle-best-effort-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let run_dir = root.join("runs").join("20260319T000000Z-abcd1234");
+        let job_dir = run_dir.join("jobs").join("job-one");
+        let prepared_outputs_path = run_dir.join("prepared-outputs.json");
+        fs::create_dir_all(&job_dir).expect("create job dir");
+        let host_log_path = job_dir.join("host.log");
+        let guest_log_path = job_dir.join("guest.log");
+        fs::write(&host_log_path, "host\n").expect("write host log");
+        fs::write(&guest_log_path, "guest\n").expect("write guest log");
+        write_run_record(
+            &run_dir,
+            &RunRecord {
+                run_id: "20260319T000000Z-abcd1234".to_string(),
+                status: RunStatus::Passed,
+                rerun_of: None,
+                target_id: Some("pre-merge-pika-rust".to_string()),
+                target_description: Some("test".to_string()),
+                source_root: "/tmp/source".to_string(),
+                snapshot_dir: "/tmp/snapshot".to_string(),
+                git_head: None,
+                git_dirty: None,
+                created_at: "2026-03-19T00:00:00Z".to_string(),
+                finished_at: Some("2026-03-19T00:00:05Z".to_string()),
+                plan_path: None,
+                prepared_outputs_path: None,
+                prepared_output_consumer: None,
+                prepared_output_mode: None,
+                prepared_output_invocation_mode: None,
+                prepared_output_invocation_wrapper_program: None,
+                prepared_output_launcher_transport_mode: None,
+                prepared_output_launcher_transport_program: None,
+                prepared_output_launcher_transport_host: None,
+                prepared_output_launcher_transport_remote_launcher_program: None,
+                prepared_output_launcher_transport_remote_helper_program: None,
+                prepared_output_launcher_transport_remote_work_dir: None,
+                changed_files: vec![],
+                filters: vec![],
+                message: None,
+                prepare_timings: vec![],
+                jobs: vec![JobRecord {
+                    id: "job-one".to_string(),
+                    description: "job".to_string(),
+                    status: RunStatus::Passed,
+                    executor: "host_local".to_string(),
+                    plan_node_id: None,
+                    timeout_secs: 30,
+                    host_log_path: host_log_path.display().to_string(),
+                    guest_log_path: guest_log_path.display().to_string(),
+                    started_at: "2026-03-19T00:00:00Z".to_string(),
+                    finished_at: Some("2026-03-19T00:00:05Z".to_string()),
+                    exit_code: Some(0),
+                    message: None,
+                    pre_execution_prepare_duration_ms: None,
+                    remote_linux_vm_execution: None,
+                }],
+            },
+        )
+        .expect("write run record");
+        fs::write(&prepared_outputs_path, "{not valid json").expect("write invalid record");
+
+        let bundle =
+            super::load_run_bundle(&root, "20260319T000000Z-abcd1234").expect("load bundle");
+
+        assert_eq!(bundle.run.run_id, "20260319T000000Z-abcd1234");
+        assert_eq!(bundle.logs.jobs.len(), 1);
+        assert!(bundle.prepared_outputs.is_none());
 
         let _ = fs::remove_dir_all(&root);
     }

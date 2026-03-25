@@ -47,7 +47,6 @@ pub(super) fn build_remote_incus_guest_request(job: &JobSpec) -> IncusGuestReque
         timeout_secs: job.timeout_secs,
         run_as_root,
         workspace_dir: REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH.to_string(),
-        artifacts_dir: REMOTE_LINUX_VM_INCUS_ARTIFACTS_DIR.to_string(),
         cargo_home_dir: REMOTE_LINUX_VM_INCUS_CARGO_HOME_DIR.to_string(),
         target_dir: REMOTE_LINUX_VM_INCUS_TARGET_DIR.to_string(),
         xdg_state_home_dir: REMOTE_LINUX_VM_INCUS_XDG_STATE_HOME_DIR.to_string(),
@@ -346,10 +345,14 @@ pub(super) fn collect_remote_incus_artifacts(
     remote: &RemoteIncusContext,
     ctx: &HostContext,
 ) -> anyhow::Result<()> {
-    copy_remote_incus_file_to_local(remote, "/artifacts/guest.log", &ctx.guest_log_path)?;
     copy_remote_incus_file_to_local(
         remote,
-        "/artifacts/result.json",
+        &format!("{}/guest.log", REMOTE_LINUX_VM_INCUS_ARTIFACTS_DIR),
+        &ctx.guest_log_path,
+    )?;
+    copy_remote_incus_file_to_local(
+        remote,
+        &format!("{}/result.json", REMOTE_LINUX_VM_INCUS_ARTIFACTS_DIR),
         &ctx.job_dir.join("artifacts/result.json"),
     )
 }
@@ -550,9 +553,27 @@ fn snapshot_mount_record() -> PreparedOutputPayloadMountRecord {
     }
 }
 
+fn snapshot_mount_device_prefix() -> &'static str {
+    "workspace-snapshot"
+}
+
+fn add_snapshot_mount(remote: &RemoteIncusContext, log_path: &Path) -> anyhow::Result<()> {
+    add_declared_payload_mount(
+        remote,
+        &remote.shared.remote_snapshot_dir,
+        snapshot_mount_device_prefix(),
+        snapshot_mount_record(),
+        log_path,
+    )
+}
+
 #[cfg(test)]
-pub(super) fn build_snapshot_mount_for_test() -> PreparedOutputPayloadMountRecord {
-    snapshot_mount_record()
+pub(super) fn build_snapshot_mount_plan_for_test(
+    output_root: &Path,
+) -> (String, PathBuf, PreparedOutputPayloadMountRecord) {
+    let mount = snapshot_mount_record();
+    let source = resolve_payload_mount_source(output_root, &mount.relative_path);
+    (snapshot_mount_device_prefix().to_string(), source, mount)
 }
 
 fn declared_payload_mount_device_name(device_prefix: &str, mount_name: &str) -> String {
@@ -710,13 +731,7 @@ fn configure_remote_incus_devices(
     if job.writable_workspace {
         bail!("remote Linux VM backend `incus` does not support writable workspace jobs");
     }
-    add_declared_payload_mount(
-        remote,
-        &remote.shared.remote_snapshot_dir,
-        "workspace-snapshot",
-        snapshot_mount_record(),
-        log_path,
-    )?;
+    add_snapshot_mount(remote, log_path)?;
     if job.staged_linux_rust_lane().is_some() {
         add_declared_payload_mounts(
             remote,

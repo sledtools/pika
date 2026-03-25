@@ -73,7 +73,6 @@ struct IncusGuestRequest {
     timeout_secs: u64,
     run_as_root: bool,
     workspace_dir: String,
-    artifacts_dir: String,
     cargo_home_dir: String,
     target_dir: String,
     xdg_state_home_dir: String,
@@ -3244,10 +3243,10 @@ mod tests {
 
     use super::{
         GuestFlakePaths, HostContext, HostLocalCommandMode, HostLocalDevEnvState,
-        HostLocalEnvironmentRefresh, REMOTE_LINUX_VM_INCUS_ARTIFACTS_DIR,
-        REMOTE_LINUX_VM_INCUS_CARGO_HOME_DIR, REMOTE_LINUX_VM_INCUS_GUEST_REQUEST_PATH,
-        REMOTE_LINUX_VM_INCUS_NON_ROOT_HOME_DIR, REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH,
-        REMOTE_LINUX_VM_INCUS_TARGET_DIR, REMOTE_LINUX_VM_INCUS_WORKSPACE_BUILD_MOUNT_PATH,
+        HostLocalEnvironmentRefresh, REMOTE_LINUX_VM_INCUS_CARGO_HOME_DIR,
+        REMOTE_LINUX_VM_INCUS_GUEST_REQUEST_PATH, REMOTE_LINUX_VM_INCUS_NON_ROOT_HOME_DIR,
+        REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH, REMOTE_LINUX_VM_INCUS_TARGET_DIR,
+        REMOTE_LINUX_VM_INCUS_WORKSPACE_BUILD_MOUNT_PATH,
         REMOTE_LINUX_VM_INCUS_WORKSPACE_DEPS_MOUNT_PATH, REMOTE_LINUX_VM_INCUS_XDG_STATE_HOME_DIR,
         REMOTE_MICROVM_VIRTIOFS_SOCKETS, RemoteIncusContext, RemoteLinuxVmSharedContext,
         RemoteMicrovmContext, attach_remote_linux_vm_execution,
@@ -3557,7 +3556,6 @@ mod tests {
             request.workspace_dir,
             REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH
         );
-        assert_eq!(request.artifacts_dir, REMOTE_LINUX_VM_INCUS_ARTIFACTS_DIR);
         assert_eq!(request.cargo_home_dir, REMOTE_LINUX_VM_INCUS_CARGO_HOME_DIR);
         assert_eq!(request.target_dir, REMOTE_LINUX_VM_INCUS_TARGET_DIR);
         assert_eq!(
@@ -3662,7 +3660,11 @@ mod tests {
 
     #[test]
     fn remote_linux_incus_snapshot_mount_uses_declared_mount_contract() {
-        let mount = incus::build_snapshot_mount_for_test();
+        let snapshot_root = Path::new("/var/tmp/pikaci/runs/run/snapshot");
+        let (device_prefix, source, mount) =
+            incus::build_snapshot_mount_plan_for_test(snapshot_root);
+        assert_eq!(device_prefix, "workspace-snapshot");
+        assert_eq!(source, snapshot_root);
         assert_eq!(mount.name, "workspace_snapshot_root");
         assert_eq!(mount.relative_path, ".");
         assert_eq!(mount.guest_path, REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH);

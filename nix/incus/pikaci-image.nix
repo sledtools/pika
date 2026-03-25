@@ -86,56 +86,7 @@ let
         print("usage: pikaci-incus-run <request-path>", file=sys.stderr)
         raise SystemExit(2)
 
-    try:
-        request = json.loads(request_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        fallback_artifacts_dir = pathlib.Path("/artifacts")
-        fallback_artifacts_dir.mkdir(parents=True, exist_ok=True)
-        print(
-            f"[pikaci] failed to load Incus guest request {request_path}: {exc}",
-            file=sys.stderr,
-            flush=True,
-        )
-        write_result(fallback_artifacts_dir, 2, f"failed to load guest request: {exc}")
-        raise SystemExit(2)
-
-    try:
-        if request.get("schema_version") != 1:
-            raise ValueError(
-                f"unsupported Incus guest request schema_version={request.get('schema_version')!r}"
-            )
-
-        command = request.get("command")
-        timeout_secs = request.get("timeout_secs")
-        run_as_root = request.get("run_as_root")
-        workspace_dir = validate_absolute_dir(request.get("workspace_dir"), "workspace_dir")
-        artifacts_dir = validate_absolute_dir(request.get("artifacts_dir"), "artifacts_dir")
-        cargo_home_dir = validate_absolute_dir(request.get("cargo_home_dir"), "cargo_home_dir")
-        target_dir = validate_absolute_dir(request.get("target_dir"), "target_dir")
-        xdg_state_home_dir = validate_absolute_dir(
-            request.get("xdg_state_home_dir"), "xdg_state_home_dir"
-        )
-        home_dir = validate_absolute_dir(request.get("home_dir"), "home_dir")
-
-        if not isinstance(command, str) or not command:
-            raise ValueError(
-                "Incus guest request is missing non-empty string field `command`"
-            )
-        if isinstance(timeout_secs, bool) or not isinstance(timeout_secs, int) or timeout_secs <= 0:
-            raise ValueError(
-                "Incus guest request is missing positive integer field `timeout_secs`"
-            )
-        if not isinstance(run_as_root, bool):
-            raise ValueError(
-                "Incus guest request is missing boolean field `run_as_root`"
-            )
-    except ValueError as exc:
-        fallback_artifacts_dir = pathlib.Path("/artifacts")
-        fallback_artifacts_dir.mkdir(parents=True, exist_ok=True)
-        print(f"[pikaci] {exc}", file=sys.stderr, flush=True)
-        write_result(fallback_artifacts_dir, 2, str(exc))
-        raise SystemExit(2)
-
+    artifacts_dir = pathlib.Path("/artifacts")
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     guest_log_path = artifacts_dir / "guest.log"
     with guest_log_path.open("a", encoding="utf-8") as log_file:
@@ -145,44 +96,75 @@ let
         )
         print(boot_line, flush=True)
         print(boot_line, file=log_file, flush=True)
-        ensure_owned_dir(pathlib.Path("/home/pikaci"), PIKACI_UID, USERS_GID, log_file)
-        ensure_owned_dir(artifacts_dir, PIKACI_UID, USERS_GID, log_file)
-        ensure_owned_dir(cargo_home_dir, PIKACI_UID, USERS_GID, log_file)
-        ensure_owned_dir(target_dir, PIKACI_UID, USERS_GID, log_file)
-        ensure_owned_dir(xdg_state_home_dir, PIKACI_UID, USERS_GID, log_file)
-
-        child_env = os.environ.copy()
-        child_env["PATH"] = f"{SYSTEM_BIN}:{child_env.get('PATH', \"\")}"
-        child_env["CARGO_TERM_COLOR"] = "never"
-        child_env["CARGO_HOME"] = str(cargo_home_dir)
-        child_env["CARGO_TARGET_DIR"] = str(target_dir)
-        child_env["CARGO_INCREMENTAL"] = "0"
-        child_env["XDG_CACHE_HOME"] = str(cargo_home_dir / "xdg-cache")
-        child_env["XDG_STATE_HOME"] = str(xdg_state_home_dir)
-        child_env["PGSYSCONFDIR"] = "/run/current-system/sw"
-        child_env["PGSHAREDIR"] = "/run/current-system/sw/share/postgresql"
-        child_env["SSL_CERT_FILE"] = "/etc/ssl/certs/ca-bundle.crt"
-        child_env["NIX_SSL_CERT_FILE"] = "/etc/ssl/certs/ca-bundle.crt"
-        pathlib.Path(child_env["XDG_CACHE_HOME"]).mkdir(parents=True, exist_ok=True)
-        pathlib.Path(child_env["XDG_STATE_HOME"]).mkdir(parents=True, exist_ok=True)
-
-        command_prefix = [
-            "timeout",
-            f"{timeout_secs}s",
-            "bash",
-            "--noprofile",
-            "--norc",
-            "-lc",
-            command,
-        ]
-        if run_as_root:
-            child_env["HOME"] = str(home_dir)
-            child_command = command_prefix
-        else:
-            child_env["HOME"] = str(home_dir)
-            child_command = ["runuser", "-u", "pikaci", "-m", "--", *command_prefix]
-
         try:
+            request = json.loads(request_path.read_text(encoding="utf-8"))
+            if request.get("schema_version") != 1:
+                raise ValueError(
+                    f"unsupported Incus guest request schema_version={request.get('schema_version')!r}"
+                )
+
+            command = request.get("command")
+            timeout_secs = request.get("timeout_secs")
+            run_as_root = request.get("run_as_root")
+            workspace_dir = validate_absolute_dir(request.get("workspace_dir"), "workspace_dir")
+            cargo_home_dir = validate_absolute_dir(request.get("cargo_home_dir"), "cargo_home_dir")
+            target_dir = validate_absolute_dir(request.get("target_dir"), "target_dir")
+            xdg_state_home_dir = validate_absolute_dir(
+                request.get("xdg_state_home_dir"), "xdg_state_home_dir"
+            )
+            home_dir = validate_absolute_dir(request.get("home_dir"), "home_dir")
+
+            if not isinstance(command, str) or not command:
+                raise ValueError(
+                    "Incus guest request is missing non-empty string field `command`"
+                )
+            if isinstance(timeout_secs, bool) or not isinstance(timeout_secs, int) or timeout_secs <= 0:
+                raise ValueError(
+                    "Incus guest request is missing positive integer field `timeout_secs`"
+                )
+            if not isinstance(run_as_root, bool):
+                raise ValueError(
+                    "Incus guest request is missing boolean field `run_as_root`"
+                )
+
+            ensure_owned_dir(pathlib.Path("/home/pikaci"), PIKACI_UID, USERS_GID, log_file)
+            ensure_owned_dir(artifacts_dir, PIKACI_UID, USERS_GID, log_file)
+            ensure_owned_dir(cargo_home_dir, PIKACI_UID, USERS_GID, log_file)
+            ensure_owned_dir(target_dir, PIKACI_UID, USERS_GID, log_file)
+            ensure_owned_dir(xdg_state_home_dir, PIKACI_UID, USERS_GID, log_file)
+
+            child_env = os.environ.copy()
+            current_path = child_env.get("PATH") or ""
+            child_env["PATH"] = f"{SYSTEM_BIN}:{current_path}"
+            child_env["CARGO_TERM_COLOR"] = "never"
+            child_env["CARGO_HOME"] = str(cargo_home_dir)
+            child_env["CARGO_TARGET_DIR"] = str(target_dir)
+            child_env["CARGO_INCREMENTAL"] = "0"
+            child_env["XDG_CACHE_HOME"] = str(cargo_home_dir / "xdg-cache")
+            child_env["XDG_STATE_HOME"] = str(xdg_state_home_dir)
+            child_env["PGSYSCONFDIR"] = "/run/current-system/sw"
+            child_env["PGSHAREDIR"] = "/run/current-system/sw/share/postgresql"
+            child_env["SSL_CERT_FILE"] = "/etc/ssl/certs/ca-bundle.crt"
+            child_env["NIX_SSL_CERT_FILE"] = "/etc/ssl/certs/ca-bundle.crt"
+            pathlib.Path(child_env["XDG_CACHE_HOME"]).mkdir(parents=True, exist_ok=True)
+            pathlib.Path(child_env["XDG_STATE_HOME"]).mkdir(parents=True, exist_ok=True)
+
+            command_prefix = [
+                "timeout",
+                f"{timeout_secs}s",
+                "bash",
+                "--noprofile",
+                "--norc",
+                "-lc",
+                command,
+            ]
+            if run_as_root:
+                child_env["HOME"] = str(home_dir)
+                child_command = command_prefix
+            else:
+                child_env["HOME"] = str(home_dir)
+                child_command = ["runuser", "-u", "pikaci", "-m", "--", *command_prefix]
+
             completed = subprocess.Popen(
                 child_command,
                 cwd=workspace_dir,
@@ -203,16 +185,16 @@ let
             raise SystemExit(exit_code)
         except Exception as exc:
             print(
-                f"[pikaci] failed to launch or monitor guest command: {exc}",
+                f"[pikaci] Incus guest bootstrap failed: {exc}",
                 file=sys.stderr,
                 flush=True,
             )
             print(
-                f"[pikaci] failed to launch or monitor guest command: {exc}",
+                f"[pikaci] Incus guest bootstrap failed: {exc}",
                 file=log_file,
                 flush=True,
             )
-            write_result(artifacts_dir, 2, f"failed to launch or monitor guest command: {exc}")
+            write_result(artifacts_dir, 2, f"Incus guest bootstrap failed: {exc}")
             raise SystemExit(2)
   '';
 in

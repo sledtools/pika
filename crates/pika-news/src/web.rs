@@ -1331,6 +1331,10 @@ pub async fn serve(
         .route("/news/api/inbox", get(api_inbox_list_handler))
         .route("/news/api/inbox/count", get(api_inbox_count_handler))
         .route("/news/api/inbox/dismiss", post(api_inbox_dismiss_handler))
+        .route(
+            "/news/api/inbox/reviewed/:pr_id",
+            post(api_inbox_mark_reviewed_handler),
+        )
         .route("/news/api/me", get(api_me_handler))
         .route(
             "/news/api/forge/branch/resolve",
@@ -4765,18 +4769,27 @@ async fn api_inbox_list_handler(
         } else {
             store.list_inbox(&npub, 50, offset)?
         };
-        let count = if forge_mode {
+        let review_needed = if forge_mode {
             store.branch_inbox_count(&npub)?
         } else {
             store.inbox_count(&npub)?
         };
-        Ok::<_, anyhow::Error>((items, count))
+        let total = if forge_mode {
+            store.branch_inbox_total(&npub)?
+        } else {
+            review_needed
+        };
+        Ok::<_, anyhow::Error>((items, total, review_needed))
     })
     .await
     {
-        Ok(Ok((items, total))) => {
-            Json(serde_json::json!({"items": items, "total": total, "page": page})).into_response()
-        }
+        Ok(Ok((items, total, review_needed))) => Json(serde_json::json!({
+            "items": items,
+            "total": total,
+            "review_needed": review_needed,
+            "page": page
+        }))
+        .into_response(),
         Ok(Err(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),
@@ -4876,6 +4889,40 @@ async fn api_inbox_dismiss_handler(
     }
 }
 
+async fn api_inbox_mark_reviewed_handler(
+    State(state): State<Arc<AppState>>,
+    Path(review_id): Path<i64>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let forge_mode = state.config.effective_forge_repo().is_some();
+    let npub = match require_inbox_auth(&state.auth, &headers, forge_mode) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+    let store = state.store.clone();
+    match tokio::task::spawn_blocking(move || {
+        if forge_mode {
+            store.mark_branch_inbox_reviewed(&npub, review_id)
+        } else {
+            Ok(0)
+        }
+    })
+    .await
+    {
+        Ok(Ok(count)) => Json(serde_json::json!({"marked": count})).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
 async fn api_inbox_neighbors_handler(
     State(state): State<Arc<AppState>>,
     Path(review_id): Path<i64>,
@@ -4958,12 +5005,12 @@ mod tests {
         api_forge_branch_detail_handler, api_forge_branch_logs_handler,
         api_forge_branch_resolve_handler, api_forge_pikaci_logs_handler,
         api_forge_pikaci_prepared_outputs_handler, api_forge_pikaci_run_handler,
-        api_inbox_count_handler, api_inbox_list_handler, auth_challenge_handler,
-        branch_ci_stream_handler, build_mirror_health_status, collect_forge_startup_issues,
-        current_forge_runtime_issues, fail_branch_ci_lane_handler, fail_nightly_lane_handler,
-        inbox_review_handler, load_branch_ci_live_snapshot, load_nightly_live_snapshot,
-        markdown_to_safe_html, next_branch_ci_live_snapshot, next_nightly_live_snapshot,
-        nightly_stream_handler, recover_branch_ci_run_handler,
+        api_inbox_count_handler, api_inbox_list_handler, api_inbox_mark_reviewed_handler,
+        auth_challenge_handler, branch_ci_stream_handler, build_mirror_health_status,
+        collect_forge_startup_issues, current_forge_runtime_issues, fail_branch_ci_lane_handler,
+        fail_nightly_lane_handler, inbox_review_handler, load_branch_ci_live_snapshot,
+        load_nightly_live_snapshot, markdown_to_safe_html, next_branch_ci_live_snapshot,
+        next_nightly_live_snapshot, nightly_stream_handler, recover_branch_ci_run_handler,
         render_branch_ci_template_with_notices, render_detail_template,
         render_detail_template_with_notices, render_nightly_template, rerun_branch_ci_lane_handler,
         rerun_nightly_lane_handler, should_backfill_managed_allowlist_entry, verify_signature,
@@ -5664,6 +5711,64 @@ mod tests {
             .await
             .into_response();
         assert_eq!(count_response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn forge_inbox_mark_reviewed_updates_review_needed_count() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let branch = store
+            .upsert_branch_record(&branch_upsert_input("feature/review-progress", "head-1"))
+            .expect("insert branch");
+        let artifact_id = store
+            .with_connection(|conn| {
+                conn.query_row(
+                    "SELECT id
+                     FROM branch_artifact_versions
+                     WHERE branch_id = ?1
+                     ORDER BY version DESC
+                     LIMIT 1",
+                    rusqlite::params![branch.branch_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("branch artifact id");
+        let reviewer = TRUSTED_NPUB;
+        store
+            .mark_branch_generation_ready(
+                artifact_id,
+                r#"{"executive_summary":"ok","media_links":[],"steps":[]}"#,
+                "<p>ok</p>",
+                "head-1",
+                "diff",
+            )
+            .expect("mark ready");
+        store
+            .populate_branch_inbox(artifact_id, &[reviewer.to_string()])
+            .expect("populate branch inbox");
+
+        let state = test_state(store.clone(), forge_test_config());
+        let headers = trusted_headers(&store, reviewer);
+        let response = api_inbox_mark_reviewed_handler(
+            State(state.clone()),
+            Path(branch.branch_id),
+            headers.clone(),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let count_response = api_inbox_count_handler(State(state), headers)
+            .await
+            .into_response();
+        assert_eq!(count_response.status(), StatusCode::OK);
+        let body = to_bytes(count_response.into_body(), usize::MAX)
+            .await
+            .expect("count body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("parse count json");
+        assert_eq!(json["count"], 0);
     }
 
     #[tokio::test]
@@ -7460,7 +7565,8 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
         assert!(detail_rendered.contains("feature/render-history"));
         assert!(detail_rendered.contains("Open CI Details"));
         assert!(!detail_rendered.contains("branch-ci-ok"));
-        assert!(detail_rendered.contains("Merge Commit"));
+        assert!(detail_rendered.contains("branch: merged"));
+        assert!(!detail_rendered.contains("Merge Into master"));
 
         let ci_rendered =
             render_branch_ci_template_with_notices(detail, ci_runs, Vec::new(), false)

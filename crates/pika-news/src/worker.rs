@@ -171,7 +171,14 @@ fn process_job(
     let tutorial_json =
         serde_json::to_string(&gen_output.tutorial).context("serialize tutorial JSON")?;
     store
-        .mark_branch_generation_ready(job.artifact_id, &tutorial_json, &html, &job.head_sha, &diff)
+        .mark_branch_generation_ready(
+            job.artifact_id,
+            &tutorial_json,
+            &html,
+            &job.head_sha,
+            &diff,
+            gen_output.session_id.as_deref(),
+        )
         .with_context(|| format!("mark branch artifact {} ready", job.artifact_id))?;
     populate_ready_branch_inbox(store, config, job.artifact_id)
         .with_context(|| format!("populate inbox for branch artifact {}", job.artifact_id))?;
@@ -297,6 +304,7 @@ mod tests {
                 "<p>ok</p>",
                 "head-1",
                 "diff",
+                None,
             )
             .expect("mark ready");
 

@@ -306,6 +306,7 @@ struct DetailTemplate {
     title: String,
     target_branch: String,
     branch_state: String,
+    merge_commit_sha: Option<String>,
     tutorial_status: String,
     ci_status: String,
     executive_html: Option<String>,
@@ -315,6 +316,7 @@ struct DetailTemplate {
     diff_json: Option<String>,
     branch_ci_summary_html: String,
     branch_ci_summary_enabled: bool,
+    branch_chat_ready: bool,
     review_mode: bool,
 }
 
@@ -1395,6 +1397,10 @@ pub async fn serve(
             "/news/pr/:pr_id/chat",
             get(chat_history_handler).post(chat_send_handler),
         )
+        .route(
+            "/news/branch/:branch_id/chat",
+            get(branch_chat_history_handler).post(branch_chat_send_handler),
+        )
         .route("/news/pr/:pr_id/regenerate", post(regenerate_handler))
         .route("/news/webhook", post(webhook_handler))
         .route("/news/llms.txt", get(llms_txt_handler))
@@ -2193,6 +2199,7 @@ fn render_detail_template_with_notices(
         title: record.title,
         target_branch: record.target_branch,
         branch_state: record.branch_state.clone(),
+        merge_commit_sha: record.merge_commit_sha,
         tutorial_status: record.tutorial_status,
         ci_status: record.ci_status,
         executive_html,
@@ -2210,6 +2217,7 @@ fn render_detail_template_with_notices(
         }),
         branch_ci_summary_html,
         branch_ci_summary_enabled,
+        branch_chat_ready: record.claude_session_id.is_some(),
         review_mode,
     })
 }
@@ -3895,6 +3903,71 @@ async fn chat_history_handler(
     }
 }
 
+async fn branch_chat_history_handler(
+    State(state): State<Arc<AppState>>,
+    Path(branch_id): Path<i64>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let npub = match require_chat_auth(&state.auth, &headers) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+
+    let store = state.store.clone();
+    let base_session_id = match tokio::task::spawn_blocking({
+        let store = store.clone();
+        move || store.get_branch_review_artifact_session_id(branch_id)
+    })
+    .await
+    {
+        Ok(Ok(Some(sid))) => sid,
+        Ok(Ok(None)) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "no chat session for this branch tutorial"})),
+            )
+                .into_response();
+        }
+        Ok(Err(e)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let result = tokio::task::spawn_blocking({
+        let store = store.clone();
+        let npub = npub.clone();
+        move || store.get_or_create_branch_review_chat_session(branch_id, &npub, &base_session_id)
+    })
+    .await;
+
+    match result {
+        Ok(Ok((_session_id, messages))) => {
+            Json(serde_json::json!({"messages": messages})).into_response()
+        }
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct ChatSendRequest {
     message: String,
@@ -4025,6 +4098,151 @@ async fn chat_send_handler(
                 move || {
                     let _ = store.update_chat_claude_session_id(session_id, &new_session_id);
                     let _ = store.append_chat_message(session_id, "assistant", &response_text);
+                }
+            })
+            .await;
+
+            Json(serde_json::json!({
+                "role": "assistant",
+                "content": response.text
+            }))
+            .into_response()
+        }
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("claude error: {}", e)})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn branch_chat_send_handler(
+    State(state): State<Arc<AppState>>,
+    Path(branch_id): Path<i64>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<ChatSendRequest>,
+) -> impl IntoResponse {
+    let npub = match require_chat_auth(&state.auth, &headers) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+
+    let store = state.store.clone();
+    let base_session_id = match tokio::task::spawn_blocking({
+        let store = store.clone();
+        move || store.get_branch_review_artifact_session_id(branch_id)
+    })
+    .await
+    {
+        Ok(Ok(Some(sid))) => sid,
+        Ok(Ok(None)) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "no chat session for this branch tutorial"})),
+            )
+                .into_response();
+        }
+        Ok(Err(e)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let (session_id, _messages) = match tokio::task::spawn_blocking({
+        let store = store.clone();
+        let npub = npub.clone();
+        move || store.get_or_create_branch_review_chat_session(branch_id, &npub, &base_session_id)
+    })
+    .await
+    {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let claude_session_id = match tokio::task::spawn_blocking({
+        let store = store.clone();
+        move || store.get_branch_review_chat_claude_session_id(session_id)
+    })
+    .await
+    {
+        Ok(Ok(sid)) => sid,
+        Ok(Err(e)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    if let Err(e) = tokio::task::spawn_blocking({
+        let store = store.clone();
+        let msg = body.message.clone();
+        move || store.append_branch_review_chat_message(session_id, "user", &msg)
+    })
+    .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response();
+    }
+
+    let message = body.message.clone();
+    let chat_result =
+        tokio::task::spawn_blocking(move || model::chat_with_session(&claude_session_id, &message))
+            .await;
+
+    match chat_result {
+        Ok(Ok(response)) => {
+            let new_session_id = response.session_id.clone();
+            let response_text = response.text.clone();
+            let _ = tokio::task::spawn_blocking({
+                let store = store.clone();
+                move || {
+                    let _ = store
+                        .update_branch_review_chat_claude_session_id(session_id, &new_session_id);
+                    let _ = store.append_branch_review_chat_message(
+                        session_id,
+                        "assistant",
+                        &response_text,
+                    );
                 }
             })
             .await;
@@ -5688,6 +5906,7 @@ mod tests {
                 "<p>ok</p>",
                 "head-1",
                 "diff",
+                None,
             )
             .expect("mark ready");
         store
@@ -5743,6 +5962,7 @@ mod tests {
                 "<p>ok</p>",
                 "head-1",
                 "diff",
+                None,
             )
             .expect("mark ready");
         store
@@ -5800,6 +6020,7 @@ mod tests {
                 "<p>ok</p>",
                 "head-1",
                 "diff",
+                None,
             )
             .expect("mark ready");
         store
@@ -7528,6 +7749,7 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
                 "<p>ok</p>",
                 &branch.head_sha,
                 "@@ -0,0 +1 @@",
+                None,
             )
             .expect("mark artifact ready");
 
@@ -7989,6 +8211,7 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
                 "<p>ok</p>",
                 "head-diff",
                 "diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n",
+                Some("branch-sid-ready"),
             )
             .expect("mark tutorial ready");
 
@@ -8011,6 +8234,60 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
             .find("class=\"panel diff-panel diff-row\"")
             .expect("diff row");
         assert!(diff_row > review_layout);
+    }
+
+    #[test]
+    fn branch_detail_renders_branch_discussion_sidebar_when_artifact_ready() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let branch = store
+            .upsert_branch_record(&branch_upsert_input(
+                "feature/discussion-sidebar",
+                "head-chat",
+            ))
+            .expect("insert branch");
+        let artifact_id: i64 = store
+            .with_connection(|conn| {
+                conn.query_row(
+                    "SELECT id
+                     FROM branch_artifact_versions
+                     WHERE branch_id = ?1
+                     ORDER BY version DESC
+                     LIMIT 1",
+                    rusqlite::params![branch.branch_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("branch artifact id");
+        store
+            .mark_branch_generation_ready(
+                artifact_id,
+                r#"{"executive_summary":"summary","steps":[],"media_links":[]}"#,
+                "<p>ok</p>",
+                "head-chat",
+                "diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n",
+                Some("branch-chat-session"),
+            )
+            .expect("mark tutorial ready");
+
+        let detail = store
+            .get_branch_detail(branch.branch_id)
+            .expect("branch detail")
+            .expect("detail");
+        let ci_runs = store
+            .list_branch_ci_runs(branch.branch_id, 8)
+            .expect("branch ci runs");
+        let rendered = render_detail_template(detail, ci_runs, false)
+            .expect("render detail template")
+            .render()
+            .expect("render detail html");
+
+        assert!(rendered.contains("Branch Review"));
+        assert!(rendered.contains("Discussion"));
+        assert!(rendered.contains("artifact ready"));
+        assert!(rendered.contains("Ask about this branch review"));
     }
 
     #[test]

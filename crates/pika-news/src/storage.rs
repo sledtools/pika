@@ -717,6 +717,97 @@ impl Store {
         })
     }
 
+    pub fn get_branch_review_artifact_session_id(
+        &self,
+        branch_id: i64,
+    ) -> anyhow::Result<Option<String>> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT claude_session_id
+                 FROM branch_artifact_versions
+                 WHERE branch_id = ?1 AND is_current = 1 AND status = 'ready'
+                 ORDER BY version DESC
+                 LIMIT 1",
+                params![branch_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("query branch review artifact session id")
+            .map(|opt| opt.flatten())
+        })
+    }
+
+    pub fn get_or_create_branch_review_chat_session(
+        &self,
+        branch_id: i64,
+        npub: &str,
+        claude_session_id: &str,
+    ) -> anyhow::Result<(i64, Vec<ChatMessage>)> {
+        self.with_connection(|conn| {
+            let artifact_id: i64 = conn
+                .query_row(
+                    "SELECT id
+                     FROM branch_artifact_versions
+                     WHERE branch_id = ?1 AND is_current = 1 AND status = 'ready'
+                     ORDER BY version DESC
+                     LIMIT 1",
+                    params![branch_id],
+                    |row| row.get(0),
+                )
+                .context("lookup branch review artifact for chat session")?;
+
+            let existing: Option<i64> = conn
+                .query_row(
+                    "SELECT id
+                     FROM branch_chat_sessions
+                     WHERE branch_artifact_id = ?1 AND npub = ?2",
+                    params![artifact_id, npub],
+                    |row| row.get(0),
+                )
+                .optional()
+                .context("lookup existing branch review chat session")?;
+
+            let session_id = match existing {
+                Some(id) => id,
+                None => {
+                    conn.execute(
+                        "INSERT INTO branch_chat_sessions(branch_artifact_id, npub, claude_session_id)
+                         VALUES (?1, ?2, ?3)",
+                        params![artifact_id, npub, claude_session_id],
+                    )
+                    .context("insert branch review chat session")?;
+                    conn.last_insert_rowid()
+                }
+            };
+
+            let mut stmt = conn
+                .prepare(
+                    "SELECT role, content, created_at
+                     FROM branch_chat_messages
+                     WHERE session_id = ?1
+                     ORDER BY created_at ASC",
+                )
+                .context("prepare branch review chat messages query")?;
+
+            let rows = stmt
+                .query_map(params![session_id], |row| {
+                    Ok(ChatMessage {
+                        role: row.get(0)?,
+                        content: row.get(1)?,
+                        created_at: row.get(2)?,
+                    })
+                })
+                .context("query branch review chat messages")?;
+
+            let mut messages = Vec::new();
+            for row in rows {
+                messages.push(row.context("read branch review chat message row")?);
+            }
+
+            Ok((session_id, messages))
+        })
+    }
+
     pub fn get_chat_claude_session_id(&self, session_id: i64) -> anyhow::Result<String> {
         self.with_connection(|conn| {
             conn.query_row(
@@ -725,6 +816,22 @@ impl Store {
                 |row| row.get(0),
             )
             .context("query chat claude session id")
+        })
+    }
+
+    pub fn get_branch_review_chat_claude_session_id(
+        &self,
+        session_id: i64,
+    ) -> anyhow::Result<String> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT claude_session_id
+                 FROM branch_chat_sessions
+                 WHERE id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .context("query branch review chat claude session id")
         })
     }
 
@@ -743,6 +850,23 @@ impl Store {
         })
     }
 
+    pub fn update_branch_review_chat_claude_session_id(
+        &self,
+        session_id: i64,
+        claude_session_id: &str,
+    ) -> anyhow::Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE branch_chat_sessions
+                 SET claude_session_id = ?1, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ?2",
+                params![claude_session_id, session_id],
+            )
+            .context("update branch review chat claude session id")?;
+            Ok(())
+        })
+    }
+
     pub fn append_chat_message(
         &self,
         session_id: i64,
@@ -755,6 +879,23 @@ impl Store {
                 params![session_id, role, content],
             )
             .context("insert chat message")?;
+            Ok(())
+        })
+    }
+
+    pub fn append_branch_review_chat_message(
+        &self,
+        session_id: i64,
+        role: &str,
+        content: &str,
+    ) -> anyhow::Result<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO branch_chat_messages(session_id, role, content)
+                 VALUES (?1, ?2, ?3)",
+                params![session_id, role, content],
+            )
+            .context("insert branch review chat message")?;
             Ok(())
         })
     }
@@ -2657,6 +2798,11 @@ fn migrations() -> Vec<Migration> {
             name: "0022_branch_inbox_review_progress",
             sql: include_str!("../migrations/0022_branch_inbox_review_progress.sql"),
         },
+        Migration {
+            version: 23,
+            name: "0023_branch_chat",
+            sql: include_str!("../migrations/0023_branch_chat.sql"),
+        },
     ]
 }
 
@@ -2799,6 +2945,7 @@ mod tests {
                 "<p>ok</p>",
                 head_sha,
                 "diff",
+                None,
             )
             .expect("mark branch artifact ready");
         artifact_id
@@ -4085,6 +4232,49 @@ mod tests {
         let (second_session_id, second_messages) = store
             .get_or_create_chat_session(pr_id, "npub1chat", "sid-v2")
             .unwrap();
+        assert_ne!(first_session_id, second_session_id);
+        assert!(second_messages.is_empty());
+    }
+
+    #[test]
+    fn branch_chat_sessions_are_scoped_to_the_current_artifact_version() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+
+        let branch = store
+            .upsert_branch_record(&branch_upsert_input("feature/branch-chat", "head-1"))
+            .expect("insert branch");
+
+        mark_latest_branch_artifact_ready(&store, branch.branch_id, "head-1");
+
+        let (first_session_id, first_messages) = store
+            .get_or_create_branch_review_chat_session(branch.branch_id, "npub1chat", "sid-v1")
+            .expect("create initial branch chat session");
+        assert!(first_messages.is_empty());
+        store
+            .append_branch_review_chat_message(first_session_id, "user", "first branch version")
+            .expect("append first branch chat message");
+
+        let reopened = store
+            .upsert_branch_record(&branch_upsert_input("feature/branch-chat", "head-2"))
+            .expect("upsert reopened branch");
+        assert_eq!(reopened.branch_id, branch.branch_id);
+        let next_artifact_id = latest_branch_artifact_id(&store, branch.branch_id);
+        store
+            .mark_branch_generation_ready(
+                next_artifact_id,
+                "{}",
+                "<p>new</p>",
+                "head-2",
+                "diff-2",
+                Some("branch-sid-v2"),
+            )
+            .expect("mark next branch artifact ready");
+
+        let (second_session_id, second_messages) = store
+            .get_or_create_branch_review_chat_session(branch.branch_id, "npub1chat", "sid-v2")
+            .expect("create second branch chat session");
         assert_ne!(first_session_id, second_session_id);
         assert!(second_messages.is_empty());
     }

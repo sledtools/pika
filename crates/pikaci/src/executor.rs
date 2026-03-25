@@ -2203,19 +2203,18 @@ fn remote_linux_vm_context(
         remote_run_dir.join("snapshot")
     };
     let remote_job_dir = remote_run_dir.join("jobs").join(job.id);
-    let shared_job_dir = remote_work_dir.join("jobs").join(job.id);
     let shared = RemoteLinuxVmSharedContext {
         remote_host,
         remote_work_dir: remote_work_dir.clone(),
         remote_job_dir: remote_job_dir.clone(),
         remote_snapshot_dir,
-        remote_artifacts_dir: shared_job_dir.join("artifacts"),
+        remote_artifacts_dir: remote_job_dir.join("artifacts"),
         remote_cargo_home_dir: remote_work_dir.join("cache").join("cargo-home"),
         remote_target_dir: remote_work_dir.join("cache").join("cargo-target"),
-        remote_workspace_deps_dir: shared_job_dir
+        remote_workspace_deps_dir: remote_job_dir
             .join("staged-linux-rust")
             .join("workspace-deps"),
-        remote_workspace_build_dir: shared_job_dir
+        remote_workspace_build_dir: remote_job_dir
             .join("staged-linux-rust")
             .join("workspace-build"),
     };
@@ -3324,17 +3323,18 @@ mod tests {
         RemoteLinuxVmSharedContext {
             remote_host: "pika-build".to_string(),
             remote_work_dir: Path::new("/var/tmp/pikaci").to_path_buf(),
-            remote_job_dir: Path::new("/var/tmp/pikaci/jobs/job").to_path_buf(),
+            remote_job_dir: Path::new("/var/tmp/pikaci/runs/run/jobs/job").to_path_buf(),
             remote_snapshot_dir: Path::new("/var/tmp/pikaci/runs/run/snapshot").to_path_buf(),
-            remote_artifacts_dir: Path::new("/var/tmp/pikaci/jobs/job/artifacts").to_path_buf(),
+            remote_artifacts_dir: Path::new("/var/tmp/pikaci/runs/run/jobs/job/artifacts")
+                .to_path_buf(),
             remote_cargo_home_dir: Path::new("/var/tmp/pikaci/cache/cargo-home").to_path_buf(),
             remote_target_dir: Path::new("/var/tmp/pikaci/cache/cargo-target").to_path_buf(),
             remote_workspace_deps_dir: Path::new(
-                "/var/tmp/pikaci/jobs/job/staged-linux-rust/workspace-deps",
+                "/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-deps",
             )
             .to_path_buf(),
             remote_workspace_build_dir: Path::new(
-                "/var/tmp/pikaci/jobs/job/staged-linux-rust/workspace-build",
+                "/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-build",
             )
             .to_path_buf(),
         }
@@ -3343,8 +3343,9 @@ mod tests {
     fn sample_microvm_context() -> RemoteMicrovmContext {
         RemoteMicrovmContext {
             shared: sample_remote_shared_context(),
-            remote_runtime_dir: Path::new("/var/tmp/pikaci/jobs/job/vm").to_path_buf(),
-            remote_runtime_link: Path::new("/var/tmp/pikaci/jobs/job/vm/runner").to_path_buf(),
+            remote_runtime_dir: Path::new("/var/tmp/pikaci/runs/run/jobs/job/vm").to_path_buf(),
+            remote_runtime_link: Path::new("/var/tmp/pikaci/runs/run/jobs/job/vm/runner")
+                .to_path_buf(),
         }
     }
 
@@ -3415,14 +3416,14 @@ mod tests {
             Path::new("/tmp/pikaci/snapshot"),
             true,
             &GuestFlakePaths {
-                artifacts_dir: Path::new("/var/tmp/pikaci/jobs/pika-core-lib-app-flows-tests/artifacts"),
+                artifacts_dir: Path::new("/var/tmp/pikaci/runs/run/jobs/pika-core-lib-app-flows-tests/artifacts"),
                 cargo_home_dir: Path::new("/var/tmp/pikaci/cache/cargo-home"),
                 target_dir: Path::new("/var/tmp/pikaci/cache/cargo-target"),
                 staged_linux_rust_workspace_deps_dir: Some(Path::new(
-                    "/var/tmp/pikaci/jobs/pika-core-lib-app-flows-tests/staged-linux-rust/workspace-deps",
+                    "/var/tmp/pikaci/runs/run/jobs/pika-core-lib-app-flows-tests/staged-linux-rust/workspace-deps",
                 )),
                 staged_linux_rust_workspace_build_dir: Some(Path::new(
-                    "/var/tmp/pikaci/jobs/pika-core-lib-app-flows-tests/staged-linux-rust/workspace-build",
+                    "/var/tmp/pikaci/runs/run/jobs/pika-core-lib-app-flows-tests/staged-linux-rust/workspace-build",
                 )),
                 socket_path: None,
             },
@@ -3667,6 +3668,33 @@ mod tests {
                 read_only: true,
             }]
         );
+    }
+
+    #[test]
+    fn payload_manifest_mount_validation_rejects_escaping_paths() {
+        let err = incus::validate_mount_for_test(
+            Path::new("/nix/store/workspace-build"),
+            &PreparedOutputPayloadMountRecord {
+                name: "workspace_build_root".to_string(),
+                relative_path: "../escape".to_string(),
+                guest_path: "/staged/linux-rust/workspace-build".to_string(),
+                read_only: true,
+            },
+        )
+        .expect_err("parent traversal should be rejected");
+        assert!(err.to_string().contains("relative_path"));
+
+        let err = incus::validate_mount_for_test(
+            Path::new("/nix/store/workspace-build"),
+            &PreparedOutputPayloadMountRecord {
+                name: "workspace_build_root".to_string(),
+                relative_path: ".".to_string(),
+                guest_path: "staged/linux-rust/workspace-build".to_string(),
+                read_only: true,
+            },
+        )
+        .expect_err("relative guest path should be rejected");
+        assert!(err.to_string().contains("guest_path"));
     }
 
     #[test]
@@ -4809,16 +4837,16 @@ mod tests {
         let shared = RemoteLinuxVmSharedContext {
             remote_host: "localhost".to_string(),
             remote_work_dir: PathBuf::from("/var/tmp/pikaci"),
-            remote_job_dir: PathBuf::from("/var/tmp/pikaci/jobs/job"),
+            remote_job_dir: PathBuf::from("/var/tmp/pikaci/runs/run/jobs/job"),
             remote_snapshot_dir: PathBuf::from("/var/tmp/pikaci/snapshots/abc123/snapshot"),
-            remote_artifacts_dir: PathBuf::from("/var/tmp/pikaci/jobs/job/artifacts"),
+            remote_artifacts_dir: PathBuf::from("/var/tmp/pikaci/runs/run/jobs/job/artifacts"),
             remote_cargo_home_dir: PathBuf::from("/var/tmp/pikaci/cache/cargo-home"),
             remote_target_dir: PathBuf::from("/var/tmp/pikaci/cache/cargo-target"),
             remote_workspace_deps_dir: PathBuf::from(
-                "/var/tmp/pikaci/jobs/job/staged-linux-rust/workspace-deps",
+                "/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-deps",
             ),
             remote_workspace_build_dir: PathBuf::from(
-                "/var/tmp/pikaci/jobs/job/staged-linux-rust/workspace-build",
+                "/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-build",
             ),
         };
         let command = format!(
@@ -4849,8 +4877,8 @@ mod tests {
             shell_single_quote(&shared.remote_workspace_build_dir.display().to_string()),
         );
 
-        assert!(command.contains("if [ ! -e '/var/tmp/pikaci/jobs/job/staged-linux-rust/workspace-deps' ] && [ ! -L '/var/tmp/pikaci/jobs/job/staged-linux-rust/workspace-deps' ]; then mkdir -p '/var/tmp/pikaci/jobs/job/staged-linux-rust/workspace-deps'; fi;"));
-        assert!(command.contains("if [ ! -e '/var/tmp/pikaci/jobs/job/staged-linux-rust/workspace-build' ] && [ ! -L '/var/tmp/pikaci/jobs/job/staged-linux-rust/workspace-build' ]; then mkdir -p '/var/tmp/pikaci/jobs/job/staged-linux-rust/workspace-build'; fi"));
-        assert!(!command.contains("mkdir -p '/var/tmp/pikaci/jobs/job/staged-linux-rust/workspace-deps' '/var/tmp/pikaci/jobs/job/staged-linux-rust/workspace-build'"));
+        assert!(command.contains("if [ ! -e '/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-deps' ] && [ ! -L '/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-deps' ]; then mkdir -p '/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-deps'; fi;"));
+        assert!(command.contains("if [ ! -e '/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-build' ] && [ ! -L '/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-build' ]; then mkdir -p '/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-build'; fi"));
+        assert!(!command.contains("mkdir -p '/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-deps' '/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-build'"));
     }
 }

@@ -1,5 +1,6 @@
 use super::*;
 use crate::model::{PreparedOutputPayloadManifestRecord, PreparedOutputPayloadMountRecord};
+use std::path::Component;
 
 #[derive(Deserialize)]
 struct RemoteIncusImageShowRecord {
@@ -474,6 +475,48 @@ fn resolve_payload_mount_source(output_root: &Path, relative_path: &str) -> Path
     }
 }
 
+fn path_has_parent_traversal(path: &Path) -> bool {
+    path.components()
+        .any(|component| matches!(component, Component::ParentDir))
+}
+
+fn validate_declared_payload_mount(
+    output_root: &Path,
+    mount: &PreparedOutputPayloadMountRecord,
+) -> anyhow::Result<()> {
+    if mount.name.trim().is_empty() {
+        bail!(
+            "invalid payload mount for {}: empty mount name",
+            output_root.display()
+        );
+    }
+    let relative_path = Path::new(&mount.relative_path);
+    if relative_path.is_absolute() || path_has_parent_traversal(relative_path) {
+        bail!(
+            "invalid payload mount `{}` for {}: relative_path must stay within the payload root",
+            mount.name,
+            output_root.display()
+        );
+    }
+    let guest_path = Path::new(&mount.guest_path);
+    if !guest_path.is_absolute() || path_has_parent_traversal(guest_path) {
+        bail!(
+            "invalid payload mount `{}` for {}: guest_path must be an absolute normalized path",
+            mount.name,
+            output_root.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn validate_mount_for_test(
+    output_root: &Path,
+    mount: &PreparedOutputPayloadMountRecord,
+) -> anyhow::Result<()> {
+    validate_declared_payload_mount(output_root, mount)
+}
+
 fn sanitize_incus_device_component(value: &str) -> String {
     let sanitized = value
         .chars()
@@ -609,6 +652,7 @@ fn add_declared_payload_mounts(
             )
         })?;
     for mount in manifest.mounts {
+        validate_declared_payload_mount(output_root, &mount)?;
         add_declared_payload_mount(remote, output_root, device_prefix, mount, log_path)?;
     }
     Ok(())

@@ -2480,6 +2480,10 @@ fn translate_prepared_output_remote_path(
     remote_work_dir: &Path,
     local_path: &Path,
 ) -> anyhow::Result<PathBuf> {
+    let run_id = local_run_dir
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| anyhow!("derive run id from {}", local_run_dir.display()))?;
     let relative = local_path.strip_prefix(local_run_dir).with_context(|| {
         format!(
             "translate {} into remote work dir {}",
@@ -2487,7 +2491,7 @@ fn translate_prepared_output_remote_path(
             remote_work_dir.display()
         )
     })?;
-    Ok(remote_work_dir.join(relative))
+    Ok(remote_work_dir.join("runs").join(run_id).join(relative))
 }
 
 fn write_remote_file_via_ssh(
@@ -6887,8 +6891,10 @@ EOF
         let realized_path = first_test_nix_store_path();
         let mount_path = root.join("jobs/job-1/staged-linux-rust/workspace-build");
         let remote_work_dir = root.join("remote-work");
-        let remote_mount_path =
-            remote_work_dir.join("jobs/job-1/staged-linux-rust/workspace-build");
+        let remote_run_dir = remote_work_dir
+            .join("runs")
+            .join(root.file_name().expect("run dir file name"));
+        let remote_mount_path = remote_run_dir.join("jobs/job-1/staged-linux-rust/workspace-build");
         let log_path = root.join("job.log");
         let helper_path = root.join("remote-bin/pikaci-fulfill-prepared-output");
         let launcher_path = root.join("remote-bin/pikaci-launch-fulfill-prepared-output");
@@ -7044,7 +7050,7 @@ EOF
                 .remote_launcher_request_path
                 .as_deref()
                 .expect("remote launch request path"),
-            remote_work_dir
+            remote_run_dir
                 .join("prepared-output-launch-requests/prepare-pika-core-linux-rust-workspace-build.json")
                 .to_str()
                 .expect("remote launch request utf8")
@@ -7054,7 +7060,7 @@ EOF
                 .remote_helper_request_path
                 .as_deref()
                 .expect("remote helper request path"),
-            remote_work_dir
+            remote_run_dir
                 .join("prepared-output-requests/prepare-pika-core-linux-rust-workspace-build.json")
                 .to_str()
                 .expect("remote helper request utf8")
@@ -7064,7 +7070,7 @@ EOF
                 .remote_helper_result_path
                 .as_deref()
                 .expect("remote helper result path"),
-            remote_work_dir
+            remote_run_dir
                 .join("prepared-output-results/prepare-pika-core-linux-rust-workspace-build.json")
                 .to_str()
                 .expect("remote helper result utf8")
@@ -7102,8 +7108,10 @@ EOF
         let realized_path = PathBuf::from("/nix/store/remote-only-workspace-build");
         let mount_path = root.join("jobs/job-1/staged-linux-rust/workspace-build");
         let remote_work_dir = root.join("remote-work");
-        let remote_mount_path =
-            remote_work_dir.join("jobs/job-1/staged-linux-rust/workspace-build");
+        let remote_run_dir = remote_work_dir
+            .join("runs")
+            .join(root.file_name().expect("run dir file name"));
+        let remote_mount_path = remote_run_dir.join("jobs/job-1/staged-linux-rust/workspace-build");
         let log_path = root.join("job.log");
         let helper_path = root.join("remote-bin/pikaci-fulfill-prepared-output");
         let launcher_path = root.join("remote-bin/pikaci-launch-fulfill-prepared-output");
@@ -7258,8 +7266,10 @@ EOF
         let realized_path = first_test_nix_store_path();
         let mount_path = root.join("jobs/job-1/staged-linux-rust/workspace-build");
         let remote_work_dir = root.join("remote-work");
-        let remote_mount_path =
-            remote_work_dir.join("jobs/job-1/staged-linux-rust/workspace-build");
+        let remote_run_dir = remote_work_dir
+            .join("runs")
+            .join(root.file_name().expect("run dir file name"));
+        let remote_mount_path = remote_run_dir.join("jobs/job-1/staged-linux-rust/workspace-build");
         let log_path = root.join("job.log");
         let helper_path = root.join("remote-bin/pikaci-fulfill-prepared-output");
         let launcher_path = root.join("remote-bin/pikaci-launch-fulfill-prepared-output");

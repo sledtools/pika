@@ -302,6 +302,7 @@ struct DetailTemplate {
     page_title: String,
     repo: String,
     branch_id: i64,
+    branch_chat_artifact_id: Option<i64>,
     branch_name: String,
     title: String,
     target_branch: String,
@@ -2195,6 +2196,7 @@ fn render_detail_template_with_notices(
         ),
         repo: record.repo,
         branch_id: record.branch_id,
+        branch_chat_artifact_id: record.current_artifact_id,
         branch_name: record.branch_name,
         title: record.title,
         target_branch: record.target_branch,
@@ -3906,6 +3908,7 @@ async fn chat_history_handler(
 async fn branch_chat_history_handler(
     State(state): State<Arc<AppState>>,
     Path(branch_id): Path<i64>,
+    Query(query): Query<BranchChatArtifactQuery>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     let npub = match require_chat_auth(&state.auth, &headers) {
@@ -3916,7 +3919,7 @@ async fn branch_chat_history_handler(
     let store = state.store.clone();
     let base_session_id = match tokio::task::spawn_blocking({
         let store = store.clone();
-        move || store.get_branch_review_artifact_session_id(branch_id)
+        move || store.get_branch_review_artifact_session_id(branch_id, query.artifact_id)
     })
     .await
     {
@@ -3947,7 +3950,13 @@ async fn branch_chat_history_handler(
     let result = tokio::task::spawn_blocking({
         let store = store.clone();
         let npub = npub.clone();
-        move || store.get_or_create_branch_review_chat_session(branch_id, &npub, &base_session_id)
+        move || {
+            store.get_or_create_branch_review_chat_session(
+                query.artifact_id,
+                &npub,
+                &base_session_id,
+            )
+        }
     })
     .await;
 
@@ -3970,6 +3979,17 @@ async fn branch_chat_history_handler(
 
 #[derive(serde::Deserialize)]
 struct ChatSendRequest {
+    message: String,
+}
+
+#[derive(serde::Deserialize)]
+struct BranchChatArtifactQuery {
+    artifact_id: i64,
+}
+
+#[derive(serde::Deserialize)]
+struct BranchChatSendRequest {
+    artifact_id: i64,
     message: String,
 }
 
@@ -4125,7 +4145,7 @@ async fn branch_chat_send_handler(
     State(state): State<Arc<AppState>>,
     Path(branch_id): Path<i64>,
     headers: axum::http::HeaderMap,
-    Json(body): Json<ChatSendRequest>,
+    Json(body): Json<BranchChatSendRequest>,
 ) -> impl IntoResponse {
     let npub = match require_chat_auth(&state.auth, &headers) {
         Ok(n) => n,
@@ -4135,7 +4155,8 @@ async fn branch_chat_send_handler(
     let store = state.store.clone();
     let base_session_id = match tokio::task::spawn_blocking({
         let store = store.clone();
-        move || store.get_branch_review_artifact_session_id(branch_id)
+        let artifact_id = body.artifact_id;
+        move || store.get_branch_review_artifact_session_id(branch_id, artifact_id)
     })
     .await
     {
@@ -4166,7 +4187,8 @@ async fn branch_chat_send_handler(
     let (session_id, _messages) = match tokio::task::spawn_blocking({
         let store = store.clone();
         let npub = npub.clone();
-        move || store.get_or_create_branch_review_chat_session(branch_id, &npub, &base_session_id)
+        let artifact_id = body.artifact_id;
+        move || store.get_or_create_branch_review_chat_session(artifact_id, &npub, &base_session_id)
     })
     .await
     {
@@ -8288,6 +8310,109 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
         assert!(rendered.contains("Discussion"));
         assert!(rendered.contains("artifact ready"));
         assert!(rendered.contains("Ask about this branch review"));
+        assert!(rendered.contains(&format!("const branchChatArtifactId = {};", artifact_id)));
+    }
+
+    #[tokio::test]
+    async fn branch_chat_history_uses_requested_artifact_not_current_branch_state() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-news.db");
+        let store = Store::open(&db_path).expect("open store");
+        let branch = store
+            .upsert_branch_record(&branch_upsert_input("feature/chat-stable", "head-chat-1"))
+            .expect("insert branch");
+        let first_artifact_id: i64 = store
+            .with_connection(|conn| {
+                conn.query_row(
+                    "SELECT id
+                     FROM branch_artifact_versions
+                     WHERE branch_id = ?1
+                     ORDER BY version DESC
+                     LIMIT 1",
+                    rusqlite::params![branch.branch_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("first artifact id");
+        store
+            .mark_branch_generation_ready(
+                first_artifact_id,
+                r#"{"executive_summary":"first","steps":[],"media_links":[]}"#,
+                "<p>first</p>",
+                "head-chat-1",
+                "diff-1",
+                Some("branch-chat-session-1"),
+            )
+            .expect("mark first tutorial ready");
+        let (first_session_id, _) = store
+            .get_or_create_branch_review_chat_session(
+                first_artifact_id,
+                TRUSTED_NPUB,
+                "branch-chat-session-1",
+            )
+            .expect("first chat session");
+        store
+            .append_branch_review_chat_message(first_session_id, "assistant", "artifact one")
+            .expect("append first message");
+
+        store
+            .upsert_branch_record(&branch_upsert_input("feature/chat-stable", "head-chat-2"))
+            .expect("upsert second head");
+        let second_artifact_id: i64 = store
+            .with_connection(|conn| {
+                conn.query_row(
+                    "SELECT id
+                     FROM branch_artifact_versions
+                     WHERE branch_id = ?1
+                     ORDER BY version DESC
+                     LIMIT 1",
+                    rusqlite::params![branch.branch_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("second artifact id");
+        store
+            .mark_branch_generation_ready(
+                second_artifact_id,
+                r#"{"executive_summary":"second","steps":[],"media_links":[]}"#,
+                "<p>second</p>",
+                "head-chat-2",
+                "diff-2",
+                Some("branch-chat-session-2"),
+            )
+            .expect("mark second tutorial ready");
+        let (second_session_id, _) = store
+            .get_or_create_branch_review_chat_session(
+                second_artifact_id,
+                TRUSTED_NPUB,
+                "branch-chat-session-2",
+            )
+            .expect("second chat session");
+        store
+            .append_branch_review_chat_message(second_session_id, "assistant", "artifact two")
+            .expect("append second message");
+
+        let state = test_state(store.clone(), forge_test_config());
+        let headers = trusted_headers(&store, TRUSTED_NPUB);
+        let response = super::branch_chat_history_handler(
+            State(state),
+            Path(branch.branch_id),
+            Query(super::BranchChatArtifactQuery {
+                artifact_id: first_artifact_id,
+            }),
+            headers,
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let text = String::from_utf8(body.to_vec()).expect("body text");
+        assert!(text.contains("artifact one"));
+        assert!(!text.contains("artifact two"));
     }
 
     #[test]

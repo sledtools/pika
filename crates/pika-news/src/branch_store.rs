@@ -69,6 +69,7 @@ pub struct BranchFeedItem {
 #[allow(dead_code)]
 pub struct BranchDetailRecord {
     pub branch_id: i64,
+    pub current_artifact_id: Option<i64>,
     pub repo: String,
     pub branch_name: String,
     pub title: String,
@@ -545,6 +546,7 @@ impl Store {
         self.with_connection(|conn| {
             conn.query_row(
                 "SELECT br.id,
+                        ba_current.id,
                         r.repo,
                         br.branch_name,
                         br.title,
@@ -588,21 +590,22 @@ impl Store {
                 |row| {
                     Ok(BranchDetailRecord {
                         branch_id: row.get(0)?,
-                        repo: row.get(1)?,
-                        branch_name: row.get(2)?,
-                        title: row.get(3)?,
-                        branch_state: row.get(4)?,
-                        updated_at: row.get(5)?,
-                        target_branch: row.get(6)?,
-                        head_sha: row.get(7)?,
-                        merge_base_sha: row.get(8)?,
-                        merge_commit_sha: row.get(9)?,
-                        tutorial_status: row.get(10)?,
-                        tutorial_json: row.get(11)?,
-                        unified_diff: row.get(12)?,
-                        claude_session_id: row.get(13)?,
-                        error_message: row.get(14)?,
-                        ci_status: row.get(15)?,
+                        current_artifact_id: row.get(1)?,
+                        repo: row.get(2)?,
+                        branch_name: row.get(3)?,
+                        title: row.get(4)?,
+                        branch_state: row.get(5)?,
+                        updated_at: row.get(6)?,
+                        target_branch: row.get(7)?,
+                        head_sha: row.get(8)?,
+                        merge_base_sha: row.get(9)?,
+                        merge_commit_sha: row.get(10)?,
+                        tutorial_status: row.get(11)?,
+                        tutorial_json: row.get(12)?,
+                        unified_diff: row.get(13)?,
+                        claude_session_id: row.get(14)?,
+                        error_message: row.get(15)?,
+                        ci_status: row.get(16)?,
                     })
                 },
             )

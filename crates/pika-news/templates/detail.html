@@ -82,8 +82,9 @@
       .tone-neutral { border-color: var(--border-light); background: var(--badge-bg-row); color: var(--text-secondary); }
       .branch-meta-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 0.85rem;
+        max-width: 1360px;
       }
       .meta-block {
         padding: 0.85rem 0.95rem;
@@ -129,7 +130,7 @@
       }
       .notice.warning { border-color: #d9a441; background: rgba(217, 164, 65, 0.12); }
       .notice.error { border-color: #b8475b; background: rgba(184, 71, 91, 0.12); }
-      .summary-stack { display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem; }
+      .summary-stack { display: flex; flex-direction: column; gap: 1rem; }
       .ci-summary-card {
         display: flex;
         flex-direction: column;
@@ -196,7 +197,24 @@
         color: var(--text-muted);
         font-size: 0.9rem;
       }
-      .review-main { min-width: 0; }
+      .review-main {
+        min-width: 0;
+        display: grid;
+        grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+        gap: 1.25rem;
+      }
+      .review-rail,
+      .tutorial-column {
+        min-width: 0;
+      }
+      .review-rail {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+      }
+      .tutorial-column .panel + .panel {
+        margin-top: 1rem;
+      }
       .diff-row {
         margin-top: 1.25rem;
       }
@@ -248,8 +266,13 @@
         .d2h-file-list-line a { color: var(--link); }
       }
       @media (max-width: 1024px) {
+        .branch-meta-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .review-layout { grid-template-columns: 1fr; }
         .file-list-sidebar { position: static; }
+        .review-main { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 720px) {
+        .branch-meta-grid { grid-template-columns: 1fr; }
       }
 {% endblock %}
 
@@ -309,8 +332,6 @@
         </div>
       </section>
 
-      <div id="branch-ci-summary" class="summary-stack">{{ branch_ci_summary_html|safe }}</div>
-
       <div class="review-layout">
         <aside class="file-list-sidebar">
           <section class="panel">
@@ -321,22 +342,47 @@
         </aside>
 
         <div class="review-main">
-          {% match error_message %}
-          {% when Some with (msg) %}
-          <section class="panel">
-            <h2>Branch-Specific Tutorial Generation Failed</h2>
-            <p>This failure is specific to the current branch head.</p>
-            <p>{{ msg }}</p>
-          </section>
-          {% when None %}{% endmatch %}
-
-          <div class="summary-stack">
+          <div class="review-rail">
+            <div id="branch-ci-summary" class="summary-stack">{{ branch_ci_summary_html|safe }}</div>
             {% match executive_html %}
             {% when Some with (summary_html) %}
             <section class="panel">
               <h2>Summary</h2>
               <div>{{ summary_html|safe }}</div>
             </section>
+            {% when None %}
+            <section class="panel">
+              <h2>Summary</h2>
+              {% if tutorial_status == "failed" %}
+              <p>This branch tutorial is unavailable because generation for this branch head failed. That is separate from any forge-wide generator worker warning.</p>
+              {% else %}
+              <p>Summary is not ready yet. Refresh shortly.</p>
+              {% endif %}
+            </section>
+            {% endmatch %}
+
+            {% if media_links.len() > 0 %}
+            <section class="panel">
+              <h2>Media Links</h2>
+              <ul>
+                {% for link in media_links %}
+                <li><a href="{{ link.href }}">{{ link.label }}</a></li>
+                {% endfor %}
+              </ul>
+            </section>
+            {% endif %}
+
+          </div>
+
+          <div class="tutorial-column">
+            {% match error_message %}
+            {% when Some with (msg) %}
+            <section class="panel">
+              <h2>Branch-Specific Tutorial Generation Failed</h2>
+              <p>This failure is specific to the current branch head.</p>
+              <p>{{ msg }}</p>
+            </section>
+            {% when None %}{% endmatch %}
 
             <section class="panel">
               <h2>Tutorial Steps</h2>
@@ -364,28 +410,6 @@
               {% endfor %}
               {% endif %}
             </section>
-            {% when None %}
-            <section class="panel">
-              <h2>Summary</h2>
-              {% if tutorial_status == "failed" %}
-              <p>This branch tutorial is unavailable because generation for this branch head failed. That is separate from any forge-wide generator worker warning.</p>
-              {% else %}
-              <p>Summary is not ready yet. Refresh shortly.</p>
-              {% endif %}
-            </section>
-            {% endmatch %}
-
-            {% if media_links.len() > 0 %}
-            <section class="panel">
-              <h2>Media Links</h2>
-              <ul>
-                {% for link in media_links %}
-                <li><a href="{{ link.href }}">{{ link.label }}</a></li>
-                {% endfor %}
-              </ul>
-            </section>
-            {% endif %}
-
           </div>
         </div>
       </div>

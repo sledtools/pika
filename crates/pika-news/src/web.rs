@@ -4235,7 +4235,7 @@ mod tests {
     use axum::response::IntoResponse;
     use chrono::{TimeZone, Utc};
 
-    use crate::pikaci_store::PikaciRunStore;
+    use crate::pikaci_store::{PikaciRunStore, TestPikaciJobFixture, TestPikaciRunFixture};
 
     use super::{
         api_forge_branch_detail_handler, api_forge_branch_logs_handler,
@@ -4341,28 +4341,31 @@ mod tests {
 
     fn write_pikaci_run_fixture(config: &Config, run_id: &str) {
         let run_store = PikaciRunStore::from_config(config).expect("pikaci run store");
-        let run_dir = run_store.run_dir(run_id);
-        let job_dir = run_store.job_dir(run_id, "job-one");
-        let prepared_outputs_path = run_store.prepared_outputs_path(run_id);
-        fs::create_dir_all(&job_dir).expect("create pikaci fixture dir");
-        let host_log = run_store.host_log_path(run_id, "job-one");
-        let guest_log = run_store.guest_log_path(run_id, "job-one");
-        fs::create_dir_all(guest_log.parent().expect("guest log parent"))
-            .expect("create guest log artifacts dir");
-        fs::write(&host_log, "host fixture\n").expect("write host log");
-        fs::write(&guest_log, "guest fixture\n").expect("write guest log");
-        fs::write(
-            &prepared_outputs_path,
-            r#"{"schema_version":1,"outputs":[{"node_id":"prepare-pika-core-linux-rust-workspace-build","installable":"path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild","output_name":"ci.x86_64-linux.workspaceBuild","protocol":"nix_store_path_v1","residency":"local_authoritative","consumer":"host_local_symlink_mounts_v1","realized_path":"/nix/store/workspace-build","consumer_request_path":null,"consumer_result_path":null,"consumer_launch_request_path":null,"consumer_transport_request_path":null,"exposures":[],"requested_exposures":[]}]}"#,
-        )
-        .expect("write prepared outputs");
-        let run_json = format!(
-            "{{\"run_id\":\"{run_id}\",\"status\":\"passed\",\"rerun_of\":null,\"target_id\":\"pre-merge-pika-rust\",\"target_description\":\"Run staged pika rust\",\"source_root\":\"/tmp/source\",\"snapshot_dir\":\"/tmp/snapshot\",\"git_head\":null,\"git_dirty\":null,\"created_at\":\"2026-03-19T00:00:00Z\",\"finished_at\":\"2026-03-19T00:00:02Z\",\"plan_path\":null,\"prepared_outputs_path\":\"{}\",\"prepared_output_consumer\":null,\"prepared_output_mode\":null,\"prepared_output_invocation_mode\":null,\"prepared_output_invocation_wrapper_program\":null,\"prepared_output_launcher_transport_mode\":null,\"prepared_output_launcher_transport_program\":null,\"prepared_output_launcher_transport_host\":null,\"prepared_output_launcher_transport_remote_launcher_program\":null,\"prepared_output_launcher_transport_remote_helper_program\":null,\"prepared_output_launcher_transport_remote_work_dir\":null,\"changed_files\":[],\"filters\":[],\"message\":null,\"prepare_timings\":[],\"jobs\":[{{\"id\":\"job-one\",\"description\":\"job one\",\"status\":\"passed\",\"executor\":\"remote_linux_vm\",\"plan_node_id\":null,\"timeout_secs\":30,\"host_log_path\":\"{}\",\"guest_log_path\":\"{}\",\"started_at\":\"2026-03-19T00:00:01Z\",\"finished_at\":\"2026-03-19T00:00:02Z\",\"exit_code\":0,\"message\":null,\"pre_execution_prepare_duration_ms\":null,\"remote_linux_vm_execution\":{{\"backend\":\"incus\",\"incus_image\":{{\"project\":\"pika-managed-agents\",\"alias\":\"pikaci/dev\",\"fingerprint\":\"abc123\"}},\"phases\":[]}}}}]}}",
-            prepared_outputs_path.display(),
-            host_log.display(),
-            guest_log.display(),
+        let mut fixture = TestPikaciRunFixture::passed(
+            run_id,
+            Some("pre-merge-pika-rust"),
+            Some("Run staged pika rust"),
         );
-        fs::write(run_dir.join("run.json"), run_json).expect("write run fixture");
+        let mut job = TestPikaciJobFixture::passed_remote_linux("job-one", "job one");
+        job.remote_linux_vm_execution = Some(pikaci::RemoteLinuxVmExecutionRecord {
+            backend: pikaci::RemoteLinuxVmBackend::Incus,
+            incus_image: Some(pikaci::RemoteLinuxVmImageRecord {
+                project: "pika-managed-agents".to_string(),
+                alias: "pikaci/dev".to_string(),
+                fingerprint: Some("abc123".to_string()),
+            }),
+            phases: Vec::new(),
+        });
+        fixture.jobs.push(job);
+        fixture.prepared_outputs = Some(
+            serde_json::from_str(
+                r#"{"schema_version":1,"outputs":[{"node_id":"prepare-pika-core-linux-rust-workspace-build","installable":"path:/tmp/snapshot#ci.x86_64-linux.workspaceBuild","output_name":"ci.x86_64-linux.workspaceBuild","protocol":"nix_store_path_v1","residency":"local_authoritative","consumer":"host_local_symlink_mounts_v1","realized_path":"/nix/store/workspace-build","consumer_request_path":null,"consumer_result_path":null,"consumer_launch_request_path":null,"consumer_transport_request_path":null,"exposures":[],"requested_exposures":[]}]}"#,
+            )
+            .expect("parse prepared outputs fixture"),
+        );
+        run_store
+            .write_fixture(&fixture)
+            .expect("write run fixture");
     }
 
     fn test_state_with_live_buffer(

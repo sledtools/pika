@@ -220,14 +220,13 @@ fn main() -> anyhow::Result<()> {
                     "target_description={}",
                     shell_escape(config.target_description)
                 );
-                println!(
-                    "workspace_deps_installable={}",
-                    config.workspace_deps_installable
-                );
-                println!(
-                    "workspace_build_installable={}",
-                    config.workspace_build_installable
-                );
+                for payload_spec in config.payload_specs {
+                    println!(
+                        "payload_{}_installable={}",
+                        payload_spec.role.prepare_node_suffix(),
+                        payload_spec.nix_installable
+                    );
+                }
                 println!("shadow_recipe={}", shell_escape(config.shadow_recipe));
             }
         }
@@ -2434,11 +2433,11 @@ mod tests {
             .expect("encode target config");
         assert_eq!(payload["target_id"], "pre-merge-pika-rust");
         assert_eq!(
-            payload["workspace_deps_installable"],
+            payload["payload_specs"][0]["nix_installable"],
             ".#ci.x86_64-linux.workspaceDeps"
         );
         assert_eq!(
-            payload["workspace_build_installable"],
+            payload["payload_specs"][1]["nix_installable"],
             ".#ci.x86_64-linux.workspaceBuild"
         );
     }

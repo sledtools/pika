@@ -1716,16 +1716,19 @@ fn staged_linux_payload_specs(
     lane: StagedLinuxRustLane,
 ) -> Vec<StagedPreparedPayload> {
     let prefix = lane.shared_prepare_node_prefix();
-    lane.payload_roles()
+    lane.payload_specs()
         .into_iter()
-        .map(|role| StagedPreparedPayload {
-            prepare_node_id: format!("prepare-{prefix}-{}", role.prepare_node_suffix()),
-            installable: staged_linux_rust_installable(snapshot_dir, lane, role),
-            output_name: lane.payload_output_name(role),
-            local_mount_path: role.local_mount_path(job_dir),
+        .map(|payload_spec| StagedPreparedPayload {
+            prepare_node_id: format!(
+                "prepare-{prefix}-{}",
+                payload_spec.role.prepare_node_suffix()
+            ),
+            installable: staged_linux_rust_installable(snapshot_dir, lane, payload_spec.role),
+            output_name: payload_spec.output_name,
+            local_mount_path: payload_spec.role.local_mount_path(job_dir),
             prepare_description: format!(
                 "{} for {}",
-                role.prepare_description(),
+                payload_spec.role.prepare_description(),
                 lane.shared_prepare_description()
             ),
         })

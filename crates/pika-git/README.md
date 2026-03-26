@@ -10,12 +10,10 @@ Hosted forge:
 ## Config file (`pika-git.toml`)
 
 ```toml
-repos = ["sledtools/pika"]
-
 poll_interval_secs = 60
 model = "claude-sonnet-4-5-20250929"
 api_key_env = "ANTHROPIC_API_KEY"
-merged_lookback_hours = 72
+github_token_env = "GITHUB_TOKEN"
 worker_concurrency = 2
 retry_backoff_secs = 120
 bind_address = "127.0.0.1"
@@ -32,7 +30,6 @@ mirror_timeout_secs = 120
 hook_url = "http://127.0.0.1:8787/git/webhook"
 ```
 
-- `repos`: legacy repo slug list; keep `["sledtools/pika"]`.
 - `forge_repo`: canonical forge metadata for the single hosted `pika` bare repo.
 - `forge_repo.mirror_remote`: outbound mirror remote name in the canonical bare repo, for example `github`.
 - `forge_repo.mirror_poll_interval_secs`: hosted background mirror cadence in seconds. Set `0` to disable background mirroring and keep manual sync only.
@@ -42,14 +39,12 @@ hook_url = "http://127.0.0.1:8787/git/webhook"
 - `poll_interval_secs`: interval used by hosted mode repair scans of the canonical bare repo.
 - `model`: Anthropic model name for tutorial generation.
 - `api_key_env`: environment variable containing the API key.
-- `merged_lookback_hours`: retained legacy setting; forge mode does not rely on GitHub merged lookback polling.
+- `github_token_env`: environment variable containing the GitHub token used for outbound mirror operations.
 - `worker_concurrency`: max hosted generation jobs claimed per pass.
 - `retry_backoff_secs`: delay before retrying retry-safe generation failures.
 - `bind_address`: hosted server bind address.
 - `bind_port`: hosted server bind port.
 - `bootstrap_admin_npubs`: Nostr pubkeys that can always sign in and manage the runtime chat allowlist from `/git/admin`.
-
-`allowed_npubs` remains as a legacy chat-access list for existing deployments, but it no longer grants admin rights. Set `bootstrap_admin_npubs` explicitly for anyone who should manage the in-app admin page.
 
 ## Canonical CI
 

@@ -188,12 +188,7 @@ fn process_job(
 
 fn branch_inbox_recipients(store: &Store, config: &Config) -> anyhow::Result<Vec<String>> {
     let mut recipients = BTreeSet::new();
-    for npub in config.effective_bootstrap_admin_npubs() {
-        if let Ok(normalized) = normalize_npub(&npub) {
-            recipients.insert(normalized);
-        }
-    }
-    for npub in &config.allowed_npubs {
+    for npub in &config.bootstrap_admin_npubs {
         if let Ok(normalized) = normalize_npub(npub) {
             recipients.insert(normalized);
         }
@@ -247,10 +242,6 @@ mod tests {
             .public_key()
             .to_bech32()
             .expect("encode admin npub");
-        let legacy_npub = Keys::generate()
-            .public_key()
-            .to_bech32()
-            .expect("encode legacy npub");
         let allowlisted_npub = Keys::generate()
             .public_key()
             .to_bech32()
@@ -321,16 +312,15 @@ mod tests {
             webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
             bind_address: "127.0.0.1".to_string(),
             bind_port: 8787,
-            allowed_npubs: vec![legacy_npub.clone()],
+            allowed_npubs: vec![],
             bootstrap_admin_npubs: vec![admin_npub.clone()],
         };
 
         assert_eq!(
             populate_ready_branch_inbox(&store, &config, artifact_id).unwrap(),
-            4
+            3
         );
         assert_eq!(store.branch_inbox_count(&admin_npub).unwrap(), 1);
-        assert_eq!(store.branch_inbox_count(&legacy_npub).unwrap(), 1);
         assert_eq!(store.branch_inbox_count(&allowlisted_npub).unwrap(), 1);
         assert_eq!(store.branch_inbox_count(&forge_writer_npub).unwrap(), 1);
     }

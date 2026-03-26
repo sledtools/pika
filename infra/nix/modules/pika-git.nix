@@ -32,7 +32,6 @@ let
     ${pkgs.git}/bin/git --git-dir="$repo" config core.sharedRepository group
   '';
   configFile = tomlFormat.generate "pika-git.toml" {
-    repos = [ "sledtools/pika" ];
     forge_repo = {
       repo = "sledtools/pika";
       canonical_git_dir = canonicalGitDir;
@@ -46,12 +45,10 @@ let
     model = "claude-opus-4-6";
     api_key_env = "ANTHROPIC_API_KEY";
     github_token_env = "GITHUB_TOKEN";
-    merged_lookback_hours = 72;
     worker_concurrency = 1;
     bind_address = "127.0.0.1";
     bind_port = servicePort;
     bootstrap_admin_npubs = adminIdentities.prodAdminNpubs;
-    allowed_npubs = [ ];
   };
 in
 {

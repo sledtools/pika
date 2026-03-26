@@ -62,12 +62,6 @@
           <div id="bootstrap-admins"></div>
         </section>
 
-        <section class="panel" id="legacy-allowed-section">
-          <h2>Legacy Chat Access</h2>
-          <p class="muted">These keys come from `allowed_npubs` config. They keep chat access for compatibility, but they are not the main forge write path and are not editable here.</p>
-          <div id="legacy-allowed"></div>
-        </section>
-
         <section class="panel">
           <h2>Add Or Update Contributor</h2>
           <form id="allowlist-form">
@@ -141,8 +135,6 @@
         var loadingEl = document.getElementById('admin-loading');
         var contentEl = document.getElementById('admin-content');
         var bootstrapEl = document.getElementById('bootstrap-admins');
-        var legacyAllowedSectionEl = document.getElementById('legacy-allowed-section');
-        var legacyAllowedEl = document.getElementById('legacy-allowed');
         var statusEl = document.getElementById('admin-status');
         var formEl = document.getElementById('allowlist-form');
         var npubEl = document.getElementById('allowlist-npub');
@@ -187,17 +179,6 @@
             return;
           }
           bootstrapEl.innerHTML = npubs.map(function (npub) {
-            return '<p><code>' + escapeHtml(npub) + '</code></p>';
-          }).join('');
-        }
-
-        function renderLegacyAllowed(npubs) {
-          if (!npubs || npubs.length === 0) {
-            legacyAllowedSectionEl.style.display = 'none';
-            return;
-          }
-          legacyAllowedSectionEl.style.display = '';
-          legacyAllowedEl.innerHTML = npubs.map(function (npub) {
             return '<p><code>' + escapeHtml(npub) + '</code></p>';
           }).join('');
         }
@@ -504,7 +485,6 @@
 
             var data = await res.json();
             renderBootstrapAdmins(data.bootstrap_admin_npubs || []);
-            renderLegacyAllowed(data.legacy_allowed_npubs || []);
             renderEntries(data.entries || []);
             loadMirrorStatus(token);
             loadingEl.style.display = 'none';

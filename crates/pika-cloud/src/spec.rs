@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::ProviderKind;
 use crate::incus::{IncusRuntimePlan, plan_mounts};
 use crate::mount::RuntimeMount;
-use crate::paths::{RUNTIME_ROOT, RuntimePaths};
+use crate::paths::RuntimePaths;
 use crate::policy::RuntimePolicies;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -27,14 +27,6 @@ pub struct RuntimeResources {
     pub root_disk_gib: Option<u32>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub struct RuntimeBootstrap {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub guest_request_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub entry_command: Option<String>,
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct IncusRuntimeConfig {
     pub project: String,
@@ -51,22 +43,16 @@ pub struct RuntimeSpec {
     pub resources: RuntimeResources,
     #[serde(default)]
     pub mounts: Vec<RuntimeMount>,
-    #[serde(default = "default_runtime_root")]
-    pub lifecycle_root: String,
     #[serde(default)]
     pub paths: RuntimePaths,
     #[serde(default)]
     pub policies: RuntimePolicies,
-    #[serde(default)]
-    pub bootstrap: RuntimeBootstrap,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_command: Option<String>,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
     #[serde(default)]
     pub metadata: BTreeMap<String, Value>,
-}
-
-fn default_runtime_root() -> String {
-    RUNTIME_ROOT.to_string()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -79,16 +65,8 @@ pub enum RuntimeSpecError {
         path: String,
         reason: &'static str,
     },
-    MismatchedStateRoot {
-        lifecycle_root: String,
-        state_dir: String,
-    },
     DuplicateMountGuestPath {
         guest_path: String,
-    },
-    MismatchedGuestRequestPath {
-        bootstrap_path: String,
-        runtime_path: String,
     },
 }
 
@@ -106,26 +84,12 @@ impl fmt::Display for RuntimeSpecError {
                 f,
                 "runtime spec path `{field}` = `{path}` is invalid: {reason}"
             ),
-            Self::MismatchedStateRoot {
-                lifecycle_root,
-                state_dir,
-            } => write!(
-                f,
-                "runtime spec lifecycle_root `{lifecycle_root}` must match paths.state_dir `{state_dir}`"
-            ),
             Self::DuplicateMountGuestPath { guest_path } => {
                 write!(
                     f,
                     "runtime spec mount guest_path `{guest_path}` must be unique"
                 )
             }
-            Self::MismatchedGuestRequestPath {
-                bootstrap_path,
-                runtime_path,
-            } => write!(
-                f,
-                "runtime spec bootstrap guest_request_path `{bootstrap_path}` must match paths.guest_request_path `{runtime_path}`"
-            ),
         }
     }
 }
@@ -145,17 +109,16 @@ impl RuntimeSpec {
             incus,
             resources,
             mounts,
-            lifecycle_root: default_runtime_root(),
             paths: RuntimePaths::default(),
             policies: RuntimePolicies::default(),
-            bootstrap: RuntimeBootstrap::default(),
+            entry_command: None,
             labels: BTreeMap::new(),
             metadata: BTreeMap::new(),
         }
     }
 
-    pub fn with_bootstrap(mut self, bootstrap: RuntimeBootstrap) -> Self {
-        self.bootstrap = bootstrap;
+    pub fn with_entry_command(mut self, entry_command: impl Into<String>) -> Self {
+        self.entry_command = Some(entry_command.into());
         self
     }
 
@@ -166,7 +129,6 @@ impl RuntimeSpec {
         require_non_empty("incus.profile", &self.incus.profile)?;
         require_non_empty("incus.image_alias", &self.incus.image_alias)?;
 
-        validate_absolute_normalized_path("lifecycle_root", &self.lifecycle_root)?;
         validate_absolute_normalized_path("paths.state_dir", &self.paths.state_dir)?;
         validate_absolute_normalized_path(
             "paths.events_path",
@@ -187,13 +149,6 @@ impl RuntimeSpec {
         validate_absolute_normalized_path("paths.logs_dir", &self.paths.logs_dir)?;
         validate_absolute_normalized_path("paths.guest_log_path", &self.paths.guest_log_path)?;
         validate_absolute_normalized_path("paths.artifacts_dir", &self.paths.artifacts_dir)?;
-
-        if self.lifecycle_root != self.paths.state_dir {
-            return Err(RuntimeSpecError::MismatchedStateRoot {
-                lifecycle_root: self.lifecycle_root.clone(),
-                state_dir: self.paths.state_dir.clone(),
-            });
-        }
 
         for (field, path) in [
             (
@@ -216,21 +171,11 @@ impl RuntimeSpec {
             ("paths.guest_log_path", self.paths.guest_log_path.as_str()),
             ("paths.artifacts_dir", self.paths.artifacts_dir.as_str()),
         ] {
-            ensure_under_root(field, path, &self.lifecycle_root)?;
+            ensure_under_root(field, path, &self.paths.state_dir)?;
         }
 
-        if let Some(path) = self.bootstrap.guest_request_path.as_deref() {
-            validate_absolute_normalized_path("bootstrap.guest_request_path", path)?;
-            if path != self.paths.guest_request_path {
-                return Err(RuntimeSpecError::MismatchedGuestRequestPath {
-                    bootstrap_path: path.to_string(),
-                    runtime_path: self.paths.guest_request_path.clone(),
-                });
-            }
-        }
-
-        if let Some(command) = self.bootstrap.entry_command.as_deref() {
-            require_non_empty("bootstrap.entry_command", command)?;
+        if let Some(command) = self.entry_command.as_deref() {
+            require_non_empty("entry_command", command)?;
         }
 
         let mut guest_paths = std::collections::BTreeSet::new();
@@ -254,10 +199,9 @@ impl RuntimeSpec {
             identity: self.identity.clone(),
             incus: self.incus.clone(),
             resources: self.resources.clone(),
-            lifecycle_root: self.lifecycle_root.clone(),
             paths: self.paths.clone(),
             policies: self.policies.clone(),
-            bootstrap: self.bootstrap.clone(),
+            entry_command: self.entry_command.clone(),
             mounts: plan_mounts(&self.mounts)?,
             labels: self.labels.clone(),
             metadata: self.metadata.clone(),
@@ -301,13 +245,13 @@ fn validate_absolute_normalized_path(
 fn ensure_under_root(
     field: &'static str,
     value: &str,
-    lifecycle_root: &str,
+    state_dir: &str,
 ) -> Result<(), RuntimeSpecError> {
-    if !value.starts_with(lifecycle_root) {
+    if !value.starts_with(state_dir) {
         return Err(RuntimeSpecError::InvalidPath {
             field,
             path: value.to_string(),
-            reason: "must stay under lifecycle_root",
+            reason: "must stay under paths.state_dir",
         });
     }
     Ok(())
@@ -346,10 +290,7 @@ mod tests {
                 required: true,
             }],
         )
-        .with_bootstrap(RuntimeBootstrap {
-            guest_request_path: Some("/run/pika-cloud/guest-request.json".to_string()),
-            entry_command: Some("/run/current-system/sw/bin/pikaci-incus-run".to_string()),
-        });
+        .with_entry_command("/run/current-system/sw/bin/pikaci-incus-run");
         spec.policies = RuntimePolicies {
             restart_policy: RestartPolicy::OnFailure,
             retention_policy: RetentionPolicy::KeepUntilStopped,
@@ -385,16 +326,15 @@ mod tests {
         );
 
         assert_eq!(spec.provider, ProviderKind::Incus);
-        assert_eq!(spec.lifecycle_root, RUNTIME_ROOT);
         assert_eq!(spec.paths, RuntimePaths::default());
         assert_eq!(spec.policies, RuntimePolicies::default());
-        assert_eq!(spec.bootstrap, RuntimeBootstrap::default());
+        assert_eq!(spec.entry_command, None);
         assert!(spec.labels.is_empty());
         assert!(spec.metadata.is_empty());
     }
 
     #[test]
-    fn runtime_spec_defaults_lifecycle_root_to_runtime_root() {
+    fn runtime_spec_defaults_paths_to_runtime_root() {
         let decoded: RuntimeSpec = serde_json::from_value(serde_json::json!({
             "identity": {
                 "runtime_id": "runtime-1",
@@ -412,7 +352,6 @@ mod tests {
             }
         }))
         .expect("decode");
-        assert_eq!(decoded.lifecycle_root, RUNTIME_ROOT);
         assert_eq!(decoded.paths, RuntimePaths::default());
         assert_eq!(
             decoded.policies.output_collection.mode,
@@ -445,7 +384,7 @@ mod tests {
         assert_eq!(plan.incus, spec.incus);
         assert_eq!(plan.resources, spec.resources);
         assert_eq!(plan.paths, spec.paths);
-        assert_eq!(plan.bootstrap, spec.bootstrap);
+        assert_eq!(plan.entry_command, spec.entry_command);
         assert_eq!(plan.mounts.len(), 2);
         assert_eq!(plan.mounts[0].io_bus, None);
         assert_eq!(
@@ -492,25 +431,24 @@ mod tests {
             RuntimeSpecError::InvalidPath {
                 field: "paths.status_path",
                 path: "/tmp/status.json".to_string(),
-                reason: "must stay under lifecycle_root",
+                reason: "must stay under paths.state_dir",
             }
         );
     }
 
     #[test]
-    fn validate_rejects_mismatched_bootstrap_guest_request_path() {
+    fn validate_rejects_empty_entry_command() {
         let mut spec = sample_runtime_spec();
-        spec.bootstrap.guest_request_path = Some("/run/pika-cloud/request.json".to_string());
+        spec.entry_command = Some("   ".to_string());
 
         let error = spec
             .build_incus_plan()
-            .expect_err("mismatched bootstrap guest request path");
+            .expect_err("empty entry command should fail");
 
         assert_eq!(
             error,
-            RuntimeSpecError::MismatchedGuestRequestPath {
-                bootstrap_path: "/run/pika-cloud/request.json".to_string(),
-                runtime_path: "/run/pika-cloud/guest-request.json".to_string(),
+            RuntimeSpecError::EmptyField {
+                field: "entry_command"
             }
         );
     }

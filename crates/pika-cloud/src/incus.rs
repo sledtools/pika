@@ -6,9 +6,7 @@ use serde_json::Value;
 use crate::mount::{RuntimeMount, RuntimeMountKind, RuntimeMountMode};
 use crate::paths::RuntimePaths;
 use crate::policy::RuntimePolicies;
-use crate::spec::{
-    IncusRuntimeConfig, RuntimeBootstrap, RuntimeIdentity, RuntimeResources, RuntimeSpecError,
-};
+use crate::spec::{IncusRuntimeConfig, RuntimeIdentity, RuntimeResources, RuntimeSpecError};
 
 pub const INCUS_READ_ONLY_DISK_IO_BUS: &str = "virtiofs";
 pub const INCUS_LIMITS_CPU_KEY: &str = "limits.cpu";
@@ -38,10 +36,10 @@ pub struct IncusRuntimePlan {
     pub identity: RuntimeIdentity,
     pub incus: IncusRuntimeConfig,
     pub resources: RuntimeResources,
-    pub lifecycle_root: String,
     pub paths: RuntimePaths,
     pub policies: RuntimePolicies,
-    pub bootstrap: RuntimeBootstrap,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_command: Option<String>,
     #[serde(default)]
     pub mounts: Vec<IncusMountPlan>,
     #[serde(default)]
@@ -219,10 +217,9 @@ mod tests {
                 memory_mib: Some(4096),
                 root_disk_gib: None,
             },
-            lifecycle_root: crate::RUNTIME_STATE_DIR.to_string(),
             paths: RuntimePaths::default(),
             policies: RuntimePolicies::default(),
-            bootstrap: RuntimeBootstrap::default(),
+            entry_command: None,
             mounts: Vec::new(),
             labels: BTreeMap::new(),
             metadata: BTreeMap::new(),

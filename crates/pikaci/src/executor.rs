@@ -11,9 +11,9 @@ use anyhow::{Context, anyhow, bail};
 use chrono::Utc;
 use fs2::FileExt;
 use pika_cloud::{
-    CLOUD_GUEST_LOG_PATH, EVENTS_PATH, GUEST_REQUEST_PATH, IncusGuestRunRequest,
-    LIFECYCLE_SCHEMA_VERSION, RESULT_PATH, RuntimeArtifacts, RuntimeResultStatus,
-    RuntimeTerminalResult, STATUS_PATH, runtime_terminal_result_for_exit_code,
+    CLOUD_GUEST_LOG_PATH, EVENTS_PATH, IncusGuestRunRequest, LIFECYCLE_SCHEMA_VERSION, RESULT_PATH,
+    RuntimeArtifacts, RuntimeResultStatus, RuntimeTerminalResult, STATUS_PATH,
+    runtime_terminal_result_for_exit_code,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

@@ -23,8 +23,7 @@ pub use policy::{
     OutputCollectionMode, OutputCollectionPolicy, RestartPolicy, RetentionPolicy, RuntimePolicies,
 };
 pub use spec::{
-    IncusRuntimeConfig, RuntimeBootstrap, RuntimeIdentity, RuntimeResources, RuntimeSpec,
-    RuntimeSpecError,
+    IncusRuntimeConfig, RuntimeIdentity, RuntimeResources, RuntimeSpec, RuntimeSpecError,
 };
 
 use std::collections::BTreeMap;

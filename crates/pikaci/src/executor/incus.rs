@@ -5,9 +5,8 @@ use crate::model::{
 };
 use pika_cloud::incus::{INCUS_DEVICE_TYPE_KEY, INCUS_DISK_DEVICE_TYPE};
 use pika_cloud::{
-    IncusMountPlan, IncusRuntimeConfig, IncusRuntimePlan, MountKind, MountMode, RuntimeBootstrap,
-    RuntimeIdentity, RuntimeMount, RuntimeResources, RuntimeSpec, incus_disk_device_config,
-    incus_runtime_config,
+    IncusMountPlan, IncusRuntimeConfig, IncusRuntimePlan, MountKind, MountMode, RuntimeIdentity,
+    RuntimeMount, RuntimeResources, RuntimeSpec, incus_disk_device_config, incus_runtime_config,
 };
 use std::path::Component;
 
@@ -92,10 +91,7 @@ fn build_remote_incus_runtime_plan(
         },
         mounts,
     )
-    .with_bootstrap(RuntimeBootstrap {
-        guest_request_path: Some(GUEST_REQUEST_PATH.to_string()),
-        entry_command: Some(REMOTE_LINUX_VM_INCUS_RUN_BINARY.to_string()),
-    })
+    .with_entry_command(REMOTE_LINUX_VM_INCUS_RUN_BINARY)
     .build_incus_plan()
     .map_err(|err| anyhow!("build remote Incus runtime plan: {err}"))
 }

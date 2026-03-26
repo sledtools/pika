@@ -182,6 +182,7 @@
         fileset = lib.fileset.unions [
           ./Cargo.toml
           ./Cargo.lock
+          ./ci
           ./flake.nix
           ./flake.lock
           ./cli

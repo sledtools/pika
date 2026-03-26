@@ -12,7 +12,8 @@ use chrono::Utc;
 use fs2::FileExt;
 use pika_cloud::{
     CLOUD_GUEST_LOG_PATH, EVENTS_PATH, GUEST_REQUEST_PATH, IncusGuestRunRequest, RESULT_PATH,
-    STATUS_PATH,
+    RuntimeResultStatus, RuntimeTerminalResult, STATUS_PATH, decode_runtime_terminal_result,
+    encode_runtime_terminal_result_pretty, runtime_terminal_result_for_exit_code,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -57,14 +58,6 @@ fn resolved_host_local_openclaw_dir(ctx: &HostContext) -> Option<PathBuf> {
     }
 
     None
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct GuestResult {
-    status: String,
-    exit_code: i32,
-    finished_at: String,
-    message: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -421,19 +414,12 @@ fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOut
     } else {
         format!("host-local command exited with {exit_code}")
     };
-    let result = GuestResult {
-        status: match status {
-            RunStatus::Passed => "passed".to_string(),
-            _ => "failed".to_string(),
-        },
-        exit_code,
-        finished_at: Utc::now().to_rfc3339(),
-        message: Some(message.clone()),
-    };
+    let result =
+        runtime_terminal_result_for_exit_code(exit_code, Utc::now().to_rfc3339(), message.clone());
     let result_path = artifacts_dir.join("result.json");
     fs::write(
         &result_path,
-        serde_json::to_vec_pretty(&result).context("encode host-local result")?,
+        encode_runtime_terminal_result_pretty(&result).context("encode host-local result")?,
     )
     .with_context(|| format!("write {}", result_path.display()))?;
 
@@ -1022,17 +1008,11 @@ fn run_remote_linux_vm_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<J
             collect_remote_linux_vm_artifacts(&remote, ctx)
         })?;
 
-        let guest_result = load_guest_result(&ctx.job_dir.join("artifacts/result.json"))?;
-        let status = match guest_result.status.as_str() {
-            "passed" => RunStatus::Passed,
-            _ => RunStatus::Failed,
-        };
+        let guest_result = load_guest_terminal_result(&ctx.job_dir.join("artifacts/result.json"))?;
         Ok(JobOutcome {
-            status,
-            exit_code: Some(guest_result.exit_code),
-            message: guest_result
-                .message
-                .unwrap_or_else(|| format!("guest finished with {}", guest_result.status)),
+            status: run_status_from_terminal_result(&guest_result),
+            exit_code: guest_result.exit_code,
+            message: guest_result.message,
             remote_linux_vm_execution: None,
         })
     })();
@@ -1264,17 +1244,11 @@ fn run_tart_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> 
     let _ = tart_process.stderr_handle.join();
 
     let result_path = artifacts_dir.join("result.json");
-    let guest_result = load_guest_result(&result_path)?;
-    let status = match guest_result.status.as_str() {
-        "passed" => RunStatus::Passed,
-        _ => RunStatus::Failed,
-    };
+    let guest_result = load_guest_terminal_result(&result_path)?;
     Ok(JobOutcome {
-        status,
-        exit_code: Some(guest_result.exit_code),
-        message: guest_result
-            .message
-            .unwrap_or_else(|| format!("guest finished with {}", guest_result.status)),
+        status: run_status_from_terminal_result(&guest_result),
+        exit_code: guest_result.exit_code,
+        message: guest_result.message,
         remote_linux_vm_execution: None,
     })
 }
@@ -1657,7 +1631,7 @@ set +e
 {user_command}
 code=$?
 set -e
-status="passed"
+status="completed"
 message="test passed"
 if [ "$code" -ne 0 ]; then
   status="failed"
@@ -1665,6 +1639,7 @@ if [ "$code" -ne 0 ]; then
 fi
 cat > "{artifacts_mount}/result.json" <<EOF
 {{
+  "schema_version": 1,
   "status": "$status",
   "exit_code": $code,
   "finished_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
@@ -1744,9 +1719,16 @@ fn run_command_to_log(command: &mut Command, log_path: &Path, label: &str) -> an
     Ok(())
 }
 
-fn load_guest_result(path: &Path) -> anyhow::Result<GuestResult> {
+fn load_guest_terminal_result(path: &Path) -> anyhow::Result<RuntimeTerminalResult> {
     let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    serde_json::from_slice(&bytes).with_context(|| format!("decode {}", path.display()))
+    decode_runtime_terminal_result(&bytes).with_context(|| format!("decode {}", path.display()))
+}
+
+fn run_status_from_terminal_result(result: &RuntimeTerminalResult) -> RunStatus {
+    match result.status {
+        RuntimeResultStatus::Completed => RunStatus::Passed,
+        RuntimeResultStatus::Failed => RunStatus::Failed,
+    }
 }
 
 fn command_stdout(command: &mut Command) -> Option<String> {
@@ -2426,6 +2408,7 @@ mod tests {
     use pika_cloud::{
         CLOUD_GUEST_LOG_PATH, EVENTS_PATH, GUEST_REQUEST_PATH,
         INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION, RESULT_PATH, STATUS_PATH,
+        runtime_terminal_result_for_exit_code,
     };
 
     use super::{
@@ -2437,7 +2420,8 @@ mod tests {
         build_sync_directory_finalize_command, cached_host_local_dev_env_is_usable,
         host_local_command_mode, host_local_dev_env_script_path, host_local_dev_env_shell_program,
         incus, prepare_host_local_cached_dev_env_with, read_host_local_dev_env_state,
-        remote_linux_vm_execution_from_error, remote_snapshot_ready_for_use, run_job_on_runner,
+        remote_linux_vm_execution_from_error, remote_snapshot_ready_for_use,
+        render_tart_guest_script, run_job_on_runner, run_status_from_terminal_result,
         shell_single_quote, staged_linux_remote_defaults, staged_linux_remote_snapshot_dir,
         write_host_local_dev_env_script, write_host_local_dev_env_state,
     };
@@ -2547,6 +2531,23 @@ mod tests {
         assert_eq!(STATUS_PATH, "/run/pika-cloud/status.json");
         assert_eq!(EVENTS_PATH, "/run/pika-cloud/events.jsonl");
         assert_eq!(RESULT_PATH, "/run/pika-cloud/result.json");
+    }
+
+    #[test]
+    fn runtime_terminal_result_completed_maps_to_passed_run_status() {
+        let result =
+            runtime_terminal_result_for_exit_code(0, "2026-03-25T20:00:00Z", "test passed");
+
+        assert_eq!(run_status_from_terminal_result(&result), RunStatus::Passed);
+    }
+
+    #[test]
+    fn tart_guest_script_writes_shared_terminal_result_vocabulary() {
+        let script = render_tart_guest_script("cargo test", false, false, false);
+
+        assert!(script.contains("status=\"completed\""));
+        assert!(script.contains("\"schema_version\": 1"));
+        assert!(script.contains("\"status\": \"$status\""));
     }
 
     #[test]

@@ -94,6 +94,41 @@ pub struct LifecycleTerminalResult {
     pub details: Option<Value>,
 }
 
+impl LifecycleTerminalStatus {
+    pub fn from_exit_code(exit_code: i32) -> Self {
+        if exit_code == 0 {
+            Self::Completed
+        } else {
+            Self::Failed
+        }
+    }
+}
+
+pub fn runtime_terminal_result_for_exit_code(
+    exit_code: i32,
+    finished_at: impl Into<String>,
+    message: impl Into<String>,
+) -> RuntimeTerminalResult {
+    RuntimeTerminalResult {
+        schema_version: LIFECYCLE_SCHEMA_VERSION,
+        status: RuntimeResultStatus::from_exit_code(exit_code),
+        finished_at: finished_at.into(),
+        message: message.into(),
+        exit_code: Some(exit_code),
+        details: None,
+    }
+}
+
+pub fn encode_runtime_terminal_result_pretty(
+    result: &RuntimeTerminalResult,
+) -> serde_json::Result<Vec<u8>> {
+    serde_json::to_vec_pretty(result)
+}
+
+pub fn decode_runtime_terminal_result(bytes: &[u8]) -> serde_json::Result<RuntimeTerminalResult> {
+    serde_json::from_slice(bytes)
+}
+
 pub type LifecycleState = RuntimeState;
 pub type RuntimeStatusSnapshot = LifecycleStatus;
 pub type RuntimeResultStatus = LifecycleTerminalStatus;
@@ -131,5 +166,47 @@ mod tests {
         };
         let encoded = serde_json::to_string(&status).expect("encode");
         assert!(encoded.contains("\"provisioning\""));
+    }
+
+    #[test]
+    fn runtime_terminal_result_for_exit_code_uses_completed_on_success() {
+        let result =
+            runtime_terminal_result_for_exit_code(0, "2026-03-25T20:00:00Z", "test passed");
+
+        assert_eq!(result.schema_version, LIFECYCLE_SCHEMA_VERSION);
+        assert_eq!(result.status, RuntimeResultStatus::Completed);
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(result.message, "test passed");
+    }
+
+    #[test]
+    fn runtime_terminal_result_helpers_round_trip() {
+        let result = runtime_terminal_result_for_exit_code(
+            9,
+            "2026-03-25T20:00:00Z",
+            "test command exited with 9",
+        );
+
+        let encoded = encode_runtime_terminal_result_pretty(&result).expect("encode");
+        let decoded = decode_runtime_terminal_result(&encoded).expect("decode");
+
+        assert_eq!(decoded, result);
+        assert_eq!(decoded.status, RuntimeResultStatus::Failed);
+    }
+
+    #[test]
+    fn runtime_terminal_result_rejects_legacy_passed_status() {
+        let err = decode_runtime_terminal_result(
+            br#"{
+                "schema_version": 1,
+                "status": "passed",
+                "exit_code": 0,
+                "finished_at": "2026-03-25T20:00:00Z",
+                "message": "test passed"
+            }"#,
+        )
+        .expect_err("legacy passed status should fail");
+
+        assert!(err.to_string().contains("unknown variant"));
     }
 }

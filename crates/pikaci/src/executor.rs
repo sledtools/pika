@@ -2683,6 +2683,7 @@ mod tests {
         assert!(args.contains(&"config".to_string()));
         assert!(args.contains(&"device".to_string()));
         assert!(args.contains(&"add".to_string()));
+        assert!(args.contains(&"disk".to_string()));
         assert!(args.contains(&"source=/nix/store/workspace-deps".to_string()));
         assert!(args.contains(&format!(
             "path={}",
@@ -2691,6 +2692,7 @@ mod tests {
         assert!(args.contains(&"readonly=true".to_string()));
         assert!(args.contains(&"shift=false".to_string()));
         assert!(args.contains(&"io.bus=virtiofs".to_string()));
+        assert!(!args.contains(&"type=disk".to_string()));
     }
 
     #[test]

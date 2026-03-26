@@ -36,12 +36,12 @@ use crate::nostr_auth::{
 };
 use crate::{RequestContext, State};
 use pika_cloud::{
-    AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams, IncusRuntimeConfig,
-    IncusRuntimePlan, LifecycleState, ManagedOpenClawLaunchAuth, ManagedRuntimeBackupStatus,
-    ManagedRuntimeStatus, ManagedVmProvisionParams as ManagedRuntimeProvisionParams, MountKind,
-    MountMode, ProviderKind, RuntimeBootstrap, RuntimeIdentity, RuntimeMount, RuntimePaths,
-    RuntimePolicies, RuntimeResources, RuntimeSpec, RuntimeStatusSnapshot, VmBackupFreshness,
-    VmBackupUnitKind, VmRecoveryPointKind, STATUS_PATH,
+    incus_mount_device_config, incus_runtime_config, AgentProvisionRequest, AgentStartupPhase,
+    IncusProvisionParams, IncusRuntimeConfig, IncusRuntimePlan, LifecycleState,
+    ManagedOpenClawLaunchAuth, ManagedRuntimeBackupStatus, ManagedRuntimeStatus,
+    ManagedVmProvisionParams as ManagedRuntimeProvisionParams, MountKind, MountMode,
+    RuntimeIdentity, RuntimeMount, RuntimeResources, RuntimeSpec, RuntimeStatusSnapshot,
+    VmBackupFreshness, VmBackupUnitKind, VmRecoveryPointKind, STATUS_PATH,
 };
 use pika_relay_profiles::default_message_relays;
 
@@ -1573,36 +1573,15 @@ impl IncusManagedRuntimeProvider {
             }),
         );
         for mount in &runtime_plan.mounts {
-            let mut device = serde_json::Map::from_iter([
-                (
-                    "type".to_string(),
-                    serde_json::Value::String("disk".to_string()),
-                ),
-                (
-                    "pool".to_string(),
-                    serde_json::Value::String(self.resolved.storage_pool.clone()),
-                ),
-                (
-                    "source".to_string(),
-                    serde_json::Value::String(mount.source.clone()),
-                ),
-                (
-                    "path".to_string(),
-                    serde_json::Value::String(mount.guest_path.clone()),
-                ),
-            ]);
-            if mount.read_only {
-                device.insert(
-                    "readonly".to_string(),
-                    serde_json::Value::String("true".to_string()),
-                );
-            }
-            if let Some(io_bus) = mount.io_bus.as_deref() {
-                device.insert(
-                    "io.bus".to_string(),
-                    serde_json::Value::String(io_bus.to_string()),
-                );
-            }
+            let mut device = serde_json::Map::from_iter(
+                incus_mount_device_config(mount)
+                    .into_iter()
+                    .map(|(key, value)| (key, serde_json::Value::String(value))),
+            );
+            device.insert(
+                "pool".to_string(),
+                serde_json::Value::String(self.resolved.storage_pool.clone()),
+            );
             devices.insert(mount.device_name.clone(), serde_json::Value::Object(device));
         }
         let openclaw_nic_network = self.load_primary_nic_network_name(request_id).await?;
@@ -1628,17 +1607,8 @@ impl IncusManagedRuntimeProvider {
                 serde_json::Value::String("openclaw".to_string()),
             ),
         ]);
-        if let Some(memory_mib) = runtime_plan.resources.memory_mib {
-            instance_config.insert(
-                "limits.memory".to_string(),
-                serde_json::Value::String(format!("{memory_mib}MiB")),
-            );
-        }
-        if let Some(vcpu_count) = runtime_plan.resources.vcpu_count {
-            instance_config.insert(
-                "limits.cpu".to_string(),
-                serde_json::Value::String(vcpu_count.to_string()),
-            );
+        for (key, value) in incus_runtime_config(&runtime_plan) {
+            instance_config.insert(key, serde_json::Value::String(value));
         }
         let proxy_host = self.openclaw_proxy_host_ipv4()?;
         let (proxy_port, guest_ipv4) = self
@@ -1824,36 +1794,29 @@ impl IncusManagedRuntimeProvider {
         vm_id: &str,
         volume_name: &str,
     ) -> anyhow::Result<IncusRuntimePlan> {
-        RuntimeSpec {
-            identity: RuntimeIdentity {
+        RuntimeSpec::for_incus(
+            RuntimeIdentity {
                 runtime_id: vm_id.to_string(),
                 instance_name: vm_id.to_string(),
             },
-            provider: ProviderKind::Incus,
-            incus: IncusRuntimeConfig {
+            IncusRuntimeConfig {
                 project: self.resolved.project.clone(),
                 profile: self.resolved.profile.clone(),
                 image_alias: self.resolved.image_alias.clone(),
             },
-            resources: RuntimeResources {
+            RuntimeResources {
                 vcpu_count: None,
                 memory_mib: Some(INCUS_DEV_VM_MEMORY_MIB),
                 root_disk_gib: None,
             },
-            mounts: vec![RuntimeMount {
+            vec![RuntimeMount {
                 kind: MountKind::PersistentVolume,
                 guest_path: INCUS_PERSISTENT_VOLUME_PATH.to_string(),
                 source: volume_name.to_string(),
                 mode: MountMode::ReadWrite,
                 required: true,
             }],
-            lifecycle_root: pika_cloud::RUNTIME_STATE_DIR.to_string(),
-            paths: RuntimePaths::default(),
-            policies: RuntimePolicies::default(),
-            bootstrap: RuntimeBootstrap::default(),
-            labels: BTreeMap::new(),
-            metadata: BTreeMap::new(),
-        }
+        )
         .build_incus_plan()
         .context("build managed Incus runtime plan")
     }

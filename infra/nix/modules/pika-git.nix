@@ -15,6 +15,38 @@ let
     state_dir=${lib.escapeShellArg serviceStateDir}
     legacy_state_dir=${lib.escapeShellArg legacyServiceStateDir}
     repo=${lib.escapeShellArg canonicalGitDir}
+    db_path="$state_dir/pika-git.db"
+    legacy_db_path_before_move="$legacy_state_dir/pika-news.db"
+    legacy_db_path_after_move="$state_dir/pika-news.db"
+    db_backup_path="$state_dir/pika-git.db.pre-rename-backup"
+
+    count_table_rows() {
+      local db_path="$1"
+      local table_name="$2"
+
+      if [ ! -f "$db_path" ]; then
+        echo 0
+        return 0
+      fi
+
+      if [ "$(${pkgs.sqlite}/bin/sqlite3 "$db_path" "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '$table_name';" 2>/dev/null || echo 0)" != "1" ]; then
+        echo 0
+        return 0
+      fi
+
+      ${pkgs.sqlite}/bin/sqlite3 "$db_path" "SELECT COUNT(*) FROM $table_name;" 2>/dev/null || echo 0
+    }
+
+    db_richness_score() {
+      local db_path="$1"
+      local branch_count artifact_count inbox_count nightly_count auth_count
+      branch_count="$(count_table_rows "$db_path" branch_records)"
+      artifact_count="$(count_table_rows "$db_path" branch_artifact_versions)"
+      inbox_count="$(count_table_rows "$db_path" branch_inbox_states)"
+      nightly_count="$(count_table_rows "$db_path" nightly_runs)"
+      auth_count="$(count_table_rows "$db_path" auth_tokens)"
+      echo $((branch_count + artifact_count + inbox_count + nightly_count + auth_count))
+    }
 
     if [ "$legacy_state_dir" != "$state_dir" ] && [ -d "$legacy_state_dir" ] && [ ! -L "$legacy_state_dir" ]; then
       ${pkgs.coreutils}/bin/mkdir -p "$state_dir"
@@ -27,6 +59,32 @@ let
 
     ${pkgs.coreutils}/bin/mkdir -p "$state_dir"
     ${pkgs.coreutils}/bin/chown -R ${serviceUser}:${serviceGroup} "$state_dir"
+
+    legacy_db_path=""
+    if [ "$legacy_db_path_before_move" != "$db_path" ] && [ -f "$legacy_db_path_before_move" ]; then
+      legacy_db_path="$legacy_db_path_before_move"
+    elif [ "$legacy_db_path_after_move" != "$db_path" ] && [ -f "$legacy_db_path_after_move" ]; then
+      legacy_db_path="$legacy_db_path_after_move"
+    fi
+
+    if [ -n "$legacy_db_path" ]; then
+      legacy_richness_score="$(db_richness_score "$legacy_db_path")"
+      current_richness_score="$(db_richness_score "$db_path")"
+
+      if [ ! -f "$db_path" ] || [ "$legacy_richness_score" -gt "$current_richness_score" ]; then
+        if [ -f "$db_path" ] && [ "$legacy_richness_score" -gt "$current_richness_score" ]; then
+          if [ ! -e "$db_backup_path" ]; then
+            ${pkgs.coreutils}/bin/mv "$db_path" "$db_backup_path"
+          else
+            ${pkgs.coreutils}/bin/rm -f "$db_path"
+          fi
+        fi
+
+        ${pkgs.coreutils}/bin/mv "$legacy_db_path" "$db_path"
+        ${pkgs.coreutils}/bin/chown ${serviceUser}:${serviceGroup} "$db_path"
+        ${pkgs.coreutils}/bin/chmod 0640 "$db_path"
+      fi
+    fi
 
     if [ "$legacy_state_dir" != "$state_dir" ] && [ ! -e "$legacy_state_dir" ]; then
       ${pkgs.coreutils}/bin/ln -s "$state_dir" "$legacy_state_dir"

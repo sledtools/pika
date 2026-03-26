@@ -128,6 +128,7 @@ mod tests {
     use std::fs;
     use std::process::Command;
 
+    use crate::ci_state::CiLaneStatus;
     use crate::config::{Config, ForgeRepoConfig};
 
     use super::poll_once_limited;
@@ -287,7 +288,7 @@ paths = []
             .list_branch_ci_runs(branch.branch_id, 4)
             .expect("list finished ci runs");
         assert_eq!(finished[0].lanes[0].lane_id, "branch_lane");
-        assert_eq!(finished[0].lanes[0].status, "success");
+        assert_eq!(finished[0].lanes[0].status, CiLaneStatus::Success);
         assert_eq!(finished[0].lanes[0].log_text.as_deref(), Some("lane-b\n"));
     }
 

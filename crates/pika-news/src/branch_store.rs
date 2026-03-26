@@ -1,4 +1,5 @@
 use anyhow::Context;
+use pika_forge_model::{BranchState, ForgeCiStatus, TutorialStatus};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use crate::storage::Store;
@@ -46,11 +47,11 @@ pub struct BranchFeedItem {
     pub repo: String,
     pub branch_name: String,
     pub title: String,
-    pub state: String,
+    pub state: BranchState,
     pub updated_at: String,
     pub head_sha: String,
-    pub tutorial_status: String,
-    pub ci_status: String,
+    pub tutorial_status: TutorialStatus,
+    pub ci_status: ForgeCiStatus,
 }
 
 #[derive(Debug, Clone)]
@@ -61,18 +62,18 @@ pub struct BranchDetailRecord {
     pub repo: String,
     pub branch_name: String,
     pub title: String,
-    pub branch_state: String,
+    pub branch_state: BranchState,
     pub updated_at: String,
     pub target_branch: String,
     pub head_sha: String,
     pub merge_base_sha: String,
     pub merge_commit_sha: Option<String>,
-    pub tutorial_status: String,
+    pub tutorial_status: TutorialStatus,
     pub tutorial_json: Option<String>,
     pub unified_diff: Option<String>,
     pub claude_session_id: Option<String>,
     pub error_message: Option<String>,
-    pub ci_status: String,
+    pub ci_status: ForgeCiStatus,
 }
 
 #[derive(Debug, Clone)]
@@ -80,7 +81,7 @@ pub struct BranchLookupRecord {
     pub branch_id: i64,
     pub repo: String,
     pub branch_name: String,
-    pub branch_state: String,
+    pub branch_state: BranchState,
 }
 
 #[derive(Debug, Clone)]
@@ -90,7 +91,7 @@ pub struct BranchActionTarget {
     pub repo: String,
     pub branch_name: String,
     pub title: String,
-    pub branch_state: String,
+    pub branch_state: BranchState,
     pub target_branch: String,
     pub head_sha: String,
     pub merge_base_sha: String,
@@ -312,11 +313,11 @@ impl Store {
                         repo: row.get(1)?,
                         branch_name: row.get(2)?,
                         title: row.get(3)?,
-                        state: row.get(4)?,
+                        state: BranchState::from(row.get::<_, String>(4)?),
                         updated_at: row.get(5)?,
                         head_sha: row.get(6)?,
-                        tutorial_status: row.get(7)?,
-                        ci_status: row.get(8)?,
+                        tutorial_status: TutorialStatus::from(row.get::<_, String>(7)?),
+                        ci_status: ForgeCiStatus::from(row.get::<_, String>(8)?),
                     })
                 })
                 .context("query branch feed items")?;
@@ -381,18 +382,18 @@ impl Store {
                         repo: row.get(2)?,
                         branch_name: row.get(3)?,
                         title: row.get(4)?,
-                        branch_state: row.get(5)?,
+                        branch_state: BranchState::from(row.get::<_, String>(5)?),
                         updated_at: row.get(6)?,
                         target_branch: row.get(7)?,
                         head_sha: row.get(8)?,
                         merge_base_sha: row.get(9)?,
                         merge_commit_sha: row.get(10)?,
-                        tutorial_status: row.get(11)?,
+                        tutorial_status: TutorialStatus::from(row.get::<_, String>(11)?),
                         tutorial_json: row.get(12)?,
                         unified_diff: row.get(13)?,
                         claude_session_id: row.get(14)?,
                         error_message: row.get(15)?,
-                        ci_status: row.get(16)?,
+                        ci_status: ForgeCiStatus::from(row.get::<_, String>(16)?),
                     })
                 },
             )
@@ -421,7 +422,7 @@ impl Store {
                         branch_id: row.get(0)?,
                         repo: row.get(1)?,
                         branch_name: row.get(2)?,
-                        branch_state: row.get(3)?,
+                        branch_state: BranchState::from(row.get::<_, String>(3)?),
                     })
                 },
             )
@@ -447,7 +448,7 @@ impl Store {
                         repo: row.get(1)?,
                         branch_name: row.get(2)?,
                         title: row.get(3)?,
-                        branch_state: row.get(4)?,
+                        branch_state: BranchState::from(row.get::<_, String>(4)?),
                         target_branch: row.get(5)?,
                         head_sha: row.get(6)?,
                         merge_base_sha: row.get(7)?,
@@ -482,7 +483,7 @@ impl Store {
                             repo: row.get(1)?,
                             branch_name: row.get(2)?,
                             title: row.get(3)?,
-                            branch_state: row.get(4)?,
+                            branch_state: BranchState::from(row.get::<_, String>(4)?),
                             target_branch: row.get(5)?,
                             head_sha: row.get(6)?,
                             merge_base_sha: row.get(7)?,
@@ -819,9 +820,10 @@ mod tests {
 
     use super::BranchUpsertInput;
     use crate::ci_manifest::ForgeLane;
-    use crate::ci_state::CiLaneExecutionReason;
+    use crate::ci_state::{CiLaneExecutionReason, CiLaneStatus};
     use crate::ci_store::CI_LANE_LEASE_LOST;
     use crate::storage::Store;
+    use pika_forge_model::{BranchState, ForgeCiStatus};
 
     fn open_store() -> Store {
         let dir = tempfile::tempdir().expect("create temp dir").keep();
@@ -931,10 +933,10 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert!(items
             .iter()
-            .any(|item| item.branch_id == first.branch_id && item.state == "closed"));
+            .any(|item| item.branch_id == first.branch_id && item.state == BranchState::Closed));
         assert!(items
             .iter()
-            .any(|item| item.branch_id == second.branch_id && item.state == "open"));
+            .any(|item| item.branch_id == second.branch_id && item.state == BranchState::Open));
     }
 
     #[test]
@@ -953,7 +955,7 @@ mod tests {
             .expect("branch exists");
 
         assert_eq!(resolved.branch_id, first.branch_id);
-        assert_eq!(resolved.branch_state, "closed");
+        assert_eq!(resolved.branch_state, BranchState::Closed);
         assert_eq!(resolved.branch_name, "feature/history");
     }
 
@@ -1010,7 +1012,7 @@ mod tests {
             .finish_branch_ci_lane_run(
                 failed_lane.lane_run_id,
                 failed_lane.claim_token,
-                "failed",
+                crate::ci_state::CiLaneStatus::Failed,
                 "boom",
             )
             .expect("finish failed lane");
@@ -1018,7 +1020,7 @@ mod tests {
             .finish_branch_ci_lane_run(
                 passed_lane.lane_run_id,
                 passed_lane.claim_token,
-                "success",
+                crate::ci_state::CiLaneStatus::Success,
                 "ok",
             )
             .expect("finish passed lane");
@@ -1032,7 +1034,7 @@ mod tests {
             .expect("list branch runs");
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].id, rerun_suite_id);
-        assert_eq!(runs[0].status, "queued");
+        assert_eq!(runs[0].status, ForgeCiStatus::Queued);
         assert_eq!(runs[0].rerun_of_run_id, Some(failed_lane.suite_id));
         assert_eq!(runs[0].lanes.len(), 1);
         assert_eq!(runs[0].lanes[0].lane_id, "pika");
@@ -1141,7 +1143,7 @@ mod tests {
             .finish_nightly_lane_run(
                 failed_lane.lane_run_id,
                 failed_lane.claim_token,
-                "failed",
+                crate::ci_state::CiLaneStatus::Failed,
                 "nightly boom",
             )
             .expect("finish failed nightly lane");
@@ -1149,7 +1151,7 @@ mod tests {
             .finish_nightly_lane_run(
                 passed_lane.lane_run_id,
                 passed_lane.claim_token,
-                "success",
+                crate::ci_state::CiLaneStatus::Success,
                 "nightly ok",
             )
             .expect("finish passed nightly lane");
@@ -1165,7 +1167,7 @@ mod tests {
             .get_nightly_run(rerun_run_id)
             .expect("rerun nightly detail")
             .expect("rerun nightly exists");
-        assert_eq!(rerun.status, "queued");
+        assert_eq!(rerun.status, ForgeCiStatus::Queued);
         assert_eq!(rerun.rerun_of_run_id, Some(failed_lane.nightly_run_id));
         assert_eq!(rerun.lanes.len(), 1);
         assert_eq!(rerun.lanes[0].lane_id, "nightly_pika");
@@ -1280,7 +1282,12 @@ mod tests {
             .next()
             .expect("job");
         store
-            .finish_branch_ci_lane_run(job.lane_run_id, job.claim_token, "failed", "boom")
+            .finish_branch_ci_lane_run(
+                job.lane_run_id,
+                job.claim_token,
+                crate::ci_state::CiLaneStatus::Failed,
+                "boom",
+            )
             .expect("finish lane");
 
         let rerun = store
@@ -1325,7 +1332,12 @@ mod tests {
             .next()
             .expect("job");
         store
-            .finish_nightly_lane_run(job.lane_run_id, job.claim_token, "failed", "boom")
+            .finish_nightly_lane_run(
+                job.lane_run_id,
+                job.claim_token,
+                crate::ci_state::CiLaneStatus::Failed,
+                "boom",
+            )
             .expect("finish nightly lane");
         let wrong_nightly = store
             .list_recent_nightly_runs(8)
@@ -1359,24 +1371,34 @@ mod tests {
         assert_eq!(jobs.len(), 2);
 
         store
-            .finish_branch_ci_lane_run(jobs[0].lane_run_id, jobs[0].claim_token, "failed", "boom")
+            .finish_branch_ci_lane_run(
+                jobs[0].lane_run_id,
+                jobs[0].claim_token,
+                crate::ci_state::CiLaneStatus::Failed,
+                "boom",
+            )
             .expect("finish first lane");
 
         let runs = store
             .list_branch_ci_runs(branch.branch_id, 4)
             .expect("list branch runs");
-        assert_eq!(runs[0].status, "running");
+        assert_eq!(runs[0].status, ForgeCiStatus::Running);
         assert!(runs[0].finished_at.is_none());
-        assert_eq!(runs[0].lanes[0].status, "failed");
-        assert_eq!(runs[0].lanes[1].status, "running");
+        assert_eq!(runs[0].lanes[0].status, CiLaneStatus::Failed);
+        assert_eq!(runs[0].lanes[1].status, CiLaneStatus::Running);
 
         store
-            .finish_branch_ci_lane_run(jobs[1].lane_run_id, jobs[1].claim_token, "success", "ok")
+            .finish_branch_ci_lane_run(
+                jobs[1].lane_run_id,
+                jobs[1].claim_token,
+                crate::ci_state::CiLaneStatus::Success,
+                "ok",
+            )
             .expect("finish second lane");
         let runs = store
             .list_branch_ci_runs(branch.branch_id, 4)
             .expect("list branch runs");
-        assert_eq!(runs[0].status, "failed");
+        assert_eq!(runs[0].status, ForgeCiStatus::Failed);
         assert!(runs[0].finished_at.is_some());
     }
 
@@ -1430,7 +1452,7 @@ mod tests {
             .finish_branch_ci_lane_run(
                 first_job.lane_run_id,
                 first_job.claim_token,
-                "success",
+                crate::ci_state::CiLaneStatus::Success,
                 "ok",
             )
             .expect("finish first shared job");
@@ -1562,7 +1584,7 @@ mod tests {
         let ready_runs = store
             .list_branch_ci_runs(ready_branch.branch_id, 1)
             .expect("list ready runs");
-        assert_eq!(ready_runs[0].lanes[0].status, "running");
+        assert_eq!(ready_runs[0].lanes[0].status, CiLaneStatus::Running);
         assert_eq!(
             ready_runs[0].lanes[0].execution_reason,
             CiLaneExecutionReason::Running
@@ -1572,7 +1594,7 @@ mod tests {
             .finish_branch_ci_lane_run(
                 running_job.lane_run_id,
                 running_job.claim_token,
-                "success",
+                crate::ci_state::CiLaneStatus::Success,
                 "ok",
             )
             .expect("finish running holder");
@@ -1580,7 +1602,7 @@ mod tests {
             .finish_branch_ci_lane_run(
                 claimed[0].lane_run_id,
                 claimed[0].claim_token,
-                "success",
+                crate::ci_state::CiLaneStatus::Success,
                 "ok",
             )
             .expect("finish claimed ready lane");
@@ -1611,7 +1633,7 @@ mod tests {
             .finish_branch_ci_lane_run(
                 first.lane_run_id,
                 first.claim_token,
-                "failed",
+                crate::ci_state::CiLaneStatus::Failed,
                 "ci runner error: permission denied",
             )
             .expect("finish first infra failure");
@@ -1635,7 +1657,7 @@ mod tests {
             .finish_branch_ci_lane_run(
                 second.lane_run_id,
                 second.claim_token,
-                "failed",
+                crate::ci_state::CiLaneStatus::Failed,
                 "ci runner error: unbound variable",
             )
             .expect("finish second infra failure");
@@ -1675,7 +1697,12 @@ mod tests {
             .next()
             .expect("third run");
         store
-            .finish_branch_ci_lane_run(third.lane_run_id, third.claim_token, "success", "ok")
+            .finish_branch_ci_lane_run(
+                third.lane_run_id,
+                third.claim_token,
+                crate::ci_state::CiLaneStatus::Success,
+                "ok",
+            )
             .expect("finish healthy success");
         let final_health = target_health_row(&store, "pre-merge-pika-rust");
         assert_eq!(final_health.0, "healthy");
@@ -1752,7 +1779,12 @@ mod tests {
             .claim_pending_branch_ci_lane_runs(1, 120)
             .expect("claim ci lane");
         store
-            .finish_branch_ci_lane_run(jobs[0].lane_run_id, jobs[0].claim_token, "success", "ci ok")
+            .finish_branch_ci_lane_run(
+                jobs[0].lane_run_id,
+                jobs[0].claim_token,
+                crate::ci_state::CiLaneStatus::Success,
+                "ci ok",
+            )
             .expect("persist ci lane result");
         store
             .mark_branch_merged(branch.branch_id, "npub1trusted", "merge999")
@@ -1762,10 +1794,10 @@ mod tests {
             .get_branch_detail(branch.branch_id)
             .expect("load branch detail")
             .expect("detail exists");
-        assert_eq!(detail.branch_state, "merged");
+        assert_eq!(detail.branch_state, BranchState::Merged);
         assert_eq!(detail.merge_commit_sha.as_deref(), Some("merge999"));
         assert!(detail.tutorial_json.is_some());
-        assert_eq!(detail.ci_status, "success");
+        assert_eq!(detail.ci_status, ForgeCiStatus::Success);
         assert_eq!(detail.unified_diff.as_deref(), Some("@@ -1 +1 @@"));
     }
 
@@ -1851,7 +1883,7 @@ mod tests {
         let branch_runs = store
             .list_branch_ci_runs(branch.branch_id, 4)
             .expect("list branch runs");
-        assert_eq!(branch_runs[0].status, "running");
+        assert_eq!(branch_runs[0].status, ForgeCiStatus::Running);
         let old_branch_lane = branch_runs[0]
             .lanes
             .iter()
@@ -1862,12 +1894,12 @@ mod tests {
             .iter()
             .find(|lane| lane.lane_id == "fresh")
             .expect("fresh branch lane");
-        assert_eq!(old_branch_lane.status, "queued");
+        assert_eq!(old_branch_lane.status, CiLaneStatus::Queued);
         assert_eq!(old_branch_lane.retry_count, 1);
         assert!(old_branch_lane.log_text.is_none());
         assert!(old_branch_lane.pikaci_run_id.is_none());
         assert!(old_branch_lane.pikaci_target_id.is_none());
-        assert_eq!(fresh_branch_lane.status, "running");
+        assert_eq!(fresh_branch_lane.status, CiLaneStatus::Running);
         assert_eq!(fresh_branch_lane.retry_count, 0);
 
         let nightlies = store.list_recent_nightly_runs(4).expect("nightly feed");
@@ -1875,7 +1907,7 @@ mod tests {
             .get_nightly_run(nightlies[0].nightly_run_id)
             .expect("get nightly")
             .expect("nightly exists");
-        assert_eq!(nightly.status, "running");
+        assert_eq!(nightly.status, ForgeCiStatus::Running);
         let old_nightly_lane = nightly
             .lanes
             .iter()
@@ -1886,12 +1918,12 @@ mod tests {
             .iter()
             .find(|lane| lane.lane_id == "nightly_fresh")
             .expect("fresh nightly lane");
-        assert_eq!(old_nightly_lane.status, "queued");
+        assert_eq!(old_nightly_lane.status, CiLaneStatus::Queued);
         assert_eq!(old_nightly_lane.retry_count, 1);
         assert!(old_nightly_lane.log_text.is_none());
         assert!(old_nightly_lane.pikaci_run_id.is_none());
         assert!(old_nightly_lane.pikaci_target_id.is_none());
-        assert_eq!(fresh_nightly_lane.status, "running");
+        assert_eq!(fresh_nightly_lane.status, CiLaneStatus::Running);
         assert_eq!(fresh_nightly_lane.retry_count, 0);
     }
 
@@ -1952,7 +1984,7 @@ mod tests {
             .finish_branch_ci_lane_run(
                 second_job.lane_run_id,
                 second_job.claim_token,
-                "failed",
+                crate::ci_state::CiLaneStatus::Failed,
                 "retry failed before run_started",
             )
             .expect("finish retried job");
@@ -1961,7 +1993,7 @@ mod tests {
             .list_branch_ci_runs(branch.branch_id, 4)
             .expect("list finished runs");
         let lane = &finished[0].lanes[0];
-        assert_eq!(lane.status, "failed");
+        assert_eq!(lane.status, CiLaneStatus::Failed);
         assert_eq!(
             lane.log_text.as_deref(),
             Some("retry failed before run_started")
@@ -2017,7 +2049,7 @@ mod tests {
             .finish_branch_ci_lane_run(
                 first_job.lane_run_id,
                 first_job.claim_token,
-                "success",
+                crate::ci_state::CiLaneStatus::Success,
                 "stale worker",
             )
             .expect_err("old branch finish should fail")
@@ -2030,7 +2062,7 @@ mod tests {
             .finish_branch_ci_lane_run(
                 second_job.lane_run_id,
                 second_job.claim_token,
-                "success",
+                crate::ci_state::CiLaneStatus::Success,
                 "current worker",
             )
             .expect("current branch finish");
@@ -2090,7 +2122,7 @@ mod tests {
             .finish_nightly_lane_run(
                 first_nightly.lane_run_id,
                 first_nightly.claim_token,
-                "success",
+                crate::ci_state::CiLaneStatus::Success,
                 "stale nightly worker",
             )
             .expect_err("old nightly finish should fail")
@@ -2103,7 +2135,7 @@ mod tests {
             .finish_nightly_lane_run(
                 second_nightly.lane_run_id,
                 second_nightly.claim_token,
-                "success",
+                crate::ci_state::CiLaneStatus::Success,
                 "current nightly worker",
             )
             .expect("current nightly finish");
@@ -2136,7 +2168,7 @@ mod tests {
             .finish_branch_ci_lane_run(
                 first_branch.lane_run_id,
                 first_branch.claim_token,
-                "success",
+                crate::ci_state::CiLaneStatus::Success,
                 "stale branch worker",
             )
             .expect_err("stale branch finish should fail")
@@ -2184,7 +2216,7 @@ mod tests {
             .finish_nightly_lane_run(
                 first_nightly.lane_run_id,
                 first_nightly.claim_token,
-                "success",
+                crate::ci_state::CiLaneStatus::Success,
                 "stale nightly worker",
             )
             .expect_err("stale nightly finish should fail")
@@ -2220,10 +2252,20 @@ mod tests {
             .expect("claim branch jobs");
         jobs.sort_by_key(|job| job.lane_run_id);
         store
-            .finish_branch_ci_lane_run(jobs[0].lane_run_id, jobs[0].claim_token, "success", "ok")
+            .finish_branch_ci_lane_run(
+                jobs[0].lane_run_id,
+                jobs[0].claim_token,
+                crate::ci_state::CiLaneStatus::Success,
+                "ok",
+            )
             .expect("finish success lane");
         store
-            .finish_branch_ci_lane_run(jobs[1].lane_run_id, jobs[1].claim_token, "failed", "boom")
+            .finish_branch_ci_lane_run(
+                jobs[1].lane_run_id,
+                jobs[1].claim_token,
+                crate::ci_state::CiLaneStatus::Failed,
+                "boom",
+            )
             .expect("finish failed lane");
         let recovered = store
             .recover_branch_ci_run(branch.branch_id, jobs[2].suite_id)
@@ -2235,10 +2277,10 @@ mod tests {
             .expect("list branch runs")[0]
             .lanes
             .clone();
-        assert_eq!(lanes[0].status, "success");
-        assert_eq!(lanes[1].status, "queued");
+        assert_eq!(lanes[0].status, CiLaneStatus::Success);
+        assert_eq!(lanes[1].status, CiLaneStatus::Queued);
         assert_eq!(lanes[1].retry_count, 1);
-        assert_eq!(lanes[2].status, "queued");
+        assert_eq!(lanes[2].status, CiLaneStatus::Queued);
         assert_eq!(lanes[2].retry_count, 1);
 
         let repo_id = store
@@ -2268,7 +2310,7 @@ mod tests {
             .finish_nightly_lane_run(
                 nightly_jobs[0].lane_run_id,
                 nightly_jobs[0].claim_token,
-                "success",
+                crate::ci_state::CiLaneStatus::Success,
                 "ok",
             )
             .expect("finish nightly success lane");
@@ -2281,8 +2323,8 @@ mod tests {
             .get_nightly_run(nightly_run_id)
             .expect("nightly detail")
             .expect("nightly run");
-        assert_eq!(nightly.lanes[0].status, "success");
-        assert_eq!(nightly.lanes[1].status, "queued");
+        assert_eq!(nightly.lanes[0].status, CiLaneStatus::Success);
+        assert_eq!(nightly.lanes[1].status, CiLaneStatus::Queued);
         assert_eq!(nightly.lanes[1].retry_count, 1);
     }
 }

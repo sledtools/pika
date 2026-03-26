@@ -109,13 +109,18 @@ let
     export PIKACI_PAYLOAD_MANIFEST_HAS_SHARE_PIKACI="$had_share_pikaci"
     export PIKACI_PAYLOAD_MANIFEST_HAS_TARGET="$had_target"
     export PIKACI_PAYLOAD_MANIFEST_HAS_LIB="$had_lib"
+    export PIKACI_PAYLOAD_MANIFEST_KIND
+    export PIKACI_PAYLOAD_MANIFEST_MOUNT_NAME
+    export PIKACI_PAYLOAD_MANIFEST_GUEST_PATH
     ${pkgs.python3}/bin/python3 <<'PY'
 import json
 import os
 from pathlib import Path
 
 out = Path(os.environ["PIKACI_PAYLOAD_MANIFEST_OUT"])
-kind = "staged_linux_workspace_build_v1" if (out / "bin").is_dir() else "staged_linux_workspace_deps_v1"
+kind = os.environ["PIKACI_PAYLOAD_MANIFEST_KIND"]
+mount_name = os.environ["PIKACI_PAYLOAD_MANIFEST_MOUNT_NAME"]
+guest_path = os.environ["PIKACI_PAYLOAD_MANIFEST_GUEST_PATH"]
 entrypoints = []
 bin_dir = out / "bin"
 if bin_dir.is_dir():
@@ -131,25 +136,14 @@ if os.environ.get("PIKACI_PAYLOAD_MANIFEST_HAS_TARGET") == "1":
 if os.environ.get("PIKACI_PAYLOAD_MANIFEST_HAS_LIB") == "1":
     asset_roots.append({"name": "lib", "relative_path": "lib"})
 
-mounts = []
-if kind == "staged_linux_workspace_deps_v1":
-    mounts.append(
-        {
-            "name": "workspace_deps_root",
-            "relative_path": ".",
-            "guest_path": "/staged/linux-rust/workspace-deps",
-            "read_only": True,
-        }
-    )
-elif kind == "staged_linux_workspace_build_v1":
-    mounts.append(
-        {
-            "name": "workspace_build_root",
-            "relative_path": ".",
-            "guest_path": "/staged/linux-rust/workspace-build",
-            "read_only": True,
-        }
-    )
+mounts = [
+    {
+        "name": mount_name,
+        "relative_path": ".",
+        "guest_path": guest_path,
+        "read_only": True,
+    }
+]
 
 manifest = {
     "schema_version": 1,
@@ -1759,6 +1753,9 @@ rec {
     dummySrc = workspaceDummySrc;
     doCheck = false;
     buildPhaseCargoCommand = laneCompileCommand;
+    PIKACI_PAYLOAD_MANIFEST_KIND = "staged_linux_workspace_deps_v1";
+    PIKACI_PAYLOAD_MANIFEST_MOUNT_NAME = "workspace_deps_root";
+    PIKACI_PAYLOAD_MANIFEST_GUEST_PATH = "/staged/linux-rust/workspace-deps";
     postInstall = emitPikaciPayloadManifest;
   });
 
@@ -1771,6 +1768,9 @@ rec {
     PIKACI_REQUIRE_INTEGRATION_TEST_EXECUTABLES = "1";
     PIKACI_FOLLOWUP_VALIDATE_NON_CARGO = if lane == "pika-followup" then "1" else "0";
     PIKACI_FOLLOWUP_STAGE_OUTPUTS = if lane == "pika-followup" then "1" else "0";
+    PIKACI_PAYLOAD_MANIFEST_KIND = "staged_linux_workspace_build_v1";
+    PIKACI_PAYLOAD_MANIFEST_MOUNT_NAME = "workspace_build_root";
+    PIKACI_PAYLOAD_MANIFEST_GUEST_PATH = "/staged/linux-rust/workspace-build";
     doInstallCargoArtifacts = false;
     inherit installPhaseCommand;
     postInstall = emitPikaciPayloadManifest;

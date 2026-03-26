@@ -220,6 +220,20 @@ impl StagedLinuxRustPayloadRole {
         }
     }
 
+    pub fn payload_manifest_kind(self) -> &'static str {
+        match self {
+            Self::WorkspaceDeps => "staged_linux_workspace_deps_v1",
+            Self::WorkspaceBuild => "staged_linux_workspace_build_v1",
+        }
+    }
+
+    pub fn payload_manifest_mount_name(self) -> &'static str {
+        match self {
+            Self::WorkspaceDeps => "workspace_deps_root",
+            Self::WorkspaceBuild => "workspace_build_root",
+        }
+    }
+
     pub fn local_mount_path(self, job_dir: &Path) -> PathBuf {
         job_dir
             .join("staged-linux-rust")
@@ -1086,6 +1100,14 @@ mod tests {
             "/staged/linux-rust/workspace-deps"
         );
         assert_eq!(
+            roles[0].payload_manifest_kind(),
+            "staged_linux_workspace_deps_v1"
+        );
+        assert_eq!(
+            roles[0].payload_manifest_mount_name(),
+            "workspace_deps_root"
+        );
+        assert_eq!(
             lane.payload_output_name(roles[0]),
             "ci.x86_64-linux.notificationsWorkspaceDeps"
         );
@@ -1094,6 +1116,14 @@ mod tests {
         assert_eq!(
             roles[1].guest_mount_path(),
             "/staged/linux-rust/workspace-build"
+        );
+        assert_eq!(
+            roles[1].payload_manifest_kind(),
+            "staged_linux_workspace_build_v1"
+        );
+        assert_eq!(
+            roles[1].payload_manifest_mount_name(),
+            "workspace_build_root"
         );
         assert_eq!(
             lane.payload_output_name(roles[1]),

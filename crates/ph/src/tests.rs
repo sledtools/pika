@@ -407,6 +407,53 @@ fn merge_and_close_use_authenticated_json_endpoints() {
                 }),
             )
             .route(
+                "/git/api/forge/branch/11",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "branch": {
+                            "branch_id": 11,
+                            "repo": "sledtools/pika",
+                            "branch_name": "feature/merge",
+                            "title": "merge",
+                            "branch_state": "open",
+                            "updated_at": "2026-03-19T00:00:00Z",
+                            "target_branch": "master",
+                            "head_sha": "deadbeef",
+                            "merge_base_sha": "base",
+                            "merge_commit_sha": null,
+                            "tutorial_status": "ready",
+                            "ci_status": "success",
+                            "error_message": null
+                        },
+                        "ci_runs": [{
+                            "id": 5,
+                            "source_head_sha": "deadbeef",
+                            "status": "success",
+                            "lane_count": 1,
+                            "rerun_of_run_id": null,
+                            "created_at": "2026-03-19T00:00:00Z",
+                            "started_at": "2026-03-19T00:00:01Z",
+                            "finished_at": "2026-03-19T00:00:02Z",
+                            "lanes": [{
+                                "id": 9,
+                                "lane_id": "check-pika",
+                                "title": "check-pika",
+                                "entrypoint": "just checks::pre-merge-pika",
+                                "status": "success",
+                                "pikaci_run_id": null,
+                                "pikaci_target_id": null,
+                                "log_text": null,
+                                "retry_count": 0,
+                                "rerun_of_lane_run_id": null,
+                                "created_at": "2026-03-19T00:00:00Z",
+                                "started_at": "2026-03-19T00:00:01Z",
+                                "finished_at": "2026-03-19T00:00:02Z"
+                            }]
+                        }]
+                    }))
+                }),
+            )
+            .route(
                 "/git/api/forge/branch/11/merge",
                 post(move |headers: axum::http::HeaderMap| {
                     let merge_auth = Arc::clone(&merge_auth);
@@ -453,7 +500,7 @@ fn merge_and_close_use_authenticated_json_endpoints() {
         "merge",
         "feature/merge",
     ]);
-    cmd_merge(&cli, Some("feature/merge")).expect("merge");
+    cmd_merge(&cli, Some("feature/merge"), false).expect("merge");
     let cli = Cli::parse_from([
         "ph",
         "--state-dir",
@@ -464,6 +511,226 @@ fn merge_and_close_use_authenticated_json_endpoints() {
     cmd_close(&cli, Some("feature/merge")).expect("close");
     assert_eq!(merge_auth.load(Ordering::SeqCst), 1);
     assert_eq!(close_auth.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn merge_refuses_failed_ci_without_force() {
+    let state_dir = tempdir().expect("state dir");
+    save_session(
+        state_dir.path(),
+        &Session {
+            base_url: "http://placeholder".to_string(),
+            token: "token-123".to_string(),
+            npub: "npub1test".to_string(),
+            is_admin: false,
+            can_forge_write: true,
+        },
+    )
+    .expect("save session");
+    let merge_auth = Arc::new(AtomicUsize::new(0));
+    let base_url = spawn_test_server({
+        let merge_auth = Arc::clone(&merge_auth);
+        Router::new()
+            .route(
+                "/git/api/forge/branch/resolve",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "branch_id": 12,
+                        "repo": "sledtools/pika",
+                        "branch_name": "feature/failing-merge",
+                        "branch_state": "open"
+                    }))
+                }),
+            )
+            .route(
+                "/git/api/forge/branch/12",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "branch": {
+                            "branch_id": 12,
+                            "repo": "sledtools/pika",
+                            "branch_name": "feature/failing-merge",
+                            "title": "merge",
+                            "branch_state": "open",
+                            "updated_at": "2026-03-19T00:00:00Z",
+                            "target_branch": "master",
+                            "head_sha": "deadbeef",
+                            "merge_base_sha": "base",
+                            "merge_commit_sha": null,
+                            "tutorial_status": "ready",
+                            "ci_status": "failed",
+                            "error_message": null
+                        },
+                        "ci_runs": [{
+                            "id": 5,
+                            "source_head_sha": "deadbeef",
+                            "status": "failed",
+                            "lane_count": 1,
+                            "rerun_of_run_id": null,
+                            "created_at": "2026-03-19T00:00:00Z",
+                            "started_at": "2026-03-19T00:00:01Z",
+                            "finished_at": "2026-03-19T00:00:02Z",
+                            "lanes": [{
+                                "id": 9,
+                                "lane_id": "check-pika",
+                                "title": "check-pika",
+                                "entrypoint": "just checks::pre-merge-pika",
+                                "status": "failed",
+                                "pikaci_run_id": null,
+                                "pikaci_target_id": null,
+                                "log_text": "boom",
+                                "retry_count": 0,
+                                "rerun_of_lane_run_id": null,
+                                "created_at": "2026-03-19T00:00:00Z",
+                                "started_at": "2026-03-19T00:00:01Z",
+                                "finished_at": "2026-03-19T00:00:02Z"
+                            }]
+                        }]
+                    }))
+                }),
+            )
+            .route(
+                "/git/api/forge/branch/12/merge",
+                post(move |headers: axum::http::HeaderMap| {
+                    let merge_auth = Arc::clone(&merge_auth);
+                    async move {
+                        if headers.get("authorization").and_then(|v| v.to_str().ok())
+                            == Some("Bearer token-123")
+                        {
+                            merge_auth.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Json(serde_json::json!({
+                            "status": "ok",
+                            "branch_id": 12,
+                            "merge_commit_sha": "abc123"
+                        }))
+                    }
+                }),
+            )
+    });
+    let mut session = load_session(state_dir.path()).expect("session");
+    session.base_url = base_url;
+    save_session(state_dir.path(), &session).expect("save session");
+    let cli = Cli::parse_from([
+        "ph",
+        "--state-dir",
+        state_dir.path().to_str().expect("state dir path"),
+        "merge",
+        "feature/failing-merge",
+    ]);
+    let err = cmd_merge(&cli, Some("feature/failing-merge"), false).expect_err("merge blocked");
+    assert!(err.to_string().contains("--force"));
+    assert_eq!(merge_auth.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn merge_force_overrides_failed_ci_guard() {
+    let state_dir = tempdir().expect("state dir");
+    save_session(
+        state_dir.path(),
+        &Session {
+            base_url: "http://placeholder".to_string(),
+            token: "token-123".to_string(),
+            npub: "npub1test".to_string(),
+            is_admin: false,
+            can_forge_write: true,
+        },
+    )
+    .expect("save session");
+    let merge_auth = Arc::new(AtomicUsize::new(0));
+    let base_url = spawn_test_server({
+        let merge_auth = Arc::clone(&merge_auth);
+        Router::new()
+            .route(
+                "/git/api/forge/branch/resolve",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "branch_id": 13,
+                        "repo": "sledtools/pika",
+                        "branch_name": "feature/forced-merge",
+                        "branch_state": "open"
+                    }))
+                }),
+            )
+            .route(
+                "/git/api/forge/branch/13",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "branch": {
+                            "branch_id": 13,
+                            "repo": "sledtools/pika",
+                            "branch_name": "feature/forced-merge",
+                            "title": "merge",
+                            "branch_state": "open",
+                            "updated_at": "2026-03-19T00:00:00Z",
+                            "target_branch": "master",
+                            "head_sha": "deadbeef",
+                            "merge_base_sha": "base",
+                            "merge_commit_sha": null,
+                            "tutorial_status": "ready",
+                            "ci_status": "failed",
+                            "error_message": null
+                        },
+                        "ci_runs": [{
+                            "id": 5,
+                            "source_head_sha": "deadbeef",
+                            "status": "failed",
+                            "lane_count": 1,
+                            "rerun_of_run_id": null,
+                            "created_at": "2026-03-19T00:00:00Z",
+                            "started_at": "2026-03-19T00:00:01Z",
+                            "finished_at": "2026-03-19T00:00:02Z",
+                            "lanes": [{
+                                "id": 9,
+                                "lane_id": "check-pika",
+                                "title": "check-pika",
+                                "entrypoint": "just checks::pre-merge-pika",
+                                "status": "failed",
+                                "pikaci_run_id": null,
+                                "pikaci_target_id": null,
+                                "log_text": "boom",
+                                "retry_count": 0,
+                                "rerun_of_lane_run_id": null,
+                                "created_at": "2026-03-19T00:00:00Z",
+                                "started_at": "2026-03-19T00:00:01Z",
+                                "finished_at": "2026-03-19T00:00:02Z"
+                            }]
+                        }]
+                    }))
+                }),
+            )
+            .route(
+                "/git/api/forge/branch/13/merge",
+                post(move |headers: axum::http::HeaderMap| {
+                    let merge_auth = Arc::clone(&merge_auth);
+                    async move {
+                        if headers.get("authorization").and_then(|v| v.to_str().ok())
+                            == Some("Bearer token-123")
+                        {
+                            merge_auth.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Json(serde_json::json!({
+                            "status": "ok",
+                            "branch_id": 13,
+                            "merge_commit_sha": "abc123"
+                        }))
+                    }
+                }),
+            )
+    });
+    let mut session = load_session(state_dir.path()).expect("session");
+    session.base_url = base_url;
+    save_session(state_dir.path(), &session).expect("save session");
+    let cli = Cli::parse_from([
+        "ph",
+        "--state-dir",
+        state_dir.path().to_str().expect("state dir path"),
+        "merge",
+        "--force",
+        "feature/forced-merge",
+    ]);
+    cmd_merge(&cli, Some("feature/forced-merge"), true).expect("forced merge");
+    assert_eq!(merge_auth.load(Ordering::SeqCst), 1);
 }
 
 #[test]

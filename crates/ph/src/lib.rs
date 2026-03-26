@@ -28,7 +28,10 @@ pub fn run() -> anyhow::Result<()> {
             lane,
             lane_run_id,
         } => commands::cmd_logs(&cli, branch_or_id.as_deref(), lane.as_deref(), *lane_run_id),
-        PhCommand::Merge { branch_or_id } => commands::cmd_merge(&cli, branch_or_id.as_deref()),
+        PhCommand::Merge {
+            branch_or_id,
+            force,
+        } => commands::cmd_merge(&cli, branch_or_id.as_deref(), *force),
         PhCommand::Close { branch_or_id } => commands::cmd_close(&cli, branch_or_id.as_deref()),
         PhCommand::Url { branch_or_id } => commands::cmd_url(&cli, branch_or_id.as_deref()),
         PhCommand::FailLane(args) => commands::cmd_fail_lane(&cli, args),
@@ -75,6 +78,8 @@ enum PhCommand {
     },
     Merge {
         branch_or_id: Option<String>,
+        #[arg(long)]
+        force: bool,
     },
     Close {
         branch_or_id: Option<String>,

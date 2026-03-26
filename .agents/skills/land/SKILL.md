@@ -65,7 +65,7 @@ If CI fails:
 ph logs
 ```
 
-Fix the issue, push again, and repeat.
+Do not merge. Fix the issue, push again, and repeat.
 
 If CI is green:
 
@@ -126,7 +126,8 @@ Focus on:
 - real regressions
 
 If CI appears wedged or the failure is operational rather than code-related, report that clearly
-instead of pretending the landing path is healthy.
+instead of pretending the landing path is healthy. Do not merge with failing CI unless the user
+explicitly instructs you to override that guardrail.
 
 ## Final handoff
 

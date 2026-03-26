@@ -1,9 +1,10 @@
 use super::*;
 use crate::model::{PreparedOutputPayloadManifestRecord, PreparedOutputPayloadMountRecord};
+use pika_cloud::incus::{INCUS_DEVICE_TYPE_KEY, INCUS_DISK_DEVICE_TYPE};
 use pika_cloud::{
-    IncusMountPlan, IncusRuntimeConfig, IncusRuntimePlan, MountKind, MountMode, ProviderKind,
-    RuntimeBootstrap, RuntimeIdentity, RuntimeMount, RuntimePaths, RuntimePolicies,
-    RuntimeResources, RuntimeSpec,
+    IncusMountPlan, IncusRuntimeConfig, IncusRuntimePlan, MountKind, MountMode, RuntimeBootstrap,
+    RuntimeIdentity, RuntimeMount, RuntimeResources, RuntimeSpec, incus_disk_device_config,
+    incus_runtime_config,
 };
 use std::path::Component;
 
@@ -60,7 +61,7 @@ pub(super) fn build_guest_request(job: &JobSpec) -> IncusGuestRunRequest {
 }
 
 fn build_remote_incus_runtime_plan(
-    job: &JobSpec,
+    _job: &JobSpec,
     remote: &RemoteIncusContext,
 ) -> anyhow::Result<IncusRuntimePlan> {
     let mounts = vec![RuntimeMount {
@@ -70,35 +71,28 @@ fn build_remote_incus_runtime_plan(
         mode: MountMode::ReadOnly,
         required: true,
     }];
-    let _ = job;
 
-    RuntimeSpec {
-        identity: RuntimeIdentity {
+    RuntimeSpec::for_incus(
+        RuntimeIdentity {
             runtime_id: remote.incus_instance_name.clone(),
             instance_name: remote.incus_instance_name.clone(),
         },
-        provider: ProviderKind::Incus,
-        incus: IncusRuntimeConfig {
+        IncusRuntimeConfig {
             project: remote.incus_project.clone(),
             profile: remote.incus_profile.clone(),
             image_alias: remote.incus_image_alias.clone(),
         },
-        resources: RuntimeResources {
+        RuntimeResources {
             vcpu_count: Some(2),
             memory_mib: Some(4096),
             root_disk_gib: None,
         },
         mounts,
-        lifecycle_root: pika_cloud::RUNTIME_STATE_DIR.to_string(),
-        paths: RuntimePaths::default(),
-        policies: RuntimePolicies::default(),
-        bootstrap: RuntimeBootstrap {
-            guest_request_path: Some(GUEST_REQUEST_PATH.to_string()),
-            entry_command: Some(REMOTE_LINUX_VM_INCUS_RUN_BINARY.to_string()),
-        },
-        labels: std::collections::BTreeMap::new(),
-        metadata: std::collections::BTreeMap::new(),
-    }
+    )
+    .with_bootstrap(RuntimeBootstrap {
+        guest_request_path: Some(GUEST_REQUEST_PATH.to_string()),
+        entry_command: Some(REMOTE_LINUX_VM_INCUS_RUN_BINARY.to_string()),
+    })
     .build_incus_plan()
     .map_err(|err| anyhow!("build remote Incus runtime plan: {err}"))
 }
@@ -111,14 +105,6 @@ fn snapshot_mount_plan(plan: &IncusRuntimePlan) -> anyhow::Result<&IncusMountPla
                 && mount.guest_path == REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH
         })
         .ok_or_else(|| anyhow!("runtime plan is missing the snapshot mount"))
-}
-
-fn incus_cpu_limit(plan: &IncusRuntimePlan) -> String {
-    plan.resources.vcpu_count.unwrap_or(2).to_string()
-}
-
-fn incus_memory_limit(plan: &IncusRuntimePlan) -> String {
-    format!("{}MiB", plan.resources.memory_mib.unwrap_or(4096))
 }
 
 pub(super) fn build_remote_incus_launch_command(
@@ -291,6 +277,7 @@ pub(super) fn ensure_remote_incus_runtime(
     log_path: &Path,
 ) -> anyhow::Result<()> {
     let runtime_plan = build_remote_incus_runtime_plan(job, remote)?;
+    let runtime_config = incus_runtime_config(&runtime_plan);
     ensure_remote_incus_image_available(remote, log_path)?;
     delete_remote_incus_instance(remote, log_path)?;
     append_line(
@@ -302,26 +289,30 @@ pub(super) fn ensure_remote_incus_runtime(
     )?;
     reset_remote_linux_vm_artifacts(&remote.shared, log_path)?;
 
+    let mut init_args = vec![
+        "init".to_string(),
+        "--project".to_string(),
+        runtime_plan.incus.project.clone(),
+        "--storage".to_string(),
+        "default".to_string(),
+        "--profile".to_string(),
+        "default".to_string(),
+        "--profile".to_string(),
+        runtime_plan.incus.profile.clone(),
+    ];
+    for (key, value) in runtime_config {
+        init_args.push("--config".to_string());
+        init_args.push(format!("{key}={value}"));
+    }
+    init_args.extend([
+        "--vm".to_string(),
+        runtime_plan.incus.image_alias.clone(),
+        runtime_plan.identity.instance_name.clone(),
+    ]);
+    let init_arg_refs = init_args.iter().map(String::as_str).collect::<Vec<_>>();
     run_remote_incus_to_log(
         &remote.shared.remote_host,
-        &[
-            "init",
-            "--project",
-            runtime_plan.incus.project.as_str(),
-            "--storage",
-            "default",
-            "--profile",
-            "default",
-            "--profile",
-            runtime_plan.incus.profile.as_str(),
-            "--config",
-            &format!("limits.cpu={}", incus_cpu_limit(&runtime_plan)),
-            "--config",
-            &format!("limits.memory={}", incus_memory_limit(&runtime_plan)),
-            "--vm",
-            runtime_plan.incus.image_alias.as_str(),
-            runtime_plan.identity.instance_name.as_str(),
-        ],
+        &init_arg_refs,
         log_path,
         "[pikaci] create remote Linux VM backend `incus` instance",
     )?;
@@ -367,12 +358,13 @@ pub(super) fn delete_remote_incus_instance(
 pub(super) fn build_remote_incus_device_add_args(
     remote: &RemoteIncusContext,
     device_name: &str,
-    source: &Path,
-    guest_path: &str,
-    readonly: bool,
-    io_bus: &str,
+    properties: &std::collections::BTreeMap<String, String>,
 ) -> Vec<String> {
-    vec![
+    let device_type = properties
+        .get(INCUS_DEVICE_TYPE_KEY)
+        .map(String::as_str)
+        .unwrap_or(INCUS_DISK_DEVICE_TYPE);
+    std::iter::once(vec![
         "config".to_string(),
         "device".to_string(),
         "add".to_string(),
@@ -380,13 +372,17 @@ pub(super) fn build_remote_incus_device_add_args(
         remote.incus_project.clone(),
         remote.incus_instance_name.clone(),
         device_name.to_string(),
-        "disk".to_string(),
-        format!("source={}", source.display()),
-        format!("path={guest_path}"),
-        format!("readonly={}", if readonly { "true" } else { "false" }),
-        "shift=false".to_string(),
-        format!("io.bus={io_bus}"),
-    ]
+        device_type.to_string(),
+    ])
+    .chain(
+        properties
+            .iter()
+            .filter(|(key, _)| key.as_str() != INCUS_DEVICE_TYPE_KEY)
+            .map(|(key, value)| vec![format!("{key}={value}")]),
+    )
+    .flatten()
+    .chain(std::iter::once("shift=false".to_string()))
+    .collect()
 }
 
 #[cfg(test)]
@@ -398,7 +394,13 @@ pub(super) fn build_device_add_args(
     readonly: bool,
     io_bus: &str,
 ) -> Vec<String> {
-    build_remote_incus_device_add_args(remote, device_name, source, guest_path, readonly, io_bus)
+    let properties = incus_disk_device_config(
+        source.display().to_string(),
+        guest_path.to_string(),
+        readonly,
+        Some(io_bus),
+    );
+    build_remote_incus_device_add_args(remote, device_name, &properties)
 }
 
 pub(super) fn collect_remote_incus_artifacts(
@@ -740,14 +742,13 @@ fn add_remote_incus_disk_device(
     log_path: &Path,
 ) -> anyhow::Result<()> {
     let realized_source = remote_realpath(&remote.shared.remote_host, source)?;
-    let args = build_remote_incus_device_add_args(
-        remote,
-        device_name,
-        &realized_source,
-        guest_path,
+    let properties = incus_disk_device_config(
+        realized_source.display().to_string(),
+        guest_path.to_string(),
         readonly,
-        io_bus,
+        Some(io_bus),
     );
+    let args = build_remote_incus_device_add_args(remote, device_name, &properties);
     let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
     run_remote_incus_to_log(
         &remote.shared.remote_host,

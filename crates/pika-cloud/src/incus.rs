@@ -11,6 +11,14 @@ use crate::spec::{
 };
 
 pub const INCUS_READ_ONLY_DISK_IO_BUS: &str = "virtiofs";
+pub const INCUS_LIMITS_CPU_KEY: &str = "limits.cpu";
+pub const INCUS_LIMITS_MEMORY_KEY: &str = "limits.memory";
+pub const INCUS_DISK_DEVICE_TYPE: &str = "disk";
+pub const INCUS_DEVICE_TYPE_KEY: &str = "type";
+pub const INCUS_DEVICE_SOURCE_KEY: &str = "source";
+pub const INCUS_DEVICE_PATH_KEY: &str = "path";
+pub const INCUS_DEVICE_READONLY_KEY: &str = "readonly";
+pub const INCUS_DEVICE_IO_BUS_KEY: &str = "io.bus";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct IncusMountPlan {
@@ -40,6 +48,52 @@ pub struct IncusRuntimePlan {
     pub labels: BTreeMap<String, String>,
     #[serde(default)]
     pub metadata: BTreeMap<String, Value>,
+}
+
+pub fn incus_runtime_config(plan: &IncusRuntimePlan) -> BTreeMap<String, String> {
+    let mut config = BTreeMap::new();
+    if let Some(memory_mib) = plan.resources.memory_mib {
+        config.insert(
+            INCUS_LIMITS_MEMORY_KEY.to_string(),
+            format!("{memory_mib}MiB"),
+        );
+    }
+    if let Some(vcpu_count) = plan.resources.vcpu_count {
+        config.insert(INCUS_LIMITS_CPU_KEY.to_string(), vcpu_count.to_string());
+    }
+    config
+}
+
+pub fn incus_disk_device_config(
+    source: impl Into<String>,
+    guest_path: impl Into<String>,
+    read_only: bool,
+    io_bus: Option<&str>,
+) -> BTreeMap<String, String> {
+    let mut device = BTreeMap::from([
+        (
+            INCUS_DEVICE_TYPE_KEY.to_string(),
+            INCUS_DISK_DEVICE_TYPE.to_string(),
+        ),
+        (INCUS_DEVICE_SOURCE_KEY.to_string(), source.into()),
+        (INCUS_DEVICE_PATH_KEY.to_string(), guest_path.into()),
+    ]);
+    if read_only {
+        device.insert(INCUS_DEVICE_READONLY_KEY.to_string(), "true".to_string());
+    }
+    if let Some(io_bus) = io_bus.filter(|value| !value.trim().is_empty()) {
+        device.insert(INCUS_DEVICE_IO_BUS_KEY.to_string(), io_bus.to_string());
+    }
+    device
+}
+
+pub fn incus_mount_device_config(mount: &IncusMountPlan) -> BTreeMap<String, String> {
+    incus_disk_device_config(
+        mount.source.clone(),
+        mount.guest_path.clone(),
+        mount.read_only,
+        mount.io_bus.as_deref(),
+    )
 }
 
 pub(crate) fn plan_mounts(
@@ -146,5 +200,70 @@ mod tests {
         assert_eq!(planned[0].device_name, "pk-persis-b09b5ac0");
         assert_eq!(planned[0].io_bus, None);
         assert!(!planned[0].read_only);
+    }
+
+    #[test]
+    fn runtime_config_emits_only_present_resource_limits() {
+        let plan = IncusRuntimePlan {
+            identity: RuntimeIdentity {
+                runtime_id: "runtime-1".to_string(),
+                instance_name: "pika-runtime-1".to_string(),
+            },
+            incus: IncusRuntimeConfig {
+                project: "pika-managed-agents".to_string(),
+                profile: "default".to_string(),
+                image_alias: "pikaci/dev".to_string(),
+            },
+            resources: RuntimeResources {
+                vcpu_count: Some(2),
+                memory_mib: Some(4096),
+                root_disk_gib: None,
+            },
+            lifecycle_root: crate::RUNTIME_STATE_DIR.to_string(),
+            paths: RuntimePaths::default(),
+            policies: RuntimePolicies::default(),
+            bootstrap: RuntimeBootstrap::default(),
+            mounts: Vec::new(),
+            labels: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+        };
+
+        assert_eq!(
+            incus_runtime_config(&plan),
+            BTreeMap::from([
+                (INCUS_LIMITS_CPU_KEY.to_string(), "2".to_string()),
+                (INCUS_LIMITS_MEMORY_KEY.to_string(), "4096MiB".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn mount_device_config_uses_shared_disk_contract() {
+        let mount = IncusMountPlan {
+            kind: RuntimeMountKind::ReadOnlySnapshot,
+            source: "/var/tmp/run/snapshot".to_string(),
+            guest_path: "/workspace/snapshot".to_string(),
+            device_name: "pk-snapsh-7bc0883f".to_string(),
+            read_only: true,
+            io_bus: Some(INCUS_READ_ONLY_DISK_IO_BUS.to_string()),
+            required: true,
+        };
+
+        assert_eq!(
+            incus_mount_device_config(&mount),
+            BTreeMap::from([
+                (INCUS_DEVICE_IO_BUS_KEY.to_string(), "virtiofs".to_string()),
+                (
+                    INCUS_DEVICE_PATH_KEY.to_string(),
+                    "/workspace/snapshot".to_string()
+                ),
+                (INCUS_DEVICE_READONLY_KEY.to_string(), "true".to_string()),
+                (
+                    INCUS_DEVICE_SOURCE_KEY.to_string(),
+                    "/var/tmp/run/snapshot".to_string()
+                ),
+                (INCUS_DEVICE_TYPE_KEY.to_string(), "disk".to_string()),
+            ])
+        );
     }
 }

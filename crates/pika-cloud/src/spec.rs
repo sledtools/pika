@@ -133,6 +133,32 @@ impl fmt::Display for RuntimeSpecError {
 impl std::error::Error for RuntimeSpecError {}
 
 impl RuntimeSpec {
+    pub fn for_incus(
+        identity: RuntimeIdentity,
+        incus: IncusRuntimeConfig,
+        resources: RuntimeResources,
+        mounts: Vec<RuntimeMount>,
+    ) -> Self {
+        Self {
+            identity,
+            provider: ProviderKind::Incus,
+            incus,
+            resources,
+            mounts,
+            lifecycle_root: default_runtime_root(),
+            paths: RuntimePaths::default(),
+            policies: RuntimePolicies::default(),
+            bootstrap: RuntimeBootstrap::default(),
+            labels: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    pub fn with_bootstrap(mut self, bootstrap: RuntimeBootstrap) -> Self {
+        self.bootstrap = bootstrap;
+        self
+    }
+
     pub fn validate(&self) -> Result<(), RuntimeSpecError> {
         require_non_empty("identity.runtime_id", &self.identity.runtime_id)?;
         require_non_empty("identity.instance_name", &self.identity.instance_name)?;
@@ -279,51 +305,74 @@ mod tests {
     };
 
     fn sample_runtime_spec() -> RuntimeSpec {
-        RuntimeSpec {
-            identity: RuntimeIdentity {
+        let mut spec = RuntimeSpec::for_incus(
+            RuntimeIdentity {
                 runtime_id: "runtime-1".to_string(),
                 instance_name: "pika-runtime-1".to_string(),
             },
-            provider: ProviderKind::Incus,
-            incus: IncusRuntimeConfig {
+            IncusRuntimeConfig {
                 project: "pika-managed-agents".to_string(),
                 profile: "default".to_string(),
                 image_alias: "pikaci/dev".to_string(),
             },
-            resources: RuntimeResources {
+            RuntimeResources {
                 vcpu_count: Some(2),
                 memory_mib: Some(4096),
                 root_disk_gib: Some(32),
             },
-            mounts: vec![RuntimeMount {
+            vec![RuntimeMount {
                 kind: RuntimeMountKind::PersistentVolume,
                 guest_path: "/var/lib/pika".to_string(),
                 source: "customer-state".to_string(),
                 mode: RuntimeMountMode::ReadWrite,
                 required: true,
             }],
-            lifecycle_root: RUNTIME_ROOT.to_string(),
-            paths: RuntimePaths::default(),
-            policies: RuntimePolicies {
-                restart_policy: RestartPolicy::OnFailure,
-                retention_policy: RetentionPolicy::KeepUntilStopped,
-                output_collection: OutputCollectionPolicy {
-                    mode: OutputCollectionMode::FailureOnly,
-                    include_logs: true,
-                    include_result: true,
-                    artifact_globs: vec!["*.json".to_string()],
-                },
+        )
+        .with_bootstrap(RuntimeBootstrap {
+            guest_request_path: Some("/run/pika-cloud/guest-request.json".to_string()),
+            entry_command: Some("/run/current-system/sw/bin/pikaci-incus-run".to_string()),
+        });
+        spec.policies = RuntimePolicies {
+            restart_policy: RestartPolicy::OnFailure,
+            retention_policy: RetentionPolicy::KeepUntilStopped,
+            output_collection: OutputCollectionPolicy {
+                mode: OutputCollectionMode::FailureOnly,
+                include_logs: true,
+                include_result: true,
+                artifact_globs: vec!["*.json".to_string()],
             },
-            bootstrap: RuntimeBootstrap {
-                guest_request_path: Some("/run/pika-cloud/guest-request.json".to_string()),
-                entry_command: Some("/run/current-system/sw/bin/pikaci-incus-run".to_string()),
+        };
+        spec.labels = BTreeMap::from([("customer_id".to_string(), "cust-123".to_string())]);
+        spec.metadata = BTreeMap::from([(
+            "debug".to_string(),
+            serde_json::json!({ "ticket": "ops-123" }),
+        )]);
+        spec
+    }
+
+    #[test]
+    fn for_incus_applies_shared_defaults() {
+        let spec = RuntimeSpec::for_incus(
+            RuntimeIdentity {
+                runtime_id: "runtime-1".to_string(),
+                instance_name: "pika-runtime-1".to_string(),
             },
-            labels: BTreeMap::from([("customer_id".to_string(), "cust-123".to_string())]),
-            metadata: BTreeMap::from([(
-                "debug".to_string(),
-                serde_json::json!({ "ticket": "ops-123" }),
-            )]),
-        }
+            IncusRuntimeConfig {
+                project: "pika-managed-agents".to_string(),
+                profile: "default".to_string(),
+                image_alias: "pikaci/dev".to_string(),
+            },
+            RuntimeResources::default(),
+            Vec::new(),
+        );
+
+        assert_eq!(spec.provider, ProviderKind::Incus);
+        assert_eq!(spec.lifecycle_root, RUNTIME_ROOT);
+        assert_eq!(spec.paths, RuntimePaths::default());
+        assert_eq!(spec.policies, RuntimePolicies::default());
+        assert_eq!(spec.bootstrap, RuntimeBootstrap::default());
+        assert!(spec.labels.is_empty());
+        assert!(spec.metadata.is_empty());
     }
 
     #[test]

@@ -5,7 +5,10 @@ pub mod paths;
 pub mod policy;
 pub mod spec;
 
-pub use incus::{INCUS_READ_ONLY_DISK_IO_BUS, IncusMountPlan, IncusRuntimePlan};
+pub use incus::{
+    INCUS_READ_ONLY_DISK_IO_BUS, IncusMountPlan, IncusRuntimePlan, incus_disk_device_config,
+    incus_mount_device_config, incus_runtime_config,
+};
 pub use lifecycle::{
     LIFECYCLE_SCHEMA_VERSION, LifecycleEvent, LifecycleState, RuntimeResultStatus,
     RuntimeStatusSnapshot, RuntimeTerminalResult,

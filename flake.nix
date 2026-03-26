@@ -83,6 +83,7 @@
           ./config
           ./crates
           ./fixtures
+          ./nix/pikaci
           ./pikachat-openclaw/openclaw/extensions/pikachat-openclaw
           ./rust
           ./tests
@@ -99,6 +100,7 @@
           ./config
           ./crates
           ./fixtures
+          ./nix/pikaci
           ./pikachat-openclaw/openclaw/extensions/pikachat-openclaw
           ./rust
           ./tests

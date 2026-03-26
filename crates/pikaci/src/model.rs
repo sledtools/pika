@@ -1,3 +1,6 @@
+use std::path::{Path, PathBuf};
+
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
@@ -1552,6 +1555,20 @@ pub struct PreparedOutputPayloadManifestRecord {
     pub asset_roots: Vec<PreparedOutputPayloadPathRecord>,
     #[serde(default)]
     pub mounts: Vec<PreparedOutputPayloadMountRecord>,
+}
+
+pub const PREPARED_OUTPUT_PAYLOAD_MANIFEST_RELATIVE_PATH: &str =
+    "share/pikaci/payload-manifest.json";
+
+pub fn prepared_output_payload_manifest_path(output_root: &Path) -> PathBuf {
+    output_root.join(PREPARED_OUTPUT_PAYLOAD_MANIFEST_RELATIVE_PATH)
+}
+
+pub fn decode_prepared_output_payload_manifest(
+    bytes: &[u8],
+    manifest_path: &Path,
+) -> anyhow::Result<PreparedOutputPayloadManifestRecord> {
+    serde_json::from_slice(bytes).with_context(|| format!("decode {}", manifest_path.display()))
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

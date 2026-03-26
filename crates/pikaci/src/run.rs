@@ -22,7 +22,8 @@ use crate::executor::{
     staged_linux_remote_defaults, staged_linux_remote_snapshot_dir, sync_snapshot_to_remote,
 };
 use crate::model::{
-    ExecuteNode, JobLogMetadata, JobRecord, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope,
+    ExecuteNode, JobLogMetadata, JobRecord, JobSpec,
+    PREPARED_OUTPUT_PAYLOAD_MANIFEST_RELATIVE_PATH, PlanExecutorKind, PlanNodeRecord, PlanScope,
     PrepareNode, PrepareTimingRecord, PreparedOutputConsumerKind, PreparedOutputExposure,
     PreparedOutputExposureAccess, PreparedOutputExposureKind,
     PreparedOutputFulfillmentLaunchRequest, PreparedOutputFulfillmentResult,
@@ -33,7 +34,8 @@ use crate::model::{
     PreparedOutputRemoteExposureRequest, PreparedOutputResidency, PreparedOutputsRecord,
     RealizedPreparedOutputRecord, RunBundle, RunLifecycleEvent, RunLogsMetadata, RunPlanRecord,
     RunRecord, RunStatus, RunnerKind, StagedLinuxRustLane, StagedLinuxRustPayloadRole,
-    StagedLinuxRustTarget,
+    StagedLinuxRustTarget, decode_prepared_output_payload_manifest,
+    prepared_output_payload_manifest_path,
 };
 use crate::snapshot::{
     SnapshotProfile, compute_source_fingerprint_with_profile, create_snapshot_with_profile,
@@ -933,19 +935,17 @@ pub fn load_run_bundle(state_root: &Path, run_id: &str) -> anyhow::Result<RunBun
     })
 }
 
-const PREPARED_OUTPUT_PAYLOAD_MANIFEST_RELATIVE_PATH: &str = "share/pikaci/payload-manifest.json";
-
 fn load_prepared_output_payload_manifest(
     realized_path: &Path,
 ) -> anyhow::Result<Option<PreparedOutputPayloadManifestRecord>> {
-    let path = realized_path.join(PREPARED_OUTPUT_PAYLOAD_MANIFEST_RELATIVE_PATH);
+    let path = prepared_output_payload_manifest_path(realized_path);
     if !path.is_file() {
         return Ok(None);
     }
     let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-    let manifest =
-        serde_json::from_slice(&bytes).with_context(|| format!("decode {}", path.display()))?;
-    Ok(Some(manifest))
+    Ok(Some(decode_prepared_output_payload_manifest(
+        &bytes, &path,
+    )?))
 }
 
 fn run_logs_metadata_for_run(
@@ -1006,9 +1006,10 @@ fn load_remote_prepared_output_payload_manifest(
     if output.stdout.is_empty() {
         return Ok(None);
     }
-    let manifest = serde_json::from_slice(&output.stdout)
-        .with_context(|| format!("decode remote {}", manifest_path.display()))?;
-    Ok(Some(manifest))
+    Ok(Some(decode_prepared_output_payload_manifest(
+        &output.stdout,
+        &manifest_path,
+    )?))
 }
 
 fn load_prepared_output_payload_manifest_for_record(

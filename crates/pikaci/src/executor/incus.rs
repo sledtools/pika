@@ -1,5 +1,8 @@
 use super::*;
-use crate::model::{PreparedOutputPayloadManifestRecord, PreparedOutputPayloadMountRecord};
+use crate::model::{
+    PreparedOutputPayloadManifestRecord, PreparedOutputPayloadMountRecord,
+    decode_prepared_output_payload_manifest, prepared_output_payload_manifest_path,
+};
 use pika_cloud::incus::{INCUS_DEVICE_TYPE_KEY, INCUS_DISK_DEVICE_TYPE};
 use pika_cloud::{
     IncusMountPlan, IncusRuntimeConfig, IncusRuntimePlan, MountKind, MountMode, RuntimeBootstrap,
@@ -523,7 +526,7 @@ fn load_remote_payload_manifest(
     remote_host: &str,
     output_root: &Path,
 ) -> anyhow::Result<Option<PreparedOutputPayloadManifestRecord>> {
-    let manifest_path = output_root.join("share/pikaci/payload-manifest.json");
+    let manifest_path = prepared_output_payload_manifest_path(output_root);
     let output = run_ssh_command(
         remote_host,
         &format!(
@@ -545,9 +548,10 @@ fn load_remote_payload_manifest(
     if output.stdout.is_empty() {
         return Ok(None);
     }
-    let manifest = serde_json::from_slice(&output.stdout)
-        .with_context(|| format!("decode remote payload manifest {}", manifest_path.display()))?;
-    Ok(Some(manifest))
+    Ok(Some(decode_prepared_output_payload_manifest(
+        &output.stdout,
+        &manifest_path,
+    )?))
 }
 
 fn resolve_payload_mount_source(output_root: &Path, relative_path: &str) -> PathBuf {

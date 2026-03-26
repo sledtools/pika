@@ -125,28 +125,12 @@ pub fn poll_once_limited_with_updates(
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-    use std::process::Command;
-
     use crate::ci_state::CiLaneStatus;
     use crate::config::{Config, ForgeRepoConfig};
+    use crate::test_support::GitTestRepo;
 
     use super::poll_once_limited;
-    use crate::{ci, storage::Store};
-
-    fn git<P: AsRef<std::path::Path>>(cwd: P, args: &[&str]) {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(cwd.as_ref())
-            .output()
-            .expect("run git");
-        assert!(
-            output.status.success(),
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    use crate::ci;
 
     fn config_for_bare_repo(bare: &std::path::Path) -> Config {
         Config::test_with_forge_repo(ForgeRepoConfig {
@@ -164,40 +148,21 @@ mod tests {
 
     #[test]
     fn branch_push_queues_lanes_from_branch_head_manifest() {
-        let root = tempfile::tempdir().expect("create temp root");
-        let bare = root.path().join("pika.git");
-        let seed = root.path().join("seed");
-        let db_path = root.path().join("pika-git.db");
-
-        git(
-            root.path(),
-            &["init", "--bare", bare.to_str().expect("bare path")],
-        );
-        git(root.path(), &["init", seed.to_str().expect("seed path")]);
-        git(&seed, &["config", "user.name", "Test User"]);
-        git(&seed, &["config", "user.email", "test@example.com"]);
-        fs::create_dir_all(seed.join("ci")).expect("create ci dir");
-        fs::write(seed.join("README.md"), "hello\n").expect("write readme");
-        fs::write(
-            seed.join("lane-a.sh"),
+        let repo = GitTestRepo::new();
+        repo.write_seed("README.md", "hello\n");
+        repo.write_seed(
+            "lane-a.sh",
             "#!/usr/bin/env bash\nset -euo pipefail\necho lane-a\n",
-        )
-        .expect("write lane a script");
-        fs::write(
-            seed.join("lane-b.sh"),
+        );
+        repo.write_seed(
+            "lane-b.sh",
             "#!/usr/bin/env bash\nset -euo pipefail\necho lane-b\n",
-        )
-        .expect("write lane b script");
-        use std::os::unix::fs::PermissionsExt;
+        );
         for script in ["lane-a.sh", "lane-b.sh"] {
-            let mut perms = fs::metadata(seed.join(script))
-                .expect("script metadata")
-                .permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(seed.join(script), perms).expect("chmod script");
+            repo.chmod_seed_executable(script);
         }
-        fs::write(
-            seed.join("ci/forge-lanes.toml"),
+        repo.write_seed(
+            "ci/forge-lanes.toml",
             r#"
 version = 1
 nightly_schedule_utc = "08:00"
@@ -209,30 +174,15 @@ entrypoint = "./lane-a.sh"
 command = ["./lane-a.sh"]
 paths = ["README.md"]
 "#,
-        )
-        .expect("write master manifest");
-        git(
-            &seed,
-            &[
-                "add",
-                "README.md",
-                "lane-a.sh",
-                "lane-b.sh",
-                "ci/forge-lanes.toml",
-            ],
         );
-        git(&seed, &["commit", "-m", "initial"]);
-        git(&seed, &["branch", "-M", "master"]);
-        git(
-            &seed,
-            &["remote", "add", "origin", bare.to_str().expect("bare path")],
-        );
-        git(&seed, &["push", "origin", "master"]);
+        repo.seed_add(&["README.md", "lane-a.sh", "lane-b.sh", "ci/forge-lanes.toml"]);
+        repo.seed_commit("initial");
+        repo.seed_push_master();
 
-        git(&seed, &["checkout", "-b", "feature/manifest"]);
-        fs::write(seed.join("README.md"), "branch\n").expect("update readme");
-        fs::write(
-            seed.join("ci/forge-lanes.toml"),
+        repo.seed_checkout_new_branch("feature/manifest");
+        repo.write_seed("README.md", "branch\n");
+        repo.write_seed(
+            "ci/forge-lanes.toml",
             r#"
 version = 1
 nightly_schedule_utc = "08:00"
@@ -244,14 +194,13 @@ entrypoint = "./lane-b.sh"
 command = ["./lane-b.sh"]
 paths = []
 "#,
-        )
-        .expect("write branch manifest");
-        git(&seed, &["add", "README.md", "ci/forge-lanes.toml"]);
-        git(&seed, &["commit", "-m", "branch manifest"]);
-        git(&seed, &["push", "origin", "feature/manifest"]);
+        );
+        repo.seed_add(&["README.md", "ci/forge-lanes.toml"]);
+        repo.seed_commit("branch manifest");
+        repo.seed_push_branch("feature/manifest");
 
-        let config = config_for_bare_repo(&bare);
-        let store = Store::open(&db_path).expect("open store");
+        let config = config_for_bare_repo(repo.bare_path());
+        let store = repo.open_store();
         poll_once_limited(&store, &config, 0).expect("poll branches");
         let branch = store
             .list_branch_feed_items()
@@ -279,42 +228,24 @@ paths = []
 
     #[test]
     fn invalid_branch_manifest_records_failed_suite_for_head() {
-        let root = tempfile::tempdir().expect("create temp root");
-        let bare = root.path().join("pika.git");
-        let seed = root.path().join("seed");
-        let db_path = root.path().join("pika-git.db");
-
-        git(
-            root.path(),
-            &["init", "--bare", bare.to_str().expect("bare path")],
-        );
-        git(root.path(), &["init", seed.to_str().expect("seed path")]);
-        git(&seed, &["config", "user.name", "Test User"]);
-        git(&seed, &["config", "user.email", "test@example.com"]);
-        fs::create_dir_all(seed.join("ci")).expect("create ci dir");
-        fs::write(seed.join("README.md"), "hello\n").expect("write readme");
-        fs::write(
-            seed.join("ci/forge-lanes.toml"),
+        let repo = GitTestRepo::new();
+        repo.write_seed("README.md", "hello\n");
+        repo.write_seed(
+            "ci/forge-lanes.toml",
             "version = 1\nnightly_schedule_utc = \"08:00\"\n",
-        )
-        .expect("write manifest");
-        git(&seed, &["add", "README.md", "ci/forge-lanes.toml"]);
-        git(&seed, &["commit", "-m", "initial"]);
-        git(&seed, &["branch", "-M", "master"]);
-        git(
-            &seed,
-            &["remote", "add", "origin", bare.to_str().expect("bare path")],
         );
-        git(&seed, &["push", "origin", "master"]);
+        repo.seed_add(&["README.md", "ci/forge-lanes.toml"]);
+        repo.seed_commit("initial");
+        repo.seed_push_master();
 
-        git(&seed, &["checkout", "-b", "feature/bad-manifest"]);
-        fs::write(seed.join("ci/forge-lanes.toml"), "not = [valid\n").expect("break manifest");
-        git(&seed, &["add", "ci/forge-lanes.toml"]);
-        git(&seed, &["commit", "-m", "break manifest"]);
-        git(&seed, &["push", "origin", "feature/bad-manifest"]);
+        repo.seed_checkout_new_branch("feature/bad-manifest");
+        repo.write_seed("ci/forge-lanes.toml", "not = [valid\n");
+        repo.seed_add(&["ci/forge-lanes.toml"]);
+        repo.seed_commit("break manifest");
+        repo.seed_push_branch("feature/bad-manifest");
 
-        let config = config_for_bare_repo(&bare);
-        let store = Store::open(&db_path).expect("open store");
+        let config = config_for_bare_repo(repo.bare_path());
+        let store = repo.open_store();
         poll_once_limited(&store, &config, 0).expect("poll branches");
         let branch = store
             .list_branch_feed_items()

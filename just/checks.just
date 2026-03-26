@@ -34,6 +34,10 @@ pre-commit-full: pre-commit
     just clippy -p pika-server --tests
     just clippy -p pikahut
 
+# Run the Codex-backed architecture invariant review.
+invariants:
+    python3 ./scripts/check_invariants.py
+
 # CI-safe pre-merge for the Pika app lane.
 pre-merge-pika: fmt clippy
     #!/usr/bin/env bash

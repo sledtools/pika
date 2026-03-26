@@ -28,6 +28,8 @@ info:
     @echo "    just checks::pre-commit-full"
     @echo "  Human-oriented workflow help:"
     @echo "    just info"
+    @echo "  Architecture invariants:"
+    @echo "    just invariants"
     @echo "  Expanded module tree:"
     @echo "    JUST_UNSTABLE=1 just --list --list-submodules"
     @echo "  Agent discovery:"
@@ -159,6 +161,10 @@ qa:
 # Single CI entrypoint for the whole repo.
 pre-merge:
     @just checks::pre-merge
+
+# Run the Codex-backed architecture invariant review.
+invariants:
+    @just checks::invariants
 
 # Nightly root task.
 nightly:

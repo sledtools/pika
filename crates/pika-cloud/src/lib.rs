@@ -11,8 +11,8 @@ pub use incus::{
 };
 pub use lifecycle::{
     LIFECYCLE_SCHEMA_VERSION, LifecycleEvent, LifecycleState, RuntimeResultStatus,
-    RuntimeStatusSnapshot, RuntimeTerminalResult, decode_runtime_status,
-    decode_runtime_terminal_result, encode_runtime_status_pretty,
+    RuntimeStatusSnapshot, RuntimeTerminalResult, decode_runtime_event_line, decode_runtime_status,
+    decode_runtime_terminal_result, encode_runtime_event_line, encode_runtime_status_pretty,
     encode_runtime_terminal_result_pretty, runtime_terminal_result_for_exit_code,
 };
 pub use mount::{MountKind, MountMode, RuntimeMount};

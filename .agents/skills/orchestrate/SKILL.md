@@ -19,6 +19,10 @@ Use this skill when running a multi-chunk implementation program in `pika` where
 - Run `./scripts/agent-brief` once per new worktree session before substantial work.
 - Do not keep doing large cleanup work on a shared scratch branch. Create a dedicated branch per chunk or per program.
 - If two chunks may conflict, put them in separate worktrees immediately instead of hoping the merge will be easy.
+- Keep a local untracked `JOURNAL.md` in the worktree for simplification opportunities, abstraction ideas, and cleanup candidates noticed in the weeds.
+  - Capture the note quickly and keep moving.
+  - Do not widen the active chunk just because the journal grew.
+  - Triage the journal at the end of the broader project or migration once the primary seams are landed.
 
 ## Chunking Rules
 

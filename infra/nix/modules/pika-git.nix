@@ -17,11 +17,11 @@ let
     repo=${lib.escapeShellArg canonicalGitDir}
 
     if [ "$legacy_state_dir" != "$state_dir" ] && [ -d "$legacy_state_dir" ] && [ ! -L "$legacy_state_dir" ]; then
-      if [ ! -e "$state_dir" ]; then
-        ${pkgs.coreutils}/bin/mv "$legacy_state_dir" "$state_dir"
-      elif [ -d "$state_dir" ] && [ -z "$(${pkgs.findutils}/bin/find "$state_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
-        ${pkgs.coreutils}/bin/rmdir "$state_dir"
-        ${pkgs.coreutils}/bin/mv "$legacy_state_dir" "$state_dir"
+      ${pkgs.coreutils}/bin/mkdir -p "$state_dir"
+
+      if [ -z "$(${pkgs.findutils}/bin/find "$state_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+        ${pkgs.findutils}/bin/find "$legacy_state_dir" -mindepth 1 -maxdepth 1 -exec ${pkgs.coreutils}/bin/mv -t "$state_dir" {} +
+        ${pkgs.coreutils}/bin/rmdir "$legacy_state_dir" 2>/dev/null || true
       fi
     fi
 
@@ -70,7 +70,7 @@ let
   };
 in
 {
-  sops.secrets."pika_git_github_token" = {
+  sops.secrets."pika_news_github_token" = {
     format = "yaml";
     sopsFile = ../../secrets/pika-git.yaml;
     owner = serviceUser;
@@ -78,7 +78,7 @@ in
     mode = "0400";
   };
 
-  sops.secrets."pika_git_claude_oauth_token" = {
+  sops.secrets."pika_news_claude_oauth_token" = {
     format = "yaml";
     sopsFile = ../../secrets/pika-git.yaml;
     owner = serviceUser;
@@ -86,7 +86,7 @@ in
     mode = "0400";
   };
 
-  sops.secrets."pika_git_webhook_secret" = {
+  sops.secrets."pika_news_webhook_secret" = {
     format = "yaml";
     sopsFile = ../../secrets/pika-git.yaml;
     owner = serviceUser;
@@ -107,9 +107,9 @@ in
     group = serviceGroup;
     mode = "0400";
     content = ''
-      GITHUB_TOKEN=${config.sops.placeholder."pika_git_github_token"}
-      CLAUDE_CODE_OAUTH_TOKEN=${config.sops.placeholder."pika_git_claude_oauth_token"}
-      PIKA_GIT_WEBHOOK_SECRET=${config.sops.placeholder."pika_git_webhook_secret"}
+      GITHUB_TOKEN=${config.sops.placeholder."pika_news_github_token"}
+      CLAUDE_CODE_OAUTH_TOKEN=${config.sops.placeholder."pika_news_claude_oauth_token"}
+      PIKA_GIT_WEBHOOK_SECRET=${config.sops.placeholder."pika_news_webhook_secret"}
       RUST_LOG=info
       PIKACI_APPLE_SSH_KEY_FILE=${config.sops.secrets."pikaci_apple_ssh_key".path}
       PIKACI_APPLE_SSH_HOST=pika-mini.tail029da2.ts.net

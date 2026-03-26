@@ -4450,8 +4450,9 @@ mod tests {
         write_run_record,
     };
     use crate::model::{
-        ExecuteNode, GuestCommand, JobExecutionConfig, JobPlacementKind, JobRecord, JobRuntimeKind,
-        JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope, PrepareNode, PrepareTimingRecord,
+        ExecuteNode, GuestCommand, HostProcessRuntimeConfig, IncusRuntimeConfig,
+        JobExecutionConfig, JobPlacementKind, JobRecord, JobRuntimeConfig, JobRuntimeKind, JobSpec,
+        PlanExecutorKind, PlanNodeRecord, PlanScope, PrepareNode, PrepareTimingRecord,
         PreparedOutputConsumerKind, PreparedOutputExposure, PreparedOutputExposureAccess,
         PreparedOutputExposureKind, PreparedOutputFulfillmentResult,
         PreparedOutputFulfillmentStatus, PreparedOutputFulfillmentTransportPathContract,
@@ -4551,6 +4552,14 @@ mod tests {
         }
     }
 
+    fn remote_incus_runtime(
+        staged_linux_command: Option<StagedLinuxCommandConfig>,
+    ) -> JobRuntimeConfig {
+        JobRuntimeConfig::Incus(IncusRuntimeConfig {
+            staged_linux_command,
+        })
+    }
+
     fn remote_incus_job_base() -> JobSpec {
         JobSpec {
             id: "",
@@ -4558,10 +4567,8 @@ mod tests {
             timeout_secs: 0,
             writable_workspace: false,
             execution: JobExecutionConfig::REMOTE_SSH_INCUS,
+            runtime_config: remote_incus_runtime(None),
             guest_command: GuestCommand::ShellCommand { command: "" },
-            staged_linux_command: None,
-            host_setup_command: None,
-            mount_host_rust_toolchain: false,
         }
     }
 
@@ -4572,10 +4579,8 @@ mod tests {
             timeout_secs: 0,
             writable_workspace: false,
             execution: JobExecutionConfig::HOST_LOCAL,
+            runtime_config: JobRuntimeConfig::HostProcess(HostProcessRuntimeConfig),
             guest_command: GuestCommand::HostShellCommand { command: "" },
-            staged_linux_command: None,
-            host_setup_command: None,
-            mount_host_rust_toolchain: false,
         }
     }
 
@@ -4627,7 +4632,6 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "printf 'ok\\n'",
             },
-            staged_linux_command: None,
             ..host_local_job_base()
         }];
         let metadata = RunMetadata {
@@ -4683,7 +4687,6 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "printf 'ok\\n'",
             },
-            staged_linux_command: None,
             ..host_local_job_base()
         }];
         let metadata = RunMetadata {
@@ -5130,9 +5133,9 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "actionlint",
             },
-            staged_linux_command: Some(
+            runtime_config: remote_incus_runtime(Some(
                 StagedLinuxRustLane::PikaFollowupActionlint.command_config(),
-            ),
+            )),
             ..remote_incus_job_base()
         }];
 
@@ -5180,9 +5183,9 @@ mod tests {
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
                 },
-                staged_linux_command: Some(
+                runtime_config: remote_incus_runtime(Some(
                     StagedLinuxRustLane::PikaCoreLibAppFlows.command_config(),
-                ),
+                )),
                 ..remote_incus_job_base()
             },
             JobSpec {
@@ -5193,9 +5196,9 @@ mod tests {
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
                 },
-                staged_linux_command: Some(
+                runtime_config: remote_incus_runtime(Some(
                     StagedLinuxRustLane::PikaCoreMessagingE2e.command_config(),
-                ),
+                )),
                 ..remote_incus_job_base()
             },
         ];
@@ -5449,7 +5452,6 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "cargo clippy -p pikachat -- -D warnings",
             },
-            staged_linux_command: None,
             ..host_local_job_base()
         }];
 
@@ -5510,7 +5512,6 @@ mod tests {
                 guest_command: GuestCommand::HostShellCommand {
                     command: "cargo build -p pikachat",
                 },
-                staged_linux_command: None,
                 ..host_local_job_base()
             },
             JobSpec {
@@ -5521,7 +5522,6 @@ mod tests {
                 guest_command: GuestCommand::HostShellCommand {
                     command: "cargo test -p pikahut --test integration_openclaw",
                 },
-                staged_linux_command: None,
                 ..host_local_job_base()
             },
         ];
@@ -5598,7 +5598,6 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "cargo clippy -p pikachat -- -D warnings",
             },
-            staged_linux_command: None,
             ..host_local_job_base()
         }];
         let cache = build_host_local_cache_layout(&prepared, &jobs, &metadata)
@@ -5672,7 +5671,6 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "cargo clippy -p pikachat -- -D warnings",
             },
-            staged_linux_command: None,
             ..host_local_job_base()
         }];
         let cache = build_host_local_cache_layout(&prepared, &jobs, &metadata)
@@ -5728,9 +5726,9 @@ mod tests {
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
                 },
-                staged_linux_command: Some(
+                runtime_config: remote_incus_runtime(Some(
                     StagedLinuxRustLane::PikaCoreLibAppFlows.command_config(),
-                ),
+                )),
                 ..remote_incus_job_base()
             },
             JobSpec {
@@ -5741,9 +5739,9 @@ mod tests {
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
                 },
-                staged_linux_command: Some(
+                runtime_config: remote_incus_runtime(Some(
                     StagedLinuxRustLane::PikaCoreMessagingE2e.command_config(),
-                ),
+                )),
                 ..remote_incus_job_base()
             },
         ];
@@ -6528,7 +6526,9 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
-            staged_linux_command: Some(StagedLinuxRustLane::PikaCoreLibAppFlows.command_config()),
+            runtime_config: remote_incus_runtime(Some(
+                StagedLinuxRustLane::PikaCoreLibAppFlows.command_config(),
+            )),
             ..remote_incus_job_base()
         }];
         let metadata = RunMetadata {
@@ -6559,9 +6559,9 @@ mod tests {
             guest_command: GuestCommand::PackageUnitTests {
                 package: "pika-agent-control-plane",
             },
-            staged_linux_command: Some(
+            runtime_config: remote_incus_runtime(Some(
                 StagedLinuxRustLane::AgentContractsControlPlaneUnit.command_config(),
-            ),
+            )),
             ..remote_incus_job_base()
         }];
         let metadata = RunMetadata {
@@ -6592,7 +6592,9 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
-            staged_linux_command: Some(StagedLinuxRustLane::PikaCoreLibAppFlows.command_config()),
+            runtime_config: remote_incus_runtime(Some(
+                StagedLinuxRustLane::PikaCoreLibAppFlows.command_config(),
+            )),
             ..remote_incus_job_base()
         }];
         let metadata = RunMetadata {
@@ -6625,7 +6627,9 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
-            staged_linux_command: Some(StagedLinuxRustLane::PikaCoreLibAppFlows.command_config()),
+            runtime_config: remote_incus_runtime(Some(
+                StagedLinuxRustLane::PikaCoreLibAppFlows.command_config(),
+            )),
             ..remote_incus_job_base()
         }];
         let metadata = RunMetadata {
@@ -6719,7 +6723,9 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
-            staged_linux_command: Some(StagedLinuxRustLane::PikaCoreLibAppFlows.command_config()),
+            runtime_config: remote_incus_runtime(Some(
+                StagedLinuxRustLane::PikaCoreLibAppFlows.command_config(),
+            )),
             ..remote_incus_job_base()
         }];
 
@@ -8290,9 +8296,9 @@ EOF
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
                 },
-                staged_linux_command: Some(
+                runtime_config: remote_incus_runtime(Some(
                     StagedLinuxRustLane::PikaCoreLibAppFlows.command_config(),
-                ),
+                )),
                 ..remote_incus_job_base()
             },
             JobSpec {
@@ -8303,9 +8309,9 @@ EOF
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
                 },
-                staged_linux_command: Some(
+                runtime_config: remote_incus_runtime(Some(
                     StagedLinuxRustLane::PikaCoreMessagingE2e.command_config(),
-                ),
+                )),
                 ..remote_incus_job_base()
             },
         ];
@@ -8319,7 +8325,6 @@ EOF
                 guest_command: GuestCommand::HostShellCommand {
                     command: "cargo test -p pika-ios --lib -- --nocapture",
                 },
-                staged_linux_command: None,
                 ..host_local_job_base()
             },
         ];
@@ -8353,9 +8358,9 @@ EOF
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
                 },
-                staged_linux_command: Some(
+                runtime_config: remote_incus_runtime(Some(
                     StagedLinuxRustLane::PikaCoreLibAppFlows.command_config(),
-                ),
+                )),
                 ..remote_incus_job_base()
             },
             JobSpec {
@@ -8366,9 +8371,9 @@ EOF
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
                 },
-                staged_linux_command: Some(
+                runtime_config: remote_incus_runtime(Some(
                     StagedLinuxRustLane::PikaCoreMessagingE2e.command_config(),
-                ),
+                )),
                 ..remote_incus_job_base()
             },
         ];

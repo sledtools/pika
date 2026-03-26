@@ -16,8 +16,13 @@ let
     legacy_state_dir=${lib.escapeShellArg legacyServiceStateDir}
     repo=${lib.escapeShellArg canonicalGitDir}
 
-    if [ "$legacy_state_dir" != "$state_dir" ] && [ -d "$legacy_state_dir" ] && [ ! -e "$state_dir" ]; then
-      ${pkgs.coreutils}/bin/mv "$legacy_state_dir" "$state_dir"
+    if [ "$legacy_state_dir" != "$state_dir" ] && [ -d "$legacy_state_dir" ] && [ ! -L "$legacy_state_dir" ]; then
+      if [ ! -e "$state_dir" ]; then
+        ${pkgs.coreutils}/bin/mv "$legacy_state_dir" "$state_dir"
+      elif [ -d "$state_dir" ] && [ -z "$(${pkgs.findutils}/bin/find "$state_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+        ${pkgs.coreutils}/bin/rmdir "$state_dir"
+        ${pkgs.coreutils}/bin/mv "$legacy_state_dir" "$state_dir"
+      fi
     fi
 
     ${pkgs.coreutils}/bin/mkdir -p "$state_dir"

@@ -11,9 +11,10 @@ use anyhow::{Context, anyhow, bail};
 use chrono::Utc;
 use fs2::FileExt;
 use pika_cloud::{
-    CLOUD_GUEST_LOG_PATH, EVENTS_PATH, GUEST_REQUEST_PATH, IncusGuestRunRequest, RESULT_PATH,
-    RuntimeResultStatus, RuntimeTerminalResult, STATUS_PATH, encode_runtime_terminal_result_pretty,
-    load_runtime_terminal_result, runtime_terminal_result_for_exit_code,
+    CLOUD_GUEST_LOG_PATH, EVENTS_PATH, GUEST_REQUEST_PATH, IncusGuestRunRequest,
+    LIFECYCLE_SCHEMA_VERSION, RESULT_PATH, RuntimeResultStatus, RuntimeTerminalResult, STATUS_PATH,
+    encode_runtime_terminal_result_pretty, load_runtime_terminal_result,
+    runtime_terminal_result_for_exit_code,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1647,7 +1648,7 @@ if [ "$code" -ne 0 ]; then
 fi
 cat > "{artifacts_mount}/result.json" <<EOF
 {{
-  "schema_version": 1,
+  "schema_version": {LIFECYCLE_SCHEMA_VERSION},
   "status": "$status",
   "exit_code": $code,
   "finished_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
@@ -2440,7 +2441,7 @@ mod tests {
 
     use pika_cloud::{
         CLOUD_GUEST_LOG_PATH, EVENTS_PATH, GUEST_REQUEST_PATH,
-        INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION, RESULT_PATH, STATUS_PATH,
+        INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION, LIFECYCLE_SCHEMA_VERSION, RESULT_PATH, STATUS_PATH,
         runtime_terminal_result_for_exit_code,
     };
 
@@ -2470,13 +2471,17 @@ mod tests {
         for needle in needles {
             assert!(
                 haystack.contains(needle),
-                "expected Incus guest image source to contain `{needle}`"
+                "expected source to contain `{needle}`"
             );
         }
     }
 
     fn incus_guest_image_source() -> &'static str {
         include_str!("../../../nix/incus/pikaci-image.nix")
+    }
+
+    fn local_linux_guest_module_source() -> &'static str {
+        include_str!("../../../nix/pikaci/guest-module.nix")
     }
 
     fn write_snapshot_metadata(snapshot_dir: &Path, content_hash: &str) {
@@ -2635,9 +2640,42 @@ mod tests {
     fn tart_guest_script_writes_shared_terminal_result_vocabulary() {
         let script = render_tart_guest_script("cargo test", false, false, false);
 
-        assert!(script.contains("status=\"completed\""));
-        assert!(script.contains("\"schema_version\": 1"));
-        assert!(script.contains("\"status\": \"$status\""));
+        assert_contains_all(
+            &script,
+            &[
+                "status=\"completed\"",
+                "status=\"failed\"",
+                "cat > \"/Volumes/My Shared Files/artifacts/result.json\" <<EOF",
+                &format!("\"schema_version\": {LIFECYCLE_SCHEMA_VERSION}"),
+                "\"status\": \"$status\"",
+                "\"exit_code\": $code",
+                "\"finished_at\": \"$(date -u +\"%Y-%m-%dT%H:%M:%SZ\")\"",
+                "\"message\": \"$message\"",
+            ],
+        );
+        assert!(!script.contains("status=\"passed\""));
+        assert!(!script.contains("\"status\": \"passed\""));
+    }
+
+    #[test]
+    fn local_linux_guest_module_pins_shared_terminal_result_contract() {
+        let source = local_linux_guest_module_source();
+
+        assert_contains_all(
+            source,
+            &[
+                "status=\"completed\"",
+                "status=\"failed\"",
+                "cat > /artifacts/result.json <<EOF",
+                "\"schema_version\": 1",
+                "\"status\": \"$status\"",
+                "\"exit_code\": $code",
+                "\"finished_at\": \"$(date -Iseconds)\"",
+                "\"message\": \"$message\"",
+            ],
+        );
+        assert!(!source.contains("status=\"passed\""));
+        assert!(!source.contains("\"status\": \"passed\""));
     }
 
     #[test]

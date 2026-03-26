@@ -168,6 +168,36 @@ pub struct StagedLinuxRustTargetConfig {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StagedLinuxRustPayloadRole {
+    WorkspaceDeps,
+    WorkspaceBuild,
+}
+
+impl StagedLinuxRustPayloadRole {
+    pub fn prepare_node_suffix(self) -> &'static str {
+        match self {
+            Self::WorkspaceDeps => "workspace-deps",
+            Self::WorkspaceBuild => "workspace-build",
+        }
+    }
+
+    pub fn mount_dir_name(self) -> &'static str {
+        self.prepare_node_suffix()
+    }
+
+    pub fn device_prefix(self) -> &'static str {
+        self.prepare_node_suffix()
+    }
+
+    pub fn prepare_description(self) -> &'static str {
+        match self {
+            Self::WorkspaceDeps => "Build staged Linux Rust dependencies",
+            Self::WorkspaceBuild => "Build staged Linux Rust test artifacts",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StagedLinuxRustLane {
     PikaFollowupAndroidTestCompile,
     PikaFollowupPikachatBuild,
@@ -251,6 +281,20 @@ impl StagedLinuxRustLane {
 
     pub fn workspace_output_system(self) -> &'static str {
         self.target().config().workspace_output_system
+    }
+
+    pub fn payload_roles(self) -> [StagedLinuxRustPayloadRole; 2] {
+        [
+            StagedLinuxRustPayloadRole::WorkspaceDeps,
+            StagedLinuxRustPayloadRole::WorkspaceBuild,
+        ]
+    }
+
+    pub fn payload_output_name(self, role: StagedLinuxRustPayloadRole) -> &'static str {
+        match role {
+            StagedLinuxRustPayloadRole::WorkspaceDeps => self.workspace_deps_output_name(),
+            StagedLinuxRustPayloadRole::WorkspaceBuild => self.workspace_build_output_name(),
+        }
     }
 
     pub fn execute_wrapper_command(self) -> &'static str {
@@ -544,7 +588,7 @@ mod tests {
     use super::{
         GuestCommand, JobSpec, RemoteLinuxVmBackend, RemoteLinuxVmExecutionRecord,
         RemoteLinuxVmImageRecord, RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord,
-        StagedLinuxRustLane, StagedLinuxRustTarget,
+        StagedLinuxRustLane, StagedLinuxRustPayloadRole, StagedLinuxRustTarget,
     };
     use std::fs;
     use std::path::Path;
@@ -933,6 +977,34 @@ mod tests {
         assert_eq!(
             lane.execute_wrapper_command(),
             "/staged/linux-rust/workspace-build/bin/run-pikachat-typescript"
+        );
+    }
+
+    #[test]
+    fn staged_linux_payload_roles_use_stable_mount_and_output_contracts() {
+        let lane = StagedLinuxRustLane::NotificationsServerPackageTests;
+        let roles = lane.payload_roles();
+
+        assert_eq!(
+            roles,
+            [
+                StagedLinuxRustPayloadRole::WorkspaceDeps,
+                StagedLinuxRustPayloadRole::WorkspaceBuild,
+            ]
+        );
+        assert_eq!(roles[0].prepare_node_suffix(), "workspace-deps");
+        assert_eq!(roles[0].mount_dir_name(), "workspace-deps");
+        assert_eq!(roles[0].device_prefix(), "workspace-deps");
+        assert_eq!(
+            lane.payload_output_name(roles[0]),
+            "ci.x86_64-linux.notificationsWorkspaceDeps"
+        );
+        assert_eq!(roles[1].prepare_node_suffix(), "workspace-build");
+        assert_eq!(roles[1].mount_dir_name(), "workspace-build");
+        assert_eq!(roles[1].device_prefix(), "workspace-build");
+        assert_eq!(
+            lane.payload_output_name(roles[1]),
+            "ci.x86_64-linux.notificationsWorkspaceBuild"
         );
     }
 

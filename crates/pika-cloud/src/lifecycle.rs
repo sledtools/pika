@@ -77,28 +77,38 @@ impl LifecycleTerminalStatus {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeArtifactKind {
+    Status,
+    TerminalResult,
+    EventStream,
+}
+
+impl RuntimeArtifactKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Status => "status",
+            Self::TerminalResult => "terminal result",
+            Self::EventStream => "event stream",
+        }
+    }
+}
+
 #[derive(Debug)]
-pub enum RuntimeLifecycleLoadError {
+pub enum RuntimeArtifactLoadError {
     Read {
         path: PathBuf,
         source: io::Error,
     },
-    DecodeStatus {
+    Decode {
+        kind: RuntimeArtifactKind,
         source_name: String,
-        source: serde_json::Error,
-    },
-    DecodeTerminalResult {
-        source_name: String,
-        source: serde_json::Error,
-    },
-    DecodeEventLine {
-        path: PathBuf,
-        line: usize,
+        line: Option<usize>,
         source: serde_json::Error,
     },
 }
 
-impl fmt::Display for RuntimeLifecycleLoadError {
+impl fmt::Display for RuntimeArtifactLoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Read { path, source } => {
@@ -108,29 +118,28 @@ impl fmt::Display for RuntimeLifecycleLoadError {
                     path.display()
                 )
             }
-            Self::DecodeStatus {
+            Self::Decode {
+                kind,
                 source_name,
+                line: None,
                 source,
             } => {
                 write!(
                     f,
-                    "failed to decode runtime status from `{source_name}`: {source}"
+                    "failed to decode runtime {} from `{source_name}`: {source}",
+                    kind.label()
                 )
             }
-            Self::DecodeTerminalResult {
+            Self::Decode {
+                kind,
                 source_name,
+                line: Some(line),
                 source,
             } => {
                 write!(
                     f,
-                    "failed to decode runtime terminal result from `{source_name}`: {source}"
-                )
-            }
-            Self::DecodeEventLine { path, line, source } => {
-                write!(
-                    f,
-                    "failed to decode runtime lifecycle event at `{}` line {}: {source}",
-                    path.display(),
+                    "failed to decode runtime {} at `{source_name}` line {}: {source}",
+                    kind.label(),
                     line
                 )
             }
@@ -138,15 +147,130 @@ impl fmt::Display for RuntimeLifecycleLoadError {
     }
 }
 
-impl std::error::Error for RuntimeLifecycleLoadError {
+impl std::error::Error for RuntimeArtifactLoadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Read { source, .. } => Some(source),
-            Self::DecodeStatus { source, .. } => Some(source),
-            Self::DecodeTerminalResult { source, .. } => Some(source),
-            Self::DecodeEventLine { source, .. } => Some(source),
+            Self::Decode { source, .. } => Some(source),
         }
     }
+}
+
+pub struct RuntimeArtifacts;
+
+impl RuntimeArtifacts {
+    pub fn encode_terminal_result_pretty(
+        result: &RuntimeTerminalResult,
+    ) -> serde_json::Result<Vec<u8>> {
+        serde_json::to_vec_pretty(result)
+    }
+
+    pub fn decode_terminal_result(bytes: &[u8]) -> serde_json::Result<RuntimeTerminalResult> {
+        serde_json::from_slice(bytes)
+    }
+
+    pub fn decode_terminal_result_artifact(
+        source_name: impl Into<String>,
+        bytes: &[u8],
+    ) -> Result<RuntimeTerminalResult, RuntimeArtifactLoadError> {
+        let source_name = source_name.into();
+        Self::decode_terminal_result(bytes).map_err(|source| RuntimeArtifactLoadError::Decode {
+            kind: RuntimeArtifactKind::TerminalResult,
+            source_name,
+            line: None,
+            source,
+        })
+    }
+
+    pub fn load_terminal_result(
+        path: impl AsRef<Path>,
+    ) -> Result<RuntimeTerminalResult, RuntimeArtifactLoadError> {
+        let path = path.as_ref();
+        let bytes = read_artifact_bytes(path)?;
+        Self::decode_terminal_result_artifact(path.display().to_string(), &bytes)
+    }
+
+    pub fn encode_event_line(event: &LifecycleEvent) -> serde_json::Result<String> {
+        serde_json::to_string(event)
+    }
+
+    pub fn decode_event_line(line: &str) -> serde_json::Result<LifecycleEvent> {
+        serde_json::from_str(line)
+    }
+
+    pub fn decode_event_stream(
+        source_name: impl Into<String>,
+        contents: &str,
+    ) -> Result<Vec<LifecycleEvent>, RuntimeArtifactLoadError> {
+        let source_name = source_name.into();
+        let mut events = Vec::new();
+        for (index, line) in contents.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let event = Self::decode_event_line(line).map_err(|source| {
+                RuntimeArtifactLoadError::Decode {
+                    kind: RuntimeArtifactKind::EventStream,
+                    source_name: source_name.clone(),
+                    line: Some(index + 1),
+                    source,
+                }
+            })?;
+            events.push(event);
+        }
+        Ok(events)
+    }
+
+    pub fn load_events(
+        path: impl AsRef<Path>,
+    ) -> Result<Vec<LifecycleEvent>, RuntimeArtifactLoadError> {
+        let path = path.as_ref();
+        let contents = read_artifact_string(path)?;
+        Self::decode_event_stream(path.display().to_string(), &contents)
+    }
+
+    pub fn encode_status_pretty(status: &RuntimeStatusSnapshot) -> serde_json::Result<Vec<u8>> {
+        serde_json::to_vec_pretty(status)
+    }
+
+    pub fn decode_status(bytes: &[u8]) -> serde_json::Result<RuntimeStatusSnapshot> {
+        serde_json::from_slice(bytes)
+    }
+
+    pub fn decode_status_artifact(
+        source_name: impl Into<String>,
+        bytes: &[u8],
+    ) -> Result<RuntimeStatusSnapshot, RuntimeArtifactLoadError> {
+        let source_name = source_name.into();
+        Self::decode_status(bytes).map_err(|source| RuntimeArtifactLoadError::Decode {
+            kind: RuntimeArtifactKind::Status,
+            source_name,
+            line: None,
+            source,
+        })
+    }
+
+    pub fn load_status(
+        path: impl AsRef<Path>,
+    ) -> Result<RuntimeStatusSnapshot, RuntimeArtifactLoadError> {
+        let path = path.as_ref();
+        let bytes = read_artifact_bytes(path)?;
+        Self::decode_status_artifact(path.display().to_string(), &bytes)
+    }
+}
+
+fn read_artifact_bytes(path: &Path) -> Result<Vec<u8>, RuntimeArtifactLoadError> {
+    fs::read(path).map_err(|source| RuntimeArtifactLoadError::Read {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+fn read_artifact_string(path: &Path) -> Result<String, RuntimeArtifactLoadError> {
+    fs::read_to_string(path).map_err(|source| RuntimeArtifactLoadError::Read {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 pub fn runtime_terminal_result_for_exit_code(
@@ -162,103 +286,6 @@ pub fn runtime_terminal_result_for_exit_code(
         exit_code: Some(exit_code),
         details: None,
     }
-}
-
-pub fn encode_runtime_terminal_result_pretty(
-    result: &RuntimeTerminalResult,
-) -> serde_json::Result<Vec<u8>> {
-    serde_json::to_vec_pretty(result)
-}
-
-pub fn decode_runtime_terminal_result(bytes: &[u8]) -> serde_json::Result<RuntimeTerminalResult> {
-    serde_json::from_slice(bytes)
-}
-
-pub fn decode_runtime_terminal_result_artifact(
-    source_name: impl Into<String>,
-    bytes: &[u8],
-) -> Result<RuntimeTerminalResult, RuntimeLifecycleLoadError> {
-    let source_name = source_name.into();
-    decode_runtime_terminal_result(bytes).map_err(|source| {
-        RuntimeLifecycleLoadError::DecodeTerminalResult {
-            source_name,
-            source,
-        }
-    })
-}
-
-pub fn encode_runtime_event_line(event: &LifecycleEvent) -> serde_json::Result<String> {
-    serde_json::to_string(event)
-}
-
-pub fn decode_runtime_event_line(line: &str) -> serde_json::Result<LifecycleEvent> {
-    serde_json::from_str(line)
-}
-
-pub fn encode_runtime_status_pretty(status: &RuntimeStatusSnapshot) -> serde_json::Result<Vec<u8>> {
-    serde_json::to_vec_pretty(status)
-}
-
-pub fn decode_runtime_status(bytes: &[u8]) -> serde_json::Result<RuntimeStatusSnapshot> {
-    serde_json::from_slice(bytes)
-}
-
-pub fn decode_runtime_status_artifact(
-    source_name: impl Into<String>,
-    bytes: &[u8],
-) -> Result<RuntimeStatusSnapshot, RuntimeLifecycleLoadError> {
-    let source_name = source_name.into();
-    decode_runtime_status(bytes).map_err(|source| RuntimeLifecycleLoadError::DecodeStatus {
-        source_name,
-        source,
-    })
-}
-
-pub fn load_runtime_status(
-    path: impl AsRef<Path>,
-) -> Result<RuntimeStatusSnapshot, RuntimeLifecycleLoadError> {
-    let path = path.as_ref();
-    let bytes = fs::read(path).map_err(|source| RuntimeLifecycleLoadError::Read {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    decode_runtime_status_artifact(path.display().to_string(), &bytes)
-}
-
-pub fn load_runtime_terminal_result(
-    path: impl AsRef<Path>,
-) -> Result<RuntimeTerminalResult, RuntimeLifecycleLoadError> {
-    let path = path.as_ref();
-    let bytes = fs::read(path).map_err(|source| RuntimeLifecycleLoadError::Read {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    decode_runtime_terminal_result_artifact(path.display().to_string(), &bytes)
-}
-
-pub fn load_runtime_events(
-    path: impl AsRef<Path>,
-) -> Result<Vec<LifecycleEvent>, RuntimeLifecycleLoadError> {
-    let path = path.as_ref();
-    let contents = fs::read_to_string(path).map_err(|source| RuntimeLifecycleLoadError::Read {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    let mut events = Vec::new();
-    for (index, line) in contents.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let event = decode_runtime_event_line(line).map_err(|source| {
-            RuntimeLifecycleLoadError::DecodeEventLine {
-                path: path.to_path_buf(),
-                line: index + 1,
-                source,
-            }
-        })?;
-        events.push(event);
-    }
-    Ok(events)
 }
 
 pub type LifecycleEventKind = RuntimeState;
@@ -308,8 +335,8 @@ mod tests {
             details: Some(serde_json::json!({ "service": "openclaw" })),
         };
 
-        let encoded = encode_runtime_event_line(&event).expect("encode");
-        let decoded = decode_runtime_event_line(&encoded).expect("decode");
+        let encoded = RuntimeArtifacts::encode_event_line(&event).expect("encode");
+        let decoded = RuntimeArtifacts::decode_event_line(&encoded).expect("decode");
 
         assert_eq!(decoded, event);
         assert!(!encoded.ends_with('\n'));
@@ -324,7 +351,7 @@ mod tests {
 
     #[test]
     fn runtime_event_line_rejects_unknown_kind() {
-        let err = decode_runtime_event_line(
+        let err = RuntimeArtifacts::decode_event_line(
             r#"{
                 "schema_version": 1,
                 "seq": 7,
@@ -363,15 +390,15 @@ mod tests {
             details: Some(serde_json::json!({ "service": "openclaw" })),
         };
 
-        let encoded = encode_runtime_status_pretty(&status).expect("encode");
-        let decoded = decode_runtime_status(&encoded).expect("decode");
+        let encoded = RuntimeArtifacts::encode_status_pretty(&status).expect("encode");
+        let decoded = RuntimeArtifacts::decode_status(&encoded).expect("decode");
 
         assert_eq!(decoded, status);
     }
 
     #[test]
     fn runtime_status_rejects_unknown_state() {
-        let err = decode_runtime_status(
+        let err = RuntimeArtifacts::decode_status(
             br#"{
                 "schema_version": 1,
                 "state": "passed",
@@ -386,7 +413,7 @@ mod tests {
 
     #[test]
     fn decode_runtime_status_artifact_reports_source_name() {
-        let err = decode_runtime_status_artifact(
+        let err = RuntimeArtifacts::decode_status_artifact(
             "/run/pika-cloud/status.json",
             br#"{
                 "schema_version": 1,
@@ -406,7 +433,7 @@ mod tests {
     #[test]
     fn load_runtime_status_reports_missing_path() {
         let path = temp_test_path("missing-status");
-        let err = load_runtime_status(&path).expect_err("missing file should fail");
+        let err = RuntimeArtifacts::load_status(&path).expect_err("missing file should fail");
 
         assert!(
             err.to_string()
@@ -434,8 +461,8 @@ mod tests {
             "test command exited with 9",
         );
 
-        let encoded = encode_runtime_terminal_result_pretty(&result).expect("encode");
-        let decoded = decode_runtime_terminal_result(&encoded).expect("decode");
+        let encoded = RuntimeArtifacts::encode_terminal_result_pretty(&result).expect("encode");
+        let decoded = RuntimeArtifacts::decode_terminal_result(&encoded).expect("decode");
 
         assert_eq!(decoded, result);
         assert_eq!(decoded.status, RuntimeResultStatus::Failed);
@@ -443,7 +470,7 @@ mod tests {
 
     #[test]
     fn runtime_terminal_result_rejects_legacy_passed_status() {
-        let err = decode_runtime_terminal_result(
+        let err = RuntimeArtifacts::decode_terminal_result(
             br#"{
                 "schema_version": 1,
                 "status": "passed",
@@ -462,7 +489,8 @@ mod tests {
         let path = temp_test_path("bad-result");
         fs::write(&path, br#"{ "status": "passed" }"#).expect("write malformed result");
 
-        let err = load_runtime_terminal_result(&path).expect_err("malformed result should fail");
+        let err = RuntimeArtifacts::load_terminal_result(&path)
+            .expect_err("malformed result should fail");
 
         assert!(
             err.to_string()
@@ -485,7 +513,7 @@ mod tests {
         )
         .expect("write malformed events");
 
-        let err = load_runtime_events(&path).expect_err("malformed event should fail");
+        let err = RuntimeArtifacts::load_events(&path).expect_err("malformed event should fail");
 
         assert!(err.to_string().contains("line 2"));
 

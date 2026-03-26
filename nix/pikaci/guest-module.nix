@@ -205,7 +205,7 @@ in
       code=$?
       set -e
 
-      status="passed"
+      status="completed"
       message="test passed"
       if [ "$code" -ne 0 ]; then
         status="failed"
@@ -214,6 +214,7 @@ in
 
       cat > /artifacts/result.json <<EOF
       {
+        "schema_version": 1,
         "status": "$status",
         "exit_code": $code,
         "finished_at": "$(date -Iseconds)",

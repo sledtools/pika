@@ -58,8 +58,7 @@ let
 
 
     def write_result(state_dir: pathlib.Path, exit_code: int, message: str) -> None:
-        status = "passed" if exit_code == 0 else "failed"
-        write_status(state_dir, status, message)
+        status = "completed" if exit_code == 0 else "failed"
         write_json(
             state_dir / "result.json",
             {

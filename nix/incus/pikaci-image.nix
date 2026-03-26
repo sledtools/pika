@@ -14,7 +14,7 @@ let
     PIKACI_UID = 1000
     USERS_GID = 100
     SYSTEM_BIN = "/run/current-system/sw/bin"
-    INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION = 1
+    INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION = 2
     LIFECYCLE_SCHEMA_VERSION = 1
     EVENT_SEQ = 0
 
@@ -123,6 +123,12 @@ let
     state_dir = pathlib.Path("/run/pika-cloud")
     logs_dir = state_dir / "logs"
     artifacts_dir = state_dir / "artifacts"
+    workspace_dir = pathlib.Path("/workspace/snapshot")
+    cargo_home_dir = pathlib.Path("/cargo-home")
+    target_dir = pathlib.Path("/cargo-target")
+    xdg_state_home_dir = state_dir / "xdg-state"
+    root_home_dir = pathlib.Path("/root")
+    non_root_home_dir = pathlib.Path("/home/pikaci")
     state_dir.mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -147,13 +153,6 @@ let
             command = request.get("command")
             timeout_secs = request.get("timeout_secs")
             run_as_root = request.get("run_as_root")
-            workspace_dir = validate_absolute_dir(request.get("workspace_dir"), "workspace_dir")
-            cargo_home_dir = validate_absolute_dir(request.get("cargo_home_dir"), "cargo_home_dir")
-            target_dir = validate_absolute_dir(request.get("target_dir"), "target_dir")
-            xdg_state_home_dir = validate_absolute_dir(
-                request.get("xdg_state_home_dir"), "xdg_state_home_dir"
-            )
-            home_dir = validate_absolute_dir(request.get("home_dir"), "home_dir")
 
             if not isinstance(command, str) or not command:
                 raise ValueError(
@@ -199,10 +198,10 @@ let
                 command,
             ]
             if run_as_root:
-                child_env["HOME"] = str(home_dir)
+                child_env["HOME"] = str(root_home_dir)
                 child_command = command_prefix
             else:
-                child_env["HOME"] = str(home_dir)
+                child_env["HOME"] = str(non_root_home_dir)
                 child_command = ["runuser", "-u", "pikaci", "-m", "--", *command_prefix]
 
             write_status(

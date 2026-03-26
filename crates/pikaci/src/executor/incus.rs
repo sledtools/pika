@@ -46,15 +46,6 @@ pub(super) fn build_remote_incus_guest_request(job: &JobSpec) -> IncusGuestRunRe
         command,
         timeout_secs: job.timeout_secs,
         run_as_root,
-        workspace_dir: REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH.to_string(),
-        cargo_home_dir: REMOTE_LINUX_VM_INCUS_CARGO_HOME_DIR.to_string(),
-        target_dir: REMOTE_LINUX_VM_INCUS_TARGET_DIR.to_string(),
-        xdg_state_home_dir: REMOTE_LINUX_VM_INCUS_XDG_STATE_HOME_DIR.to_string(),
-        home_dir: if run_as_root {
-            "/root".to_string()
-        } else {
-            REMOTE_LINUX_VM_INCUS_NON_ROOT_HOME_DIR.to_string()
-        },
     }
 }
 

@@ -34,7 +34,7 @@ pub const CMD_SCHEMA_V1: &str = "agent.control.cmd.v1";
 pub const STATUS_SCHEMA_V1: &str = "agent.control.status.v1";
 pub const RESULT_SCHEMA_V1: &str = "agent.control.result.v1";
 pub const ERROR_SCHEMA_V1: &str = "agent.control.error.v1";
-pub const INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION: u32 = 1;
+pub const INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -65,11 +65,6 @@ pub struct IncusGuestRunRequest {
     pub command: String,
     pub timeout_secs: u64,
     pub run_as_root: bool,
-    pub workspace_dir: String,
-    pub cargo_home_dir: String,
-    pub target_dir: String,
-    pub xdg_state_home_dir: String,
-    pub home_dir: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -871,11 +866,6 @@ mod tests {
             command: "bash --noprofile --norc -lc 'cargo test -p pika-cloud'".to_string(),
             timeout_secs: 120,
             run_as_root: false,
-            workspace_dir: "/workspace/snapshot".to_string(),
-            cargo_home_dir: "/cargo-home".to_string(),
-            target_dir: "/cargo-target".to_string(),
-            xdg_state_home_dir: "/run/pika-cloud/xdg-state".to_string(),
-            home_dir: "/home/pikaci".to_string(),
         };
         let encoded = serde_json::to_string(&request).expect("encode request");
         let decoded: IncusGuestRunRequest = serde_json::from_str(&encoded).expect("decode request");

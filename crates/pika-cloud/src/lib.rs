@@ -315,9 +315,50 @@ pub struct GuestStartupArtifacts {
     pub startup_plan_path: String,
     pub identity_seed_path: String,
     #[serde(flatten)]
-    pub runtime_artifacts: RuntimeArtifactPaths,
-    pub log_path: String,
+    pub lifecycle_artifacts: RuntimeArtifactPaths,
+    #[serde(flatten)]
+    pub service_artifacts: ManagedGuestServiceArtifacts,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ManagedGuestServiceArtifacts {
+    #[serde(rename = "log_path")]
+    pub service_log_path: String,
     pub pid_path: String,
+}
+
+impl Default for ManagedGuestServiceArtifacts {
+    fn default() -> Self {
+        Self {
+            service_log_path: GUEST_LOG_PATH.to_string(),
+            pid_path: GUEST_PID_PATH.to_string(),
+        }
+    }
+}
+
+impl ManagedGuestServiceArtifacts {
+    pub fn validate_canonical_paths(&self, field_prefix: &str) -> Result<(), String> {
+        let canonical = Self::default();
+        for (field, actual, expected) in [
+            (
+                "log_path",
+                self.service_log_path.as_str(),
+                canonical.service_log_path.as_str(),
+            ),
+            (
+                "pid_path",
+                self.pid_path.as_str(),
+                canonical.pid_path.as_str(),
+            ),
+        ] {
+            if actual != expected {
+                return Err(format!(
+                    "{field_prefix}.{field} must use canonical path {expected:?}, got {actual:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Default for GuestStartupArtifacts {
@@ -325,9 +366,8 @@ impl Default for GuestStartupArtifacts {
         Self {
             startup_plan_path: GUEST_STARTUP_PLAN_PATH.to_string(),
             identity_seed_path: GUEST_AUTOSTART_IDENTITY_PATH.to_string(),
-            runtime_artifacts: RuntimeArtifactPaths::default(),
-            log_path: GUEST_LOG_PATH.to_string(),
-            pid_path: GUEST_PID_PATH.to_string(),
+            lifecycle_artifacts: RuntimeArtifactPaths::default(),
+            service_artifacts: ManagedGuestServiceArtifacts::default(),
         }
     }
 }
@@ -346,16 +386,6 @@ impl GuestStartupArtifacts {
                 self.identity_seed_path.as_str(),
                 canonical.identity_seed_path.as_str(),
             ),
-            (
-                "log_path",
-                self.log_path.as_str(),
-                canonical.log_path.as_str(),
-            ),
-            (
-                "pid_path",
-                self.pid_path.as_str(),
-                canonical.pid_path.as_str(),
-            ),
         ] {
             if actual != expected {
                 return Err(format!(
@@ -363,7 +393,9 @@ impl GuestStartupArtifacts {
                 ));
             }
         }
-        self.runtime_artifacts
+        self.lifecycle_artifacts
+            .validate_canonical_paths("artifacts")?;
+        self.service_artifacts
             .validate_canonical_paths("artifacts")?;
         Ok(())
     }
@@ -937,11 +969,11 @@ mod tests {
         let artifacts = GuestStartupArtifacts::default();
         assert_eq!(artifacts.startup_plan_path, GUEST_STARTUP_PLAN_PATH);
         assert_eq!(artifacts.identity_seed_path, GUEST_AUTOSTART_IDENTITY_PATH);
-        assert_eq!(artifacts.runtime_artifacts.status_path, STATUS_PATH);
-        assert_eq!(artifacts.runtime_artifacts.events_path, EVENTS_PATH);
-        assert_eq!(artifacts.runtime_artifacts.result_path, RESULT_PATH);
-        assert_eq!(artifacts.log_path, GUEST_LOG_PATH);
-        assert_eq!(artifacts.pid_path, GUEST_PID_PATH);
+        assert_eq!(artifacts.lifecycle_artifacts.status_path, STATUS_PATH);
+        assert_eq!(artifacts.lifecycle_artifacts.events_path, EVENTS_PATH);
+        assert_eq!(artifacts.lifecycle_artifacts.result_path, RESULT_PATH);
+        assert_eq!(artifacts.service_artifacts.service_log_path, GUEST_LOG_PATH);
+        assert_eq!(artifacts.service_artifacts.pid_path, GUEST_PID_PATH);
     }
 
     #[test]
@@ -1068,7 +1100,7 @@ mod tests {
                 timeout_failure_reason: "timeout_waiting_for_openclaw_health".to_string(),
             },
             artifacts: GuestStartupArtifacts {
-                runtime_artifacts: RuntimeArtifactPaths {
+                lifecycle_artifacts: RuntimeArtifactPaths {
                     status_path: "/run/custom/status.json".to_string(),
                     ..RuntimeArtifactPaths::default()
                 },

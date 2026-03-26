@@ -424,7 +424,6 @@ mod tests {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct StagedLinuxRustTargetConfig {
         target_id: &'static str,
-        shadow_recipe: &'static str,
         snapshot_profile: StagedLinuxSnapshotProfile,
         prepare_node_prefix: &'static str,
         prepare_description: &'static str,
@@ -487,7 +486,6 @@ mod tests {
             match self {
                 Self::PreMergePikaRust => StagedLinuxRustTargetConfig {
                     target_id: "pre-merge-pika-rust",
-                    shadow_recipe: "pre-merge-pika-rust-shadow",
                     snapshot_profile: StagedLinuxSnapshotProfile::Rust,
                     prepare_node_prefix: "pika-core-linux-rust",
                     prepare_description: "pika_core staged Linux Rust lane",
@@ -501,7 +499,6 @@ mod tests {
                 },
                 Self::PreMergePikaFollowup => StagedLinuxRustTargetConfig {
                     target_id: "pre-merge-pika-followup",
-                    shadow_recipe: "",
                     snapshot_profile: StagedLinuxSnapshotProfile::Followup,
                     prepare_node_prefix: "pika-followup-linux-rust",
                     prepare_description: "pika follow-up staged Linux lane",
@@ -515,7 +512,6 @@ mod tests {
                 },
                 Self::PreMergeAgentContracts => StagedLinuxRustTargetConfig {
                     target_id: "pre-merge-agent-contracts",
-                    shadow_recipe: "pre-merge-agent-contracts-shadow",
                     snapshot_profile: StagedLinuxSnapshotProfile::Rust,
                     prepare_node_prefix: "agent-contracts-linux-rust",
                     prepare_description: "agent contracts staged Linux lane",
@@ -529,7 +525,6 @@ mod tests {
                 },
                 Self::PreMergeNotifications => StagedLinuxRustTargetConfig {
                     target_id: "pre-merge-notifications",
-                    shadow_recipe: "pre-merge-notifications-shadow",
                     snapshot_profile: StagedLinuxSnapshotProfile::Rust,
                     prepare_node_prefix: "notifications-linux-rust",
                     prepare_description: "notifications staged Linux lane",
@@ -543,7 +538,6 @@ mod tests {
                 },
                 Self::PreMergeFixtureRust => StagedLinuxRustTargetConfig {
                     target_id: "pre-merge-fixture-rust",
-                    shadow_recipe: "",
                     snapshot_profile: StagedLinuxSnapshotProfile::Rust,
                     prepare_node_prefix: "fixture-linux-rust",
                     prepare_description: "fixture staged Linux lane",
@@ -557,7 +551,6 @@ mod tests {
                 },
                 Self::PreMergeRmp => StagedLinuxRustTargetConfig {
                     target_id: "pre-merge-rmp",
-                    shadow_recipe: "pre-merge-rmp-shadow",
                     snapshot_profile: StagedLinuxSnapshotProfile::Rust,
                     prepare_node_prefix: "rmp-linux-rust",
                     prepare_description: "rmp staged Linux lane",
@@ -571,7 +564,6 @@ mod tests {
                 },
                 Self::PreMergePikachatRust => StagedLinuxRustTargetConfig {
                     target_id: "pre-merge-pikachat-rust",
-                    shadow_recipe: "pre-merge-pikachat-rust-shadow",
                     snapshot_profile: StagedLinuxSnapshotProfile::Rust,
                     prepare_node_prefix: "pikachat-linux-rust",
                     prepare_description: "pikachat staged Linux lane",
@@ -585,7 +577,6 @@ mod tests {
                 },
                 Self::PreMergePikachatTypescript => StagedLinuxRustTargetConfig {
                     target_id: "pre-merge-pikachat-typescript",
-                    shadow_recipe: "",
                     snapshot_profile: StagedLinuxSnapshotProfile::Rust,
                     prepare_node_prefix: "pikachat-linux-rust",
                     prepare_description: "pikachat staged Linux lane",
@@ -599,7 +590,6 @@ mod tests {
                 },
                 Self::PreMergePikachatOpenclawE2e => StagedLinuxRustTargetConfig {
                     target_id: "pre-merge-pikachat-openclaw-e2e",
-                    shadow_recipe: "",
                     snapshot_profile: StagedLinuxSnapshotProfile::Rust,
                     prepare_node_prefix: "pikachat-linux-rust",
                     prepare_description: "pikachat staged Linux lane",
@@ -1215,10 +1205,6 @@ mod tests {
             ".#ci.x86_64-linux.notificationsWorkspaceBuild"
         );
         assert_eq!(
-            notifications_config.shadow_recipe,
-            "pre-merge-notifications-shadow"
-        );
-        assert_eq!(
             StagedLinuxRustLane::NotificationsServerPackageTests.target(),
             StagedLinuxRustTarget::PreMergeNotifications
         );
@@ -1236,7 +1222,6 @@ mod tests {
             followup.payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceBuild),
             ".#ci.x86_64-linux.pikaFollowupWorkspaceBuild"
         );
-        assert_eq!(followup_config.shadow_recipe, "");
         assert_eq!(
             StagedLinuxRustLane::PikaFollowupDocContracts.target(),
             StagedLinuxRustTarget::PreMergePikaFollowup
@@ -1259,7 +1244,6 @@ mod tests {
             fixture.payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceBuild),
             ".#ci.x86_64-linux.fixtureWorkspaceBuild"
         );
-        assert_eq!(fixture_config.shadow_recipe, "");
         for lane in [
             StagedLinuxRustLane::FixturePikahutClippy,
             StagedLinuxRustLane::FixtureRelaySmoke,
@@ -1279,10 +1263,6 @@ mod tests {
         assert_eq!(
             pikachat.payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceBuild),
             ".#ci.x86_64-linux.pikachatWorkspaceBuild"
-        );
-        assert_eq!(
-            pikachat_config.shadow_recipe,
-            "pre-merge-pikachat-rust-shadow"
         );
         assert_eq!(
             StagedLinuxRustLane::PikachatCliSmokeLocal.target(),
@@ -1306,7 +1286,6 @@ mod tests {
             pikachat_typescript.payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceBuild),
             ".#ci.x86_64-linux.pikachatWorkspaceBuild"
         );
-        assert_eq!(pikachat_typescript_config.shadow_recipe, "");
         assert_eq!(
             StagedLinuxRustLane::PikachatTypescript.target(),
             StagedLinuxRustTarget::PreMergePikachatTypescript
@@ -1315,7 +1294,6 @@ mod tests {
         let pikachat_openclaw =
             StagedLinuxRustTarget::from_target_id("pre-merge-pikachat-openclaw-e2e")
                 .expect("pikachat openclaw target");
-        let pikachat_openclaw_config = pikachat_openclaw.config();
 
         assert_eq!(
             pikachat_openclaw.payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceDeps),
@@ -1325,7 +1303,6 @@ mod tests {
             pikachat_openclaw.payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceBuild),
             ".#ci.x86_64-linux.pikachatWorkspaceBuild"
         );
-        assert_eq!(pikachat_openclaw_config.shadow_recipe, "");
         assert_eq!(
             StagedLinuxRustLane::OpenclawGatewayE2e.target(),
             StagedLinuxRustTarget::PreMergePikachatOpenclawE2e
@@ -1335,7 +1312,6 @@ mod tests {
     #[test]
     fn rmp_lane_uses_rmp_workspace_outputs() {
         let lane = StagedLinuxRustLane::RmpInitSmokeCi;
-        let config = lane.target().config();
 
         assert_eq!(
             lane.workspace_deps_output_name(),
@@ -1350,7 +1326,6 @@ mod tests {
             "/staged/linux-rust/workspace-build/bin/run-rmp-init-smoke-ci"
         );
         assert_eq!(lane.target(), StagedLinuxRustTarget::PreMergeRmp);
-        assert_eq!(config.shadow_recipe, "pre-merge-rmp-shadow");
     }
 
     #[test]

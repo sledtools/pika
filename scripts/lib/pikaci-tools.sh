@@ -106,7 +106,6 @@ load_pikaci_staged_linux_target_info() {
         workspace_build_installable="$value"
         build_installable="$value"
         ;;
-      shadow_recipe) shadow_recipe="$value" ;;
     esac
   done < <(
     read_pikaci_json_fields \
@@ -114,7 +113,6 @@ load_pikaci_staged_linux_target_info() {
       target_id \
       target_description \
       workspace_deps_installable \
-      workspace_build_installable \
-      shadow_recipe
+      workspace_build_installable
   )
 }

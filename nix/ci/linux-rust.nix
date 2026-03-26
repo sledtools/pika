@@ -540,7 +540,7 @@ PY
             echo "[pikaci] validating pika follow-up actionlint" >&2
             if ${pkgs.actionlint}/bin/actionlint \
               -config-file .github/actionlint.yaml \
-              .github/workflows/pre-merge.yml; then
+              .github/workflows/*.yml; then
               :
             else
               status=$?

@@ -1,7 +1,7 @@
 ---
 summary: Deterministic CI lanes for `pikachat agent` providers and how to reproduce them
 read_when:
-  - changing provider CI gating in `.github/workflows/pre-merge.yml`
+  - changing provider CI gating in `ci/forge-lanes.toml`
   - debugging `check-agent-contracts` failures
 ---
 
@@ -11,7 +11,7 @@ This document defines deterministic CI coverage for `pikachat agent new` provide
 
 ## Blocking Pre-merge Contract Lanes
 
-These lanes are defined canonically in `ci/forge-lanes.toml` and orchestrated by the forge on `git.pikachat.org`. GitHub mirrors them through `.github/workflows/pre-merge.yml` as advisory shadow CI:
+These lanes are defined canonically in `ci/forge-lanes.toml` and orchestrated by the forge on `git.pikachat.org`.
 
 - `check-agent-contracts`:
   - Runs the checked-in staged Linux agent provider contract surface on `pikaci`.
@@ -23,7 +23,7 @@ These lanes are defined canonically in `ci/forge-lanes.toml` and orchestrated by
 
 Real-provider probes stay outside pre-merge gating:
 
-- They run canonically from forge nightly orchestration, with GitHub `mode=nightly` as an advisory mirror.
+- They run canonically from forge nightly orchestration.
 - A failure in an integration probe should not be used as a pre-merge gate.
 
 ## Local Reproduction

@@ -24,8 +24,8 @@ This matrix is the canonical ownership map for integration coverage.
 
 ## Policy Classes
 
-- `pre-merge CI-owned`: blocking in GitHub pre-merge today.
-- `nightly CI-owned`: scheduled or workflow-dispatch nightly coverage today.
+- `pre-merge CI-owned`: blocking in canonical forge CI today.
+- `nightly CI-owned`: scheduled canonical nightly coverage today.
 - `manual-only`: kept as a checked-in contract, but intentionally outside CI.
 - `compatibility-only`: wrapper/alias that forwards to a selector or lane owner.
 - `advisory/convenience`: helpful aggregate or rerun entrypoint that is not itself a policy owner.
@@ -105,11 +105,10 @@ Current policy note:
 | `nightly-pika-e2e` | call-path boundary selectors (`call_over_local_moq_relay_boundary`, `call_with_pikachat_daemon_boundary`, `cli_smoke_media_local`) |
 | `nightly-pika-ui-android` | Android bot/media fixture selector via `integration_deterministic::ui_e2e_local_android` |
 | `nightly-apple-host-bundle` | `just apple-host-bundle` on the Mac mini via the Apple remote wrapper; owns retained `ios-ui-test` and Apple-host regression reruns |
-| `apple-mini-validate` | manual-only GitHub dispatch workflow that runs only `just apple-host-sanity` or `just apple-host-bundle` on the Mac mini via the Apple remote wrapper |
 | `integration-manual` | two `integration_manual` runbook selectors |
 
 Apple Silicon contract note:
-`just pre-merge-pikachat` still explicitly composes staged Linux `pre-merge-pikachat-rust` with the `pikaci` target `pre-merge-pikachat-apple-followup`, and GitHub now treats that Apple follow-up as part of the nightly `apple-host-bundle` instead of the blocking `check-apple-host-sanity` smoke lane.
+`just pre-merge-pikachat` still explicitly composes staged Linux `pre-merge-pikachat-rust` with the `pikaci` target `pre-merge-pikachat-apple-followup`, and the canonical Apple nightly treats that Apple follow-up as part of `apple-host-bundle` instead of the blocking `check-apple-host-sanity` smoke lane.
 
 ## Non-Owner Entry Points
 
@@ -120,12 +119,12 @@ Apple Silicon contract note:
 | `just ios-ui-test` | compatibility-only -> `nightly-apple-host-bundle` | Retained `Pika` XCTest suite on simulator. This remains real nightly coverage, but ownership now sits with the mini-owned nightly Apple bundle instead of a dedicated hosted macOS job. The default retained run excludes the flaky OpenClaw live-network UI E2E case; opt back in with `PIKA_IOS_UI_TEST_INCLUDE_OPENCLAW_E2E=1` or target it directly via `PIKA_IOS_UI_TEST_ONLY_TESTING=...`. |
 | `just android-ui-test` | advisory/convenience | Native Android instrumentation suite for manual/dev use. Current pre-merge only compiles Android test code; it does not execute this suite. |
 | `just pre-merge` | advisory/convenience | Aggregate wrapper over the blocking repo lanes; not itself the canonical enforcement map. |
-| `just nightly` | advisory/convenience | Aggregate wrapper over the current nightly recipes; not a full mirror of the GitHub nightly workflow. |
+| `just nightly` | advisory/convenience | Aggregate wrapper over the current nightly recipes; not a full mirror of the canonical nightly lane set. |
 | `just e2e-local-relay` | advisory/convenience | Manual bundle for `ios-ui-e2e-local` + `android-ui-e2e-local`; useful for humans, not a lane owner. |
 | `just nightly-primal-ios-interop` | manual-only | Retained Primal iOS interop smoke. Keep it explicitly inventoried as manual compatibility coverage, not part of the core Apple nightly bundle. |
 | `just shared-runtime-regression` | compatibility-only -> `nightly-apple-host-bundle` | High-signal Apple-host rerun set retained inside the nightly mini bundle. |
 | `just desktop-ui-test` | compatibility-only -> `check-apple-host-sanity` | Native desktop package test retained as the entire blocking Mac mini smoke contract. |
-| `just pre-merge-apple-deterministic` | advisory/convenience | Checked-in Tart/`pikaci` Apple lane entrypoint, but not part of current GitHub pre-merge enforcement. |
+| `just pre-merge-apple-deterministic` | advisory/convenience | Checked-in Tart/`pikaci` Apple lane entrypoint, but not part of current canonical pre-merge enforcement. |
 
 ## Migration Notes
 

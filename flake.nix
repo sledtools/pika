@@ -125,7 +125,7 @@
           ./justfile
           ./nix
           ./.github/actionlint.yaml
-          ./.github/workflows/pre-merge.yml
+          ./.github/workflows
           ./scripts
         ];
       };
@@ -636,7 +636,7 @@
             ./justfile
             ./nix
             ./.github/actionlint.yaml
-            ./.github/workflows/pre-merge.yml
+            ./.github/workflows
             ./scripts
           ];
         };

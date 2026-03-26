@@ -50,7 +50,6 @@ hook_url = "http://127.0.0.1:8787/git/webhook"
 
 - Branch-push pre-merge CI is now orchestrated by the forge from `ci/forge-lanes.toml`.
 - Nightly scheduling is now orchestrated by the forge service from the same manifest.
-- GitHub mirrors the same manifest through `scripts/forge-github-ci-shim.py` and `.github/workflows/pre-merge.yml`, but that path is advisory only.
 - GitHub Actions release and TestFlight workflows remain in place, but GitHub is no longer the canonical control plane for day-to-day pre-merge or nightly CI.
 - Hosted mirror sync needs the configured Git remote plus whatever credentials that remote requires. For a GitHub HTTPS remote, set the env named by `github_token_env` so the admin page and manual sync controls can report failures cleanly.
 - GitHub repo webhooks are not required for normal forge operation. The canonical forge uses the bare repo's installed hooks plus outbound mirroring to GitHub.

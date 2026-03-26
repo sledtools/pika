@@ -279,7 +279,6 @@ fn main() -> anyhow::Result<()> {
                         payload_spec.nix_installable
                     );
                 }
-                println!("shadow_recipe={}", shell_escape(config.shadow_recipe));
             }
         }
         Command::Rerun { run_id, output } => {
@@ -788,7 +787,6 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "flake.lock",
                 "nix/**",
                 "justfile",
-                ".github/workflows/pre-merge.yml",
                 "crates/pikaci/**",
                 "crates/pika-desktop/**",
                 "ios/**",
@@ -1822,7 +1820,7 @@ mod tests {
         assert!(!matches_filter("Cargo.lock", "Cargo.toml"));
         assert!(matches_filter("rust/src/core/agent.rs", "rust/**"));
         assert!(matches_filter(
-            ".github/workflows/pre-merge.yml",
+            ".github/workflows/release.yml",
             ".github/**"
         ));
         assert!(!matches_filter("docs/agent-ci.md", "rust/**"));

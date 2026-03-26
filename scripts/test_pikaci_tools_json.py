@@ -44,7 +44,6 @@ class PikaciToolsJsonTests(unittest.TestCase):
                             "workspace_output_system": "x86_64-linux",
                             "workspace_deps_installable": ".#ci.x86_64-linux.workspaceDeps",
                             "workspace_build_installable": ".#ci.x86_64-linux.workspaceBuild",
-                            "shadow_recipe": "pre-merge-pika-rust-shadow",
                         }))
                         raise SystemExit(0)
                     raise SystemExit(f"unexpected args: {args}")

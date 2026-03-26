@@ -21,9 +21,6 @@ pub const DEFAULT_MIRROR_TIMEOUT_SECS: u64 = 120;
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
 pub struct Config {
-    #[cfg(test)]
-    #[serde(default)]
-    pub repos: Vec<String>,
     #[serde(default)]
     pub forge_repo: Option<ForgeRepoConfig>,
     #[serde(default = "default_poll_interval_secs")]
@@ -34,9 +31,6 @@ pub struct Config {
     pub api_key_env: String,
     #[serde(default = "default_github_token_env")]
     pub github_token_env: String,
-    #[cfg(test)]
-    #[serde(default)]
-    pub merged_lookback_hours: u64,
     #[serde(default = "default_worker_concurrency")]
     pub worker_concurrency: usize,
     #[serde(default = "default_retry_backoff_secs")]
@@ -47,9 +41,6 @@ pub struct Config {
     pub bind_address: String,
     #[serde(default = "default_bind_port")]
     pub bind_port: u16,
-    #[cfg(test)]
-    #[serde(default)]
-    pub allowed_npubs: Vec<String>,
     #[serde(default)]
     pub bootstrap_admin_npubs: Vec<String>,
 }
@@ -163,6 +154,32 @@ fn default_worker_concurrency() -> usize {
 
 fn default_retry_backoff_secs() -> u64 {
     DEFAULT_RETRY_BACKOFF_SECS
+}
+
+#[cfg(test)]
+impl Config {
+    pub(crate) fn test_defaults() -> Self {
+        Self {
+            forge_repo: None,
+            poll_interval_secs: DEFAULT_POLL_INTERVAL_SECS,
+            model: DEFAULT_MODEL.to_string(),
+            api_key_env: DEFAULT_API_KEY_ENV.to_string(),
+            github_token_env: DEFAULT_GITHUB_TOKEN_ENV.to_string(),
+            worker_concurrency: DEFAULT_WORKER_CONCURRENCY,
+            retry_backoff_secs: DEFAULT_RETRY_BACKOFF_SECS,
+            webhook_secret_env: DEFAULT_WEBHOOK_SECRET_ENV.to_string(),
+            bind_address: DEFAULT_BIND_ADDRESS.to_string(),
+            bind_port: DEFAULT_BIND_PORT,
+            bootstrap_admin_npubs: Vec::new(),
+        }
+    }
+
+    pub(crate) fn test_with_forge_repo(forge_repo: ForgeRepoConfig) -> Self {
+        Self {
+            forge_repo: Some(forge_repo),
+            ..Self::test_defaults()
+        }
+    }
 }
 
 #[cfg(test)]

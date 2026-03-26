@@ -134,10 +134,7 @@
           listEl.innerHTML = '';
           items.forEach(function (item) {
             var reviewId = item.review_id;
-            var isBranch = !!item.branch_id;
-            var titleText = isBranch
-              ? (escapeHtml(item.repo) + ' · branch ' + escapeHtml(item.branch_name || ('#' + reviewId)) + ': ' + escapeHtml(item.title))
-              : (escapeHtml(item.repo) + ' · legacy review #' + reviewId + ': ' + escapeHtml(item.title));
+            var titleText = escapeHtml(item.repo) + ' · branch ' + escapeHtml(item.branch_name) + ': ' + escapeHtml(item.title);
             var div = document.createElement('div');
             div.className = 'inbox-item';
             div.dataset.reviewId = reviewId;

@@ -358,13 +358,10 @@ pub struct ChatMessage {
 #[derive(Debug, Clone, Serialize)]
 pub struct InboxItem {
     pub review_id: i64,
-    pub branch_id: Option<i64>,
-    pub pr_id: Option<i64>,
+    pub branch_id: i64,
     pub repo: String,
-    pub branch_name: Option<String>,
-    pub pr_number: Option<i64>,
+    pub branch_name: String,
     pub title: String,
-    pub url: Option<String>,
     pub state: String,
     pub updated_at: String,
     pub generation_status: String,
@@ -401,23 +398,29 @@ pub(crate) fn artifact_user_state_rank(state: &str) -> u8 {
     }
 }
 
+const MIGRATIONS_TABLE: &str = "_pika_git_migrations";
+const LEGACY_MIGRATIONS_TABLE: &str = "_pika_news_migrations";
+
 fn run_migrations(conn: &mut Connection) -> anyhow::Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS _pika_news_migrations (
+    ensure_migrations_table(conn)?;
+
+    let create_migrations_table_sql = format!(
+        "CREATE TABLE IF NOT EXISTS {MIGRATIONS_TABLE} (
             version INTEGER PRIMARY KEY,
             name TEXT NOT NULL,
             applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );",
-    )
-    .context("create migrations table")?;
+        );"
+    );
+    conn.execute_batch(&create_migrations_table_sql)
+        .context("create migrations table")?;
 
     for migration in migrations() {
+        let already_applied_sql =
+            format!("SELECT EXISTS(SELECT 1 FROM {MIGRATIONS_TABLE} WHERE version = ?1)");
         let already_applied: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM _pika_news_migrations WHERE version = ?1)",
-                params![migration.version],
-                |row| row.get(0),
-            )
+            .query_row(&already_applied_sql, params![migration.version], |row| {
+                row.get(0)
+            })
             .with_context(|| format!("check migration version {}", migration.version))?;
 
         if already_applied {
@@ -427,8 +430,10 @@ fn run_migrations(conn: &mut Connection) -> anyhow::Result<()> {
         if migration.name == "0020_ci_queue_state_and_target_health"
             && ci_queue_state_schema_present(conn)?
         {
+            let record_preapplied_sql =
+                format!("INSERT INTO {MIGRATIONS_TABLE}(version, name) VALUES (?1, ?2)");
             conn.execute(
-                "INSERT INTO _pika_news_migrations(version, name) VALUES (?1, ?2)",
+                &record_preapplied_sql,
                 params![migration.version, migration.name],
             )
             .with_context(|| format!("record pre-applied migration {}", migration.name))?;
@@ -440,13 +445,42 @@ fn run_migrations(conn: &mut Connection) -> anyhow::Result<()> {
             .with_context(|| format!("start migration transaction {}", migration.name))?;
         tx.execute_batch(migration.sql)
             .with_context(|| format!("apply migration {}", migration.name))?;
+        let record_migration_sql =
+            format!("INSERT INTO {MIGRATIONS_TABLE}(version, name) VALUES (?1, ?2)");
         tx.execute(
-            "INSERT INTO _pika_news_migrations(version, name) VALUES (?1, ?2)",
+            &record_migration_sql,
             params![migration.version, migration.name],
         )
         .with_context(|| format!("record migration {}", migration.name))?;
         tx.commit()
             .with_context(|| format!("commit migration {}", migration.name))?;
+    }
+
+    Ok(())
+}
+
+fn ensure_migrations_table(conn: &Connection) -> anyhow::Result<()> {
+    let has_current = table_exists(conn, MIGRATIONS_TABLE)?;
+    let has_legacy = table_exists(conn, LEGACY_MIGRATIONS_TABLE)?;
+
+    if has_current && has_legacy {
+        let merge_sql = format!(
+            "INSERT OR IGNORE INTO {MIGRATIONS_TABLE}(version, name, applied_at)
+             SELECT version, name, applied_at FROM {LEGACY_MIGRATIONS_TABLE}"
+        );
+        conn.execute(&merge_sql, [])
+            .context("merge legacy migration ledger into current ledger")?;
+        let drop_legacy_sql = format!("DROP TABLE {LEGACY_MIGRATIONS_TABLE}");
+        conn.execute_batch(&drop_legacy_sql)
+            .context("drop legacy migration ledger after merge")?;
+        return Ok(());
+    }
+
+    if !has_current && has_legacy {
+        let rename_sql =
+            format!("ALTER TABLE {LEGACY_MIGRATIONS_TABLE} RENAME TO {MIGRATIONS_TABLE}");
+        conn.execute_batch(&rename_sql)
+            .context("rename legacy migration ledger to current name")?;
     }
 
     Ok(())
@@ -634,6 +668,11 @@ fn migrations() -> Vec<Migration> {
             name: "0024_ci_lane_structured_pikaci_target",
             sql: include_str!("../migrations/0024_ci_lane_structured_pikaci_target.sql"),
         },
+        Migration {
+            version: 25,
+            name: "0025_drop_legacy_pr_surface",
+            sql: include_str!("../migrations/0025_drop_legacy_pr_surface.sql"),
+        },
     ]
 }
 
@@ -646,7 +685,7 @@ mod tests {
 
     use super::{
         migrations, table_exists, table_has_column, ChatAllowlistEntry, InboxItem,
-        InboxReviewContext, Store,
+        InboxReviewContext, Store, LEGACY_MIGRATIONS_TABLE, MIGRATIONS_TABLE,
     };
     use crate::branch_store::BranchUpsertInput;
 
@@ -744,6 +783,17 @@ mod tests {
                     .query_row("SELECT COUNT(*) FROM repos", [], |row| row.get(0))
                     .expect("count repos");
                 assert_eq!(count, 1);
+                assert!(table_exists(conn, MIGRATIONS_TABLE)?);
+                assert!(!table_exists(conn, LEGACY_MIGRATIONS_TABLE)?);
+                assert!(!table_exists(conn, "pull_requests")?);
+                assert!(!table_exists(conn, "generated_artifacts")?);
+                assert!(!table_exists(conn, "artifact_versions")?);
+                assert!(!table_exists(conn, "artifact_user_states")?);
+                assert!(!table_exists(conn, "chat_sessions")?);
+                assert!(!table_exists(conn, "chat_messages")?);
+                assert!(!table_exists(conn, "inbox")?);
+                assert!(!table_exists(conn, "inbox_dismissals")?);
+                assert!(!table_exists(conn, "poll_markers")?);
                 Ok(())
             })
             .expect("verify data");
@@ -757,13 +807,13 @@ mod tests {
         let db_path = dir.path().join("pika-git.db");
         let conn = Connection::open(&db_path).expect("open sqlite");
 
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS _pika_news_migrations (
+        conn.execute_batch(&format!(
+            "CREATE TABLE IF NOT EXISTS {LEGACY_MIGRATIONS_TABLE} (
                 version INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
                 applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );",
-        )
+            );"
+        ))
         .expect("create migrations table");
 
         for migration in migrations()
@@ -775,7 +825,7 @@ mod tests {
                 .expect("start migration transaction");
             tx.execute_batch(migration.sql).expect("apply migration");
             tx.execute(
-                "INSERT INTO _pika_news_migrations(version, name) VALUES (?1, ?2)",
+                &format!("INSERT INTO {LEGACY_MIGRATIONS_TABLE}(version, name) VALUES (?1, ?2)"),
                 params![migration.version, migration.name],
             )
             .expect("record migration");
@@ -803,8 +853,10 @@ mod tests {
                 )?);
                 assert!(table_has_column(conn, "nightly_run_lanes", "failure_kind")?);
                 assert!(table_exists(conn, "ci_target_health")?);
+                assert!(table_exists(conn, MIGRATIONS_TABLE)?);
+                assert!(!table_exists(conn, LEGACY_MIGRATIONS_TABLE)?);
                 let migration_name: String = conn.query_row(
-                    "SELECT name FROM _pika_news_migrations WHERE version = 20",
+                    &format!("SELECT name FROM {MIGRATIONS_TABLE} WHERE version = 20"),
                     [],
                     |row| row.get(0),
                 )?;
@@ -820,13 +872,13 @@ mod tests {
         let db_path = dir.path().join("pika-git.db");
         let conn = Connection::open(&db_path).expect("open sqlite");
 
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS _pika_news_migrations (
+        conn.execute_batch(&format!(
+            "CREATE TABLE IF NOT EXISTS {LEGACY_MIGRATIONS_TABLE} (
                 version INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
                 applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );",
-        )
+            );"
+        ))
         .expect("create migrations table");
 
         for migration in migrations()
@@ -838,7 +890,7 @@ mod tests {
                 .expect("start migration transaction");
             tx.execute_batch(migration.sql).expect("apply migration");
             tx.execute(
-                "INSERT INTO _pika_news_migrations(version, name) VALUES (?1, ?2)",
+                &format!("INSERT INTO {LEGACY_MIGRATIONS_TABLE}(version, name) VALUES (?1, ?2)"),
                 params![migration.version, migration.name],
             )
             .expect("record migration");
@@ -921,8 +973,10 @@ mod tests {
                 assert_eq!(row.0, "inbox");
                 assert_eq!(row.1, "generation_ready");
                 assert_eq!(row.2, None);
+                assert!(table_exists(conn, MIGRATIONS_TABLE)?);
+                assert!(!table_exists(conn, LEGACY_MIGRATIONS_TABLE)?);
                 let migration_name: String = conn.query_row(
-                    "SELECT name FROM _pika_news_migrations WHERE version = 21",
+                    &format!("SELECT name FROM {MIGRATIONS_TABLE} WHERE version = 21"),
                     [],
                     |row| row.get(0),
                 )?;
@@ -978,8 +1032,8 @@ mod tests {
             branch_inbox_item_ids(&items),
             vec![second.branch_id, first.branch_id]
         );
-        assert_eq!(items[0].branch_name.as_deref(), Some("feature/two"));
-        assert_eq!(items[1].branch_name.as_deref(), Some("feature/one"));
+        assert_eq!(items[0].branch_name, "feature/two");
+        assert_eq!(items[1].branch_name, "feature/one");
         assert_eq!(store.branch_inbox_count(&npub).unwrap(), 2);
 
         let first_ctx = store

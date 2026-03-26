@@ -784,8 +784,6 @@ pub async fn serve(
     let app = Router::new()
         .route("/", get(|| async { Redirect::permanent("/git") }))
         .nest("/git", git_routes.clone())
-        // Keep `/news` alive as a compatibility alias during the rename rollout.
-        .nest("/news", git_routes)
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind_addr)

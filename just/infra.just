@@ -63,16 +63,6 @@ pikaci-remote-fulfill-pre-merge-rmp:
 pikaci-remote-fulfill-pre-merge-pikachat-rust:
     ./scripts/pikaci-staged-linux-remote.sh run pre-merge-pikachat-rust
 
-# Repair the legacy local aarch64-linux linux-builder staged Rust cargo-path corruption and rerun workspaceDeps.
-[private]
-linux-builder-repair:
-    ./scripts/linux-builder-repair.sh
-
-# Fully recreate the local linux-builder VM/store state via the existing launchd service after `just linux-builder-repair` still points at live builder corruption.
-[private]
-linux-builder-recreate:
-    ./scripts/linux-builder-recreate.sh
-
 # Run pika-news with auto-rebuild on source changes.
 [private]
 news MAX_PRS="2":

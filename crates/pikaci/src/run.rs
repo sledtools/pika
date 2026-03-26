@@ -15,8 +15,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::executor::{
-    HostContext, compiled_guest_command, materialize_vfkit_runner_flake,
-    prepare_remote_linux_vm_backend, prepare_vfkit_runner_link,
+    HostContext, compiled_guest_command, prepare_remote_linux_vm_backend,
     prepared_output_remote_helper_binary, prepared_output_remote_launcher_binary,
     prepared_output_remote_work_dir, prepared_output_ssh_host,
     remote_linux_vm_execution_from_error, remote_linux_vm_prepare_artifact, run_job_on_runner,
@@ -1125,11 +1124,6 @@ enum PrepareAction {
         mount_paths: Vec<PathBuf>,
         log_paths: Vec<PathBuf>,
     },
-    VfkitRunner {
-        installable: String,
-        runner_link: PathBuf,
-        log_paths: Vec<PathBuf>,
-    },
     RemoteLinuxVmBackend {
         job: JobSpec,
         ctx: Box<HostContext>,
@@ -1591,66 +1585,29 @@ fn build_run_plan(
             depends_on.push(deps_node_id);
             depends_on.push(build_node_id);
         }
-        if matches!(
-            job.runner_kind(),
-            RunnerKind::VfkitLocal | RunnerKind::RemoteLinuxVm
-        ) {
+        if job.runner_kind() == RunnerKind::RemoteLinuxVm {
             let prepare_node_id = format!("prepare-{}-runner", job.id);
-            let runner_description = match job.runner_kind() {
-                RunnerKind::HostLocal => unreachable!("host-local jobs skip Linux microvm runner"),
-                RunnerKind::VfkitLocal => format!("Build vfkit runner for `{}`", job.id),
-                RunnerKind::RemoteLinuxVm => {
-                    format!("Prepare remote Linux VM backend for `{}`", job.id)
-                }
-                RunnerKind::TartLocal => unreachable!("tart jobs skip Linux microvm runner"),
+            let runner_description = format!("Prepare remote Linux VM backend for `{}`", job.id);
+            let prepare = match remote_linux_vm_prepare_artifact(job, &ctx)? {
+                Some(artifact) => PrepareNode::NixBuild {
+                    installable: artifact.installable,
+                    output_name: artifact.output_name,
+                    residency: PreparedOutputResidency::LocalAuthoritative,
+                    handoff: None,
+                },
+                None => PrepareNode::RemoteLinuxVmBackend {
+                    backend: job.remote_linux_vm_backend().ok_or_else(|| {
+                        anyhow!(
+                            "remote Linux VM backend is missing for prepare node `{}`",
+                            job.id
+                        )
+                    })?,
+                },
             };
-            let (action, prepare) = match job.runner_kind() {
-                RunnerKind::HostLocal => unreachable!("host-local jobs skip Linux microvm runner"),
-                RunnerKind::VfkitLocal => {
-                    let installable = materialize_vfkit_runner_flake(job, &ctx)?;
-                    (
-                        PrepareAction::VfkitRunner {
-                            installable: installable.clone(),
-                            runner_link: ctx.job_dir.join("vm").join("runner"),
-                            log_paths: vec![ctx.host_log_path.clone()],
-                        },
-                        PrepareNode::NixBuild {
-                            installable,
-                            output_name:
-                                "nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
-                                    .to_string(),
-                            residency: PreparedOutputResidency::LocalAuthoritative,
-                            handoff: None,
-                        },
-                    )
-                }
-                RunnerKind::RemoteLinuxVm => {
-                    let prepare = match remote_linux_vm_prepare_artifact(job, &ctx)? {
-                        Some(artifact) => PrepareNode::NixBuild {
-                            installable: artifact.installable,
-                            output_name: artifact.output_name,
-                            residency: PreparedOutputResidency::LocalAuthoritative,
-                            handoff: None,
-                        },
-                        None => PrepareNode::RemoteLinuxVmBackend {
-                            backend: job.remote_linux_vm_backend().ok_or_else(|| {
-                                anyhow!(
-                                    "remote Linux VM backend is missing for prepare node `{}`",
-                                    job.id
-                                )
-                            })?,
-                        },
-                    };
-                    (
-                        PrepareAction::RemoteLinuxVmBackend {
-                            job: job.clone(),
-                            ctx: Box::new(ctx.clone()),
-                            log_paths: vec![ctx.host_log_path.clone()],
-                        },
-                        prepare,
-                    )
-                }
-                RunnerKind::TartLocal => unreachable!("tart jobs skip Linux microvm runner"),
+            let action = PrepareAction::RemoteLinuxVmBackend {
+                job: job.clone(),
+                ctx: Box::new(ctx.clone()),
+                log_paths: vec![ctx.host_log_path.clone()],
             };
             planned_prepares.push(PlannedPrepare {
                 node_id: prepare_node_id.clone(),
@@ -4207,18 +4164,6 @@ fn run_prepare_nodes(
                 }
                 Ok(())
             })(),
-            PrepareAction::VfkitRunner {
-                installable,
-                runner_link,
-                log_paths,
-            } => (|| -> Result<(), String> {
-                let log_path = log_paths
-                    .first()
-                    .ok_or_else(|| "missing vfkit runner prepare log path".to_string())?;
-                prepare_vfkit_runner_link(installable, runner_link, log_path)
-                    .map_err(|err| format!("{err:#}"))?;
-                Ok(())
-            })(),
             PrepareAction::RemoteLinuxVmBackend {
                 job,
                 ctx,
@@ -5773,8 +5718,8 @@ mod tests {
         let plan = RunPlanRecord {
             schema_version: 1,
             run_id: "run-1".to_string(),
-            target_id: Some("beachhead".to_string()),
-            target_description: Some("Run one tiny exact unit test".to_string()),
+            target_id: Some("agent-control-plane-unit".to_string()),
+            target_description: Some("Run all pika-agent-control-plane unit tests".to_string()),
             created_at: "2026-03-07T00:00:00Z".to_string(),
             scope: PlanScope::PostHostSetupAndSnapshot,
             preconditions: vec![
@@ -5782,12 +5727,14 @@ mod tests {
                 "workspace_snapshot_created".to_string(),
             ],
             nodes: vec![PlanNodeRecord::Execute {
-                id: "execute-beachhead".to_string(),
-                description: "Run one tiny exact unit test in a vfkit guest".to_string(),
-                executor: PlanExecutorKind::VfkitLocal,
+                id: "execute-agent-control-plane-unit".to_string(),
+                description: "Run all pika-agent-control-plane unit tests in a remote Linux VM"
+                    .to_string(),
+                executor: PlanExecutorKind::RemoteLinuxVm,
                 depends_on: Vec::new(),
                 execute: ExecuteNode::VmCommand {
-                    command: "cargo test -p pika-agent-control-plane tests::command_envelope_round_trips -- --exact --nocapture".to_string(),
+                    command: "cargo test -p pika-agent-control-plane --lib -- --nocapture"
+                        .to_string(),
                     run_as_root: false,
                     timeout_secs: 1800,
                     writable_workspace: false,
@@ -6683,7 +6630,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_request_consumer_is_rejected_for_real_staged_vfkit_jobs() {
+    fn remote_request_consumer_is_rejected_for_real_staged_remote_linux_vm_jobs() {
         let root = std::env::temp_dir().join(format!(
             "pikaci-remote-consumer-guard-test-{}",
             uuid::Uuid::new_v4()
@@ -6692,7 +6639,7 @@ mod tests {
         let snapshot = sample_snapshot_source(&prepared);
         let jobs = vec![JobSpec {
             id: "pika-core-lib-app-flows-tests",
-            description: "Run pika_core lib tests and app_flows integration tests in a vfkit guest",
+            description: "Run pika_core lib tests and app_flows integration tests in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand {
@@ -8284,12 +8231,12 @@ EOF
         let mixed_jobs = vec![
             staged_jobs[0].clone(),
             JobSpec {
-                id: "agent-control-plane-unit-local",
-                description: "Run all pika-agent-control-plane unit tests in a remote Linux VM",
+                id: "apple-host-followup-local",
+                description: "Run Apple follow-up checks on the host",
                 timeout_secs: 1800,
                 writable_workspace: false,
-                guest_command: GuestCommand::PackageUnitTests {
-                    package: "pika-agent-control-plane",
+                guest_command: GuestCommand::HostShellCommand {
+                    command: "cargo test -p pika-ios --lib -- --nocapture",
                 },
                 staged_linux_rust_lane: None,
             },

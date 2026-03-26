@@ -85,7 +85,6 @@ struct GuestFlakePaths<'a> {
     target_dir: &'a Path,
     staged_linux_rust_workspace_deps_dir: Option<&'a Path>,
     staged_linux_rust_workspace_build_dir: Option<&'a Path>,
-    socket_path: Option<&'a Path>,
 }
 
 struct GuestRunnerConfig {
@@ -254,7 +253,6 @@ const TART_XCODE_TAG: &str = "pikaci-xcode";
 const TART_LIBRARY_DEVELOPER_TAG: &str = "pikaci-library-developer";
 const TART_RUST_TOOLCHAIN_NAME: &str = "rust-toolchain";
 const TART_NIX_STORE_TAG: &str = "pikaci-nix-store";
-const VFKIT_GUEST_SYSTEM: &str = "aarch64-linux";
 const REMOTE_MICROVM_GUEST_SYSTEM: &str = "x86_64-linux";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV: &str =
     "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY";
@@ -350,7 +348,6 @@ pub fn staged_linux_remote_defaults() -> StagedLinuxRemoteDefaults {
 pub fn run_job_on_runner(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
     match job.runner_kind() {
         RunnerKind::HostLocal => run_host_local_job(job, ctx),
-        RunnerKind::VfkitLocal => run_vfkit_job(job, ctx),
         RunnerKind::RemoteLinuxVm => run_remote_linux_vm_job(job, ctx),
         RunnerKind::TartLocal => run_tart_job(job, ctx),
     }
@@ -1031,118 +1028,6 @@ fn join_output_copy_pump(
     }
 }
 
-pub fn run_vfkit_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
-    ensure_supported_host()?;
-    ensure_staged_linux_rust_lane_matches_vfkit_guest(job)?;
-    ensure_linux_builder()?;
-
-    let vm_dir = ctx.job_dir.join("vm");
-    let runner_link = vm_dir.join("runner");
-    if !runner_link.exists() {
-        let installable = materialize_runner_flake(job, ctx)?;
-        prepare_vfkit_runner_link(&installable, &runner_link, &ctx.host_log_path)?;
-    }
-
-    let runner_dir = fs::read_link(&runner_link)
-        .with_context(|| format!("resolve {}", runner_link.display()))?;
-    let runner_bin = runner_dir.join("bin/microvm-run");
-    if !runner_bin.exists() {
-        bail!("missing runner binary: {}", runner_bin.display());
-    }
-
-    append_line(
-        &ctx.host_log_path,
-        &format!(
-            "[pikaci] starting vm for job `{}` at {}",
-            job.id,
-            Utc::now().to_rfc3339()
-        ),
-    )?;
-
-    let mut child = Command::new("/usr/bin/script")
-        .arg("-q")
-        .arg("/dev/null")
-        .arg(&runner_bin)
-        .current_dir(&vm_dir)
-        .env("NIX_CONFIG", "experimental-features = nix-command flakes")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("spawn {} via /usr/bin/script", runner_bin.display()))?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!("runner stdout unavailable"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| anyhow!("runner stderr unavailable"))?;
-
-    let log_file = Arc::new(Mutex::new(
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&ctx.host_log_path)
-            .with_context(|| format!("open {}", ctx.host_log_path.display()))?,
-    ));
-    let stdout_handle = spawn_log_pump(stdout, Arc::clone(&log_file), "[runner:stdout]");
-    let stderr_handle = spawn_log_pump(stderr, Arc::clone(&log_file), "[runner:stderr]");
-
-    let deadline = Instant::now() + Duration::from_secs(job.timeout_secs);
-    let status = loop {
-        if let Some(status) = child.try_wait().context("poll microvm-run")? {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            append_line(
-                &ctx.host_log_path,
-                &format!(
-                    "[pikaci] timeout after {}s, killing runner",
-                    job.timeout_secs
-                ),
-            )?;
-            child.kill().context("kill timed out microvm-run")?;
-            let _ = child.wait();
-            let _ = stdout_handle.join();
-            let _ = stderr_handle.join();
-            return Ok(JobOutcome {
-                status: RunStatus::Failed,
-                exit_code: None,
-                message: format!("timed out after {}s", job.timeout_secs),
-                remote_linux_vm_execution: None,
-            });
-        }
-        thread::sleep(Duration::from_millis(250));
-    };
-
-    let _ = stdout_handle.join();
-    let _ = stderr_handle.join();
-    append_line(
-        &ctx.host_log_path,
-        &format!(
-            "[pikaci] vm exited with {:?} at {}",
-            status.code(),
-            Utc::now().to_rfc3339()
-        ),
-    )?;
-
-    let result_path = ctx.job_dir.join("artifacts/result.json");
-    let guest_result = load_guest_result(&result_path)?;
-    let status = match guest_result.status.as_str() {
-        "passed" => RunStatus::Passed,
-        _ => RunStatus::Failed,
-    };
-    Ok(JobOutcome {
-        status,
-        exit_code: Some(guest_result.exit_code),
-        message: guest_result
-            .message
-            .unwrap_or_else(|| format!("guest finished with {}", guest_result.status)),
-        remote_linux_vm_execution: None,
-    })
-}
-
 fn run_remote_linux_vm_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
     let lane = job
         .staged_linux_rust_lane()
@@ -1242,40 +1127,6 @@ fn run_remote_linux_vm_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<J
     }
 }
 
-pub(crate) fn prepare_runner_link(
-    installable: &str,
-    runner_link: &Path,
-    log_path: &Path,
-) -> anyhow::Result<()> {
-    if runner_link.exists() || runner_link.is_symlink() {
-        fs::remove_file(runner_link)
-            .or_else(|_| fs::remove_dir_all(runner_link))
-            .with_context(|| format!("remove stale {}", runner_link.display()))?;
-    }
-    if let Some(parent) = runner_link.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    }
-
-    run_command_to_log(
-        Command::new("nix")
-            .arg("build")
-            .arg("--accept-flake-config")
-            .arg("-o")
-            .arg(runner_link)
-            .arg(installable),
-        log_path,
-        "[pikaci] build runner",
-    )
-}
-
-pub(crate) fn prepare_vfkit_runner_link(
-    installable: &str,
-    runner_link: &Path,
-    log_path: &Path,
-) -> anyhow::Result<()> {
-    prepare_runner_link(installable, runner_link, log_path)
-}
-
 pub(crate) fn prepare_remote_linux_vm_backend(
     job: &JobSpec,
     ctx: &HostContext,
@@ -1321,61 +1172,6 @@ pub(crate) fn remote_linux_vm_prepare_artifact(
     }
 }
 
-pub(crate) fn materialize_runner_flake(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<String> {
-    match job.runner_kind() {
-        RunnerKind::HostLocal => bail!("host-local jobs do not use Linux microvm runner flakes"),
-        RunnerKind::VfkitLocal => materialize_vfkit_runner_flake(job, ctx),
-        RunnerKind::RemoteLinuxVm => {
-            let artifact = remote_linux_vm_prepare_artifact(job, ctx)?
-                .ok_or_else(|| anyhow!("remote Linux VM backend does not use a runner flake"))?;
-            Ok(artifact.installable)
-        }
-        RunnerKind::TartLocal => bail!("tart jobs do not use Linux microvm runner flakes"),
-    }
-}
-
-pub(crate) fn materialize_vfkit_runner_flake(
-    job: &JobSpec,
-    ctx: &HostContext,
-) -> anyhow::Result<String> {
-    let vm_dir = ctx.job_dir.join("vm");
-    let artifacts_dir = ctx.job_dir.join("artifacts");
-    fs::create_dir_all(&vm_dir).with_context(|| format!("create {}", vm_dir.display()))?;
-    fs::create_dir_all(&artifacts_dir)
-        .with_context(|| format!("create {}", artifacts_dir.display()))?;
-    ensure_file(&ctx.host_log_path)?;
-    ensure_file(&ctx.guest_log_path)?;
-
-    let flake_dir = vm_dir.join("flake");
-    fs::create_dir_all(&flake_dir).with_context(|| format!("create {}", flake_dir.display()))?;
-    let socket_path = vfkit_socket_path(job, &artifacts_dir);
-    if socket_path.exists() {
-        fs::remove_file(&socket_path)
-            .with_context(|| format!("remove stale {}", socket_path.display()))?;
-    }
-    let flake_nix = render_local_guest_flake(
-        guest_runner_config_for(RunnerKind::VfkitLocal),
-        job,
-        &ctx.workspace_snapshot_dir,
-        ctx.workspace_read_only,
-        &GuestFlakePaths {
-            artifacts_dir: &artifacts_dir,
-            cargo_home_dir: &ctx.shared_cargo_home_dir,
-            target_dir: &ctx.shared_target_dir,
-            staged_linux_rust_workspace_deps_dir: ctx
-                .staged_linux_rust_workspace_deps_dir
-                .as_deref(),
-            staged_linux_rust_workspace_build_dir: ctx
-                .staged_linux_rust_workspace_build_dir
-                .as_deref(),
-            socket_path: Some(&socket_path),
-        },
-    )?;
-    fs::write(flake_dir.join("flake.nix"), flake_nix)
-        .with_context(|| format!("write {}", flake_dir.join("flake.nix").display()))?;
-    Ok(vfkit_runner_installable(&flake_dir))
-}
-
 fn materialize_remote_microvm_runner_flake(
     job: &JobSpec,
     ctx: &HostContext,
@@ -1400,14 +1196,13 @@ fn materialize_remote_microvm_runner_flake(
             target_dir: &remote.shared.remote_target_dir,
             staged_linux_rust_workspace_deps_dir: Some(&remote.shared.remote_workspace_deps_dir),
             staged_linux_rust_workspace_build_dir: Some(&remote.shared.remote_workspace_build_dir),
-            socket_path: None,
         },
         host_uid,
         host_gid,
     )?;
     fs::write(flake_dir.join("flake.nix"), flake_nix)
         .with_context(|| format!("write {}", flake_dir.join("flake.nix").display()))?;
-    Ok(vfkit_runner_installable(&flake_dir))
+    Ok(declared_runner_installable(&flake_dir))
 }
 
 fn runner_flake_content_hash(flake_dir: &Path) -> anyhow::Result<String> {
@@ -1630,49 +1425,6 @@ fn ensure_supported_host() -> anyhow::Result<()> {
     if arch != "aarch64" {
         bail!("pikaci Wave 1 only supports Apple Silicon; found {arch}");
     }
-    Ok(())
-}
-
-fn ensure_linux_builder() -> anyhow::Result<()> {
-    let builders = command_stdout(
-        Command::new("nix")
-            .arg("config")
-            .arg("show")
-            .arg("builders"),
-    )
-    .unwrap_or_default();
-    let extra_platforms = command_stdout(
-        Command::new("nix")
-            .arg("config")
-            .arg("show")
-            .arg("extra-platforms"),
-    )
-    .unwrap_or_default();
-    if builders_supports_aarch64_linux(&builders)
-        || setting_contains(&extra_platforms, "aarch64-linux")
-    {
-        return Ok(());
-    }
-
-    bail!(
-        "no aarch64-linux builder available for the current vfkit execute guest on this Apple Silicon host; configure a local linux-builder or remote aarch64-linux builder before running pikaci. builders=`{}` extra-platforms=`{}`",
-        builders.trim(),
-        extra_platforms.trim()
-    )
-}
-
-fn ensure_staged_linux_rust_lane_matches_vfkit_guest(job: &JobSpec) -> anyhow::Result<()> {
-    if let Some(lane) = job.staged_linux_rust_lane()
-        && lane.workspace_output_system() != VFKIT_GUEST_SYSTEM
-    {
-        bail!(
-            "staged Linux Rust lane `{}` now targets `{}` prepared outputs, but the current vfkit execute guest is `{}`; the mounted staged wrappers run target-native test binaries and cannot execute cross-architecture. Move execute to an x86_64-linux host such as pika-build before enabling this lane end-to-end.",
-            job.id,
-            lane.workspace_output_system(),
-            VFKIT_GUEST_SYSTEM
-        );
-    }
-
     Ok(())
 }
 
@@ -2142,34 +1894,6 @@ fn command_stdout(command: &mut Command) -> Option<String> {
     String::from_utf8(output.stdout)
         .ok()
         .map(|stdout| stdout.trim().to_string())
-}
-
-fn builders_supports_aarch64_linux(raw: &str) -> bool {
-    if let Some(path) = raw.strip_prefix('@')
-        && let Ok(contents) = fs::read_to_string(path.trim())
-    {
-        return builders_supports_aarch64_linux(&contents);
-    }
-    setting_contains(raw, "aarch64-linux")
-}
-
-fn setting_contains(raw: &str, needle: &str) -> bool {
-    raw.split_whitespace().any(|token| token == needle)
-}
-
-fn guest_runner_config_for(kind: RunnerKind) -> GuestRunnerConfig {
-    match kind {
-        RunnerKind::HostLocal => unreachable!("host-local jobs do not render Linux microvm flakes"),
-        RunnerKind::VfkitLocal => GuestRunnerConfig {
-            guest_system: VFKIT_GUEST_SYSTEM,
-            host_pkgs_expr: "nixpkgs.legacyPackages.aarch64-darwin",
-            hypervisor: "vfkit",
-        },
-        RunnerKind::RemoteLinuxVm => {
-            unreachable!("remote Linux VM jobs resolve guest runner config through their backend")
-        }
-        RunnerKind::TartLocal => unreachable!("tart jobs do not render Linux microvm flakes"),
-    }
 }
 
 fn remote_linux_vm_backend_label(backend: RemoteLinuxVmBackend) -> &'static str {
@@ -3004,10 +2728,6 @@ fn render_guest_flake(
         .staged_linux_rust_workspace_build_dir
         .map(|path| format!("\"{}\"", nix_escape(&path.display().to_string())))
         .unwrap_or_else(|| "null".to_string());
-    let socket_path = paths
-        .socket_path
-        .map(|path| format!("\"{}\"", nix_escape(&path.display().to_string())))
-        .unwrap_or_else(|| "null".to_string());
     let guest_command = nix_escape(&guest_command);
     let workspace_read_only = if workspace_read_only { "true" } else { "false" };
     let cacert_bundle = nix_escape("/etc/ssl/certs/ca-bundle.crt");
@@ -3041,7 +2761,6 @@ fn render_guest_flake(
           stagedLinuxRustWorkspaceDepsDir = {staged_linux_rust_workspace_deps_dir};
           stagedLinuxRustWorkspaceBuildDir = {staged_linux_rust_workspace_build_dir};
           hypervisor = "{hypervisor}";
-          socketPath = {socket_path};
           rustToolchain = pika.packages.{guest_system}.rustToolchain;
           moqRelay = if pika.packages.{guest_system} ? moqRelay then pika.packages.{guest_system}.moqRelay else null;
           androidSdk = if pika.packages.{guest_system} ? androidSdk then pika.packages.{guest_system}.androidSdk else null;
@@ -3059,25 +2778,6 @@ fn render_guest_flake(
 }}
 "#
     ))
-}
-
-fn render_local_guest_flake(
-    config: GuestRunnerConfig,
-    job: &JobSpec,
-    workspace_dir: &Path,
-    workspace_read_only: bool,
-    paths: &GuestFlakePaths<'_>,
-) -> anyhow::Result<String> {
-    let (host_uid, host_gid) = ownership_ids(workspace_dir)?;
-    render_guest_flake(
-        config,
-        job,
-        workspace_dir,
-        workspace_read_only,
-        paths,
-        host_uid,
-        host_gid,
-    )
 }
 
 fn remote_ownership_ids(remote_host: &str) -> anyhow::Result<(u32, u32)> {
@@ -3194,7 +2894,7 @@ pub(crate) fn compiled_guest_command(job: &JobSpec) -> (String, bool) {
     }
 }
 
-pub(crate) fn vfkit_runner_installable(flake_dir: &Path) -> String {
+pub(crate) fn declared_runner_installable(flake_dir: &Path) -> String {
     format!(
         "path:{}#nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner",
         flake_dir.display()
@@ -3207,17 +2907,6 @@ fn ownership_ids(path: &Path) -> anyhow::Result<(u32, u32)> {
         Err(_) => fs::metadata(".").context("read metadata for current directory")?,
     };
     Ok((metadata.uid(), metadata.gid()))
-}
-
-fn vfkit_socket_path(job: &JobSpec, artifacts_dir: &Path) -> PathBuf {
-    let run_id = artifacts_dir
-        .ancestors()
-        .nth(3)
-        .and_then(Path::file_name)
-        .and_then(|name| name.to_str())
-        .unwrap_or("run");
-    let run_stub: String = run_id.chars().take(12).collect();
-    PathBuf::from(format!("/tmp/pikaci-{run_stub}-{}.sock", job.id))
 }
 
 fn nix_escape(value: &str) -> String {
@@ -3250,22 +2939,19 @@ mod tests {
         REMOTE_LINUX_VM_INCUS_WORKSPACE_DEPS_MOUNT_PATH, REMOTE_LINUX_VM_INCUS_XDG_STATE_HOME_DIR,
         REMOTE_MICROVM_VIRTIOFS_SOCKETS, RemoteIncusContext, RemoteLinuxVmSharedContext,
         RemoteMicrovmContext, attach_remote_linux_vm_execution,
-        build_sync_directory_finalize_command, builders_supports_aarch64_linux,
-        cached_host_local_dev_env_is_usable, ensure_staged_linux_rust_lane_matches_vfkit_guest,
-        guest_runner_config_for, host_local_command_mode, host_local_dev_env_script_path,
-        host_local_dev_env_shell_program, incus, microvm, prepare_host_local_cached_dev_env_with,
-        read_host_local_dev_env_state, remote_linux_vm_execution_from_error,
-        remote_linux_vm_guest_runner_config, remote_linux_vm_prepare_artifact,
-        remote_snapshot_ready_for_use, render_guest_flake, render_local_guest_flake,
+        build_sync_directory_finalize_command, cached_host_local_dev_env_is_usable,
+        host_local_command_mode, host_local_dev_env_script_path, host_local_dev_env_shell_program,
+        incus, microvm, prepare_host_local_cached_dev_env_with, read_host_local_dev_env_state,
+        remote_linux_vm_execution_from_error, remote_linux_vm_guest_runner_config,
+        remote_linux_vm_prepare_artifact, remote_snapshot_ready_for_use, render_guest_flake,
         run_job_on_runner, shell_single_quote, staged_linux_remote_defaults,
-        staged_linux_remote_snapshot_dir, vfkit_socket_path, write_host_local_dev_env_script,
+        staged_linux_remote_snapshot_dir, write_host_local_dev_env_script,
         write_host_local_dev_env_state,
     };
     use crate::model::{
         GuestCommand, JobSpec, PreparedOutputPayloadManifestRecord,
         PreparedOutputPayloadMountRecord, RemoteLinuxVmBackend, RemoteLinuxVmExecutionRecord,
         RemoteLinuxVmImageRecord, RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord, RunStatus,
-        RunnerKind,
     };
     use crate::snapshot::SnapshotMetadata;
 
@@ -3373,47 +3059,6 @@ mod tests {
     }
 
     #[test]
-    fn guest_flake_targets_vfkit_exact_test_beachhead() {
-        let spec = JobSpec {
-            id: "beachhead",
-            description: "test",
-            timeout_secs: 120,
-            writable_workspace: false,
-            guest_command: GuestCommand::ExactCargoTest {
-                package: "pika-agent-control-plane",
-                test_name: "tests::command_envelope_round_trips",
-            },
-            staged_linux_rust_lane: None,
-        };
-        let flake = render_local_guest_flake(
-            guest_runner_config_for(RunnerKind::VfkitLocal),
-            &spec,
-            Path::new("/tmp/pikaci/snapshot"),
-            true,
-            &GuestFlakePaths {
-                artifacts_dir: Path::new("/tmp/pikaci/jobs/beachhead/artifacts"),
-                cargo_home_dir: Path::new("/tmp/pikaci/cache/cargo-home"),
-                target_dir: Path::new("/tmp/pikaci/cache/target"),
-                staged_linux_rust_workspace_deps_dir: None,
-                staged_linux_rust_workspace_build_dir: None,
-                socket_path: Some(Path::new("/tmp/pikaci-beachhead.sock")),
-            },
-        )
-        .expect("render flake");
-
-        assert!(flake.contains("system = \"aarch64-linux\";"));
-        assert!(flake.contains("pika.lib.pikaci.mkGuestModule"));
-        assert!(flake.contains("hostPkgs = nixpkgs.legacyPackages.aarch64-darwin;"));
-        assert!(flake.contains("guestCommand = \"cargo test -p 'pika-agent-control-plane' 'tests::command_envelope_round_trips' -- --exact --nocapture\";"));
-        assert!(flake.contains("workspaceDir = \"/tmp/pikaci/snapshot\";"));
-        assert!(flake.contains("workspaceReadOnly = true;"));
-        assert!(flake.contains("artifactsDir = \"/tmp/pikaci/jobs/beachhead/artifacts\";"));
-        assert!(flake.contains("cargoHomeDir = \"/tmp/pikaci/cache/cargo-home\";"));
-        assert!(flake.contains("cargoTargetDir = \"/tmp/pikaci/cache/target\";"));
-        assert!(flake.contains("socketPath = \"/tmp/pikaci-beachhead.sock\";"));
-    }
-
-    #[test]
     fn guest_flake_targets_remote_linux_microvm_backend_for_staged_linux_rust_lane() {
         let spec = JobSpec {
             id: "pika-core-lib-app-flows-tests",
@@ -3438,7 +3083,6 @@ mod tests {
                 staged_linux_rust_workspace_build_dir: Some(Path::new(
                     "/var/tmp/pikaci/runs/run/jobs/pika-core-lib-app-flows-tests/staged-linux-rust/workspace-build",
                 )),
-                socket_path: None,
             },
             1000,
             1234,
@@ -3450,63 +3094,9 @@ mod tests {
         assert!(flake.contains("hostUid = 1000;"));
         assert!(flake.contains("hostGid = 1234;"));
         assert!(flake.contains("hypervisor = \"cloud-hypervisor\";"));
-        assert!(flake.contains("socketPath = null;"));
         assert!(flake.contains(
             "guestCommand = \"/staged/linux-rust/workspace-build/bin/run-pika-core-lib-app-flows-tests\";"
         ));
-    }
-
-    #[test]
-    fn builder_parser_detects_supported_builder_lines() {
-        assert!(builders_supports_aarch64_linux(
-            "ssh://builder aarch64-linux /tmp/key 8 1 benchmark - -"
-        ));
-        assert!(!builders_supports_aarch64_linux(
-            "ssh://builder x86_64-linux /tmp/key 8 1 benchmark - -"
-        ));
-    }
-
-    #[test]
-    fn staged_linux_rust_lane_rejects_x86_64_outputs_in_aarch64_vfkit_guest() {
-        let spec = JobSpec {
-            id: "pika-core-lib-app-flows-tests",
-            description: "test",
-            timeout_secs: 120,
-            writable_workspace: false,
-            guest_command: GuestCommand::ShellCommand { command: "ignored" },
-            staged_linux_rust_lane: Some(crate::model::StagedLinuxRustLane::PikaCoreLibAppFlows),
-        };
-
-        let error = ensure_staged_linux_rust_lane_matches_vfkit_guest(&spec)
-            .expect_err("staged x86_64 lane should not execute in an aarch64 vfkit guest");
-
-        assert!(
-            error
-                .to_string()
-                .contains("targets `x86_64-linux` prepared outputs")
-        );
-    }
-
-    #[test]
-    fn socket_path_uses_short_tmp_location() {
-        let spec = JobSpec {
-            id: "beachhead",
-            description: "test",
-            timeout_secs: 120,
-            writable_workspace: false,
-            guest_command: GuestCommand::ExactCargoTest {
-                package: "pika-agent-control-plane",
-                test_name: "tests::command_envelope_round_trips",
-            },
-            staged_linux_rust_lane: None,
-        };
-
-        let path = vfkit_socket_path(
-            &spec,
-            Path::new("/tmp/.pikaci/runs/20260307T024254Z-5d11d4e8/jobs/beachhead/artifacts"),
-        );
-
-        assert_eq!(path, Path::new("/tmp/pikaci-20260307T024-beachhead.sock"));
     }
 
     #[test]
@@ -3913,211 +3503,6 @@ mod tests {
         assert_eq!(
             defaults.remote_helper_binary,
             "/run/current-system/sw/bin/pikaci-fulfill-prepared-output"
-        );
-    }
-
-    #[test]
-    fn guest_flake_can_run_all_package_unit_tests() {
-        let spec = JobSpec {
-            id: "agent-control-plane-unit-local",
-            description: "test",
-            timeout_secs: 120,
-            writable_workspace: false,
-            guest_command: GuestCommand::PackageUnitTests {
-                package: "pika-agent-control-plane",
-            },
-            staged_linux_rust_lane: None,
-        };
-        let flake = render_local_guest_flake(
-            guest_runner_config_for(RunnerKind::VfkitLocal),
-            &spec,
-            Path::new("/tmp/pikaci/snapshot"),
-            true,
-            &GuestFlakePaths {
-                artifacts_dir: Path::new("/tmp/pikaci/jobs/agent-control-plane-unit/artifacts"),
-                cargo_home_dir: Path::new("/tmp/pikaci/cache/cargo-home"),
-                target_dir: Path::new("/tmp/pikaci/cache/target"),
-                staged_linux_rust_workspace_deps_dir: None,
-                staged_linux_rust_workspace_build_dir: None,
-                socket_path: Some(Path::new("/tmp/pikaci-agent-control-plane-unit.sock")),
-            },
-        )
-        .expect("render flake");
-
-        assert!(flake.contains(
-            "guestCommand = \"cargo test -p 'pika-agent-control-plane' --lib -- --nocapture\";"
-        ));
-    }
-
-    #[test]
-    fn guest_flake_can_run_filtered_and_full_package_tests() {
-        let package_spec = JobSpec {
-            id: "agent-microvm-tests-local",
-            description: "test",
-            timeout_secs: 120,
-            writable_workspace: false,
-            guest_command: GuestCommand::PackageTests {
-                package: "pika-agent-microvm",
-            },
-            staged_linux_rust_lane: None,
-        };
-        let package_flake = render_local_guest_flake(
-            guest_runner_config_for(RunnerKind::VfkitLocal),
-            &package_spec,
-            Path::new("/tmp/pikaci/snapshot"),
-            true,
-            &GuestFlakePaths {
-                artifacts_dir: Path::new("/tmp/pikaci/jobs/agent-microvm-tests/artifacts"),
-                cargo_home_dir: Path::new("/tmp/pikaci/cache/cargo-home"),
-                target_dir: Path::new("/tmp/pikaci/cache/target"),
-                staged_linux_rust_workspace_deps_dir: None,
-                staged_linux_rust_workspace_build_dir: None,
-                socket_path: Some(Path::new("/tmp/pikaci-agent-microvm-tests.sock")),
-            },
-        )
-        .expect("render flake");
-        assert!(
-            package_flake
-                .contains("guestCommand = \"cargo test -p 'pika-agent-microvm' -- --nocapture\";")
-        );
-
-        let filtered_spec = JobSpec {
-            id: "server-agent-api-tests-local",
-            description: "test",
-            timeout_secs: 120,
-            writable_workspace: false,
-            guest_command: GuestCommand::FilteredCargoTests {
-                package: "pika-server",
-                filter: "agent_api::tests",
-            },
-            staged_linux_rust_lane: None,
-        };
-        let filtered_flake = render_local_guest_flake(
-            guest_runner_config_for(RunnerKind::VfkitLocal),
-            &filtered_spec,
-            Path::new("/tmp/pikaci/snapshot"),
-            true,
-            &GuestFlakePaths {
-                artifacts_dir: Path::new("/tmp/pikaci/jobs/server-agent-api-tests/artifacts"),
-                cargo_home_dir: Path::new("/tmp/pikaci/cache/cargo-home"),
-                target_dir: Path::new("/tmp/pikaci/cache/target"),
-                staged_linux_rust_workspace_deps_dir: None,
-                staged_linux_rust_workspace_build_dir: None,
-                socket_path: Some(Path::new("/tmp/pikaci-server-agent-api-tests.sock")),
-            },
-        )
-        .expect("render flake");
-        assert!(filtered_flake.contains(
-            "guestCommand = \"cargo test -p 'pika-server' -- 'agent_api::tests' --nocapture\";"
-        ));
-    }
-
-    #[test]
-    fn guest_flake_can_run_shell_commands() {
-        let spec = JobSpec {
-            id: "rmp-init-smoke-ci",
-            description: "test",
-            timeout_secs: 120,
-            writable_workspace: false,
-            guest_command: GuestCommand::ShellCommand {
-                command: "set -euo pipefail; cargo build -p rmp-cli; echo ok",
-            },
-            staged_linux_rust_lane: None,
-        };
-        let flake = render_local_guest_flake(
-            guest_runner_config_for(RunnerKind::VfkitLocal),
-            &spec,
-            Path::new("/tmp/pikaci/snapshot"),
-            true,
-            &GuestFlakePaths {
-                artifacts_dir: Path::new("/tmp/pikaci/jobs/rmp-init-smoke-ci/artifacts"),
-                cargo_home_dir: Path::new("/tmp/pikaci/cache/cargo-home"),
-                target_dir: Path::new("/tmp/pikaci/cache/target"),
-                staged_linux_rust_workspace_deps_dir: None,
-                staged_linux_rust_workspace_build_dir: None,
-                socket_path: Some(Path::new("/tmp/pikaci-rmp-init-smoke-ci.sock")),
-            },
-        )
-        .expect("render flake");
-
-        assert!(flake.contains(
-            "guestCommand = \"bash --noprofile --norc -lc 'set -euo pipefail; cargo build -p rmp-cli; echo ok'\";"
-        ));
-        assert!(flake.contains("runAsRoot = false;"));
-    }
-
-    #[test]
-    fn guest_flake_can_run_root_shell_commands() {
-        let spec = JobSpec {
-            id: "android-sdk-probe",
-            description: "test",
-            timeout_secs: 120,
-            writable_workspace: false,
-            guest_command: GuestCommand::ShellCommandAsRoot {
-                command: "nix develop .#default -c bash -lc 'command -v adb'",
-            },
-            staged_linux_rust_lane: None,
-        };
-        let flake = render_local_guest_flake(
-            guest_runner_config_for(RunnerKind::VfkitLocal),
-            &spec,
-            Path::new("/tmp/pikaci/snapshot"),
-            true,
-            &GuestFlakePaths {
-                artifacts_dir: Path::new("/tmp/pikaci/jobs/android-sdk-probe/artifacts"),
-                cargo_home_dir: Path::new("/tmp/pikaci/cache/cargo-home"),
-                target_dir: Path::new("/tmp/pikaci/cache/target"),
-                staged_linux_rust_workspace_deps_dir: None,
-                staged_linux_rust_workspace_build_dir: None,
-                socket_path: Some(Path::new("/tmp/pikaci-android-sdk-probe.sock")),
-            },
-        )
-        .expect("render flake");
-
-        assert!(flake.contains("guestCommand = \"bash --noprofile --norc -lc "));
-        assert!(flake.contains("nix develop .#default -c bash -lc"));
-        assert!(flake.contains("command -v adb"));
-        assert!(flake.contains("runAsRoot = true;"));
-    }
-
-    #[test]
-    fn guest_flake_mounts_staged_linux_rust_outputs_for_pika_core_lane() {
-        let spec = JobSpec {
-            id: "pika-core-lib-app-flows-tests",
-            description: "test",
-            timeout_secs: 120,
-            writable_workspace: false,
-            guest_command: GuestCommand::ShellCommand {
-                command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
-            },
-            staged_linux_rust_lane: Some(crate::model::StagedLinuxRustLane::PikaCoreLibAppFlows),
-        };
-        let flake = render_local_guest_flake(
-            guest_runner_config_for(RunnerKind::VfkitLocal),
-            &spec,
-            Path::new("/tmp/pikaci/snapshot"),
-            true,
-            &GuestFlakePaths {
-                artifacts_dir: Path::new(
-                    "/tmp/pikaci/jobs/pika-core-lib-app-flows-tests/artifacts",
-                ),
-                cargo_home_dir: Path::new("/tmp/pikaci/cache/cargo-home"),
-                target_dir: Path::new("/tmp/pikaci/cache/target"),
-                staged_linux_rust_workspace_deps_dir: Some(Path::new("/nix/store/workspace-deps")),
-                staged_linux_rust_workspace_build_dir: Some(Path::new(
-                    "/nix/store/workspace-build",
-                )),
-                socket_path: Some(Path::new("/tmp/pikaci-pika-core-lib-app-flows-tests.sock")),
-            },
-        )
-        .expect("render flake");
-
-        assert!(flake.contains(
-            "guestCommand = \"/staged/linux-rust/workspace-build/bin/run-pika-core-lib-app-flows-tests\";"
-        ));
-        assert!(flake.contains("stagedLinuxRustWorkspaceDepsDir = \"/nix/store/workspace-deps\";"));
-        assert!(
-            flake.contains("stagedLinuxRustWorkspaceBuildDir = \"/nix/store/workspace-build\";")
         );
     }
 

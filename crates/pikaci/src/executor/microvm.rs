@@ -100,7 +100,7 @@ pub(super) fn ensure_remote_microvm_runtime(
     }
 
     let local_flake_dir = ctx.job_dir.join("vm").join("flake");
-    let _installable = materialize_runner_flake(job, ctx)?;
+    let _installable = materialize_remote_microvm_runner_flake(job, ctx, remote)?;
     let flake_hash = runner_flake_content_hash(&local_flake_dir)?;
     let remote_flake_root = remote
         .shared

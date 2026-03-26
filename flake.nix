@@ -1010,10 +1010,9 @@ EOF
 
       # Phase 2a staged Linux Rust build outputs.
       # The preferred staged Linux Rust target is now x86_64-linux so the
-      # deterministic Rust lane can align with pika-build instead of the local
-      # nix-darwin linux-builder. Keep the aarch64-linux namespace as a legacy
-      # compatibility output while the local vfkit execute path still hard-codes
-      # an aarch64-linux guest.
+      # deterministic Rust lane can align with pika-build instead of the old
+      # local nix-darwin linux-builder path. Keep the aarch64-linux namespace
+      # only as a legacy compatibility output for any remaining callers.
       ci.x86_64-linux =
         let
           commonStagedLinuxRustArgs = {

@@ -10,7 +10,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::{Html, IntoResponse, Json, Redirect};
+use axum::response::{Html, IntoResponse, Json};
 use axum::routing::{get, post};
 use axum::Router;
 use chrono::{DateTime, NaiveDateTime, TimeDelta, Utc};
@@ -667,7 +667,7 @@ pub async fn serve(
     let app = Router::new()
         .route("/", get(feed_handler))
         .route("/news", get(feed_handler))
-        .route("/news/branch/:pr_id", get(detail_handler))
+        .route("/news/branch/:branch_id", get(detail_handler))
         .route("/news/branch/:branch_id/ci", get(branch_ci_page_handler))
         .route("/news/nightly/:nightly_run_id", get(nightly_handler))
         .route(
@@ -682,9 +682,8 @@ pub async fn serve(
             "/news/nightly/:nightly_run_id/stream",
             get(nightly_stream_handler),
         )
-        .route("/news/pr/:pr_id", get(detail_handler))
-        .route("/news/branch/:pr_id/merge", post(merge_handler))
-        .route("/news/branch/:pr_id/close", post(close_handler))
+        .route("/news/branch/:branch_id/merge", post(merge_handler))
+        .route("/news/branch/:branch_id/close", post(close_handler))
         .route(
             "/news/branch/:branch_id/ci/rerun/:lane_run_id",
             post(rerun_branch_ci_lane_handler),
@@ -719,12 +718,12 @@ pub async fn serve(
         )
         .route("/news/inbox", get(inbox_handler))
         .route("/news/admin", get(admin_handler))
-        .route("/news/inbox/review/:pr_id", get(inbox_review_handler))
+        .route("/news/inbox/review/:review_id", get(inbox_review_handler))
         .route("/news/api/inbox", get(api_inbox_list_handler))
         .route("/news/api/inbox/count", get(api_inbox_count_handler))
         .route("/news/api/inbox/dismiss", post(api_inbox_dismiss_handler))
         .route(
-            "/news/api/inbox/reviewed/:pr_id",
+            "/news/api/inbox/reviewed/:review_id",
             post(api_inbox_mark_reviewed_handler),
         )
         .route("/news/api/me", get(api_me_handler))
@@ -778,23 +777,16 @@ pub async fn serve(
             post(api_admin_mirror_sync_handler),
         )
         .route(
-            "/news/api/inbox/neighbors/:pr_id",
+            "/news/api/inbox/neighbors/:review_id",
             get(api_inbox_neighbors_handler),
         )
         .route("/news/auth/challenge", post(auth_challenge_handler))
         .route("/news/auth/verify", post(auth_verify_handler))
         .route(
-            "/news/pr/:pr_id/chat",
-            get(chat_history_handler).post(chat_send_handler),
-        )
-        .route(
             "/news/branch/:branch_id/chat",
             get(branch_chat_history_handler).post(branch_chat_send_handler),
         )
-        .route("/news/pr/:pr_id/regenerate", post(regenerate_handler))
         .route("/news/webhook", post(webhook_handler))
-        .route("/news/llms.txt", get(llms_txt_handler))
-        .route("/news/api/prs", get(api_prs_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind_addr)
@@ -912,9 +904,9 @@ async fn nightly_handler(
 
 async fn detail_handler(
     State(state): State<Arc<AppState>>,
-    Path(pr_id): Path<i64>,
+    Path(branch_id): Path<i64>,
 ) -> impl IntoResponse {
-    detail_page(state, pr_id, false).await
+    detail_page(state, branch_id, false).await
 }
 
 async fn branch_ci_page_handler(
@@ -967,33 +959,7 @@ async fn inbox_review_handler(
     State(state): State<Arc<AppState>>,
     Path(review_id): Path<i64>,
 ) -> impl IntoResponse {
-    let response = detail_page(Arc::clone(&state), review_id, true).await;
-    if state.config.effective_forge_repo().is_some() && response.status() == StatusCode::NOT_FOUND {
-        let store = state.store.clone();
-        let legacy_exists =
-            match tokio::task::spawn_blocking(move || store.get_pr_detail(review_id)).await {
-                Ok(Ok(Some(_))) => true,
-                Ok(Ok(None)) => false,
-                Ok(Err(err)) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("failed to query legacy inbox detail: {}", err),
-                    )
-                        .into_response();
-                }
-                Err(err) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("legacy inbox worker task failed: {}", err),
-                    )
-                        .into_response();
-                }
-            };
-        if legacy_exists {
-            return Redirect::to("/news/inbox").into_response();
-        }
-    }
-    response
+    detail_page(state, review_id, true).await
 }
 
 async fn detail_page(
@@ -2860,14 +2826,9 @@ async fn auth_verify_handler(
         Ok((token, npub, is_admin)) => {
             let access = state.auth.access_for_npub(&npub);
             let store = state.store.clone();
-            let forge_mode = state.config.effective_forge_repo().is_some();
             let npub_for_backfill = npub.clone();
             match tokio::task::spawn_blocking(move || {
-                if forge_mode {
-                    store.backfill_branch_inbox_for_npub(&npub_for_backfill)
-                } else {
-                    store.backfill_inbox_for_npub(&npub_for_backfill)
-                }
+                store.backfill_branch_inbox_for_npub(&npub_for_backfill)
             })
             .await
             {
@@ -2903,71 +2864,6 @@ fn extract_token(headers: &axum::http::HeaderMap) -> Option<String> {
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(|s| s.to_string())
-}
-
-async fn chat_history_handler(
-    State(state): State<Arc<AppState>>,
-    Path(pr_id): Path<i64>,
-    headers: axum::http::HeaderMap,
-) -> impl IntoResponse {
-    let npub = match require_chat_auth(&state.auth, &headers) {
-        Ok(n) => n,
-        Err(resp) => return resp,
-    };
-
-    let store = state.store.clone();
-    let base_session_id = match tokio::task::spawn_blocking({
-        let store = store.clone();
-        move || store.get_artifact_session_id(pr_id)
-    })
-    .await
-    {
-        Ok(Ok(Some(sid))) => sid,
-        Ok(Ok(None)) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "no session for this tutorial"})),
-            )
-                .into_response();
-        }
-        Ok(Err(e)) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
-    };
-
-    let result = tokio::task::spawn_blocking({
-        let store = store.clone();
-        let npub = npub.clone();
-        move || store.get_or_create_chat_session(pr_id, &npub, &base_session_id)
-    })
-    .await;
-
-    match result {
-        Ok(Ok((_session_id, messages))) => {
-            Json(serde_json::json!({"messages": messages})).into_response()
-        }
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
 }
 
 async fn branch_chat_history_handler(
@@ -3043,11 +2939,6 @@ async fn branch_chat_history_handler(
 }
 
 #[derive(serde::Deserialize)]
-struct ChatSendRequest {
-    message: String,
-}
-
-#[derive(serde::Deserialize)]
 struct BranchChatArtifactQuery {
     artifact_id: i64,
 }
@@ -3056,154 +2947,6 @@ struct BranchChatArtifactQuery {
 struct BranchChatSendRequest {
     artifact_id: i64,
     message: String,
-}
-
-async fn chat_send_handler(
-    State(state): State<Arc<AppState>>,
-    Path(pr_id): Path<i64>,
-    headers: axum::http::HeaderMap,
-    Json(body): Json<ChatSendRequest>,
-) -> impl IntoResponse {
-    let npub = match require_chat_auth(&state.auth, &headers) {
-        Ok(n) => n,
-        Err(resp) => return resp,
-    };
-
-    let store = state.store.clone();
-
-    // Get the artifact's base session id
-    let base_session_id = match tokio::task::spawn_blocking({
-        let store = store.clone();
-        move || store.get_artifact_session_id(pr_id)
-    })
-    .await
-    {
-        Ok(Ok(Some(sid))) => sid,
-        Ok(Ok(None)) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "no session for this tutorial"})),
-            )
-                .into_response();
-        }
-        Ok(Err(e)) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
-    };
-
-    // Get or create chat session
-    let (session_id, _messages) = match tokio::task::spawn_blocking({
-        let store = store.clone();
-        let npub = npub.clone();
-        let base_session_id = base_session_id.clone();
-        move || store.get_or_create_chat_session(pr_id, &npub, &base_session_id)
-    })
-    .await
-    {
-        Ok(Ok(v)) => v,
-        Ok(Err(e)) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
-    };
-
-    // Get the current claude session id for this user's chat
-    let claude_session_id = match tokio::task::spawn_blocking({
-        let store = store.clone();
-        move || store.get_chat_claude_session_id(session_id)
-    })
-    .await
-    {
-        Ok(Ok(sid)) => sid,
-        Ok(Err(e)) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
-    };
-
-    // Save user message
-    if let Err(e) = tokio::task::spawn_blocking({
-        let store = store.clone();
-        let msg = body.message.clone();
-        move || store.append_chat_message(session_id, "user", &msg)
-    })
-    .await
-    {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response();
-    }
-
-    // Call claude -r with the session
-    let message = body.message.clone();
-    let chat_result =
-        tokio::task::spawn_blocking(move || model::chat_with_session(&claude_session_id, &message))
-            .await;
-
-    match chat_result {
-        Ok(Ok(response)) => {
-            // Update the claude session id for next turn
-            let new_session_id = response.session_id.clone();
-            let response_text = response.text.clone();
-            let _ = tokio::task::spawn_blocking({
-                let store = store.clone();
-                move || {
-                    let _ = store.update_chat_claude_session_id(session_id, &new_session_id);
-                    let _ = store.append_chat_message(session_id, "assistant", &response_text);
-                }
-            })
-            .await;
-
-            Json(serde_json::json!({
-                "role": "assistant",
-                "content": response.text
-            }))
-            .into_response()
-        }
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("claude error: {}", e)})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
 }
 
 async fn branch_chat_send_handler(
@@ -3351,216 +3094,6 @@ async fn branch_chat_send_handler(
         )
             .into_response(),
     }
-}
-
-// --- Regenerate handler ---
-
-async fn regenerate_handler(
-    State(state): State<Arc<AppState>>,
-    Path(pr_id): Path<i64>,
-    headers: axum::http::HeaderMap,
-) -> impl IntoResponse {
-    if let Err(resp) = require_admin_auth(&state.auth, &headers) {
-        return resp;
-    }
-
-    let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || store.queue_regeneration(pr_id)).await {
-        Ok(Ok(true)) => {
-            Json(serde_json::json!({"status": "queued", "message": "Tutorial regeneration queued. Refresh in a minute."}))
-                .into_response()
-        }
-        Ok(Ok(false)) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": if state.config.effective_forge_repo().is_some() {
-                "no tutorial artifact found for this branch"
-            } else {
-                "no artifact found for this PR"
-            }})),
-        )
-            .into_response(),
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
-}
-
-// --- LLMs.txt and PR summary API ---
-
-async fn llms_txt_handler() -> impl IntoResponse {
-    let body = "\
-# Pika News
-
-> AI-generated PR summaries for the Pika project.
-
-Pika News automatically generates structured tutorial-style summaries for every
-pull request in the sledtools/pika repository. Summaries include an executive
-overview, step-by-step walkthrough, affected files, and evidence snippets.
-
-## API
-
-### GET /news/api/prs
-
-Returns JSON array of PR summaries. Supports filtering:
-
-- `since_pr=N`   — only PRs with pr_number >= N
-- `since=DATE`   — only PRs updated on or after DATE (ISO 8601, e.g. 2026-03-07)
-
-Both parameters can be combined. Without filters, returns all tracked PRs.
-
-Response shape:
-```json
-[
-  {
-    \"repo\": \"sledtools/pika\",
-    \"pr_number\": 482,
-    \"title\": \"Fix agent provisioning flow\",
-    \"url\": \"https://github.com/sledtools/pika/pull/482\",
-    \"state\": \"merged\",
-    \"updated_at\": \"2026-03-04T...\",
-    \"generation_status\": \"ready\",
-    \"executive_summary\": \"...\",
-    \"steps\": [
-      {
-        \"title\": \"...\",
-        \"intent\": \"...\",
-        \"affected_files\": [\"...\"],
-        \"body_markdown\": \"...\"
-      }
-    ]
-  }
-]
-```
-
-PRs where generation is not yet `ready` will have `executive_summary` and
-`steps` set to null.
-
-### GET /news
-
-Human-readable feed of open and recently merged PRs.
-
-### GET /news/pr/:pr_id
-
-Human-readable detail page for a specific PR (by internal ID, not PR number).
-";
-    ([("content-type", "text/plain; charset=utf-8")], body)
-}
-
-#[derive(serde::Deserialize)]
-struct PrsQuery {
-    since_pr: Option<i64>,
-    since: Option<String>,
-}
-
-#[derive(serde::Serialize)]
-struct PrSummaryResponse {
-    repo: String,
-    pr_number: i64,
-    title: String,
-    url: String,
-    state: String,
-    updated_at: String,
-    generation_status: String,
-    executive_summary: Option<String>,
-    steps: Option<Vec<PrStepResponse>>,
-}
-
-#[derive(serde::Serialize)]
-struct PrStepResponse {
-    title: String,
-    intent: String,
-    affected_files: Vec<String>,
-    body_markdown: String,
-}
-
-async fn api_prs_handler(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<PrsQuery>,
-) -> impl IntoResponse {
-    if let Some(ref since) = query.since {
-        // Accept ISO 8601 date (YYYY-MM-DD) or datetime prefix; reject garbage.
-        if chrono::NaiveDate::parse_from_str(since, "%Y-%m-%d").is_err()
-            && chrono::DateTime::parse_from_rfc3339(since).is_err()
-        {
-            return (
-                StatusCode::BAD_REQUEST,
-                "invalid 'since' parameter: expected ISO 8601 date (YYYY-MM-DD) or datetime"
-                    .to_string(),
-            )
-                .into_response();
-        }
-    }
-
-    let store = state.store.clone();
-    let since_date = query.since.clone();
-    let since_pr = query.since_pr;
-
-    let records = match tokio::task::spawn_blocking(move || {
-        store.list_pr_summaries(since_pr, since_date.as_deref())
-    })
-    .await
-    {
-        Ok(Ok(records)) => records,
-        Ok(Err(err)) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to query pr summaries: {}", err),
-            )
-                .into_response();
-        }
-        Err(err) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("pr summaries task failed: {}", err),
-            )
-                .into_response();
-        }
-    };
-
-    let items: Vec<PrSummaryResponse> = records
-        .into_iter()
-        .map(|r| {
-            let (executive_summary, steps) = r
-                .tutorial_json
-                .as_deref()
-                .and_then(|json| serde_json::from_str::<TutorialDoc>(json).ok())
-                .map(|doc| {
-                    let steps = doc
-                        .steps
-                        .into_iter()
-                        .map(|s| PrStepResponse {
-                            title: s.title,
-                            intent: s.intent,
-                            affected_files: s.affected_files,
-                            body_markdown: s.body_markdown,
-                        })
-                        .collect();
-                    (Some(doc.executive_summary), Some(steps))
-                })
-                .unwrap_or((None, None));
-
-            PrSummaryResponse {
-                repo: r.repo,
-                pr_number: r.pr_number,
-                title: r.title,
-                url: r.url,
-                state: r.state,
-                updated_at: r.updated_at,
-                generation_status: r.generation_status,
-                executive_summary,
-                steps,
-            }
-        })
-        .collect();
-
-    Json(items).into_response()
 }
 
 // --- Webhook handler ---
@@ -3720,16 +3253,10 @@ fn require_chat_auth(
 fn require_inbox_auth(
     auth: &AuthState,
     headers: &axum::http::HeaderMap,
-    forge_mode: bool,
 ) -> Result<String, axum::response::Response> {
     let npub = require_auth(auth, headers)?;
     let access = auth.access_for_npub(&npub);
-    let allowed = if forge_mode {
-        access.can_chat || access.can_forge_write
-    } else {
-        access.can_chat
-    };
-    if allowed {
+    if access.can_chat || access.can_forge_write {
         Ok(npub)
     } else {
         Err((
@@ -3975,7 +3502,6 @@ async fn api_admin_allowlist_upsert_handler(
     let active = body.active;
     let can_forge_write = body.can_forge_write;
     let store = state.store.clone();
-    let forge_mode = state.config.effective_forge_repo().is_some();
     match tokio::task::spawn_blocking(move || {
         let existing = store.get_chat_allowlist_entry(&npub)?;
         let entry = store.upsert_chat_allowlist_entry(
@@ -3989,13 +3515,8 @@ async fn api_admin_allowlist_upsert_handler(
             existing.as_ref(),
             active,
             can_forge_write,
-            forge_mode,
         ) {
-            if forge_mode {
-                store.backfill_branch_inbox_for_npub(&npub)?
-            } else {
-                store.backfill_inbox_for_npub(&npub)?
-            }
+            store.backfill_branch_inbox_for_npub(&npub)?
         } else {
             0
         };
@@ -4025,22 +3546,11 @@ fn should_backfill_managed_allowlist_entry(
     existing: Option<&ChatAllowlistEntry>,
     active: bool,
     can_forge_write: bool,
-    forge_mode: bool,
 ) -> bool {
     let was_reviewable = existing
-        .map(|entry| {
-            if forge_mode {
-                entry.active || entry.can_forge_write
-            } else {
-                entry.active
-            }
-        })
+        .map(|entry| entry.active || entry.can_forge_write)
         .unwrap_or(false);
-    let is_reviewable = if forge_mode {
-        active || can_forge_write
-    } else {
-        active
-    };
+    let is_reviewable = active || can_forge_write;
     is_reviewable && !was_reviewable
 }
 
@@ -4054,8 +3564,7 @@ async fn api_inbox_list_handler(
     headers: axum::http::HeaderMap,
     Query(params): Query<InboxListParams>,
 ) -> impl IntoResponse {
-    let forge_mode = state.config.effective_forge_repo().is_some();
-    let npub = match require_inbox_auth(&state.auth, &headers, forge_mode) {
+    let npub = match require_inbox_auth(&state.auth, &headers) {
         Ok(n) => n,
         Err(resp) => return resp,
     };
@@ -4063,21 +3572,9 @@ async fn api_inbox_list_handler(
     let offset = (page - 1) * 50;
     let store = state.store.clone();
     match tokio::task::spawn_blocking(move || {
-        let items = if forge_mode {
-            store.list_branch_inbox(&npub, 50, offset)?
-        } else {
-            store.list_inbox(&npub, 50, offset)?
-        };
-        let review_needed = if forge_mode {
-            store.branch_inbox_count(&npub)?
-        } else {
-            store.inbox_count(&npub)?
-        };
-        let total = if forge_mode {
-            store.branch_inbox_total(&npub)?
-        } else {
-            review_needed
-        };
+        let items = store.list_branch_inbox(&npub, 50, offset)?;
+        let review_needed = store.branch_inbox_count(&npub)?;
+        let total = store.branch_inbox_total(&npub)?;
         Ok::<_, anyhow::Error>((items, total, review_needed))
     })
     .await
@@ -4106,21 +3603,12 @@ async fn api_inbox_count_handler(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
-    let forge_mode = state.config.effective_forge_repo().is_some();
-    let npub = match require_inbox_auth(&state.auth, &headers, forge_mode) {
+    let npub = match require_inbox_auth(&state.auth, &headers) {
         Ok(n) => n,
         Err(resp) => return resp,
     };
     let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || {
-        if forge_mode {
-            store.branch_inbox_count(&npub)
-        } else {
-            store.inbox_count(&npub)
-        }
-    })
-    .await
-    {
+    match tokio::task::spawn_blocking(move || store.branch_inbox_count(&npub)).await {
         Ok(Ok(count)) => Json(serde_json::json!({"count": count})).into_response(),
         Ok(Err(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -4138,7 +3626,6 @@ async fn api_inbox_count_handler(
 #[derive(serde::Deserialize)]
 struct InboxDismissRequest {
     branch_ids: Option<Vec<i64>>,
-    pr_ids: Option<Vec<i64>>,
     all: Option<bool>,
 }
 
@@ -4147,31 +3634,17 @@ async fn api_inbox_dismiss_handler(
     headers: axum::http::HeaderMap,
     Json(body): Json<InboxDismissRequest>,
 ) -> impl IntoResponse {
-    let forge_mode = state.config.effective_forge_repo().is_some();
-    let npub = match require_inbox_auth(&state.auth, &headers, forge_mode) {
+    let npub = match require_inbox_auth(&state.auth, &headers) {
         Ok(n) => n,
         Err(resp) => return resp,
     };
     let store = state.store.clone();
     let dismissed = if body.all.unwrap_or(false) {
-        tokio::task::spawn_blocking(move || {
-            if forge_mode {
-                store.dismiss_all_branch_inbox(&npub)
-            } else {
-                store.dismiss_all_inbox(&npub)
-            }
-        })
-        .await
+        tokio::task::spawn_blocking(move || store.dismiss_all_branch_inbox(&npub)).await
     } else {
-        let review_ids = body.branch_ids.or(body.pr_ids).unwrap_or_default();
-        tokio::task::spawn_blocking(move || {
-            if forge_mode {
-                store.dismiss_branch_inbox_items(&npub, &review_ids)
-            } else {
-                store.dismiss_inbox_items(&npub, &review_ids)
-            }
-        })
-        .await
+        let review_ids = body.branch_ids.unwrap_or_default();
+        tokio::task::spawn_blocking(move || store.dismiss_branch_inbox_items(&npub, &review_ids))
+            .await
     };
     match dismissed {
         Ok(Ok(count)) => Json(serde_json::json!({"dismissed": count})).into_response(),
@@ -4193,20 +3666,13 @@ async fn api_inbox_mark_reviewed_handler(
     Path(review_id): Path<i64>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
-    let forge_mode = state.config.effective_forge_repo().is_some();
-    let npub = match require_inbox_auth(&state.auth, &headers, forge_mode) {
+    let npub = match require_inbox_auth(&state.auth, &headers) {
         Ok(n) => n,
         Err(resp) => return resp,
     };
     let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || {
-        if forge_mode {
-            store.mark_branch_inbox_reviewed(&npub, review_id)
-        } else {
-            Ok(0)
-        }
-    })
-    .await
+    match tokio::task::spawn_blocking(move || store.mark_branch_inbox_reviewed(&npub, review_id))
+        .await
     {
         Ok(Ok(count)) => Json(serde_json::json!({"marked": count})).into_response(),
         Ok(Err(e)) => (
@@ -4227,20 +3693,13 @@ async fn api_inbox_neighbors_handler(
     Path(review_id): Path<i64>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
-    let forge_mode = state.config.effective_forge_repo().is_some();
-    let npub = match require_inbox_auth(&state.auth, &headers, forge_mode) {
+    let npub = match require_inbox_auth(&state.auth, &headers) {
         Ok(n) => n,
         Err(resp) => return resp,
     };
     let store = state.store.clone();
-    match tokio::task::spawn_blocking(move || {
-        if forge_mode {
-            store.branch_inbox_review_context(&npub, review_id)
-        } else {
-            store.inbox_review_context(&npub, review_id)
-        }
-    })
-    .await
+    match tokio::task::spawn_blocking(move || store.branch_inbox_review_context(&npub, review_id))
+        .await
     {
         Ok(Ok(Some(InboxReviewContext {
             prev,
@@ -5001,12 +4460,8 @@ oldsha newsha refs/tags/v1
 
     #[test]
     fn managed_allowlist_backfills_only_for_new_reviewable_entries() {
-        assert!(should_backfill_managed_allowlist_entry(
-            None, true, false, false
-        ));
-        assert!(!should_backfill_managed_allowlist_entry(
-            None, false, false, false
-        ));
+        assert!(should_backfill_managed_allowlist_entry(None, true, false));
+        assert!(!should_backfill_managed_allowlist_entry(None, false, false));
 
         let existing_active = ChatAllowlistEntry {
             npub: "npub1existing".to_string(),
@@ -5019,12 +4474,10 @@ oldsha newsha refs/tags/v1
         assert!(!should_backfill_managed_allowlist_entry(
             Some(&existing_active),
             true,
-            false,
             false
         ));
         assert!(!should_backfill_managed_allowlist_entry(
             Some(&existing_active),
-            false,
             false,
             false
         ));
@@ -5037,7 +4490,6 @@ oldsha newsha refs/tags/v1
         assert!(should_backfill_managed_allowlist_entry(
             Some(&existing_inactive),
             true,
-            false,
             false
         ));
 
@@ -5046,13 +4498,10 @@ oldsha newsha refs/tags/v1
             can_forge_write: true,
             ..existing_inactive
         };
-        assert!(should_backfill_managed_allowlist_entry(
-            None, false, true, true
-        ));
+        assert!(should_backfill_managed_allowlist_entry(None, false, true));
         assert!(!should_backfill_managed_allowlist_entry(
             Some(&existing_forge_only),
             false,
-            true,
             true
         ));
     }
@@ -5240,74 +4689,6 @@ oldsha newsha refs/tags/v1
             .await
             .into_response();
         assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn inbox_review_legacy_pr_id_redirects_to_inbox_in_forge_mode() {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let db_path = dir.path().join("pika-news.db");
-        let store = Store::open(&db_path).expect("open store");
-        store
-            .upsert_pull_request(&crate::storage::PrUpsertInput {
-                repo: "sledtools/pika".to_string(),
-                pr_number: 264,
-                title: "legacy review item".to_string(),
-                url: "https://github.com/sledtools/pika/pull/264".to_string(),
-                state: "open".to_string(),
-                head_sha: "legacy-head".to_string(),
-                base_ref: "master".to_string(),
-                author_login: Some("alice".to_string()),
-                updated_at: "2026-03-18T12:00:00Z".to_string(),
-                merged_at: None,
-            })
-            .expect("insert legacy pr");
-        let legacy_pr_id = store
-            .list_feed_items()
-            .expect("list feed")
-            .into_iter()
-            .find(|item| item.pr_number == 264)
-            .expect("legacy pr row")
-            .pr_id;
-
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(ForgeRepoConfig {
-                repo: "sledtools/pika".to_string(),
-                canonical_git_dir: "/tmp/pika.git".to_string(),
-                default_branch: "master".to_string(),
-                ci_concurrency: Some(2),
-                mirror_remote: None,
-                mirror_poll_interval_secs: None,
-                mirror_timeout_secs: None,
-                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
-                hook_url: None,
-            }),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_NEWS_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
-        let state = test_state(store, config);
-
-        let response = inbox_review_handler(State(state), Path(legacy_pr_id))
-            .await
-            .into_response();
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        assert_eq!(
-            response
-                .headers()
-                .get(axum::http::header::LOCATION)
-                .and_then(|value| value.to_str().ok()),
-            Some("/news/inbox")
-        );
     }
 
     #[tokio::test]

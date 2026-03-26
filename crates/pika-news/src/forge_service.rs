@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
-use crate::branch_store::{
-    BranchActionTarget, BranchCiRunRecord, BranchDetailRecord, BranchLookupRecord, NightlyRunRecord,
-};
+use crate::branch_store::{BranchActionTarget, BranchDetailRecord, BranchLookupRecord};
+use crate::ci_store::{BranchCiRunRecord, NightlyRunRecord};
 use crate::config::Config;
 use crate::forge;
 use crate::forge_runtime::ForgeRuntime;

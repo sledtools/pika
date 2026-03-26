@@ -4,6 +4,7 @@ mod chat_store;
 mod ci;
 mod ci_manifest;
 mod ci_state;
+mod ci_store;
 mod cli;
 mod config;
 mod forge;

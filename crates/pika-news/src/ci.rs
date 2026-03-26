@@ -6,8 +6,8 @@ use std::thread;
 use std::time::Duration;
 use tokio::sync::Notify;
 
-use crate::branch_store::{PendingBranchCiLaneJob, PendingNightlyLaneJob, CI_LANE_LEASE_LOST};
 use crate::ci_manifest::{self, ForgeCiManifest};
+use crate::ci_store::{PendingBranchCiLaneJob, PendingNightlyLaneJob, CI_LANE_LEASE_LOST};
 use crate::config::Config;
 use crate::forge;
 use crate::live::CiLiveUpdates;

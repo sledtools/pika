@@ -5871,6 +5871,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "nostr",
+ "pika-forge-model",
  "reqwest",
  "serde",
  "serde_json",
@@ -5971,6 +5972,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pika-forge-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "pika-marmot-runtime"
 version = "0.1.0"
 dependencies = [
@@ -6027,6 +6036,7 @@ dependencies = [
  "hex",
  "hmac",
  "nostr",
+ "pika-forge-model",
  "pikaci",
  "pulldown-cmark",
  "rand 0.8.5",

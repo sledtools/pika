@@ -1,6 +1,13 @@
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
+#[allow(unused_imports)]
+pub(crate) use pika_forge_model::{
+    BranchActionResponse, BranchDetailResponse, BranchLogsResponse, BranchResolveResponse,
+    BranchState, BranchSummary, CiLane, CiLaneExecutionReason, CiLaneFailureKind, CiRun,
+    CiTargetHealthState, ForgeCiStatus, LaneMutationResponse, NightlyDetailResponse,
+    RecoverRunResponse, TutorialStatus, WakeCiResponse,
+};
 use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -28,194 +35,6 @@ pub(crate) struct MeResponse {
     pub(crate) is_admin: bool,
     pub(crate) can_chat: bool,
     pub(crate) can_forge_write: bool,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub(crate) struct BranchResolveResponse {
-    pub(crate) branch_id: i64,
-    pub(crate) repo: String,
-    pub(crate) branch_name: String,
-    pub(crate) branch_state: String,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub(crate) struct BranchDetailResponse {
-    pub(crate) branch: BranchSummary,
-    pub(crate) ci_runs: Vec<CiRun>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub(crate) struct BranchSummary {
-    pub(crate) branch_id: i64,
-    pub(crate) repo: String,
-    pub(crate) branch_name: String,
-    pub(crate) title: String,
-    pub(crate) branch_state: String,
-    pub(crate) updated_at: String,
-    pub(crate) target_branch: String,
-    pub(crate) head_sha: String,
-    pub(crate) merge_base_sha: String,
-    pub(crate) merge_commit_sha: Option<String>,
-    pub(crate) tutorial_status: String,
-    pub(crate) ci_status: String,
-    pub(crate) error_message: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub(crate) struct CiRun {
-    pub(crate) id: i64,
-    pub(crate) source_head_sha: String,
-    pub(crate) status: String,
-    pub(crate) lane_count: usize,
-    pub(crate) rerun_of_run_id: Option<i64>,
-    pub(crate) created_at: String,
-    pub(crate) started_at: Option<String>,
-    pub(crate) finished_at: Option<String>,
-    pub(crate) lanes: Vec<CiLane>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub(crate) struct CiLane {
-    pub(crate) id: i64,
-    pub(crate) lane_id: String,
-    pub(crate) title: String,
-    pub(crate) entrypoint: String,
-    pub(crate) status: String,
-    #[serde(default)]
-    pub(crate) execution_reason: CiLaneExecutionReason,
-    #[serde(default)]
-    pub(crate) failure_kind: Option<CiLaneFailureKind>,
-    pub(crate) pikaci_run_id: Option<String>,
-    pub(crate) pikaci_target_id: Option<String>,
-    #[serde(default)]
-    pub(crate) ci_target_key: Option<String>,
-    #[serde(default)]
-    pub(crate) target_health_state: Option<CiTargetHealthState>,
-    #[serde(default)]
-    pub(crate) target_health_summary: Option<String>,
-    pub(crate) log_text: Option<String>,
-    pub(crate) retry_count: i64,
-    pub(crate) rerun_of_lane_run_id: Option<i64>,
-    pub(crate) created_at: String,
-    pub(crate) started_at: Option<String>,
-    pub(crate) finished_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum CiLaneExecutionReason {
-    #[default]
-    Queued,
-    Running,
-    BlockedByConcurrencyGroup,
-    WaitingForCapacity,
-    TargetUnhealthy,
-    StaleRecovered,
-}
-
-impl CiLaneExecutionReason {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Queued => "queued",
-            Self::Running => "running",
-            Self::BlockedByConcurrencyGroup => "blocked_by_concurrency_group",
-            Self::WaitingForCapacity => "waiting_for_capacity",
-            Self::TargetUnhealthy => "target_unhealthy",
-            Self::StaleRecovered => "stale_recovered",
-        }
-    }
-
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Queued => "queued",
-            Self::Running => "running",
-            Self::BlockedByConcurrencyGroup => "blocked by concurrency group",
-            Self::WaitingForCapacity => "waiting for capacity",
-            Self::TargetUnhealthy => "target unhealthy",
-            Self::StaleRecovered => "stale recovered",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum CiLaneFailureKind {
-    TestFailure,
-    Timeout,
-    Infrastructure,
-}
-
-impl CiLaneFailureKind {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::TestFailure => "test failure",
-            Self::Timeout => "timeout",
-            Self::Infrastructure => "infrastructure",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum CiTargetHealthState {
-    Healthy,
-    Unhealthy,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub(crate) struct BranchLogsResponse {
-    pub(crate) branch_id: i64,
-    pub(crate) branch_name: String,
-    pub(crate) run_id: i64,
-    pub(crate) lane: CiLane,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub(crate) struct NightlyDetailResponse {
-    pub(crate) nightly_run_id: i64,
-    pub(crate) repo: String,
-    pub(crate) scheduled_for: String,
-    pub(crate) created_at: String,
-    pub(crate) source_ref: String,
-    pub(crate) source_head_sha: String,
-    pub(crate) status: String,
-    pub(crate) summary: Option<String>,
-    pub(crate) rerun_of_run_id: Option<i64>,
-    pub(crate) started_at: Option<String>,
-    pub(crate) finished_at: Option<String>,
-    pub(crate) lanes: Vec<CiLane>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub(crate) struct LaneMutationResponse {
-    pub(crate) status: String,
-    pub(crate) branch_id: Option<i64>,
-    pub(crate) nightly_run_id: Option<i64>,
-    pub(crate) lane_run_id: i64,
-    pub(crate) lane_status: String,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub(crate) struct RecoverRunResponse {
-    pub(crate) status: String,
-    pub(crate) branch_id: Option<i64>,
-    pub(crate) run_id: Option<i64>,
-    pub(crate) nightly_run_id: Option<i64>,
-    pub(crate) recovered_lane_count: usize,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub(crate) struct WakeCiResponse {
-    pub(crate) status: String,
-    pub(crate) message: String,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub(crate) struct BranchActionResponse {
-    pub(crate) status: String,
-    pub(crate) branch_id: i64,
-    pub(crate) merge_commit_sha: Option<String>,
-    pub(crate) deleted: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]

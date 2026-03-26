@@ -16,6 +16,17 @@ use axum::Router;
 use chrono::{DateTime, NaiveDateTime, TimeDelta, Utc};
 use futures::stream;
 use hmac::{Hmac, Mac};
+use pika_forge_model::{
+    BranchActionResponse, BranchDetailResponse as ForgeBranchDetailResponse,
+    BranchLogsResponse as SharedForgeBranchLogsResponse,
+    BranchResolveResponse as ForgeBranchResolveResponse, BranchState,
+    BranchSummary as ForgeBranchSummaryResponse, CiLane,
+    CiLaneExecutionReason as ForgeCiLaneExecutionReason,
+    CiLaneFailureKind as ForgeCiLaneFailureKind, CiLaneStatus as ForgeCiLaneStatus, CiRun,
+    CiTargetHealthState as ForgeApiTargetHealthState, ForgeCiStatus, LaneMutationResponse,
+    NightlyDetailResponse as ForgeNightlyDetailResponse, RecoverRunResponse, TutorialStatus,
+    WakeCiResponse,
+};
 use pikaci::{LogKind, PreparedOutputsRecord, RunLogsMetadata, RunRecord};
 use pulldown_cmark::{html, Options, Parser};
 use sha2::Sha256;
@@ -44,6 +55,9 @@ use crate::pikaci_store::{require_pikaci_run_store, PikaciRunStore};
 use crate::render::is_safe_http_url;
 use crate::storage::{ChatAllowlistEntry, InboxReviewContext, Store};
 use crate::tutorial::TutorialDoc;
+
+type ForgeBranchLogsResponse =
+    SharedForgeBranchLogsResponse<CiLane, RunRecord, RunLogsMetadata, PreparedOutputsRecord>;
 
 #[derive(Clone)]
 struct AppState {
@@ -383,48 +397,6 @@ struct ReviewModeQuery {
     review: bool,
 }
 
-#[derive(serde::Serialize)]
-struct ForgeBranchResolveResponse {
-    branch_id: i64,
-    repo: String,
-    branch_name: String,
-    branch_state: String,
-}
-
-#[derive(serde::Serialize)]
-struct ForgeBranchSummaryResponse {
-    branch_id: i64,
-    repo: String,
-    branch_name: String,
-    title: String,
-    branch_state: String,
-    updated_at: String,
-    target_branch: String,
-    head_sha: String,
-    merge_base_sha: String,
-    merge_commit_sha: Option<String>,
-    tutorial_status: String,
-    ci_status: String,
-    error_message: Option<String>,
-}
-
-#[derive(serde::Serialize)]
-struct ForgeBranchDetailResponse {
-    branch: ForgeBranchSummaryResponse,
-    ci_runs: Vec<CiRunView>,
-}
-
-#[derive(serde::Serialize)]
-struct ForgeBranchLogsResponse {
-    branch_id: i64,
-    branch_name: String,
-    run_id: i64,
-    lane: CiLaneView,
-    pikaci_run: Option<RunRecord>,
-    pikaci_log_metadata: Option<RunLogsMetadata>,
-    pikaci_prepared_outputs: Option<PreparedOutputsRecord>,
-}
-
 #[derive(Clone, serde::Deserialize)]
 struct ForgePikaciLogsQuery {
     job: Option<String>,
@@ -453,22 +425,6 @@ struct ForgePikaciLogsResponse {
 struct ForgePikaciPreparedOutputsResponse {
     run_id: String,
     prepared_outputs: PreparedOutputsRecord,
-}
-
-#[derive(serde::Serialize)]
-struct ForgeNightlyDetailResponse {
-    nightly_run_id: i64,
-    repo: String,
-    scheduled_for: String,
-    created_at: String,
-    source_ref: String,
-    source_head_sha: String,
-    status: String,
-    summary: Option<String>,
-    rerun_of_run_id: Option<i64>,
-    started_at: Option<String>,
-    finished_at: Option<String>,
-    lanes: Vec<NightlyLaneView>,
 }
 
 fn ci_status_tone(status: &str) -> &'static str {
@@ -2133,15 +2089,109 @@ fn map_forge_branch_summary(detail: BranchDetailRecord) -> ForgeBranchSummaryRes
         repo: detail.repo,
         branch_name: detail.branch_name,
         title: detail.title,
-        branch_state: detail.branch_state,
+        branch_state: BranchState::from(detail.branch_state),
         updated_at: detail.updated_at,
         target_branch: detail.target_branch,
         head_sha: detail.head_sha,
         merge_base_sha: detail.merge_base_sha,
         merge_commit_sha: detail.merge_commit_sha,
-        tutorial_status: detail.tutorial_status,
-        ci_status: detail.ci_status,
+        tutorial_status: TutorialStatus::from(detail.tutorial_status),
+        ci_status: ForgeCiStatus::from(detail.ci_status),
         error_message: detail.error_message,
+    }
+}
+
+fn map_api_ci_run(run: BranchCiRunRecord, now: DateTime<Utc>) -> CiRun {
+    let view = map_ci_run_view(run, now);
+    CiRun {
+        id: view.id,
+        source_head_sha: view.source_head_sha,
+        status: ForgeCiStatus::from(view.status),
+        status_tone: Some(view.status_tone),
+        lane_count: view.lane_count,
+        rerun_of_run_id: view.rerun_of_run_id,
+        created_at: view.created_at,
+        started_at: view.started_at,
+        finished_at: view.finished_at,
+        timing_summary: view.timing_summary,
+        lanes: view
+            .lanes
+            .into_iter()
+            .map(map_api_ci_lane_from_view)
+            .collect(),
+    }
+}
+
+fn map_api_ci_lane(lane: BranchCiLaneRecord, now: DateTime<Utc>) -> CiLane {
+    map_api_ci_lane_from_view(map_ci_lane_view(lane, now))
+}
+
+fn map_api_ci_lane_from_view(view: CiLaneView) -> CiLane {
+    CiLane {
+        id: view.id,
+        lane_id: view.lane_id,
+        title: view.title,
+        entrypoint: view.entrypoint,
+        status: ForgeCiLaneStatus::from(view.status),
+        status_tone: Some(view.status_tone),
+        status_badge_class: None,
+        is_failed: None,
+        execution_reason: ForgeCiLaneExecutionReason::from(view.execution_reason),
+        execution_reason_label: Some(view.execution_reason_label),
+        failure_kind: view.failure_kind.map(ForgeCiLaneFailureKind::from),
+        failure_kind_label: view.failure_kind_label,
+        pikaci_run_id: view.pikaci_run_id,
+        pikaci_target_id: view.pikaci_target_id,
+        ci_target_key: view.ci_target_key,
+        target_health_state: view
+            .target_health_state
+            .map(ForgeApiTargetHealthState::from),
+        target_health_summary: view.target_health_summary,
+        log_text: view.log_text,
+        retry_count: view.retry_count,
+        rerun_of_lane_run_id: view.rerun_of_lane_run_id,
+        created_at: view.created_at,
+        started_at: view.started_at,
+        finished_at: view.finished_at,
+        timing_summary: view.timing_summary,
+        last_heartbeat_at: view.last_heartbeat_at,
+        lease_expires_at: view.lease_expires_at,
+        operator_hint: view.operator_hint,
+    }
+}
+
+fn map_api_nightly_lane(lane: NightlyLaneRecord) -> CiLane {
+    let view = map_nightly_lane_view(lane);
+    CiLane {
+        id: view.id,
+        lane_id: view.lane_id,
+        title: view.title,
+        entrypoint: view.entrypoint,
+        status: ForgeCiLaneStatus::from(view.status),
+        status_tone: None,
+        status_badge_class: Some(view.status_badge_class),
+        is_failed: Some(view.is_failed),
+        execution_reason: ForgeCiLaneExecutionReason::from(view.execution_reason),
+        execution_reason_label: Some(view.execution_reason_label),
+        failure_kind: view.failure_kind.map(ForgeCiLaneFailureKind::from),
+        failure_kind_label: view.failure_kind_label,
+        pikaci_run_id: view.pikaci_run_id,
+        pikaci_target_id: view.pikaci_target_id,
+        ci_target_key: view.ci_target_key,
+        target_health_state: view
+            .target_health_state
+            .map(ForgeApiTargetHealthState::from),
+        target_health_summary: view.target_health_summary,
+        log_text: view.log_text,
+        retry_count: view.retry_count,
+        rerun_of_lane_run_id: view.rerun_of_lane_run_id,
+        created_at: view.created_at,
+        started_at: view.started_at,
+        finished_at: view.finished_at,
+        timing_summary: None,
+        last_heartbeat_at: view.last_heartbeat_at,
+        lease_expires_at: view.lease_expires_at,
+        operator_hint: view.operator_hint,
     }
 }
 
@@ -2210,11 +2260,12 @@ async fn merge_handler(
         Ok(MergeBranchResult {
             branch_id,
             merge_commit_sha,
-        }) => Json(serde_json::json!({
-            "status": "ok",
-            "branch_id": branch_id,
-            "merge_commit_sha": merge_commit_sha
-        }))
+        }) => Json(BranchActionResponse {
+            status: "ok".to_string(),
+            branch_id,
+            merge_commit_sha: Some(merge_commit_sha),
+            deleted: None,
+        })
         .into_response(),
         Err(err) => forge_service_json_error(err),
     }
@@ -2230,11 +2281,12 @@ async fn close_handler(
         Err(resp) => return resp,
     };
     match state.forge_service.close_branch(branch_id, &npub).await {
-        Ok(CloseBranchResult { branch_id, deleted }) => Json(serde_json::json!({
-            "status": "ok",
-            "branch_id": branch_id,
-            "deleted": deleted
-        }))
+        Ok(CloseBranchResult { branch_id, deleted }) => Json(BranchActionResponse {
+            status: "ok".to_string(),
+            branch_id,
+            merge_commit_sha: None,
+            deleted: Some(deleted),
+        })
         .into_response(),
         Err(err) => forge_service_json_error(err),
     }
@@ -2320,12 +2372,13 @@ async fn fail_branch_ci_lane_handler(
             branch_id,
             lane_run_id,
             lane_status,
-        })) => Json(serde_json::json!({
-            "status": "ok",
-            "branch_id": branch_id,
-            "lane_run_id": lane_run_id,
-            "lane_status": lane_status
-        }))
+        })) => Json(LaneMutationResponse {
+            status: "ok".to_string(),
+            branch_id: Some(branch_id),
+            nightly_run_id: None,
+            lane_run_id,
+            lane_status: ForgeCiLaneStatus::from(lane_status),
+        })
         .into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -2353,12 +2406,13 @@ async fn requeue_branch_ci_lane_handler(
             branch_id,
             lane_run_id,
             lane_status,
-        })) => Json(serde_json::json!({
-            "status": "ok",
-            "branch_id": branch_id,
-            "lane_run_id": lane_run_id,
-            "lane_status": lane_status
-        }))
+        })) => Json(LaneMutationResponse {
+            status: "ok".to_string(),
+            branch_id: Some(branch_id),
+            nightly_run_id: None,
+            lane_run_id,
+            lane_status: ForgeCiLaneStatus::from(lane_status),
+        })
         .into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -2386,12 +2440,13 @@ async fn recover_branch_ci_run_handler(
             branch_id,
             run_id,
             recovered_lane_count,
-        })) => Json(serde_json::json!({
-            "status": "ok",
-            "branch_id": branch_id,
-            "run_id": run_id,
-            "recovered_lane_count": recovered_lane_count
-        }))
+        })) => Json(RecoverRunResponse {
+            status: "ok".to_string(),
+            branch_id: Some(branch_id),
+            run_id: Some(run_id),
+            nightly_run_id: None,
+            recovered_lane_count,
+        })
         .into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -2420,12 +2475,13 @@ async fn fail_nightly_lane_handler(
             nightly_run_id,
             lane_run_id,
             lane_status,
-        })) => Json(serde_json::json!({
-            "status": "ok",
-            "nightly_run_id": nightly_run_id,
-            "lane_run_id": lane_run_id,
-            "lane_status": lane_status
-        }))
+        })) => Json(LaneMutationResponse {
+            status: "ok".to_string(),
+            branch_id: None,
+            nightly_run_id: Some(nightly_run_id),
+            lane_run_id,
+            lane_status: ForgeCiLaneStatus::from(lane_status),
+        })
         .into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -2453,12 +2509,13 @@ async fn requeue_nightly_lane_handler(
             nightly_run_id,
             lane_run_id,
             lane_status,
-        })) => Json(serde_json::json!({
-            "status": "ok",
-            "nightly_run_id": nightly_run_id,
-            "lane_run_id": lane_run_id,
-            "lane_status": lane_status
-        }))
+        })) => Json(LaneMutationResponse {
+            status: "ok".to_string(),
+            branch_id: None,
+            nightly_run_id: Some(nightly_run_id),
+            lane_run_id,
+            lane_status: ForgeCiLaneStatus::from(lane_status),
+        })
         .into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -2485,11 +2542,13 @@ async fn recover_nightly_run_handler(
         Ok(Some(NightlyRunRecoveryResult {
             nightly_run_id,
             recovered_lane_count,
-        })) => Json(serde_json::json!({
-            "status": "ok",
-            "nightly_run_id": nightly_run_id,
-            "recovered_lane_count": recovered_lane_count
-        }))
+        })) => Json(RecoverRunResponse {
+            status: "ok".to_string(),
+            branch_id: None,
+            run_id: None,
+            nightly_run_id: Some(nightly_run_id),
+            recovered_lane_count,
+        })
         .into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -2508,10 +2567,10 @@ async fn wake_ci_handler(
         return resp;
     }
     state.forge_service.wake_ci();
-    Json(serde_json::json!({
-        "status": "ok",
-        "message": "scheduler wake requested"
-    }))
+    Json(WakeCiResponse {
+        status: "ok".to_string(),
+        message: "scheduler wake requested".to_string(),
+    })
     .into_response()
 }
 
@@ -2540,7 +2599,7 @@ async fn api_forge_branch_resolve_handler(
             branch_id: branch.branch_id,
             repo: branch.repo,
             branch_name: branch.branch_name,
-            branch_state: branch.branch_state,
+            branch_state: BranchState::from(branch.branch_state),
         })
         .into_response(),
         Ok(None) => (
@@ -2565,13 +2624,16 @@ async fn api_forge_branch_detail_handler(
         .branch_detail_and_runs(branch_id, 8)
         .await
     {
-        Ok(Some(BranchDetailAndRuns { detail, ci_runs })) => Json(ForgeBranchDetailResponse {
-            branch: map_forge_branch_summary(detail),
-            ci_runs: ci_runs
-                .into_iter()
-                .map(|run| map_ci_run_view(run, Utc::now()))
-                .collect(),
-        })
+        Ok(Some(BranchDetailAndRuns { detail, ci_runs })) => {
+            let now = Utc::now();
+            Json(ForgeBranchDetailResponse {
+                branch: map_forge_branch_summary(detail),
+                ci_runs: ci_runs
+                    .into_iter()
+                    .map(|run| map_api_ci_run(run, now))
+                    .collect(),
+            })
+        }
         .into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -2616,11 +2678,12 @@ async fn api_forge_branch_logs_handler(
                 Some(bundle) => (Some(bundle.run), Some(bundle.logs), bundle.prepared_outputs),
                 None => (None, None, None),
             };
+            let now = Utc::now();
             Json(ForgeBranchLogsResponse {
                 branch_id: detail.branch_id,
                 branch_name: detail.branch_name,
                 run_id,
-                lane: map_ci_lane_view(lane, Utc::now()),
+                lane: map_api_ci_lane(lane, now),
                 pikaci_run,
                 pikaci_log_metadata,
                 pikaci_prepared_outputs,
@@ -2737,20 +2800,22 @@ async fn api_forge_nightly_detail_handler(
         return resp;
     }
     match state.forge_service.nightly_run(nightly_run_id).await {
-        Ok(Some(run)) => Json(ForgeNightlyDetailResponse {
-            nightly_run_id: run.nightly_run_id,
-            repo: run.repo,
-            scheduled_for: run.scheduled_for,
-            created_at: run.created_at,
-            source_ref: run.source_ref,
-            source_head_sha: run.source_head_sha,
-            status: run.status,
-            summary: run.summary,
-            rerun_of_run_id: run.rerun_of_run_id,
-            started_at: run.started_at,
-            finished_at: run.finished_at,
-            lanes: run.lanes.into_iter().map(map_nightly_lane_view).collect(),
-        })
+        Ok(Some(run)) => {
+            Json(ForgeNightlyDetailResponse {
+                nightly_run_id: run.nightly_run_id,
+                repo: run.repo,
+                scheduled_for: run.scheduled_for,
+                created_at: run.created_at,
+                source_ref: run.source_ref,
+                source_head_sha: run.source_head_sha,
+                status: ForgeCiStatus::from(run.status),
+                summary: run.summary,
+                rerun_of_run_id: run.rerun_of_run_id,
+                started_at: run.started_at,
+                finished_at: run.finished_at,
+                lanes: run.lanes.into_iter().map(map_api_nightly_lane).collect(),
+            })
+        }
         .into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,

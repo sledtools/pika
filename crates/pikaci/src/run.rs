@@ -22,7 +22,7 @@ use crate::executor::{
     staged_linux_remote_defaults, staged_linux_remote_snapshot_dir, sync_snapshot_to_remote,
 };
 use crate::model::{
-    ExecuteNode, JobLogMetadata, JobRecord, JobSpec,
+    ExecuteNode, JobLogMetadata, JobPlacementKind, JobRecord, JobRuntimeKind, JobSpec,
     PREPARED_OUTPUT_PAYLOAD_MANIFEST_RELATIVE_PATH, PlanExecutorKind, PlanNodeRecord, PlanScope,
     PrepareNode, PrepareTimingRecord, PreparedOutputConsumerKind, PreparedOutputExposure,
     PreparedOutputExposureAccess, PreparedOutputExposureKind,
@@ -33,8 +33,8 @@ use crate::model::{
     PreparedOutputLauncherTransportMode, PreparedOutputPayloadManifestRecord,
     PreparedOutputRemoteExposureRequest, PreparedOutputResidency, PreparedOutputsRecord,
     RealizedPreparedOutputRecord, RunBundle, RunLifecycleEvent, RunLogsMetadata, RunPlanRecord,
-    RunRecord, RunStatus, RunnerKind, StagedLinuxRustLane, StagedLinuxRustPayloadRole,
-    StagedLinuxRustTarget, decode_prepared_output_payload_manifest,
+    RunRecord, RunStatus, StagedLinuxCommandConfig, StagedLinuxRustPayloadRole,
+    StagedLinuxSnapshotProfile, decode_prepared_output_payload_manifest,
     prepared_output_payload_manifest_path,
 };
 use crate::snapshot::{
@@ -155,16 +155,13 @@ pub fn run_jobs_with_metadata_and_reporter(
 fn snapshot_profile_for_jobs(jobs: &[JobSpec]) -> SnapshotProfile {
     if jobs.iter().any(|job| {
         matches!(
-            job.staged_linux_rust_lane()
-                .map(StagedLinuxRustLane::target),
-            Some(StagedLinuxRustTarget::PreMergePikaFollowup)
+            job.staged_linux_command()
+                .map(|command| command.snapshot_profile),
+            Some(StagedLinuxSnapshotProfile::Followup)
         )
     }) {
         SnapshotProfile::StagedLinuxFollowup
-    } else if jobs
-        .iter()
-        .any(|job| job.staged_linux_rust_lane().is_some())
-    {
+    } else if jobs.iter().any(|job| job.staged_linux_command().is_some()) {
         SnapshotProfile::StagedLinuxRust
     } else {
         SnapshotProfile::Full
@@ -679,7 +676,9 @@ fn running_job_record(
         id: job.id.to_string(),
         description: job.description.to_string(),
         status: RunStatus::Running,
-        executor: job.runner_kind().as_str().to_string(),
+        executor: job.executor_label().to_string(),
+        placement: Some(job.placement_kind()),
+        runtime: Some(job.runtime_kind()),
         plan_node_id: Some(plan_node_id.to_string()),
         timeout_secs: job.timeout_secs,
         host_log_path: ctx.host_log_path.display().to_string(),
@@ -750,7 +749,9 @@ fn prepare_job_workspace(
     job_dir: &Path,
     host_local_cache: Option<&HostLocalCacheLayout>,
 ) -> anyhow::Result<PathBuf> {
-    if job.runner_kind() == RunnerKind::HostLocal {
+    if job.placement_kind() == JobPlacementKind::Local
+        && job.runtime_kind() == JobRuntimeKind::HostProcess
+    {
         let host_local_cache = host_local_cache.ok_or_else(|| {
             anyhow!(
                 "host-local cache layout missing for host-local job `{}`",
@@ -1323,10 +1324,10 @@ fn prepare_snapshot_source(
     metadata: &RunMetadata,
 ) -> anyhow::Result<SnapshotSource> {
     let profile = snapshot_profile_for_jobs(jobs);
-    if jobs
-        .iter()
-        .all(|job| job.runner_kind() == RunnerKind::HostLocal)
-    {
+    if jobs.iter().all(|job| {
+        job.placement_kind() == JobPlacementKind::Local
+            && job.runtime_kind() == JobRuntimeKind::HostProcess
+    }) {
         return prepare_host_local_cached_snapshot_source(
             options, prepared, metadata, jobs, profile,
         );
@@ -1442,10 +1443,11 @@ fn build_run_plan(
     for job in jobs {
         let job_dir = prepared.jobs_dir.join(job.id);
         fs::create_dir_all(&job_dir).with_context(|| format!("create {}", job_dir.display()))?;
-        let runner_kind = job.runner_kind();
+        let uses_host_local_cache = job.placement_kind() == JobPlacementKind::Local
+            && job.runtime_kind() == JobRuntimeKind::HostProcess;
         let staged_payloads = job
-            .staged_linux_rust_lane()
-            .map(|lane| staged_linux_payload_specs(&snapshot.snapshot_dir, &job_dir, lane))
+            .staged_linux_command()
+            .map(|command| staged_linux_payload_specs(&snapshot.snapshot_dir, &job_dir, command))
             .unwrap_or_default();
         let ctx = HostContext {
             source_root: PathBuf::from(&snapshot.source_root),
@@ -1457,10 +1459,9 @@ fn build_run_plan(
             )?,
             host_local_cache_dir: host_local_cache
                 .as_ref()
-                .filter(|_| runner_kind == RunnerKind::HostLocal)
+                .filter(|_| uses_host_local_cache)
                 .map(|layout| layout.cache_dir.clone()),
-            workspace_source_dir: (runner_kind == RunnerKind::HostLocal)
-                .then(|| snapshot.snapshot_dir.clone()),
+            workspace_source_dir: uses_host_local_cache.then(|| snapshot.snapshot_dir.clone()),
             workspace_source_content_hash: snapshot.content_hash.clone(),
             workspace_read_only: !job.writable_workspace,
             job_dir: job_dir.clone(),
@@ -1469,7 +1470,7 @@ fn build_run_plan(
             shared_cargo_home_dir: prepared.shared_cargo_home_dir.clone(),
             shared_target_dir: host_local_cache
                 .as_ref()
-                .filter(|_| runner_kind == RunnerKind::HostLocal)
+                .filter(|_| uses_host_local_cache)
                 .map(|layout| layout.target_dir.clone())
                 .unwrap_or_else(|| prepared.run_target_dir.clone()),
             staged_payloads: staged_payloads.clone(),
@@ -1478,7 +1479,7 @@ fn build_run_plan(
         ensure_log_file(&ctx.guest_log_path)?;
 
         let mut depends_on = Vec::new();
-        if job.staged_linux_rust_lane().is_some() {
+        if job.staged_linux_command().is_some() {
             let mut previous_node_id = None;
             for payload in &staged_payloads {
                 let depends_on_nodes = previous_node_id.iter().cloned().collect::<Vec<_>>();
@@ -1504,6 +1505,8 @@ fn build_run_plan(
                             id: payload.prepare_node_id.clone(),
                             description: payload.prepare_description.clone(),
                             executor: PlanExecutorKind::HostLocal,
+                            placement: Some(JobPlacementKind::Local),
+                            runtime: Some(JobRuntimeKind::HostProcess),
                             depends_on: depends_on_nodes.clone(),
                             prepare: PrepareNode::NixBuild {
                                 installable: payload.installable.clone(),
@@ -1527,7 +1530,9 @@ fn build_run_plan(
                 previous_node_id = Some(payload.prepare_node_id.clone());
             }
         }
-        if job.runner_kind() == RunnerKind::RemoteLinuxVm {
+        if job.placement_kind() == JobPlacementKind::RemoteSsh
+            && job.runtime_kind() == JobRuntimeKind::Incus
+        {
             let prepare_node_id = format!("prepare-{}-runner", job.id);
             let runner_description = format!("Prepare remote Linux VM backend for `{}`", job.id);
             let prepare = PrepareNode::RemoteLinuxVmBackend {
@@ -1554,6 +1559,8 @@ fn build_run_plan(
                     id: prepare_node_id.clone(),
                     description: runner_description,
                     executor: PlanExecutorKind::HostLocal,
+                    placement: Some(JobPlacementKind::Local),
+                    runtime: Some(JobRuntimeKind::HostProcess),
                     depends_on: Vec::new(),
                     prepare,
                 },
@@ -1562,35 +1569,34 @@ fn build_run_plan(
         }
 
         let execute_node_id = format!("execute-{}", job.id);
-        let execute = match job.runner_kind() {
-            RunnerKind::HostLocal => {
-                let command = match job.guest_command {
-                    crate::model::GuestCommand::HostShellCommand { command } => command.to_string(),
-                    _ => anyhow::bail!(
-                        "host-local job `{}` must use GuestCommand::HostShellCommand",
-                        job.id
-                    ),
-                };
-                ExecuteNode::HostCommand {
-                    command,
-                    timeout_secs: job.timeout_secs,
-                    writable_workspace: job.writable_workspace,
-                }
+        let execute = if uses_host_local_cache {
+            let command = match job.guest_command {
+                crate::model::GuestCommand::HostShellCommand { command } => command.to_string(),
+                _ => anyhow::bail!(
+                    "host-local job `{}` must use GuestCommand::HostShellCommand",
+                    job.id
+                ),
+            };
+            ExecuteNode::HostCommand {
+                command,
+                timeout_secs: job.timeout_secs,
+                writable_workspace: job.writable_workspace,
             }
-            _ => {
-                let (command, run_as_root) = compiled_guest_command(job);
-                ExecuteNode::VmCommand {
-                    command,
-                    run_as_root,
-                    timeout_secs: job.timeout_secs,
-                    writable_workspace: job.writable_workspace,
-                }
+        } else {
+            let (command, run_as_root) = compiled_guest_command(job);
+            ExecuteNode::VmCommand {
+                command,
+                run_as_root,
+                timeout_secs: job.timeout_secs,
+                writable_workspace: job.writable_workspace,
             }
         };
         execute_nodes.push(PlanNodeRecord::Execute {
             id: execute_node_id.clone(),
             description: job.description.to_string(),
-            executor: job.runner_kind().into(),
+            executor: job.execution().into(),
+            placement: Some(job.placement_kind()),
+            runtime: Some(job.runtime_kind()),
             depends_on: depends_on.clone(),
             execute,
         });
@@ -1638,7 +1644,10 @@ fn build_host_local_cache_layout(
 ) -> anyhow::Result<Option<HostLocalCacheLayout>> {
     let host_local_jobs = jobs
         .iter()
-        .filter(|job| job.runner_kind() == RunnerKind::HostLocal)
+        .filter(|job| {
+            job.placement_kind() == JobPlacementKind::Local
+                && job.runtime_kind() == JobRuntimeKind::HostProcess
+        })
         .collect::<Vec<_>>();
     if host_local_jobs.is_empty() {
         return Ok(None);
@@ -1703,33 +1712,34 @@ fn remove_path_if_exists(path: &Path) -> anyhow::Result<()> {
 
 fn staged_linux_rust_installable(
     snapshot_dir: &Path,
-    lane: StagedLinuxRustLane,
+    command: StagedLinuxCommandConfig,
     role: StagedLinuxRustPayloadRole,
 ) -> String {
-    let output_name = lane.payload_output_name(role);
+    let output_name = command.payload_output_name(role);
     format!("path:{}#{output_name}", snapshot_dir.display())
 }
 
 fn staged_linux_payload_specs(
     snapshot_dir: &Path,
     job_dir: &Path,
-    lane: StagedLinuxRustLane,
+    command: StagedLinuxCommandConfig,
 ) -> Vec<StagedPreparedPayload> {
-    let prefix = lane.shared_prepare_node_prefix();
-    lane.payload_specs()
+    let prefix = command.prepare_node_prefix;
+    command
+        .payload_specs
         .into_iter()
         .map(|payload_spec| StagedPreparedPayload {
             prepare_node_id: format!(
                 "prepare-{prefix}-{}",
                 payload_spec.role.prepare_node_suffix()
             ),
-            installable: staged_linux_rust_installable(snapshot_dir, lane, payload_spec.role),
+            installable: staged_linux_rust_installable(snapshot_dir, command, payload_spec.role),
             output_name: payload_spec.output_name,
             local_mount_path: payload_spec.role.local_mount_path(job_dir),
             prepare_description: format!(
                 "{} for {}",
                 payload_spec.role.prepare_description(),
-                lane.shared_prepare_description()
+                command.prepare_description
             ),
         })
         .collect()
@@ -3906,11 +3916,11 @@ fn resolve_run_prepared_output_consumer_kind_for_mode(
         ));
     }
     if jobs.is_empty()
-        || !jobs
-            .iter()
-            .any(|job| job.staged_linux_rust_lane().is_some())
+        || !jobs.iter().any(|job| job.staged_linux_command().is_some())
         || jobs.iter().any(|job| {
-            job.staged_linux_rust_lane().is_none() && job.runner_kind() != RunnerKind::HostLocal
+            job.staged_linux_command().is_none()
+                && !(job.placement_kind() == JobPlacementKind::Local
+                    && job.runtime_kind() == JobRuntimeKind::HostProcess)
         })
     {
         return Err(anyhow!(
@@ -3973,7 +3983,7 @@ fn validate_prepared_output_consumer_for_jobs(
     if kind == PreparedOutputConsumerKind::RemoteExposureRequestV1
         && jobs
             .iter()
-            .any(|planned_job| planned_job.job.staged_linux_rust_lane().is_some())
+            .any(|planned_job| planned_job.job.staged_linux_command().is_some())
     {
         return Err(anyhow!(
             "PIKACI_PREPARED_OUTPUT_CONSUMER=remote_request_v1 is prototype-only; staged Linux Rust jobs still require fulfilled prepared-output mounts"
@@ -4440,15 +4450,17 @@ mod tests {
         write_run_record,
     };
     use crate::model::{
-        ExecuteNode, GuestCommand, JobRecord, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope,
-        PrepareNode, PrepareTimingRecord, PreparedOutputConsumerKind, PreparedOutputExposure,
-        PreparedOutputExposureAccess, PreparedOutputExposureKind, PreparedOutputFulfillmentResult,
+        ExecuteNode, GuestCommand, JobExecutionConfig, JobPlacementKind, JobRecord, JobRuntimeKind,
+        JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope, PrepareNode, PrepareTimingRecord,
+        PreparedOutputConsumerKind, PreparedOutputExposure, PreparedOutputExposureAccess,
+        PreparedOutputExposureKind, PreparedOutputFulfillmentResult,
         PreparedOutputFulfillmentStatus, PreparedOutputFulfillmentTransportPathContract,
         PreparedOutputHandoff, PreparedOutputHandoffProtocol, PreparedOutputInvocationMode,
         PreparedOutputLauncherTransportMode, PreparedOutputRemoteExposureRequest,
         PreparedOutputResidency, PreparedOutputsRecord, RealizedPreparedOutputRecord,
         RemoteLinuxVmBackend, RunLifecycleEvent, RunPlanRecord, RunRecord, RunStatus,
-        StagedLinuxRustLane,
+        StagedLinuxCommandConfig, StagedLinuxRustPayloadRole, StagedLinuxRustTargetPayloadSpec,
+        StagedLinuxSnapshotProfile,
     };
     use crate::snapshot::{SnapshotProfile, compute_source_fingerprint_with_profile};
 
@@ -4456,6 +4468,115 @@ mod tests {
         let _backend_guard = EnvVarGuard::set("PIKACI_REMOTE_LINUX_VM_BACKEND", value);
         let _ssh_host_guard = EnvVarGuard::set(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV, None);
         action()
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum StagedLinuxRustLane {
+        PikaFollowupActionlint,
+        PikaCoreLibAppFlows,
+        PikaCoreMessagingE2e,
+        AgentContractsControlPlaneUnit,
+    }
+
+    impl StagedLinuxRustLane {
+        fn command_config(self) -> StagedLinuxCommandConfig {
+            match self {
+                Self::PikaFollowupActionlint => sample_staged_linux_command(
+                    StagedLinuxSnapshotProfile::Followup,
+                    "pika-followup-linux-rust",
+                    "/staged/linux-rust/workspace-build/bin/run-pika-actionlint",
+                    "ci.x86_64-linux.pikaFollowupWorkspaceDeps",
+                    ".#ci.x86_64-linux.pikaFollowupWorkspaceDeps",
+                    "ci.x86_64-linux.pikaFollowupWorkspaceBuild",
+                    ".#ci.x86_64-linux.pikaFollowupWorkspaceBuild",
+                ),
+                Self::PikaCoreLibAppFlows => sample_staged_linux_command(
+                    StagedLinuxSnapshotProfile::Rust,
+                    "pika-core-linux-rust",
+                    "/staged/linux-rust/workspace-build/bin/run-pika-core-lib-app-flows-tests",
+                    "ci.x86_64-linux.workspaceDeps",
+                    ".#ci.x86_64-linux.workspaceDeps",
+                    "ci.x86_64-linux.workspaceBuild",
+                    ".#ci.x86_64-linux.workspaceBuild",
+                ),
+                Self::PikaCoreMessagingE2e => sample_staged_linux_command(
+                    StagedLinuxSnapshotProfile::Rust,
+                    "pika-core-linux-rust",
+                    "/staged/linux-rust/workspace-build/bin/run-pika-core-messaging-e2e-tests",
+                    "ci.x86_64-linux.workspaceDeps",
+                    ".#ci.x86_64-linux.workspaceDeps",
+                    "ci.x86_64-linux.workspaceBuild",
+                    ".#ci.x86_64-linux.workspaceBuild",
+                ),
+                Self::AgentContractsControlPlaneUnit => sample_staged_linux_command(
+                    StagedLinuxSnapshotProfile::Rust,
+                    "agent-contracts-linux-rust",
+                    "/staged/linux-rust/workspace-build/bin/run-pika-cloud-unit-tests",
+                    "ci.x86_64-linux.agentContractsWorkspaceDeps",
+                    ".#ci.x86_64-linux.agentContractsWorkspaceDeps",
+                    "ci.x86_64-linux.agentContractsWorkspaceBuild",
+                    ".#ci.x86_64-linux.agentContractsWorkspaceBuild",
+                ),
+            }
+        }
+    }
+
+    fn sample_staged_linux_command(
+        snapshot_profile: StagedLinuxSnapshotProfile,
+        prepare_node_prefix: &'static str,
+        execute_wrapper_command: &'static str,
+        workspace_deps_output_name: &'static str,
+        workspace_deps_installable: &'static str,
+        workspace_build_output_name: &'static str,
+        workspace_build_installable: &'static str,
+    ) -> StagedLinuxCommandConfig {
+        StagedLinuxCommandConfig {
+            snapshot_profile,
+            prepare_node_prefix,
+            prepare_description: "test staged Linux command",
+            payload_specs: [
+                StagedLinuxRustTargetPayloadSpec {
+                    role: StagedLinuxRustPayloadRole::WorkspaceDeps,
+                    output_name: workspace_deps_output_name,
+                    nix_installable: workspace_deps_installable,
+                },
+                StagedLinuxRustTargetPayloadSpec {
+                    role: StagedLinuxRustPayloadRole::WorkspaceBuild,
+                    output_name: workspace_build_output_name,
+                    nix_installable: workspace_build_installable,
+                },
+            ],
+            execute_wrapper_command,
+            workspace_output_system: "x86_64-linux",
+        }
+    }
+
+    fn remote_incus_job_base() -> JobSpec {
+        JobSpec {
+            id: "",
+            description: "",
+            timeout_secs: 0,
+            writable_workspace: false,
+            execution: JobExecutionConfig::REMOTE_SSH_INCUS,
+            guest_command: GuestCommand::ShellCommand { command: "" },
+            staged_linux_command: None,
+            host_setup_command: None,
+            mount_host_rust_toolchain: false,
+        }
+    }
+
+    fn host_local_job_base() -> JobSpec {
+        JobSpec {
+            id: "",
+            description: "",
+            timeout_secs: 0,
+            writable_workspace: false,
+            execution: JobExecutionConfig::HOST_LOCAL,
+            guest_command: GuestCommand::HostShellCommand { command: "" },
+            staged_linux_command: None,
+            host_setup_command: None,
+            mount_host_rust_toolchain: false,
+        }
     }
 
     #[test]
@@ -4506,7 +4627,8 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "printf 'ok\\n'",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_command: None,
+            ..host_local_job_base()
         }];
         let metadata = RunMetadata {
             target_id: Some("host-echo".to_string()),
@@ -4561,7 +4683,8 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "printf 'ok\\n'",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_command: None,
+            ..host_local_job_base()
         }];
         let metadata = RunMetadata {
             target_id: Some("host-echo".to_string()),
@@ -4640,6 +4763,8 @@ mod tests {
                     description: "job".to_string(),
                     status: RunStatus::Failed,
                     executor: "host_local".to_string(),
+                    placement: Some(JobPlacementKind::Local),
+                    runtime: Some(JobRuntimeKind::HostProcess),
                     plan_node_id: None,
                     timeout_secs: 30,
                     host_log_path: host_log_path.display().to_string(),
@@ -4847,6 +4972,8 @@ mod tests {
                     description: "job".to_string(),
                     status: RunStatus::Passed,
                     executor: "host_local".to_string(),
+                    placement: Some(JobPlacementKind::Local),
+                    runtime: Some(JobRuntimeKind::HostProcess),
                     plan_node_id: None,
                     timeout_secs: 30,
                     host_log_path: host_log_path.display().to_string(),
@@ -4955,6 +5082,8 @@ mod tests {
                     description: "job".to_string(),
                     status: RunStatus::Passed,
                     executor: "host_local".to_string(),
+                    placement: Some(JobPlacementKind::Local),
+                    runtime: Some(JobRuntimeKind::HostProcess),
                     plan_node_id: None,
                     timeout_secs: 30,
                     host_log_path: host_log_path.display().to_string(),
@@ -5001,7 +5130,10 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "actionlint",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupActionlint),
+            staged_linux_command: Some(
+                StagedLinuxRustLane::PikaFollowupActionlint.command_config(),
+            ),
+            ..remote_incus_job_base()
         }];
 
         let snapshot = sample_snapshot_source(&prepared);
@@ -5048,7 +5180,10 @@ mod tests {
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
                 },
-                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
+                staged_linux_command: Some(
+                    StagedLinuxRustLane::PikaCoreLibAppFlows.command_config(),
+                ),
+                ..remote_incus_job_base()
             },
             JobSpec {
                 id: "pika-core-messaging-e2e-tests",
@@ -5058,7 +5193,10 @@ mod tests {
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
                 },
-                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreMessagingE2e),
+                staged_linux_command: Some(
+                    StagedLinuxRustLane::PikaCoreMessagingE2e.command_config(),
+                ),
+                ..remote_incus_job_base()
             },
         ];
 
@@ -5311,7 +5449,8 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "cargo clippy -p pikachat -- -D warnings",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_command: None,
+            ..host_local_job_base()
         }];
 
         let plan = build_run_plan(&jobs, &prepared, &snapshot, &RunMetadata::default())
@@ -5371,7 +5510,8 @@ mod tests {
                 guest_command: GuestCommand::HostShellCommand {
                     command: "cargo build -p pikachat",
                 },
-                staged_linux_rust_lane: None,
+                staged_linux_command: None,
+                ..host_local_job_base()
             },
             JobSpec {
                 id: "openclaw-e2e",
@@ -5381,7 +5521,8 @@ mod tests {
                 guest_command: GuestCommand::HostShellCommand {
                     command: "cargo test -p pikahut --test integration_openclaw",
                 },
-                staged_linux_rust_lane: None,
+                staged_linux_command: None,
+                ..host_local_job_base()
             },
         ];
 
@@ -5457,7 +5598,8 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "cargo clippy -p pikachat -- -D warnings",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_command: None,
+            ..host_local_job_base()
         }];
         let cache = build_host_local_cache_layout(&prepared, &jobs, &metadata)
             .expect("build host-local cache")
@@ -5530,7 +5672,8 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "cargo clippy -p pikachat -- -D warnings",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_command: None,
+            ..host_local_job_base()
         }];
         let cache = build_host_local_cache_layout(&prepared, &jobs, &metadata)
             .expect("build host-local cache")
@@ -5585,7 +5728,10 @@ mod tests {
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
                 },
-                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
+                staged_linux_command: Some(
+                    StagedLinuxRustLane::PikaCoreLibAppFlows.command_config(),
+                ),
+                ..remote_incus_job_base()
             },
             JobSpec {
                 id: "pika-core-messaging-e2e-tests",
@@ -5595,7 +5741,10 @@ mod tests {
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
                 },
-                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreMessagingE2e),
+                staged_linux_command: Some(
+                    StagedLinuxRustLane::PikaCoreMessagingE2e.command_config(),
+                ),
+                ..remote_incus_job_base()
             },
         ];
 
@@ -5648,6 +5797,8 @@ mod tests {
                 description: "Run all pika-agent-control-plane unit tests in a remote Linux VM"
                     .to_string(),
                 executor: PlanExecutorKind::RemoteLinuxVm,
+                placement: Some(JobPlacementKind::RemoteSsh),
+                runtime: Some(JobRuntimeKind::Incus),
                 depends_on: Vec::new(),
                 execute: ExecuteNode::VmCommand {
                     command: "cargo test -p pika-agent-control-plane --lib -- --nocapture"
@@ -6377,7 +6528,8 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
+            staged_linux_command: Some(StagedLinuxRustLane::PikaCoreLibAppFlows.command_config()),
+            ..remote_incus_job_base()
         }];
         let metadata = RunMetadata {
             target_id: Some("pre-merge-pika-rust".to_string()),
@@ -6407,7 +6559,10 @@ mod tests {
             guest_command: GuestCommand::PackageUnitTests {
                 package: "pika-agent-control-plane",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit),
+            staged_linux_command: Some(
+                StagedLinuxRustLane::AgentContractsControlPlaneUnit.command_config(),
+            ),
+            ..remote_incus_job_base()
         }];
         let metadata = RunMetadata {
             target_id: Some("pre-merge-agent-contracts".to_string()),
@@ -6437,7 +6592,8 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
+            staged_linux_command: Some(StagedLinuxRustLane::PikaCoreLibAppFlows.command_config()),
+            ..remote_incus_job_base()
         }];
         let metadata = RunMetadata {
             target_id: Some("pre-merge-pika-rust".to_string()),
@@ -6469,7 +6625,8 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
+            staged_linux_command: Some(StagedLinuxRustLane::PikaCoreLibAppFlows.command_config()),
+            ..remote_incus_job_base()
         }];
         let metadata = RunMetadata {
             target_id: Some("pre-merge-pika-rust".to_string()),
@@ -6562,7 +6719,8 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
+            staged_linux_command: Some(StagedLinuxRustLane::PikaCoreLibAppFlows.command_config()),
+            ..remote_incus_job_base()
         }];
 
         let plan = build_run_plan(&jobs, &prepared, &snapshot, &RunMetadata::default())
@@ -8132,7 +8290,10 @@ EOF
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
                 },
-                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
+                staged_linux_command: Some(
+                    StagedLinuxRustLane::PikaCoreLibAppFlows.command_config(),
+                ),
+                ..remote_incus_job_base()
             },
             JobSpec {
                 id: "pika-core-messaging-e2e-tests",
@@ -8142,7 +8303,10 @@ EOF
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
                 },
-                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreMessagingE2e),
+                staged_linux_command: Some(
+                    StagedLinuxRustLane::PikaCoreMessagingE2e.command_config(),
+                ),
+                ..remote_incus_job_base()
             },
         ];
         let mixed_jobs = vec![
@@ -8155,7 +8319,8 @@ EOF
                 guest_command: GuestCommand::HostShellCommand {
                     command: "cargo test -p pika-ios --lib -- --nocapture",
                 },
-                staged_linux_rust_lane: None,
+                staged_linux_command: None,
+                ..host_local_job_base()
             },
         ];
 
@@ -8188,7 +8353,10 @@ EOF
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
                 },
-                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
+                staged_linux_command: Some(
+                    StagedLinuxRustLane::PikaCoreLibAppFlows.command_config(),
+                ),
+                ..remote_incus_job_base()
             },
             JobSpec {
                 id: "pika-core-messaging-e2e-tests",
@@ -8198,7 +8366,10 @@ EOF
                 guest_command: GuestCommand::ShellCommand {
                     command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
                 },
-                staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreMessagingE2e),
+                staged_linux_command: Some(
+                    StagedLinuxRustLane::PikaCoreMessagingE2e.command_config(),
+                ),
+                ..remote_incus_job_base()
             },
         ];
         let plan = build_run_plan(&jobs, &prepared, &snapshot, &RunMetadata::default())

@@ -12,9 +12,8 @@ use chrono::Utc;
 use fs2::FileExt;
 use pika_cloud::{
     CLOUD_GUEST_LOG_PATH, EVENTS_PATH, GUEST_REQUEST_PATH, IncusGuestRunRequest,
-    LIFECYCLE_SCHEMA_VERSION, RESULT_PATH, RuntimeResultStatus, RuntimeTerminalResult, STATUS_PATH,
-    encode_runtime_terminal_result_pretty, load_runtime_terminal_result,
-    runtime_terminal_result_for_exit_code,
+    LIFECYCLE_SCHEMA_VERSION, RESULT_PATH, RuntimeArtifacts, RuntimeResultStatus,
+    RuntimeTerminalResult, STATUS_PATH, runtime_terminal_result_for_exit_code,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -424,7 +423,8 @@ fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOut
     let result_path = artifacts_dir.join("result.json");
     fs::write(
         &result_path,
-        encode_runtime_terminal_result_pretty(&result).context("encode host-local result")?,
+        RuntimeArtifacts::encode_terminal_result_pretty(&result)
+            .context("encode host-local result")?,
     )
     .with_context(|| format!("write {}", result_path.display()))?;
 
@@ -1013,8 +1013,9 @@ fn run_remote_linux_vm_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<J
             collect_remote_linux_vm_artifacts(&remote, ctx)
         })?;
 
-        let guest_result = load_runtime_terminal_result(ctx.job_dir.join("artifacts/result.json"))
-            .with_context(|| "load guest terminal result".to_string())?;
+        let guest_result =
+            RuntimeArtifacts::load_terminal_result(ctx.job_dir.join("artifacts/result.json"))
+                .with_context(|| "load guest terminal result".to_string())?;
         Ok(JobOutcome {
             status: run_status_from_terminal_result(&guest_result),
             exit_code: guest_result.exit_code,
@@ -1250,7 +1251,7 @@ fn run_tart_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> 
     let _ = tart_process.stderr_handle.join();
 
     let result_path = artifacts_dir.join("result.json");
-    let guest_result = load_runtime_terminal_result(result_path)
+    let guest_result = RuntimeArtifacts::load_terminal_result(result_path)
         .with_context(|| "load guest terminal result".to_string())?;
     Ok(JobOutcome {
         status: run_status_from_terminal_result(&guest_result),

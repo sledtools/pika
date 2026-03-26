@@ -36,12 +36,12 @@ use crate::nostr_auth::{
 };
 use crate::{RequestContext, State};
 use pika_cloud::{
-    decode_runtime_status_artifact, incus_mount_device_config, incus_runtime_config,
-    AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams, IncusRuntimeConfig,
-    IncusRuntimePlan, LifecycleState, ManagedOpenClawLaunchAuth, ManagedRuntimeBackupStatus,
-    ManagedRuntimeStatus, ManagedVmProvisionParams as ManagedRuntimeProvisionParams, MountKind,
-    MountMode, RuntimeIdentity, RuntimeMount, RuntimeResources, RuntimeSpec, RuntimeStatusSnapshot,
-    VmBackupFreshness, VmBackupUnitKind, VmRecoveryPointKind, STATUS_PATH,
+    incus_mount_device_config, incus_runtime_config, AgentProvisionRequest, AgentStartupPhase,
+    IncusProvisionParams, IncusRuntimeConfig, IncusRuntimePlan, LifecycleState,
+    ManagedOpenClawLaunchAuth, ManagedRuntimeBackupStatus, ManagedRuntimeStatus,
+    ManagedVmProvisionParams as ManagedRuntimeProvisionParams, MountKind, MountMode,
+    RuntimeArtifacts, RuntimeIdentity, RuntimeMount, RuntimeResources, RuntimeSpec,
+    RuntimeStatusSnapshot, VmBackupFreshness, VmBackupUnitKind, VmRecoveryPointKind, STATUS_PATH,
 };
 use pika_relay_profiles::default_message_relays;
 
@@ -1896,7 +1896,7 @@ impl IncusManagedRuntimeProvider {
                 return None;
             }
         };
-        match decode_runtime_status_artifact(&status_path, &status_bytes) {
+        match RuntimeArtifacts::decode_status_artifact(&status_path, &status_bytes) {
             Ok(status) => Some(status),
             Err(err) => {
                 tracing::warn!(
@@ -4293,7 +4293,7 @@ mod tests {
 
     #[test]
     fn decode_runtime_status_artifact_rejects_malformed_snapshot() {
-        let err = decode_runtime_status_artifact(
+        let err = RuntimeArtifacts::decode_status_artifact(
             STATUS_PATH,
             br#"{
                 "schema_version": 1,

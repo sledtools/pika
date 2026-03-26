@@ -10,7 +10,6 @@ already decided. The goal here is to keep the next code slices coherent and smal
 
 Related context:
 
-- [`docs/incus-migration-plan.md`](../docs/incus-migration-plan.md)
 - [`todos/agents-platform.md`](./agents-platform.md)
 
 ## Core Direction

@@ -17,8 +17,7 @@ It is intentionally narrow:
 - the guest image is Nix-built and imported into Incus manually
 - `pika-build` is the Incus substrate for this lane, not the agent API host
 - the managed-agent product path is now Incus-only and OpenClaw-only
-- `pika-server` still shares a host with other legacy microVM infrastructure, but managed-agent
-  requests no longer provision through that substrate
+- the runbook only covers the surviving Incus-managed runtime path
 
 ## What This Lane Proves
 
@@ -81,10 +80,7 @@ nix develop .#infra -c just -f infra/justfile build-deploy
 That entrypoint now uploads a clean repo snapshot and runs `nixos-rebuild` on `pika-build`
 itself, so operators do not need local `x86_64-linux` build support to deploy the canonical host.
 
-`pika-build` now runs both host roles side by side:
-
-- the existing microVM host stack and `vm-spawner`
-- the Incus dev lane with `incusd` listening on `:8443`
+`pika-build` now runs the Incus dev lane with `incusd` listening on `:8443`.
 
 The canonical host config now also carries the Incus bridge firewall allowances needed for:
 
@@ -249,7 +245,6 @@ That prints:
 - the assigned `vm_id`
 - whether the Incus instance exists
 - whether the matching `-state` volume exists
-- the current guest ready marker, when present
 
 For a repeated internal dashboard check, the shortest useful loop is now:
 
@@ -257,85 +252,6 @@ For a repeated internal dashboard check, the shortest useful loop is now:
 2. reset or recover the environment
 3. run `scripts/incus-dogfood-check.sh ...`
 4. refresh the dashboard until `state=ready` and `startup_phase=ready`
-
-## One-Time Hard-Cut Cleanup
-
-Before deploying the managed-agent hard cut that drops legacy provider identity from
-`agent_instances`, delete the remaining managed-agent microVM rows and VMs manually.
-
-1. On `pika-server`, identify active legacy managed-agent rows:
-
-```bash
-ssh root@178.156.233.63 \
-  "sudo -u pika_server psql pika_server -Atc \
-  \"select owner_npub, agent_id, vm_id, phase \
-     from agent_instances \
-    where provider = 'microvm' \
-      and phase in ('creating', 'ready') \
- order by updated_at desc;\""
-```
-
-2. On `pika-build`, delete the corresponding legacy VMs through `vm-spawner`:
-
-```bash
-ssh root@65.108.234.158 \
-  'for vm in vm-00000003 vm-00000005; do
-     curl -fsS -X DELETE "http://127.0.0.1:8080/vms/$vm" || true
-   done'
-```
-
-Replace the VM IDs with whatever the SQL query returned. This is destructive; it removes the
-legacy managed-agent environment entirely instead of migrating it.
-
-If `vm-spawner` returns `404`, clean up any stale host-side leftovers directly:
-
-```bash
-ssh root@65.108.234.158 \
-  'systemctl stop "microvm@<vm_id>.service" || true
-   rm -rf "/var/lib/microvms/<vm_id>"'
-```
-
-3. Retire those DB rows on `pika-server` so the surviving Incus/OpenClaw path can reprovision
-fresh environments later:
-
-```bash
-ssh root@178.156.233.63 \
-  "sudo -u pika_server psql pika_server -c \
-  \"update agent_instances
-       set phase = 'error',
-           vm_id = null,
-           updated_at = now()
-     where provider = 'microvm'
-       and phase in ('creating', 'ready');\""
-```
-
-4. Confirm the pre-deploy cleanup is complete:
-
-```bash
-ssh root@178.156.233.63 \
-  "sudo -u pika_server psql pika_server -Atc \
-  \"select count(*) from agent_instances
-     where provider = 'microvm'
-       and phase in ('creating', 'ready');\""
-```
-
-Deploy the hard cut only once that count is `0`. After the migration lands, `agent_instances`
-will no longer retain a `provider` column for this product path.
-
-5. After deploy, verify the simplified schema shape:
-
-```bash
-ssh root@178.156.233.63 \
-  "sudo -u pika_server psql pika_server -Atc \
-  \"select column_name
-     from information_schema.columns
-    where table_name = 'agent_instances'
- order by ordinal_position;\""
-```
-
-Expected result:
-- `provider` is gone
-- `incus_config` is the surviving config column
 
 ## Incus Operational Lifecycle Model
 
@@ -346,7 +262,7 @@ The first Incus operational model is intentionally narrow and volume-centric.
 - recover: bring the current instance back around the existing state volume by starting or restarting it
 - restore: roll the state volume back to its latest snapshot, then start the appliance again
 
-This differs from the old microVM model:
+This differs from the old host-local model:
 
 - there is no host-local mutable root to preserve
 - there is no host-specific durable-home path as the primary contract
@@ -370,14 +286,14 @@ Current limitations:
 Deploy the code with the managed-agent path configured for Incus:
 
 - set `PIKA_AGENT_VM_PROVIDER=incus` or leave it unset
-- do not expect managed-agent provisioning to fall back to `microvm`
+- do not expect managed-agent provisioning to fall back to another runtime backend
 - use the hosted Incus lane for internal validation
 
 The real internal dashboard path is now Incus-only:
 
 - `/dashboard` provision, recover, and reset actions explicitly request `provider=incus`
 - built-in OpenClaw launch and proxying only unlock for Incus-backed rows
-- the managed-agent product path no longer preserves legacy microVM rows or compatibility behavior
+- the managed-agent product path no longer preserves compatibility behavior for removed backends
 
 Recommended server env for canarying:
 
@@ -441,7 +357,7 @@ These wrappers:
 - request `provider=incus` explicitly
 - default to the hosted Incus lane on `pika-build`
 - target the only supported managed-agent runtime: OpenClaw
-- use normal `pika-server` ensure or recover semantics instead of direct `vm-spawner` deletion
+- use normal `pika-server` ensure or recover semantics
 
 ## Deletion Validation
 

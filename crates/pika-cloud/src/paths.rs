@@ -71,12 +71,8 @@ impl RuntimeArtifactPaths {
 pub struct RuntimePaths {
     #[serde(default = "runtime_state_dir")]
     pub state_dir: String,
-    #[serde(default = "events_path")]
-    pub events_path: String,
-    #[serde(default = "status_path")]
-    pub status_path: String,
-    #[serde(default = "result_path")]
-    pub result_path: String,
+    #[serde(flatten)]
+    pub runtime_artifacts: RuntimeArtifactPaths,
     #[serde(default = "guest_request_path")]
     pub guest_request_path: String,
     #[serde(default = "logs_dir")]
@@ -91,9 +87,7 @@ impl Default for RuntimePaths {
     fn default() -> Self {
         Self {
             state_dir: runtime_state_dir(),
-            events_path: events_path(),
-            status_path: status_path(),
-            result_path: result_path(),
+            runtime_artifacts: RuntimeArtifactPaths::default(),
             guest_request_path: guest_request_path(),
             logs_dir: logs_dir(),
             guest_log_path: guest_log_path(),
@@ -155,7 +149,9 @@ mod tests {
 
     #[test]
     fn runtime_paths_default_to_canonical_contract() {
-        assert_eq!(RuntimePaths::default().guest_log_path, GUEST_LOG_PATH);
+        let paths = RuntimePaths::default();
+        assert_eq!(paths.guest_log_path, GUEST_LOG_PATH);
+        assert_eq!(paths.runtime_artifacts.status_path, STATUS_PATH);
     }
 
     #[test]

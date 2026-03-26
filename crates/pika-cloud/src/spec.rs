@@ -168,9 +168,18 @@ impl RuntimeSpec {
 
         validate_absolute_normalized_path("lifecycle_root", &self.lifecycle_root)?;
         validate_absolute_normalized_path("paths.state_dir", &self.paths.state_dir)?;
-        validate_absolute_normalized_path("paths.events_path", &self.paths.events_path)?;
-        validate_absolute_normalized_path("paths.status_path", &self.paths.status_path)?;
-        validate_absolute_normalized_path("paths.result_path", &self.paths.result_path)?;
+        validate_absolute_normalized_path(
+            "paths.events_path",
+            &self.paths.runtime_artifacts.events_path,
+        )?;
+        validate_absolute_normalized_path(
+            "paths.status_path",
+            &self.paths.runtime_artifacts.status_path,
+        )?;
+        validate_absolute_normalized_path(
+            "paths.result_path",
+            &self.paths.runtime_artifacts.result_path,
+        )?;
         validate_absolute_normalized_path(
             "paths.guest_request_path",
             &self.paths.guest_request_path,
@@ -187,9 +196,18 @@ impl RuntimeSpec {
         }
 
         for (field, path) in [
-            ("paths.events_path", self.paths.events_path.as_str()),
-            ("paths.status_path", self.paths.status_path.as_str()),
-            ("paths.result_path", self.paths.result_path.as_str()),
+            (
+                "paths.events_path",
+                self.paths.runtime_artifacts.events_path.as_str(),
+            ),
+            (
+                "paths.status_path",
+                self.paths.runtime_artifacts.status_path.as_str(),
+            ),
+            (
+                "paths.result_path",
+                self.paths.runtime_artifacts.result_path.as_str(),
+            ),
             (
                 "paths.guest_request_path",
                 self.paths.guest_request_path.as_str(),
@@ -465,7 +483,7 @@ mod tests {
     #[test]
     fn validate_rejects_paths_outside_lifecycle_root() {
         let mut spec = sample_runtime_spec();
-        spec.paths.status_path = "/tmp/status.json".to_string();
+        spec.paths.runtime_artifacts.status_path = "/tmp/status.json".to_string();
 
         let error = spec.validate().expect_err("path outside lifecycle root");
 

@@ -182,7 +182,7 @@ pub fn build_managed_guest_autostart(input: ManagedVmCreateInput<'_>) -> Managed
         "PIKA_BOT_PUBKEY".to_string(),
         input.bot_pubkey_hex.to_string(),
     );
-    for key in ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PI_MODEL"] {
+    for key in ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"] {
         if let Ok(value) = std::env::var(key) {
             if value.trim().is_empty() {
                 continue;

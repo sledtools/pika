@@ -10,9 +10,7 @@ mod config;
 mod forge;
 mod forge_runtime;
 mod forge_service;
-mod github;
 mod inbox_store;
-mod legacy_pr_store;
 mod live;
 mod local;
 mod mirror;
@@ -50,12 +48,6 @@ fn main() -> anyhow::Result<()> {
             let max_prs = args.max_prs;
             let bind_addr = args.bind_with_config(&config.bind_address, config.bind_port);
 
-            // Recover artifacts stuck in 'generating' from a previous unclean shutdown.
-            match store.recover_stale_generating() {
-                Ok(0) => {}
-                Ok(n) => eprintln!("recovered {} stale generating artifact(s)", n),
-                Err(err) => eprintln!("warning: failed to recover stale generating: {}", err),
-            }
             match store.recover_stale_ci_lanes() {
                 Ok(0) => {}
                 Ok(n) => eprintln!("recovered {} stale ci lane(s)", n),

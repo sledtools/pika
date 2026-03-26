@@ -1724,7 +1724,6 @@ fn staged_linux_payload_specs(
             local_mount_path: job_dir
                 .join("staged-linux-rust")
                 .join(role.mount_dir_name()),
-            device_prefix: role.device_prefix().to_string(),
             prepare_description: format!(
                 "{} for {}",
                 role.prepare_description(),

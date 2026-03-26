@@ -32,7 +32,6 @@ pub struct StagedPreparedPayload {
     pub installable: String,
     pub output_name: &'static str,
     pub local_mount_path: PathBuf,
-    pub device_prefix: String,
     pub prepare_description: String,
 }
 
@@ -3644,7 +3643,6 @@ mod tests {
                     local_mount_path: PathBuf::from(
                         "/tmp/run/jobs/job/staged-linux-rust/workspace-deps",
                     ),
-                    device_prefix: "workspace-deps".to_string(),
                     prepare_description: "Build staged Linux Rust dependencies for pika_core staged Linux Rust lane".to_string(),
                 },
                 StagedPreparedPayload {
@@ -3654,7 +3652,6 @@ mod tests {
                     local_mount_path: PathBuf::from(
                         "/tmp/run/jobs/job/staged-linux-rust/workspace-build",
                     ),
-                    device_prefix: "workspace-build".to_string(),
                     prepare_description: "Build staged Linux Rust test artifacts for pika_core staged Linux Rust lane".to_string(),
                 },
             ],

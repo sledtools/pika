@@ -763,7 +763,6 @@ fn add_remote_incus_disk_device(
 fn add_declared_payload_mounts(
     remote: &RemoteIncusContext,
     output_root: &Path,
-    device_prefix: &str,
     log_path: &Path,
 ) -> anyhow::Result<()> {
     let manifest = load_remote_payload_manifest(&remote.shared.remote_host, output_root)?
@@ -773,9 +772,10 @@ fn add_declared_payload_mounts(
                 output_root.display()
             )
         })?;
+    let device_prefix = manifest.kind.clone();
     for mount in manifest.mounts {
         validate_declared_payload_mount(output_root, &mount)?;
-        add_declared_payload_mount(remote, output_root, device_prefix, mount, log_path)?;
+        add_declared_payload_mount(remote, output_root, &device_prefix, mount, log_path)?;
     }
     Ok(())
 }
@@ -846,12 +846,7 @@ fn configure_remote_incus_devices(
                 &remote.shared.remote_job_dir,
                 &remote.shared.remote_host,
             )?;
-            add_declared_payload_mounts(
-                remote,
-                &source_root,
-                &staged_payload.device_prefix,
-                log_path,
-            )?;
+            add_declared_payload_mounts(remote, &source_root, log_path)?;
         }
     }
     Ok(())

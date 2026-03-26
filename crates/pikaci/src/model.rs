@@ -185,10 +185,6 @@ impl StagedLinuxRustPayloadRole {
         self.prepare_node_suffix()
     }
 
-    pub fn device_prefix(self) -> &'static str {
-        self.prepare_node_suffix()
-    }
-
     pub fn prepare_description(self) -> &'static str {
         match self {
             Self::WorkspaceDeps => "Build staged Linux Rust dependencies",
@@ -994,14 +990,12 @@ mod tests {
         );
         assert_eq!(roles[0].prepare_node_suffix(), "workspace-deps");
         assert_eq!(roles[0].mount_dir_name(), "workspace-deps");
-        assert_eq!(roles[0].device_prefix(), "workspace-deps");
         assert_eq!(
             lane.payload_output_name(roles[0]),
             "ci.x86_64-linux.notificationsWorkspaceDeps"
         );
         assert_eq!(roles[1].prepare_node_suffix(), "workspace-build");
         assert_eq!(roles[1].mount_dir_name(), "workspace-build");
-        assert_eq!(roles[1].device_prefix(), "workspace-build");
         assert_eq!(
             lane.payload_output_name(roles[1]),
             "ci.x86_64-linux.notificationsWorkspaceBuild"

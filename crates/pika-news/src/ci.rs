@@ -7,6 +7,7 @@ use std::time::Duration;
 use tokio::sync::Notify;
 
 use crate::ci_manifest::{self, ForgeCiManifest};
+use crate::ci_state::CiLaneStatus;
 use crate::ci_store::{PendingBranchCiLaneJob, PendingNightlyLaneJob, CI_LANE_LEASE_LOST};
 use crate::config::Config;
 use crate::forge;
@@ -426,7 +427,11 @@ fn execute_branch_job(
     let mut outcome = LaneJobOutcome::default();
     match exec {
         Ok(exec) => {
-            let status = if exec.success { "success" } else { "failed" };
+            let status = if exec.success {
+                CiLaneStatus::Success
+            } else {
+                CiLaneStatus::Failed
+            };
             match store.finish_branch_ci_lane_run(
                 job.lane_run_id,
                 job.claim_token,
@@ -452,8 +457,12 @@ fn execute_branch_job(
         Err(err) if is_lease_lost(&err) => return Ok(outcome),
         Err(err) => {
             let log = format!("ci runner error: {}", err);
-            match store.finish_branch_ci_lane_run(job.lane_run_id, job.claim_token, "failed", &log)
-            {
+            match store.finish_branch_ci_lane_run(
+                job.lane_run_id,
+                job.claim_token,
+                CiLaneStatus::Failed,
+                &log,
+            ) {
                 Ok(()) => {}
                 Err(finish_err) if is_lease_lost(&finish_err) => return Ok(outcome),
                 Err(finish_err) => {
@@ -512,7 +521,11 @@ fn execute_nightly_job(
     let mut outcome = LaneJobOutcome::default();
     match exec {
         Ok(exec) => {
-            let status = if exec.success { "success" } else { "failed" };
+            let status = if exec.success {
+                CiLaneStatus::Success
+            } else {
+                CiLaneStatus::Failed
+            };
             match store.finish_nightly_lane_run(job.lane_run_id, job.claim_token, status, &exec.log)
             {
                 Ok(()) => {}
@@ -535,7 +548,12 @@ fn execute_nightly_job(
         Err(err) if is_lease_lost(&err) => return Ok(outcome),
         Err(err) => {
             let log = format!("ci runner error: {}", err);
-            match store.finish_nightly_lane_run(job.lane_run_id, job.claim_token, "failed", &log) {
+            match store.finish_nightly_lane_run(
+                job.lane_run_id,
+                job.claim_token,
+                CiLaneStatus::Failed,
+                &log,
+            ) {
                 Ok(()) => {}
                 Err(finish_err) if is_lease_lost(&finish_err) => return Ok(outcome),
                 Err(finish_err) => {
@@ -615,6 +633,7 @@ mod tests {
         run_ci_pass_with_timing_at, schedule_due_nightlies_at,
     };
     use crate::ci_manifest::ForgeLane;
+    use crate::ci_state::CiLaneStatus;
     use crate::config::{Config, ForgeRepoConfig};
     use crate::storage::Store;
 
@@ -774,7 +793,7 @@ command = ["./nightly.sh"]
             .get_nightly_run(feed[0].nightly_run_id)
             .expect("nightly detail")
             .expect("nightly exists");
-        assert_eq!(detail.status, "queued");
+        assert_eq!(detail.status, pika_forge_model::ForgeCiStatus::Queued);
         assert_eq!(detail.lanes.len(), 1);
         assert_eq!(detail.lanes[0].lane_id, "nightly_smoke");
     }
@@ -927,9 +946,12 @@ nightly_schedule_utc = "08:00"
             .list_branch_ci_runs(branch.branch_id, 4)
             .expect("list branch suites");
         assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].status, "success");
+        assert_eq!(runs[0].status, pika_forge_model::ForgeCiStatus::Success);
         assert_eq!(runs[0].lanes.len(), 2);
-        assert!(runs[0].lanes.iter().all(|lane| lane.status == "success"));
+        assert!(runs[0]
+            .lanes
+            .iter()
+            .all(|lane| lane.status == CiLaneStatus::Success));
     }
 
     #[test]
@@ -1411,7 +1433,9 @@ nightly_schedule_utc = "08:00"
             let fast_runs = store
                 .list_branch_ci_runs(fast_branch.branch_id, 2)
                 .expect("list fast runs");
-            if slow_runs[0].status == "success" && fast_runs[0].status == "success" {
+            if slow_runs[0].status == pika_forge_model::ForgeCiStatus::Success
+                && fast_runs[0].status == pika_forge_model::ForgeCiStatus::Success
+            {
                 break;
             }
             assert!(
@@ -1591,7 +1615,7 @@ nightly_schedule_utc = "08:00"
         let runs = store
             .list_branch_ci_runs(branch.branch_id, 4)
             .expect("list branch runs");
-        assert_eq!(runs[0].status, "failed");
+        assert_eq!(runs[0].status, pika_forge_model::ForgeCiStatus::Failed);
         assert!(runs[0]
             .lanes
             .iter()
@@ -1729,7 +1753,7 @@ nightly_schedule_utc = "08:00"
         let runs = store
             .list_branch_ci_runs(branch.branch_id, 4)
             .expect("list branch runs");
-        assert_eq!(runs[0].status, "success");
+        assert_eq!(runs[0].status, pika_forge_model::ForgeCiStatus::Success);
         assert_eq!(runs[0].lanes[0].retry_count, 0);
     }
 
@@ -1879,9 +1903,9 @@ command = ["./nightly.sh"]
             .get_nightly_run(nightlies[0].nightly_run_id)
             .expect("nightly detail")
             .expect("nightly exists");
-        assert_eq!(nightly.status, "success");
+        assert_eq!(nightly.status, pika_forge_model::ForgeCiStatus::Success);
         assert_eq!(nightly.lanes.len(), 1);
-        assert_eq!(nightly.lanes[0].status, "success");
+        assert_eq!(nightly.lanes[0].status, CiLaneStatus::Success);
         assert_eq!(nightly.lanes[0].log_text.as_deref(), Some("nightly-ok\n"));
     }
 }

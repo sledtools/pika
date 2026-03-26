@@ -19,13 +19,12 @@ use hmac::{Hmac, Mac};
 use pika_forge_model::{
     BranchActionResponse, BranchDetailResponse as ForgeBranchDetailResponse,
     BranchLogsResponse as SharedForgeBranchLogsResponse,
-    BranchResolveResponse as ForgeBranchResolveResponse, BranchState,
+    BranchResolveResponse as ForgeBranchResolveResponse,
     BranchSummary as ForgeBranchSummaryResponse, CiLane,
     CiLaneExecutionReason as ForgeCiLaneExecutionReason,
     CiLaneFailureKind as ForgeCiLaneFailureKind, CiLaneStatus as ForgeCiLaneStatus, CiRun,
     CiTargetHealthState as ForgeApiTargetHealthState, ForgeCiStatus, LaneMutationResponse,
-    NightlyDetailResponse as ForgeNightlyDetailResponse, RecoverRunResponse, TutorialStatus,
-    WakeCiResponse,
+    NightlyDetailResponse as ForgeNightlyDetailResponse, RecoverRunResponse, WakeCiResponse,
 };
 use pikaci::{LogKind, PreparedOutputsRecord, RunLogsMetadata, RunRecord};
 use pulldown_cmark::{html, Options, Parser};
@@ -36,7 +35,8 @@ use crate::auth::{normalize_npub, AuthState};
 use crate::branch_store::{BranchDetailRecord, BranchFeedItem};
 use crate::ci;
 use crate::ci_state::{
-    CiLaneExecutionReason, CiLaneFailureKind, CiTargetHealthSnapshot, CiTargetHealthState,
+    CiLaneExecutionReason, CiLaneFailureKind, CiLaneStatus, CiTargetHealthSnapshot,
+    CiTargetHealthState,
 };
 use crate::ci_store::{
     BranchCiLaneRecord, BranchCiRunRecord, NightlyFeedItem, NightlyLaneRecord, NightlyRunRecord,
@@ -465,7 +465,7 @@ fn ci_lane_counts(run: &BranchCiRunRecord) -> (usize, usize, usize) {
     let mut active_count = 0;
     let mut failed_count = 0;
     for lane in &run.lanes {
-        match ci_status_tone(&lane.status) {
+        match ci_status_tone(lane.status.as_str()) {
             "success" => success_count += 1,
             "warning" => active_count += 1,
             "danger" => failed_count += 1,
@@ -1435,10 +1435,10 @@ fn map_feed_item(item: BranchFeedItem) -> FeedItemView {
         repo: item.repo,
         branch_name: item.branch_name,
         title: item.title,
-        state: item.state,
+        state: item.state.as_str().to_string(),
         updated_at: item.updated_at,
-        tutorial_status: item.tutorial_status,
-        ci_status: item.ci_status,
+        tutorial_status: item.tutorial_status.as_str().to_string(),
+        ci_status: item.ci_status.as_str().to_string(),
     }
 }
 
@@ -1447,7 +1447,7 @@ fn map_nightly_feed_item(item: NightlyFeedItem) -> NightlyFeedItemView {
         nightly_run_id: item.nightly_run_id,
         repo: item.repo,
         source_head_sha: item.source_head_sha,
-        status: item.status,
+        status: item.status.as_str().to_string(),
         summary: item.summary,
         scheduled_for: item.scheduled_for,
         created_at: item.created_at,
@@ -1515,10 +1515,10 @@ fn render_detail_template_with_notices(
         branch_name: record.branch_name,
         title: record.title,
         target_branch: record.target_branch,
-        branch_state: record.branch_state.clone(),
+        branch_state: record.branch_state.as_str().to_string(),
         merge_commit_sha: record.merge_commit_sha,
-        tutorial_status: record.tutorial_status,
-        ci_status: record.ci_status,
+        tutorial_status: record.tutorial_status.as_str().to_string(),
+        ci_status: record.ci_status.as_str().to_string(),
         executive_html,
         media_links,
         error_message: record.error_message,
@@ -1555,7 +1555,7 @@ fn render_branch_ci_template_with_notices(
         title: record.title,
         target_branch: record.target_branch,
         updated_at: record.updated_at,
-        branch_state: record.branch_state,
+        branch_state: record.branch_state.as_str().to_string(),
         head_sha: record.head_sha,
         merge_base_sha: record.merge_base_sha,
         review_mode,
@@ -1591,20 +1591,20 @@ fn render_nightly_template_with_notices(
 
 fn branch_ci_runs_are_active(ci_runs: &[BranchCiRunRecord]) -> bool {
     ci_runs.iter().any(|run| {
-        matches!(run.status.as_str(), "queued" | "running")
+        matches!(run.status, ForgeCiStatus::Queued | ForgeCiStatus::Running)
             || run
                 .lanes
                 .iter()
-                .any(|lane| matches!(lane.status.as_str(), "queued" | "running"))
+                .any(|lane| matches!(lane.status, CiLaneStatus::Queued | CiLaneStatus::Running))
     })
 }
 
 fn nightly_run_is_active(run: &NightlyRunRecord) -> bool {
-    matches!(run.status.as_str(), "queued" | "running")
+    matches!(run.status, ForgeCiStatus::Queued | ForgeCiStatus::Running)
         || run
             .lanes
             .iter()
-            .any(|lane| matches!(lane.status.as_str(), "queued" | "running"))
+            .any(|lane| matches!(lane.status, CiLaneStatus::Queued | CiLaneStatus::Running))
 }
 
 fn render_branch_ci_live_html(
@@ -1626,16 +1626,16 @@ fn render_branch_ci_live_html_at(
         .map(|run| {
             run.lanes
                 .iter()
-                .filter(|lane| lane.status == "failed")
+                .filter(|lane| lane.status == CiLaneStatus::Failed)
                 .count()
         })
         .unwrap_or(0);
     BranchCiLiveTemplate {
         branch_id: record.branch_id,
-        branch_state: record.branch_state.clone(),
-        tutorial_status: record.tutorial_status.clone(),
-        ci_status: record.ci_status.clone(),
-        ci_status_tone: ci_status_tone(&record.ci_status).to_string(),
+        branch_state: record.branch_state.as_str().to_string(),
+        tutorial_status: record.tutorial_status.as_str().to_string(),
+        ci_status: record.ci_status.as_str().to_string(),
+        ci_status_tone: ci_status_tone(record.ci_status.as_str()).to_string(),
         live_active: branch_ci_runs_are_active(ci_runs),
         ci_runs: ci_runs
             .iter()
@@ -1667,8 +1667,8 @@ fn render_branch_ci_summary_html_at(
 ) -> anyhow::Result<String> {
     let latest_run = ci_runs.first().map(|run| map_ci_summary_run(run, now));
     BranchCiSummaryTemplate {
-        ci_status: record.ci_status.clone(),
-        ci_status_tone: ci_status_tone(&record.ci_status).to_string(),
+        ci_status: record.ci_status.as_str().to_string(),
+        ci_status_tone: ci_status_tone(record.ci_status.as_str()).to_string(),
         live_active: branch_ci_runs_are_active(ci_runs),
         ci_details_path: branch_ci_page_path(record.branch_id, review_mode),
         latest_run,
@@ -1685,11 +1685,11 @@ fn render_nightly_live_html(
     let failed_lane_count = run
         .lanes
         .iter()
-        .filter(|lane| lane.status == "failed")
+        .filter(|lane| lane.status == CiLaneStatus::Failed)
         .count();
     NightlyLiveTemplate {
         nightly_run_id: run.nightly_run_id,
-        status: run.status.clone(),
+        status: run.status.as_str().to_string(),
         live_active: nightly_run_is_active(run),
         source_ref: run.source_ref.clone(),
         source_head_sha: run.source_head_sha.clone(),
@@ -1710,7 +1710,7 @@ fn render_nightly_live_html(
 }
 
 fn map_ci_run_view(run: BranchCiRunRecord, now: DateTime<Utc>) -> CiRunView {
-    let status_tone = ci_status_tone(&run.status).to_string();
+    let status_tone = ci_status_tone(run.status.as_str()).to_string();
     let timing_summary = ci_timing_summary(
         &run.created_at,
         run.started_at.as_deref(),
@@ -1720,7 +1720,7 @@ fn map_ci_run_view(run: BranchCiRunRecord, now: DateTime<Utc>) -> CiRunView {
     CiRunView {
         id: run.id,
         source_head_sha: run.source_head_sha,
-        status: run.status,
+        status: run.status.as_str().to_string(),
         status_tone,
         lane_count: run.lane_count,
         rerun_of_run_id: run.rerun_of_run_id,
@@ -1744,7 +1744,7 @@ fn map_ci_lane_view(lane: BranchCiLaneRecord, now: DateTime<Utc>) -> CiLaneView 
     );
     let operator_hint = lane_operator_hint(&LaneHintContext {
         now,
-        status: &lane.status,
+        status: lane.status.as_str(),
         execution_reason: lane.execution_reason,
         failure_kind: lane.failure_kind,
         ci_target_key: lane.ci_target_key.as_deref(),
@@ -1755,7 +1755,7 @@ fn map_ci_lane_view(lane: BranchCiLaneRecord, now: DateTime<Utc>) -> CiLaneView 
         last_heartbeat_at: lane.last_heartbeat_at.as_deref(),
         lease_expires_at: lane.lease_expires_at.as_deref(),
     });
-    let status_tone = ci_status_tone(&lane.status).to_string();
+    let status_tone = ci_status_tone(lane.status.as_str()).to_string();
     let failure_kind = lane.failure_kind.map(|kind| kind.as_str().to_string());
     let failure_kind_label = lane.failure_kind.map(|kind| kind.label().to_string());
     let timing_summary = ci_timing_summary(
@@ -1773,7 +1773,7 @@ fn map_ci_lane_view(lane: BranchCiLaneRecord, now: DateTime<Utc>) -> CiLaneView 
         lane_id: lane.lane_id,
         title: lane.title,
         entrypoint: lane.entrypoint,
-        status: lane.status,
+        status: lane.status.as_str().to_string(),
         status_tone,
         execution_reason: lane.execution_reason.as_str().to_string(),
         execution_reason_label: lane.execution_reason.label().to_string(),
@@ -1801,8 +1801,8 @@ fn map_ci_summary_run(run: &BranchCiRunRecord, now: DateTime<Utc>) -> CiSummaryR
     let (success_count, active_count, failed_count) = ci_lane_counts(run);
     CiSummaryRunView {
         id: run.id,
-        status: run.status.clone(),
-        status_tone: ci_status_tone(&run.status).to_string(),
+        status: run.status.as_str().to_string(),
+        status_tone: ci_status_tone(run.status.as_str()).to_string(),
         lane_count: run.lane_count,
         created_at: run.created_at.clone(),
         source_head_sha: run.source_head_sha.clone(),
@@ -1821,8 +1821,8 @@ fn map_ci_summary_run(run: &BranchCiRunRecord, now: DateTime<Utc>) -> CiSummaryR
             .iter()
             .map(|lane| CiSummaryLaneView {
                 title: lane.title.clone(),
-                status: lane.status.clone(),
-                status_tone: ci_status_tone(&lane.status).to_string(),
+                status: lane.status.as_str().to_string(),
+                status_tone: ci_status_tone(lane.status.as_str()).to_string(),
             })
             .collect(),
     }
@@ -1830,8 +1830,8 @@ fn map_ci_summary_run(run: &BranchCiRunRecord, now: DateTime<Utc>) -> CiSummaryR
 
 fn map_nightly_lane_view(lane: NightlyLaneRecord) -> NightlyLaneView {
     let now = Utc::now();
-    let status_badge_class = lane_status_badge_class(&lane.status).to_string();
-    let is_failed = lane.status == "failed";
+    let status_badge_class = lane_status_badge_class(lane.status.as_str()).to_string();
+    let is_failed = lane.status == CiLaneStatus::Failed;
     let target_health_summary = lane_target_health_summary(
         lane.ci_target_key.as_deref(),
         lane.target_health.as_ref(),
@@ -1839,7 +1839,7 @@ fn map_nightly_lane_view(lane: NightlyLaneRecord) -> NightlyLaneView {
     );
     let operator_hint = lane_operator_hint(&LaneHintContext {
         now,
-        status: &lane.status,
+        status: lane.status.as_str(),
         execution_reason: lane.execution_reason,
         failure_kind: lane.failure_kind,
         ci_target_key: lane.ci_target_key.as_deref(),
@@ -1861,7 +1861,7 @@ fn map_nightly_lane_view(lane: NightlyLaneRecord) -> NightlyLaneView {
         lane_id: lane.lane_id,
         title: lane.title,
         entrypoint: lane.entrypoint,
-        status: lane.status,
+        status: lane.status.as_str().to_string(),
         status_badge_class,
         is_failed,
         execution_reason: lane.execution_reason.as_str().to_string(),
@@ -2089,14 +2089,14 @@ fn map_forge_branch_summary(detail: BranchDetailRecord) -> ForgeBranchSummaryRes
         repo: detail.repo,
         branch_name: detail.branch_name,
         title: detail.title,
-        branch_state: BranchState::from(detail.branch_state),
+        branch_state: detail.branch_state,
         updated_at: detail.updated_at,
         target_branch: detail.target_branch,
         head_sha: detail.head_sha,
         merge_base_sha: detail.merge_base_sha,
         merge_commit_sha: detail.merge_commit_sha,
-        tutorial_status: TutorialStatus::from(detail.tutorial_status),
-        ci_status: ForgeCiStatus::from(detail.ci_status),
+        tutorial_status: detail.tutorial_status,
+        ci_status: detail.ci_status,
         error_message: detail.error_message,
     }
 }
@@ -2223,7 +2223,7 @@ fn select_branch_log_lane(
         .find_map(|run| {
             run.lanes
                 .iter()
-                .find(|lane| lane.status == "failed")
+                .find(|lane| lane.status == CiLaneStatus::Failed)
                 .cloned()
                 .map(|lane| (run.id, lane))
         })
@@ -2377,7 +2377,7 @@ async fn fail_branch_ci_lane_handler(
             branch_id: Some(branch_id),
             nightly_run_id: None,
             lane_run_id,
-            lane_status: ForgeCiLaneStatus::from(lane_status),
+            lane_status: ForgeCiLaneStatus::from(lane_status.as_str()),
         })
         .into_response(),
         Ok(None) => (
@@ -2411,7 +2411,7 @@ async fn requeue_branch_ci_lane_handler(
             branch_id: Some(branch_id),
             nightly_run_id: None,
             lane_run_id,
-            lane_status: ForgeCiLaneStatus::from(lane_status),
+            lane_status: ForgeCiLaneStatus::from(lane_status.as_str()),
         })
         .into_response(),
         Ok(None) => (
@@ -2480,7 +2480,7 @@ async fn fail_nightly_lane_handler(
             branch_id: None,
             nightly_run_id: Some(nightly_run_id),
             lane_run_id,
-            lane_status: ForgeCiLaneStatus::from(lane_status),
+            lane_status: ForgeCiLaneStatus::from(lane_status.as_str()),
         })
         .into_response(),
         Ok(None) => (
@@ -2514,7 +2514,7 @@ async fn requeue_nightly_lane_handler(
             branch_id: None,
             nightly_run_id: Some(nightly_run_id),
             lane_run_id,
-            lane_status: ForgeCiLaneStatus::from(lane_status),
+            lane_status: ForgeCiLaneStatus::from(lane_status.as_str()),
         })
         .into_response(),
         Ok(None) => (
@@ -2599,7 +2599,7 @@ async fn api_forge_branch_resolve_handler(
             branch_id: branch.branch_id,
             repo: branch.repo,
             branch_name: branch.branch_name,
-            branch_state: BranchState::from(branch.branch_state),
+            branch_state: branch.branch_state,
         })
         .into_response(),
         Ok(None) => (
@@ -2808,7 +2808,7 @@ async fn api_forge_nightly_detail_handler(
                 created_at: run.created_at,
                 source_ref: run.source_ref,
                 source_head_sha: run.source_head_sha,
-                status: ForgeCiStatus::from(run.status),
+                status: run.status,
                 summary: run.summary,
                 rerun_of_run_id: run.rerun_of_run_id,
                 started_at: run.started_at,
@@ -5729,7 +5729,7 @@ oldsha newsha refs/tags/v1
             .finish_branch_ci_lane_run(
                 success_lane.lane_run_id,
                 success_lane.claim_token,
-                "success",
+                crate::ci_state::CiLaneStatus::Success,
                 "ok",
             )
             .expect("finish success lane");
@@ -5741,7 +5741,7 @@ oldsha newsha refs/tags/v1
             .finish_branch_ci_lane_run(
                 failed_lane.lane_run_id,
                 failed_lane.claim_token,
-                "failed",
+                crate::ci_state::CiLaneStatus::Failed,
                 "fixture boom",
             )
             .expect("finish failed lane");
@@ -5838,7 +5838,12 @@ oldsha newsha refs/tags/v1
             )
             .expect("record pikaci run");
         store
-            .finish_branch_ci_lane_run(job.lane_run_id, job.claim_token, "success", "ok")
+            .finish_branch_ci_lane_run(
+                job.lane_run_id,
+                job.claim_token,
+                crate::ci_state::CiLaneStatus::Success,
+                "ok",
+            )
             .expect("finish lane");
 
         let config = forge_test_config_with_git_dir(&dir.path().join("pika.git"));
@@ -5920,7 +5925,12 @@ oldsha newsha refs/tags/v1
             )
             .expect("record pikaci run");
         store
-            .finish_branch_ci_lane_run(job.lane_run_id, job.claim_token, "success", "ok")
+            .finish_branch_ci_lane_run(
+                job.lane_run_id,
+                job.claim_token,
+                crate::ci_state::CiLaneStatus::Success,
+                "ok",
+            )
             .expect("finish lane");
 
         let config = forge_test_config_with_git_dir(&dir.path().join("pika.git"));
@@ -6066,7 +6076,12 @@ oldsha newsha refs/tags/v1
             .next()
             .expect("job");
         store
-            .finish_branch_ci_lane_run(job.lane_run_id, job.claim_token, "failed", "boom")
+            .finish_branch_ci_lane_run(
+                job.lane_run_id,
+                job.claim_token,
+                crate::ci_state::CiLaneStatus::Failed,
+                "boom",
+            )
             .expect("finish lane");
 
         let config = Config {
@@ -6154,7 +6169,12 @@ oldsha newsha refs/tags/v1
             .next()
             .expect("job");
         store
-            .finish_nightly_lane_run(job.lane_run_id, job.claim_token, "failed", "boom")
+            .finish_nightly_lane_run(
+                job.lane_run_id,
+                job.claim_token,
+                crate::ci_state::CiLaneStatus::Failed,
+                "boom",
+            )
             .expect("finish lane");
         let wrong_nightly = store
             .list_recent_nightly_runs(8)
@@ -6411,7 +6431,12 @@ oldsha newsha refs/tags/v1
             .next()
             .expect("branch lane");
         store
-            .finish_branch_ci_lane_run(lane.lane_run_id, lane.claim_token, "success", "ok")
+            .finish_branch_ci_lane_run(
+                lane.lane_run_id,
+                lane.claim_token,
+                crate::ci_state::CiLaneStatus::Success,
+                "ok",
+            )
             .expect("finish branch lane");
 
         let config = Config {
@@ -6504,7 +6529,12 @@ oldsha newsha refs/tags/v1
             .next()
             .expect("nightly lane");
         store
-            .finish_nightly_lane_run(claimed.lane_run_id, claimed.claim_token, "failed", "boom")
+            .finish_nightly_lane_run(
+                claimed.lane_run_id,
+                claimed.claim_token,
+                crate::ci_state::CiLaneStatus::Failed,
+                "boom",
+            )
             .expect("finish nightly lane");
 
         let config = Config {
@@ -6623,7 +6653,12 @@ oldsha newsha refs/tags/v1
         assert!(running.html.contains("data-branch-ci-active=\"true\""));
 
         store
-            .finish_branch_ci_lane_run(claimed.lane_run_id, claimed.claim_token, "success", "ok")
+            .finish_branch_ci_lane_run(
+                claimed.lane_run_id,
+                claimed.claim_token,
+                crate::ci_state::CiLaneStatus::Success,
+                "ok",
+            )
             .expect("finish lane");
         let finished = load_branch_ci_live_snapshot(state, branch.branch_id)
             .await
@@ -6720,7 +6755,12 @@ oldsha newsha refs/tags/v1
         assert!(running.html.contains("data-nightly-active=\"true\""));
 
         store
-            .finish_nightly_lane_run(claimed.lane_run_id, claimed.claim_token, "failed", "boom")
+            .finish_nightly_lane_run(
+                claimed.lane_run_id,
+                claimed.claim_token,
+                crate::ci_state::CiLaneStatus::Failed,
+                "boom",
+            )
             .expect("finish nightly");
         let finished = load_nightly_live_snapshot(state, nightly_run_id)
             .await
@@ -6788,7 +6828,12 @@ oldsha newsha refs/tags/v1
             .next()
             .expect("claimed lane");
         store
-            .finish_branch_ci_lane_run(claimed.lane_run_id, claimed.claim_token, "success", "ok")
+            .finish_branch_ci_lane_run(
+                claimed.lane_run_id,
+                claimed.claim_token,
+                crate::ci_state::CiLaneStatus::Success,
+                "ok",
+            )
             .expect("finish branch lane");
 
         state
@@ -6878,7 +6923,12 @@ oldsha newsha refs/tags/v1
             .next()
             .expect("claimed nightly lane");
         store
-            .finish_nightly_lane_run(claimed.lane_run_id, claimed.claim_token, "failed", "boom")
+            .finish_nightly_lane_run(
+                claimed.lane_run_id,
+                claimed.claim_token,
+                crate::ci_state::CiLaneStatus::Failed,
+                "boom",
+            )
             .expect("finish nightly lane");
 
         state
@@ -7089,7 +7139,12 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
             .next()
             .expect("ci lane");
         store
-            .finish_branch_ci_lane_run(failed.lane_run_id, failed.claim_token, "failed", "boom")
+            .finish_branch_ci_lane_run(
+                failed.lane_run_id,
+                failed.claim_token,
+                crate::ci_state::CiLaneStatus::Failed,
+                "boom",
+            )
             .expect("finish ci");
         store
             .rerun_branch_ci_lane(branch.branch_id, failed.lane_run_id)
@@ -7697,7 +7752,7 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
             .finish_branch_ci_lane_run(
                 skipped.lane_run_id,
                 skipped.claim_token,
-                "skipped",
+                crate::ci_state::CiLaneStatus::Skipped,
                 "skipped; no changed files matched target filters",
             )
             .expect("finish skipped lane");
@@ -7763,7 +7818,12 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
             .next()
             .expect("nightly lane");
         store
-            .finish_nightly_lane_run(failed.lane_run_id, failed.claim_token, "failed", "boom")
+            .finish_nightly_lane_run(
+                failed.lane_run_id,
+                failed.claim_token,
+                crate::ci_state::CiLaneStatus::Failed,
+                "boom",
+            )
             .expect("finish nightly");
         let rerun_run_id = store
             .rerun_nightly_lane(failed.nightly_run_id, failed.lane_run_id)

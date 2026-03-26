@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use anyhow::{bail, Context};
 use chrono::{DateTime, SecondsFormat, Utc};
+use pika_forge_model::ForgeCiStatus;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use crate::ci_manifest::ForgeLane;
@@ -19,7 +20,7 @@ pub const CI_LANE_LEASE_LOST: &str = "ci lane lease lost";
 pub struct BranchCiRunRecord {
     pub id: i64,
     pub source_head_sha: String,
-    pub status: String,
+    pub status: ForgeCiStatus,
     pub lane_count: usize,
     pub rerun_of_run_id: Option<i64>,
     pub created_at: String,
@@ -34,7 +35,7 @@ pub struct BranchCiLaneRecord {
     pub lane_id: String,
     pub title: String,
     pub entrypoint: String,
-    pub status: String,
+    pub status: CiLaneStatus,
     pub execution_reason: CiLaneExecutionReason,
     pub failure_kind: Option<CiLaneFailureKind>,
     pub pikaci_run_id: Option<String>,
@@ -72,7 +73,7 @@ pub struct NightlyFeedItem {
     pub nightly_run_id: i64,
     pub repo: String,
     pub source_head_sha: String,
-    pub status: String,
+    pub status: ForgeCiStatus,
     pub summary: Option<String>,
     pub scheduled_for: String,
     pub created_at: String,
@@ -84,7 +85,7 @@ pub struct NightlyRunRecord {
     pub repo: String,
     pub source_ref: String,
     pub source_head_sha: String,
-    pub status: String,
+    pub status: ForgeCiStatus,
     pub summary: Option<String>,
     pub scheduled_for: String,
     pub rerun_of_run_id: Option<i64>,
@@ -100,7 +101,7 @@ pub struct NightlyLaneRecord {
     pub lane_id: String,
     pub title: String,
     pub entrypoint: String,
-    pub status: String,
+    pub status: CiLaneStatus,
     pub execution_reason: CiLaneExecutionReason,
     pub failure_kind: Option<CiLaneFailureKind>,
     pub pikaci_run_id: Option<String>,
@@ -141,14 +142,14 @@ struct BranchLaneRerunSource {
     structured_pikaci_target_id: Option<String>,
     concurrency_group: Option<String>,
     ci_target_key: Option<String>,
-    status: String,
+    status: CiLaneStatus,
 }
 
 #[derive(Debug, Clone)]
 struct BranchLaneRecoverySource {
     run_id: i64,
     lane_id: String,
-    status: String,
+    status: CiLaneStatus,
     claim_token: i64,
     log_text: Option<String>,
 }
@@ -166,14 +167,14 @@ struct NightlyLaneRerunSource {
     structured_pikaci_target_id: Option<String>,
     concurrency_group: Option<String>,
     ci_target_key: Option<String>,
-    status: String,
+    status: CiLaneStatus,
 }
 
 #[derive(Debug, Clone)]
 struct NightlyLaneRecoverySource {
     nightly_run_id: i64,
     lane_id: String,
-    status: String,
+    status: CiLaneStatus,
     claim_token: i64,
     log_text: Option<String>,
 }
@@ -224,7 +225,7 @@ impl Store {
                 runs.push(BranchCiRunRecord {
                     id: run_id,
                     source_head_sha,
-                    status,
+                    status: ForgeCiStatus::from(status),
                     lane_count,
                     rerun_of_run_id,
                     created_at,
@@ -264,7 +265,11 @@ impl Store {
                 return Ok(false);
             }
 
-            let suite_status = if lanes.is_empty() { "success" } else { "queued" };
+            let suite_status = if lanes.is_empty() {
+                ForgeCiStatus::Success
+            } else {
+                ForgeCiStatus::Queued
+            };
             let suite_log = if lanes.is_empty() {
                 Some("No lanes selected for this branch head.".to_string())
             } else {
@@ -289,7 +294,7 @@ impl Store {
                     head_sha,
                     "ci/forge-lanes.toml",
                     selected_lane_ids,
-                    suite_status,
+                    suite_status.as_str(),
                     suite_log,
                 ],
             )
@@ -397,7 +402,7 @@ impl Store {
                         nightly_run_id: row.get(0)?,
                         repo: row.get(1)?,
                         source_head_sha: row.get(2)?,
-                        status: row.get(3)?,
+                        status: ForgeCiStatus::from(row.get::<_, String>(3)?),
                         summary: row.get(4)?,
                         scheduled_for: row.get(5)?,
                         created_at: row.get(6)?,
@@ -448,7 +453,7 @@ impl Store {
                 repo,
                 source_ref,
                 source_head_sha,
-                status,
+                    status: ForgeCiStatus::from(status),
                 summary,
                 scheduled_for,
                 rerun_of_run_id,
@@ -484,7 +489,11 @@ impl Store {
                 tx.commit().context("commit existing nightly lookup")?;
                 return Ok(false);
             }
-            let status = if lanes.is_empty() { "success" } else { "queued" };
+            let status = if lanes.is_empty() {
+                ForgeCiStatus::Success
+            } else {
+                ForgeCiStatus::Queued
+            };
             let summary = if lanes.is_empty() {
                 Some("No nightly lanes configured.".to_string())
             } else {
@@ -493,7 +502,14 @@ impl Store {
             tx.execute(
                 "INSERT INTO nightly_runs(repo_id, source_ref, source_head_sha, status, summary, scheduled_for, finished_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, CASE WHEN ?4 = 'success' THEN CURRENT_TIMESTAMP ELSE NULL END)",
-                params![repo_id, source_ref, source_head_sha, status, summary, scheduled_for],
+                params![
+                    repo_id,
+                    source_ref,
+                    source_head_sha,
+                    status.as_str(),
+                    summary,
+                    scheduled_for
+                ],
             )
             .context("insert nightly run")?;
             let nightly_run_id = tx.last_insert_rowid();
@@ -570,7 +586,7 @@ impl Store {
                             structured_pikaci_target_id: row.get(7)?,
                             concurrency_group: row.get(8)?,
                             ci_target_key: row.get(9)?,
-                            status: row.get(10)?,
+                            status: parse_lane_status(&row.get::<_, String>(10)?)?,
                         })
                     },
                 )
@@ -579,7 +595,7 @@ impl Store {
             let Some(row) = row else {
                 return Ok(None);
             };
-            if matches!(row.status.as_str(), "queued" | "running") {
+            if matches!(row.status, CiLaneStatus::Queued | CiLaneStatus::Running) {
                 bail!("lane {} is still {}", row.lane_id, row.status);
             }
 
@@ -681,7 +697,7 @@ impl Store {
                             structured_pikaci_target_id: row.get(8)?,
                             concurrency_group: row.get(9)?,
                             ci_target_key: row.get(10)?,
-                            status: row.get(11)?,
+                            status: parse_lane_status(&row.get::<_, String>(11)?)?,
                         })
                     },
                 )
@@ -690,7 +706,7 @@ impl Store {
             let Some(row) = row else {
                 return Ok(None);
             };
-            if matches!(row.status.as_str(), "queued" | "running") {
+            if matches!(row.status, CiLaneStatus::Queued | CiLaneStatus::Running) {
                 bail!("lane {} is still {}", row.lane_id, row.status);
             }
             let scheduled_for = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
@@ -777,7 +793,7 @@ impl Store {
                         Ok(BranchLaneRecoverySource {
                             run_id: row.get(0)?,
                             lane_id: row.get(1)?,
-                            status: row.get(2)?,
+                            status: parse_lane_status(&row.get::<_, String>(2)?)?,
                             claim_token: row.get(3)?,
                             log_text: row.get(4)?,
                         })
@@ -788,7 +804,7 @@ impl Store {
             let Some(row) = row else {
                 return Ok(None);
             };
-            if !matches!(row.status.as_str(), "queued" | "running") {
+            if !matches!(row.status, CiLaneStatus::Queued | CiLaneStatus::Running) {
                 bail!("lane {} is already {}", row.lane_id, row.status);
             }
             let manual_note = manual_lane_failure_note(actor_npub, &row.lane_id);
@@ -837,7 +853,7 @@ impl Store {
                         Ok(BranchLaneRecoverySource {
                             run_id: row.get(0)?,
                             lane_id: row.get(1)?,
-                            status: row.get(2)?,
+                            status: parse_lane_status(&row.get::<_, String>(2)?)?,
                             claim_token: row.get(3)?,
                             log_text: row.get(4)?,
                         })
@@ -848,7 +864,10 @@ impl Store {
             let Some(row) = row else {
                 return Ok(None);
             };
-            if !matches!(row.status.as_str(), "queued" | "running" | "failed") {
+            if !matches!(
+                row.status,
+                CiLaneStatus::Queued | CiLaneStatus::Running | CiLaneStatus::Failed
+            ) {
                 bail!(
                     "lane {} cannot be requeued from {}",
                     row.lane_id,
@@ -955,7 +974,7 @@ impl Store {
                         Ok(NightlyLaneRecoverySource {
                             nightly_run_id: row.get(0)?,
                             lane_id: row.get(1)?,
-                            status: row.get(2)?,
+                            status: parse_lane_status(&row.get::<_, String>(2)?)?,
                             claim_token: row.get(3)?,
                             log_text: row.get(4)?,
                         })
@@ -966,7 +985,7 @@ impl Store {
             let Some(row) = row else {
                 return Ok(None);
             };
-            if !matches!(row.status.as_str(), "queued" | "running") {
+            if !matches!(row.status, CiLaneStatus::Queued | CiLaneStatus::Running) {
                 bail!("lane {} is already {}", row.lane_id, row.status);
             }
             let manual_note = manual_lane_failure_note(actor_npub, &row.lane_id);
@@ -1015,7 +1034,7 @@ impl Store {
                         Ok(NightlyLaneRecoverySource {
                             nightly_run_id: row.get(0)?,
                             lane_id: row.get(1)?,
-                            status: row.get(2)?,
+                            status: parse_lane_status(&row.get::<_, String>(2)?)?,
                             claim_token: row.get(3)?,
                             log_text: row.get(4)?,
                         })
@@ -1026,7 +1045,10 @@ impl Store {
             let Some(row) = row else {
                 return Ok(None);
             };
-            if !matches!(row.status.as_str(), "queued" | "running" | "failed") {
+            if !matches!(
+                row.status,
+                CiLaneStatus::Queued | CiLaneStatus::Running | CiLaneStatus::Failed
+            ) {
                 bail!(
                     "lane {} cannot be requeued from {}",
                     row.lane_id,
@@ -1368,10 +1390,10 @@ impl Store {
         &self,
         lane_run_id: i64,
         claim_token: i64,
-        status: &str,
+        status: CiLaneStatus,
         log_text: &str,
     ) -> anyhow::Result<()> {
-        let failure_kind = if status == CiLaneStatus::Failed.as_str() {
+        let failure_kind = if status == CiLaneStatus::Failed {
             Some(classify_ci_failure(log_text))
         } else {
             None
@@ -1389,7 +1411,7 @@ impl Store {
         &self,
         lane_run_id: i64,
         claim_token: i64,
-        status: &str,
+        status: CiLaneStatus,
         log_text: &str,
         failure_kind: Option<CiLaneFailureKind>,
     ) -> anyhow::Result<()> {
@@ -1416,7 +1438,7 @@ impl Store {
                      lease_expires_at = NULL
                  WHERE id = ?4 AND status = 'running' AND claim_token = ?5",
                     params![
-                        status,
+                        status.as_str(),
                         failure_kind.map(|kind| kind.as_str()),
                         log_text,
                         lane_run_id,
@@ -1612,10 +1634,10 @@ impl Store {
         &self,
         lane_run_id: i64,
         claim_token: i64,
-        status: &str,
+        status: CiLaneStatus,
         log_text: &str,
     ) -> anyhow::Result<()> {
-        let failure_kind = if status == CiLaneStatus::Failed.as_str() {
+        let failure_kind = if status == CiLaneStatus::Failed {
             Some(classify_ci_failure(log_text))
         } else {
             None
@@ -1633,7 +1655,7 @@ impl Store {
         &self,
         lane_run_id: i64,
         claim_token: i64,
-        status: &str,
+        status: CiLaneStatus,
         log_text: &str,
         failure_kind: Option<CiLaneFailureKind>,
     ) -> anyhow::Result<()> {
@@ -1660,7 +1682,7 @@ impl Store {
                      lease_expires_at = NULL
                  WHERE id = ?4 AND status = 'running' AND claim_token = ?5",
                     params![
-                        status,
+                        status.as_str(),
                         failure_kind.map(|kind| kind.as_str()),
                         log_text,
                         lane_run_id,
@@ -1731,7 +1753,7 @@ fn list_branch_ci_run_lanes(
                 lane_id: row.get(1)?,
                 title: row.get(2)?,
                 entrypoint: row.get(3)?,
-                status: row.get(4)?,
+                status: parse_lane_status(&row.get::<_, String>(4)?)?,
                 execution_reason: parse_execution_reason(&row.get::<_, String>(5)?)?,
                 failure_kind: parse_optional_failure_kind(row.get::<_, Option<String>>(6)?)?,
                 pikaci_run_id: row.get(7)?,
@@ -1777,7 +1799,7 @@ fn list_nightly_run_lanes(
                 lane_id: row.get(1)?,
                 title: row.get(2)?,
                 entrypoint: row.get(3)?,
-                status: row.get(4)?,
+                status: parse_lane_status(&row.get::<_, String>(4)?)?,
                 execution_reason: parse_execution_reason(&row.get::<_, String>(5)?)?,
                 failure_kind: parse_optional_failure_kind(row.get::<_, Option<String>>(6)?)?,
                 pikaci_run_id: row.get(7)?,
@@ -1811,6 +1833,19 @@ fn parse_execution_reason(raw: &str) -> rusqlite::Result<CiLaneExecutionReason> 
             Box::new(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("invalid ci execution reason `{raw}`"),
+            )),
+        )
+    })
+}
+
+fn parse_lane_status(raw: &str) -> rusqlite::Result<CiLaneStatus> {
+    CiLaneStatus::from_str(raw).map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            raw.len(),
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid ci lane status `{raw}`"),
             )),
         )
     })
@@ -2100,7 +2135,7 @@ fn running_lane_count(conn: &Connection) -> anyhow::Result<usize> {
 fn update_target_health_after_lane_finish(
     conn: &Connection,
     ci_target_key: Option<&str>,
-    status: &str,
+    status: CiLaneStatus,
     failure_kind: Option<CiLaneFailureKind>,
     now: DateTime<Utc>,
 ) -> anyhow::Result<()> {
@@ -2122,7 +2157,7 @@ fn update_target_health_after_lane_finish(
     let now_string = now.to_rfc3339_opts(SecondsFormat::Millis, true);
 
     match (status, failure_kind) {
-        (value, Some(kind)) if value == CiLaneStatus::Failed.as_str() => {
+        (CiLaneStatus::Failed, Some(kind)) => {
             if kind.counts_toward_target_health() {
                 let consecutive_failures = existing_failures + 1;
                 let state = if consecutive_failures >= CI_TARGET_HEALTH_INFRA_FAILURE_THRESHOLD {
@@ -2191,7 +2226,7 @@ fn update_target_health_after_lane_finish(
                 .with_context(|| format!("record healthy target test failure for {target_id}"))?;
             }
         }
-        (value, _) if value == CiLaneStatus::Success.as_str() => {
+        (CiLaneStatus::Success, _) => {
             conn.execute(
                 "INSERT INTO ci_target_health(
                     target_id,
@@ -2223,7 +2258,7 @@ fn aggregate_lane_status(
     table: &str,
     foreign_key: &str,
     parent_id: i64,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<ForgeCiStatus> {
     let sql = format!(
         "SELECT COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
                 COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0),
@@ -2246,17 +2281,17 @@ fn aggregate_lane_status(
         .with_context(|| format!("aggregate status from {table} for parent {parent_id}"))?;
     let total = failed + running + queued + success + skipped;
     let status = if total == 0 || success + skipped == total {
-        "success"
+        ForgeCiStatus::Success
     } else if running > 0 || (queued > 0 && (failed > 0 || success > 0 || skipped > 0)) {
-        "running"
+        ForgeCiStatus::Running
     } else if queued > 0 {
-        "queued"
+        ForgeCiStatus::Queued
     } else if failed > 0 {
-        "failed"
+        ForgeCiStatus::Failed
     } else {
-        "success"
+        ForgeCiStatus::Success
     };
-    Ok(status.to_string())
+    Ok(status)
 }
 
 fn running_concurrency_groups(conn: &Connection) -> anyhow::Result<HashSet<String>> {
@@ -2319,11 +2354,11 @@ fn append_log_note(existing: Option<String>, note: &str) -> String {
 
 fn update_branch_ci_suite_status(conn: &Connection, suite_id: i64) -> anyhow::Result<()> {
     let status = aggregate_lane_status(conn, "branch_ci_run_lanes", "branch_ci_run_id", suite_id)?;
-    let sql = if status == "success" || status == "failed" {
+    let sql = if matches!(status, ForgeCiStatus::Success | ForgeCiStatus::Failed) {
         "UPDATE branch_ci_runs
          SET status = ?1, finished_at = CURRENT_TIMESTAMP
          WHERE id = ?2"
-    } else if status == "queued" {
+    } else if status == ForgeCiStatus::Queued {
         "UPDATE branch_ci_runs
          SET status = ?1, started_at = NULL, finished_at = NULL
          WHERE id = ?2"
@@ -2332,7 +2367,7 @@ fn update_branch_ci_suite_status(conn: &Connection, suite_id: i64) -> anyhow::Re
          SET status = ?1, finished_at = NULL
          WHERE id = ?2"
     };
-    conn.execute(sql, params![status, suite_id])
+    conn.execute(sql, params![status.as_str(), suite_id])
         .with_context(|| format!("update branch ci suite {}", suite_id))?;
     Ok(())
 }
@@ -2340,11 +2375,11 @@ fn update_branch_ci_suite_status(conn: &Connection, suite_id: i64) -> anyhow::Re
 fn update_nightly_run_status(conn: &Connection, nightly_run_id: i64) -> anyhow::Result<()> {
     let status =
         aggregate_lane_status(conn, "nightly_run_lanes", "nightly_run_id", nightly_run_id)?;
-    let sql = if status == "success" || status == "failed" {
+    let sql = if matches!(status, ForgeCiStatus::Success | ForgeCiStatus::Failed) {
         "UPDATE nightly_runs
          SET status = ?1, finished_at = CURRENT_TIMESTAMP
          WHERE id = ?2"
-    } else if status == "queued" {
+    } else if status == ForgeCiStatus::Queued {
         "UPDATE nightly_runs
          SET status = ?1, started_at = NULL, finished_at = NULL
          WHERE id = ?2"
@@ -2353,7 +2388,7 @@ fn update_nightly_run_status(conn: &Connection, nightly_run_id: i64) -> anyhow::
          SET status = ?1, finished_at = NULL
          WHERE id = ?2"
     };
-    conn.execute(sql, params![status, nightly_run_id])
+    conn.execute(sql, params![status.as_str(), nightly_run_id])
         .with_context(|| format!("update nightly run {}", nightly_run_id))?;
     Ok(())
 }

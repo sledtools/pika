@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
+use pika_forge_model::BranchState;
+
 use crate::branch_store::{BranchActionTarget, BranchDetailRecord, BranchLookupRecord};
+use crate::ci_state::CiLaneStatus;
 use crate::ci_store::{BranchCiRunRecord, NightlyRunRecord};
 use crate::config::Config;
 use crate::forge;
@@ -52,13 +55,13 @@ pub(crate) struct NightlyLaneRerunResult {
 pub(crate) struct BranchLaneMutationResult {
     pub(crate) branch_id: i64,
     pub(crate) lane_run_id: i64,
-    pub(crate) lane_status: &'static str,
+    pub(crate) lane_status: CiLaneStatus,
 }
 
 pub(crate) struct NightlyLaneMutationResult {
     pub(crate) nightly_run_id: i64,
     pub(crate) lane_run_id: i64,
-    pub(crate) lane_status: &'static str,
+    pub(crate) lane_status: CiLaneStatus,
 }
 
 pub(crate) struct BranchRunRecoveryResult {
@@ -179,7 +182,7 @@ impl ForgeService {
         };
 
         let target = self.branch_action_target(branch_id).await?;
-        if target.branch_state != "open" {
+        if target.branch_state != BranchState::Open {
             return Err(ForgeServiceError::Conflict(
                 "only open branches can be merged".to_string(),
             ));
@@ -245,7 +248,7 @@ impl ForgeService {
         };
 
         let target = self.branch_action_target(branch_id).await?;
-        if target.branch_state != "open" {
+        if target.branch_state != BranchState::Open {
             return Err(ForgeServiceError::Conflict(
                 "only open branches can be closed".to_string(),
             ));
@@ -366,7 +369,7 @@ impl ForgeService {
                 Ok(Some(BranchLaneMutationResult {
                     branch_id,
                     lane_run_id,
-                    lane_status: "failed",
+                    lane_status: CiLaneStatus::Failed,
                 }))
             }
             Ok(Ok(None)) => Ok(None),
@@ -392,7 +395,7 @@ impl ForgeService {
                 Ok(Some(BranchLaneMutationResult {
                     branch_id,
                     lane_run_id,
-                    lane_status: "queued",
+                    lane_status: CiLaneStatus::Queued,
                 }))
             }
             Ok(Ok(None)) => Ok(None),
@@ -445,7 +448,7 @@ impl ForgeService {
                 Ok(Some(NightlyLaneMutationResult {
                     nightly_run_id,
                     lane_run_id,
-                    lane_status: "failed",
+                    lane_status: CiLaneStatus::Failed,
                 }))
             }
             Ok(Ok(None)) => Ok(None),
@@ -472,7 +475,7 @@ impl ForgeService {
                 Ok(Some(NightlyLaneMutationResult {
                     nightly_run_id,
                     lane_run_id,
-                    lane_status: "queued",
+                    lane_status: CiLaneStatus::Queued,
                 }))
             }
             Ok(Ok(None)) => Ok(None),

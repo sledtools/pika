@@ -1,14 +1,286 @@
 use std::collections::BTreeMap;
 
 use nostr_sdk::prelude::PublicKey;
-use pika_cloud::{
-    GuestOpenclawDaemonBackend, GuestServiceBackendMode, GuestServiceKind, GuestServiceLaunch,
-    GuestServiceReadinessCheck, GuestStartupArtifacts, GuestStartupPlan, ManagedVmCreateRequest,
-    ManagedVmGuestAutostartRequest, GUEST_AUTOSTART_COMMAND, GUEST_AUTOSTART_IDENTITY_PATH,
-    GUEST_AUTOSTART_SCRIPT_PATH, GUEST_OPENCLAW_CONFIG_PATH, GUEST_OPENCLAW_EXTENSION_ROOT,
-    GUEST_STARTUP_PLAN_PATH,
-};
+use pika_cloud::RuntimeArtifactPaths;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+pub(crate) const GUEST_AUTOSTART_COMMAND: &str = "bash /workspace/pika-agent/start-agent.sh";
+pub(crate) const GUEST_AUTOSTART_SCRIPT_PATH: &str = "workspace/pika-agent/start-agent.sh";
+pub(crate) const GUEST_STARTUP_PLAN_PATH: &str = "workspace/pika-agent/startup-plan.json";
+pub(crate) const GUEST_AUTOSTART_IDENTITY_PATH: &str = "workspace/pika-agent/state/identity.json";
+pub(crate) const GUEST_LOG_PATH: &str = "workspace/pika-agent/agent.log";
+pub(crate) const GUEST_PID_PATH: &str = "workspace/pika-agent/agent.pid";
+pub(crate) const GUEST_OPENCLAW_CONFIG_PATH: &str = "workspace/pika-agent/openclaw/openclaw.json";
+pub(crate) const GUEST_OPENCLAW_EXTENSION_ROOT: &str =
+    "workspace/pika-agent/openclaw/extensions/pikachat-openclaw";
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum GuestServiceKind {
+    PikachatDaemon,
+    OpenclawGateway,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum GuestServiceBackendMode {
+    Native,
+    Acp,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct GuestStartupPlan {
+    service_kind: GuestServiceKind,
+    backend_mode: GuestServiceBackendMode,
+    daemon_state_dir: String,
+    service: GuestServiceLaunch,
+    readiness_check: GuestServiceReadinessCheck,
+    #[serde(default)]
+    artifacts: GuestStartupArtifacts,
+    exit_failure_reason: String,
+}
+
+impl GuestStartupPlan {
+    fn validate(&self) -> Result<(), String> {
+        if self.service.kind() != self.service_kind {
+            return Err(format!(
+                "guest startup plan service_kind mismatch: {:?} vs {:?}",
+                self.service_kind,
+                self.service.kind()
+            ));
+        }
+
+        match (&self.service, self.backend_mode) {
+            (
+                GuestServiceLaunch::PikachatDaemon {
+                    acp_backend: Some(_),
+                },
+                GuestServiceBackendMode::Acp,
+            )
+            | (
+                GuestServiceLaunch::PikachatDaemon { acp_backend: None },
+                GuestServiceBackendMode::Native,
+            ) => {}
+            (
+                GuestServiceLaunch::PikachatDaemon { acp_backend: None },
+                GuestServiceBackendMode::Acp,
+            ) => {
+                return Err(
+                    "guest startup plan backend_mode=acp requires PikachatDaemon.acp_backend"
+                        .to_string(),
+                );
+            }
+            (
+                GuestServiceLaunch::PikachatDaemon {
+                    acp_backend: Some(_),
+                },
+                GuestServiceBackendMode::Native,
+            ) => {
+                return Err(
+                    "guest startup plan backend_mode=native requires PikachatDaemon.acp_backend to be absent"
+                        .to_string(),
+                );
+            }
+            (
+                GuestServiceLaunch::OpenclawGateway {
+                    daemon_backend: GuestOpenclawDaemonBackend::Acp { .. },
+                    ..
+                },
+                GuestServiceBackendMode::Acp,
+            )
+            | (
+                GuestServiceLaunch::OpenclawGateway {
+                    daemon_backend: GuestOpenclawDaemonBackend::Native,
+                    ..
+                },
+                GuestServiceBackendMode::Native,
+            ) => {}
+            (
+                GuestServiceLaunch::OpenclawGateway {
+                    daemon_backend: GuestOpenclawDaemonBackend::Native,
+                    ..
+                },
+                GuestServiceBackendMode::Acp,
+            ) => {
+                return Err(
+                    "guest startup plan backend_mode=acp requires OpenclawGateway.daemon_backend=acp"
+                        .to_string(),
+                );
+            }
+            (
+                GuestServiceLaunch::OpenclawGateway {
+                    daemon_backend: GuestOpenclawDaemonBackend::Acp { .. },
+                    ..
+                },
+                GuestServiceBackendMode::Native,
+            ) => {
+                return Err(
+                    "guest startup plan backend_mode=native requires OpenclawGateway.daemon_backend=native"
+                        .to_string(),
+                );
+            }
+        }
+
+        self.artifacts.validate_canonical_paths()?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum GuestServiceLaunch {
+    PikachatDaemon {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        acp_backend: Option<GuestAcpBackend>,
+    },
+    OpenclawGateway {
+        exec_command: String,
+        state_dir: String,
+        config_path: String,
+        gateway_port: u16,
+        daemon_backend: GuestOpenclawDaemonBackend,
+    },
+}
+
+impl GuestServiceLaunch {
+    fn kind(&self) -> GuestServiceKind {
+        match self {
+            Self::PikachatDaemon { .. } => GuestServiceKind::PikachatDaemon,
+            Self::OpenclawGateway { .. } => GuestServiceKind::OpenclawGateway,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct GuestAcpBackend {
+    exec_command: String,
+    cwd: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum GuestOpenclawDaemonBackend {
+    Native,
+    Acp {
+        #[serde(flatten)]
+        acp_backend: GuestAcpBackend,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum GuestServiceReadinessCheck {
+    LogContains {
+        path: String,
+        pattern: String,
+        ready_probe: String,
+        timeout_failure_reason: String,
+    },
+    HttpGetOk {
+        url: String,
+        ready_probe: String,
+        timeout_failure_reason: String,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct GuestStartupArtifacts {
+    startup_plan_path: String,
+    identity_seed_path: String,
+    #[serde(flatten)]
+    lifecycle_artifacts: RuntimeArtifactPaths,
+    #[serde(flatten)]
+    service_artifacts: ManagedGuestServiceArtifacts,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct ManagedGuestServiceArtifacts {
+    #[serde(rename = "log_path")]
+    service_log_path: String,
+    pid_path: String,
+}
+
+impl Default for ManagedGuestServiceArtifacts {
+    fn default() -> Self {
+        Self {
+            service_log_path: GUEST_LOG_PATH.to_string(),
+            pid_path: GUEST_PID_PATH.to_string(),
+        }
+    }
+}
+
+impl ManagedGuestServiceArtifacts {
+    fn validate_canonical_paths(&self, field_prefix: &str) -> Result<(), String> {
+        let canonical = Self::default();
+        for (field, actual, expected) in [
+            (
+                "log_path",
+                self.service_log_path.as_str(),
+                canonical.service_log_path.as_str(),
+            ),
+            (
+                "pid_path",
+                self.pid_path.as_str(),
+                canonical.pid_path.as_str(),
+            ),
+        ] {
+            if actual != expected {
+                return Err(format!(
+                    "{field_prefix}.{field} must use canonical path {expected:?}, got {actual:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Default for GuestStartupArtifacts {
+    fn default() -> Self {
+        Self {
+            startup_plan_path: GUEST_STARTUP_PLAN_PATH.to_string(),
+            identity_seed_path: GUEST_AUTOSTART_IDENTITY_PATH.to_string(),
+            lifecycle_artifacts: RuntimeArtifactPaths::default(),
+            service_artifacts: ManagedGuestServiceArtifacts::default(),
+        }
+    }
+}
+
+impl GuestStartupArtifacts {
+    fn validate_canonical_paths(&self) -> Result<(), String> {
+        let canonical = Self::default();
+        for (field, actual, expected) in [
+            (
+                "startup_plan_path",
+                self.startup_plan_path.as_str(),
+                canonical.startup_plan_path.as_str(),
+            ),
+            (
+                "identity_seed_path",
+                self.identity_seed_path.as_str(),
+                canonical.identity_seed_path.as_str(),
+            ),
+        ] {
+            if actual != expected {
+                return Err(format!(
+                    "guest startup plan artifacts.{field} must use canonical path {expected:?}, got {actual:?}"
+                ));
+            }
+        }
+        self.lifecycle_artifacts
+            .validate_canonical_paths("artifacts")?;
+        self.service_artifacts
+            .validate_canonical_paths("artifacts")?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct ManagedGuestAutostart {
+    pub command: String,
+    pub env: BTreeMap<String, String>,
+    pub files: BTreeMap<String, String>,
+}
 
 pub const DEFAULT_OPENCLAW_EXEC_COMMAND: &str = "/opt/runtime-artifacts/openclaw/bin/openclaw";
 pub const DEFAULT_OPENCLAW_GATEWAY_PORT: u16 = 18789;
@@ -26,7 +298,7 @@ pub struct ManagedVmCreateInput<'a> {
     pub bot_pubkey_hex: &'a str,
 }
 
-pub fn build_managed_vm_create_request(input: ManagedVmCreateInput<'_>) -> ManagedVmCreateRequest {
+pub fn build_managed_guest_autostart(input: ManagedVmCreateInput<'_>) -> ManagedGuestAutostart {
     let startup_plan = guest_startup_plan();
     let mut env = BTreeMap::new();
     env.insert("PIKA_OWNER_PUBKEY".to_string(), input.owner_pubkey.to_hex());
@@ -63,13 +335,10 @@ pub fn build_managed_vm_create_request(input: ManagedVmCreateInput<'_>) -> Manag
     );
     files.extend(openclaw_extension_files());
 
-    ManagedVmCreateRequest {
-        guest_autostart: ManagedVmGuestAutostartRequest {
-            command: GUEST_AUTOSTART_COMMAND.to_string(),
-            env,
-            files,
-            startup_plan,
-        },
+    ManagedGuestAutostart {
+        command: GUEST_AUTOSTART_COMMAND.to_string(),
+        env,
+        files,
     }
 }
 
@@ -701,12 +970,102 @@ mod tests {
     }
 
     #[test]
+    fn guest_startup_artifacts_default_to_shared_paths() {
+        let artifacts = GuestStartupArtifacts::default();
+
+        assert_eq!(artifacts.startup_plan_path, GUEST_STARTUP_PLAN_PATH);
+        assert_eq!(artifacts.identity_seed_path, GUEST_AUTOSTART_IDENTITY_PATH);
+        assert_eq!(artifacts.lifecycle_artifacts.status_path, STATUS_PATH);
+        assert_eq!(artifacts.lifecycle_artifacts.events_path, EVENTS_PATH);
+        assert_eq!(artifacts.lifecycle_artifacts.result_path, RESULT_PATH);
+        assert_eq!(artifacts.service_artifacts.service_log_path, GUEST_LOG_PATH);
+        assert_eq!(artifacts.service_artifacts.pid_path, GUEST_PID_PATH);
+    }
+
+    #[test]
     fn guest_startup_plan_uses_shared_lifecycle_artifacts() {
         let plan = guest_startup_plan();
 
         assert_eq!(plan.artifacts.lifecycle_artifacts.status_path, STATUS_PATH);
         assert_eq!(plan.artifacts.lifecycle_artifacts.events_path, EVENTS_PATH);
         assert_eq!(plan.artifacts.lifecycle_artifacts.result_path, RESULT_PATH);
+    }
+
+    #[test]
+    fn guest_startup_plan_file_round_trips_through_request_payload() {
+        let plan = guest_startup_plan();
+        let request = ManagedGuestAutostart {
+            command: GUEST_AUTOSTART_COMMAND.to_string(),
+            env: BTreeMap::from([("PIKA_OWNER_PUBKEY".to_string(), "owner".to_string())]),
+            files: BTreeMap::from([(
+                GUEST_STARTUP_PLAN_PATH.to_string(),
+                startup_plan_file(&plan),
+            )]),
+        };
+
+        let startup_plan = request
+            .files
+            .get(GUEST_STARTUP_PLAN_PATH)
+            .expect("startup plan file present");
+        let decoded: GuestStartupPlan =
+            serde_json::from_str(startup_plan).expect("decode startup plan");
+
+        assert_eq!(decoded, plan);
+    }
+
+    #[test]
+    fn guest_startup_plan_validate_rejects_mismatched_service_kind() {
+        let mut plan = guest_startup_plan();
+        plan.service_kind = GuestServiceKind::PikachatDaemon;
+
+        let err = plan
+            .validate()
+            .expect_err("plan should reject mismatched service kind");
+
+        assert!(err.contains("service_kind mismatch"));
+    }
+
+    #[test]
+    fn guest_startup_plan_validate_rejects_openclaw_native_mode_with_acp_daemon_backend() {
+        let mut plan = guest_startup_plan();
+        plan.service = GuestServiceLaunch::OpenclawGateway {
+            exec_command: "npx -y openclaw".to_string(),
+            state_dir: "/root/pika-agent/openclaw".to_string(),
+            config_path: GUEST_OPENCLAW_CONFIG_PATH.to_string(),
+            gateway_port: 18789,
+            daemon_backend: GuestOpenclawDaemonBackend::Acp {
+                acp_backend: GuestAcpBackend {
+                    exec_command: "npx -y pi-acp".to_string(),
+                    cwd: "/root/pika-agent/acp".to_string(),
+                },
+            },
+        };
+
+        let err = plan
+            .validate()
+            .expect_err("plan should reject OpenClaw native mode with ACP daemon backend");
+
+        assert!(err.contains("backend_mode=native"));
+        assert!(err.contains("OpenclawGateway.daemon_backend=native"));
+    }
+
+    #[test]
+    fn guest_startup_plan_validate_rejects_non_canonical_artifact_paths() {
+        let mut plan = guest_startup_plan();
+        plan.artifacts = GuestStartupArtifacts {
+            lifecycle_artifacts: RuntimeArtifactPaths {
+                status_path: "/run/custom/status.json".to_string(),
+                ..RuntimeArtifactPaths::default()
+            },
+            ..GuestStartupArtifacts::default()
+        };
+
+        let err = plan
+            .validate()
+            .expect_err("plan should reject non-canonical artifact paths");
+
+        assert!(err.contains("artifacts.status_path"));
+        assert!(err.contains(STATUS_PATH));
     }
 
     #[test]

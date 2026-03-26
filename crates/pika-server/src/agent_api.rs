@@ -23,8 +23,8 @@ use crate::agent_api_v1_contract::{
     V1_AGENTS_RECOVER_PATH,
 };
 use crate::managed_openclaw_guest::{
-    build_managed_vm_create_request, ManagedVmCreateInput as ManagedRuntimeCreateInput,
-    DEFAULT_OPENCLAW_GATEWAY_PORT,
+    build_managed_guest_autostart, ManagedVmCreateInput as ManagedRuntimeCreateInput,
+    DEFAULT_OPENCLAW_GATEWAY_PORT, GUEST_AUTOSTART_SCRIPT_PATH, GUEST_OPENCLAW_CONFIG_PATH,
 };
 use crate::models::agent_allowlist::AgentAllowlistEntry;
 use crate::models::agent_instance::{
@@ -876,7 +876,7 @@ impl IncusManagedRuntimeProvider {
         vm_id: &str,
         request_id: Option<&str>,
     ) -> anyhow::Result<IncusOpenClawConfigFile> {
-        let path = format!("/{}", pika_cloud::GUEST_OPENCLAW_CONFIG_PATH);
+        let path = format!("/{}", GUEST_OPENCLAW_CONFIG_PATH);
         let bytes = self
             .get_instance_file(vm_id, &path, request_id, "load incus OpenClaw config")
             .await?
@@ -1825,8 +1825,7 @@ impl IncusManagedRuntimeProvider {
         &self,
         input: &ManagedRuntimeCreateInput<'_>,
     ) -> anyhow::Result<String> {
-        let bootstrap_request = build_managed_vm_create_request(*input);
-        let guest_autostart = bootstrap_request.guest_autostart;
+        let guest_autostart = build_managed_guest_autostart(*input);
         let mut launcher_env = guest_autostart.env.clone();
         if let Ok(value) = std::env::var(ANTHROPIC_API_KEY_ENV) {
             if !value.trim().is_empty() {
@@ -2469,7 +2468,7 @@ fn incus_profile_has_nic_device(profile: &serde_json::Value) -> bool {
 }
 
 fn bootstrap_file_permissions(path: &str) -> &'static str {
-    if path == pika_cloud::GUEST_AUTOSTART_SCRIPT_PATH {
+    if path == GUEST_AUTOSTART_SCRIPT_PATH {
         "0755"
     } else {
         "0644"

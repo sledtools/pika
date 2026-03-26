@@ -162,18 +162,43 @@ pub struct StagedLinuxRustTargetConfig {
     pub target_description: &'static str,
     pub shared_prepare_node_prefix: &'static str,
     pub shared_prepare_description: &'static str,
-    pub workspace_deps_output_name: &'static str,
-    pub workspace_build_output_name: &'static str,
+    pub payload_specs: [StagedLinuxRustTargetPayloadSpec; 2],
     pub workspace_output_system: &'static str,
-    pub workspace_deps_installable: &'static str,
-    pub workspace_build_installable: &'static str,
     pub shadow_recipe: &'static str,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum StagedLinuxRustPayloadRole {
     WorkspaceDeps,
     WorkspaceBuild,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct StagedLinuxRustTargetPayloadSpec {
+    pub role: StagedLinuxRustPayloadRole,
+    pub output_name: &'static str,
+    pub nix_installable: &'static str,
+}
+
+fn staged_linux_target_payload_specs(
+    workspace_deps_output_name: &'static str,
+    workspace_deps_installable: &'static str,
+    workspace_build_output_name: &'static str,
+    workspace_build_installable: &'static str,
+) -> [StagedLinuxRustTargetPayloadSpec; 2] {
+    [
+        StagedLinuxRustTargetPayloadSpec {
+            role: StagedLinuxRustPayloadRole::WorkspaceDeps,
+            output_name: workspace_deps_output_name,
+            nix_installable: workspace_deps_installable,
+        },
+        StagedLinuxRustTargetPayloadSpec {
+            role: StagedLinuxRustPayloadRole::WorkspaceBuild,
+            output_name: workspace_build_output_name,
+            nix_installable: workspace_build_installable,
+        },
+    ]
 }
 
 impl StagedLinuxRustPayloadRole {
@@ -284,11 +309,13 @@ impl StagedLinuxRustLane {
     }
 
     pub fn workspace_deps_output_name(self) -> &'static str {
-        self.target().config().workspace_deps_output_name
+        self.payload_spec(StagedLinuxRustPayloadRole::WorkspaceDeps)
+            .output_name
     }
 
     pub fn workspace_build_output_name(self) -> &'static str {
-        self.target().config().workspace_build_output_name
+        self.payload_spec(StagedLinuxRustPayloadRole::WorkspaceBuild)
+            .output_name
     }
 
     pub fn workspace_output_system(self) -> &'static str {
@@ -296,17 +323,29 @@ impl StagedLinuxRustLane {
     }
 
     pub fn payload_roles(self) -> [StagedLinuxRustPayloadRole; 2] {
-        [
-            StagedLinuxRustPayloadRole::WorkspaceDeps,
-            StagedLinuxRustPayloadRole::WorkspaceBuild,
-        ]
+        self.payload_specs().map(|spec| spec.role)
+    }
+
+    pub fn payload_specs(self) -> [StagedLinuxRustTargetPayloadSpec; 2] {
+        self.target().config().payload_specs
+    }
+
+    pub fn payload_spec(
+        self,
+        role: StagedLinuxRustPayloadRole,
+    ) -> StagedLinuxRustTargetPayloadSpec {
+        self.payload_specs()
+            .into_iter()
+            .find(|spec| spec.role == role)
+            .expect("staged Linux Rust lane is missing required payload spec")
+    }
+
+    pub fn payload_nix_installable(self, role: StagedLinuxRustPayloadRole) -> &'static str {
+        self.payload_spec(role).nix_installable
     }
 
     pub fn payload_output_name(self, role: StagedLinuxRustPayloadRole) -> &'static str {
-        match role {
-            StagedLinuxRustPayloadRole::WorkspaceDeps => self.workspace_deps_output_name(),
-            StagedLinuxRustPayloadRole::WorkspaceBuild => self.workspace_build_output_name(),
-        }
+        self.payload_spec(role).output_name
     }
 
     pub fn execute_wrapper_command(self) -> &'static str {
@@ -417,11 +456,13 @@ impl StagedLinuxRustTarget {
                 target_description: "Run the VM-backed Rust tests from the pre-merge pika lane",
                 shared_prepare_node_prefix: "pika-core-linux-rust",
                 shared_prepare_description: "pika_core staged Linux Rust lane",
-                workspace_deps_output_name: "ci.x86_64-linux.workspaceDeps",
-                workspace_build_output_name: "ci.x86_64-linux.workspaceBuild",
+                payload_specs: staged_linux_target_payload_specs(
+                    "ci.x86_64-linux.workspaceDeps",
+                    ".#ci.x86_64-linux.workspaceDeps",
+                    "ci.x86_64-linux.workspaceBuild",
+                    ".#ci.x86_64-linux.workspaceBuild",
+                ),
                 workspace_output_system: "x86_64-linux",
-                workspace_deps_installable: ".#ci.x86_64-linux.workspaceDeps",
-                workspace_build_installable: ".#ci.x86_64-linux.workspaceBuild",
                 shadow_recipe: "pre-merge-pika-rust-shadow",
             },
             Self::PreMergePikaFollowup => StagedLinuxRustTargetConfig {
@@ -429,11 +470,13 @@ impl StagedLinuxRustTarget {
                 target_description: "Run the VM-backed non-Rust follow-up checks from the pre-merge pika lane",
                 shared_prepare_node_prefix: "pika-followup-linux-rust",
                 shared_prepare_description: "pika follow-up staged Linux lane",
-                workspace_deps_output_name: "ci.x86_64-linux.pikaFollowupWorkspaceDeps",
-                workspace_build_output_name: "ci.x86_64-linux.pikaFollowupWorkspaceBuild",
+                payload_specs: staged_linux_target_payload_specs(
+                    "ci.x86_64-linux.pikaFollowupWorkspaceDeps",
+                    ".#ci.x86_64-linux.pikaFollowupWorkspaceDeps",
+                    "ci.x86_64-linux.pikaFollowupWorkspaceBuild",
+                    ".#ci.x86_64-linux.pikaFollowupWorkspaceBuild",
+                ),
                 workspace_output_system: "x86_64-linux",
-                workspace_deps_installable: ".#ci.x86_64-linux.pikaFollowupWorkspaceDeps",
-                workspace_build_installable: ".#ci.x86_64-linux.pikaFollowupWorkspaceBuild",
                 shadow_recipe: "",
             },
             Self::PreMergeAgentContracts => StagedLinuxRustTargetConfig {
@@ -441,11 +484,13 @@ impl StagedLinuxRustTarget {
                 target_description: "Run the Incus-backed pre-merge agent contracts lane",
                 shared_prepare_node_prefix: "agent-contracts-linux-rust",
                 shared_prepare_description: "agent contracts staged Linux Rust lane",
-                workspace_deps_output_name: "ci.x86_64-linux.agentContractsWorkspaceDeps",
-                workspace_build_output_name: "ci.x86_64-linux.agentContractsWorkspaceBuild",
+                payload_specs: staged_linux_target_payload_specs(
+                    "ci.x86_64-linux.agentContractsWorkspaceDeps",
+                    ".#ci.x86_64-linux.agentContractsWorkspaceDeps",
+                    "ci.x86_64-linux.agentContractsWorkspaceBuild",
+                    ".#ci.x86_64-linux.agentContractsWorkspaceBuild",
+                ),
                 workspace_output_system: "x86_64-linux",
-                workspace_deps_installable: ".#ci.x86_64-linux.agentContractsWorkspaceDeps",
-                workspace_build_installable: ".#ci.x86_64-linux.agentContractsWorkspaceBuild",
                 shadow_recipe: "pre-merge-agent-contracts-shadow",
             },
             Self::PreMergeNotifications => StagedLinuxRustTargetConfig {
@@ -453,11 +498,13 @@ impl StagedLinuxRustTarget {
                 target_description: "Run the VM-backed Rust tests from the notifications lane",
                 shared_prepare_node_prefix: "notifications-linux-rust",
                 shared_prepare_description: "notifications staged Linux Rust lane",
-                workspace_deps_output_name: "ci.x86_64-linux.notificationsWorkspaceDeps",
-                workspace_build_output_name: "ci.x86_64-linux.notificationsWorkspaceBuild",
+                payload_specs: staged_linux_target_payload_specs(
+                    "ci.x86_64-linux.notificationsWorkspaceDeps",
+                    ".#ci.x86_64-linux.notificationsWorkspaceDeps",
+                    "ci.x86_64-linux.notificationsWorkspaceBuild",
+                    ".#ci.x86_64-linux.notificationsWorkspaceBuild",
+                ),
                 workspace_output_system: "x86_64-linux",
-                workspace_deps_installable: ".#ci.x86_64-linux.notificationsWorkspaceDeps",
-                workspace_build_installable: ".#ci.x86_64-linux.notificationsWorkspaceBuild",
                 shadow_recipe: "pre-merge-notifications-shadow",
             },
             Self::PreMergeFixtureRust => StagedLinuxRustTargetConfig {
@@ -465,11 +512,13 @@ impl StagedLinuxRustTarget {
                 target_description: "Run the VM-backed Rust tests from the fixture lane",
                 shared_prepare_node_prefix: "fixture-linux-rust",
                 shared_prepare_description: "fixture staged Linux Rust lane",
-                workspace_deps_output_name: "ci.x86_64-linux.fixtureWorkspaceDeps",
-                workspace_build_output_name: "ci.x86_64-linux.fixtureWorkspaceBuild",
+                payload_specs: staged_linux_target_payload_specs(
+                    "ci.x86_64-linux.fixtureWorkspaceDeps",
+                    ".#ci.x86_64-linux.fixtureWorkspaceDeps",
+                    "ci.x86_64-linux.fixtureWorkspaceBuild",
+                    ".#ci.x86_64-linux.fixtureWorkspaceBuild",
+                ),
                 workspace_output_system: "x86_64-linux",
-                workspace_deps_installable: ".#ci.x86_64-linux.fixtureWorkspaceDeps",
-                workspace_build_installable: ".#ci.x86_64-linux.fixtureWorkspaceBuild",
                 shadow_recipe: "",
             },
             Self::PreMergeRmp => StagedLinuxRustTargetConfig {
@@ -477,11 +526,13 @@ impl StagedLinuxRustTarget {
                 target_description: "Run the VM-backed pre-merge RMP lane",
                 shared_prepare_node_prefix: "rmp-linux-rust",
                 shared_prepare_description: "rmp staged Linux Rust lane",
-                workspace_deps_output_name: "ci.x86_64-linux.rmpWorkspaceDeps",
-                workspace_build_output_name: "ci.x86_64-linux.rmpWorkspaceBuild",
+                payload_specs: staged_linux_target_payload_specs(
+                    "ci.x86_64-linux.rmpWorkspaceDeps",
+                    ".#ci.x86_64-linux.rmpWorkspaceDeps",
+                    "ci.x86_64-linux.rmpWorkspaceBuild",
+                    ".#ci.x86_64-linux.rmpWorkspaceBuild",
+                ),
                 workspace_output_system: "x86_64-linux",
-                workspace_deps_installable: ".#ci.x86_64-linux.rmpWorkspaceDeps",
-                workspace_build_installable: ".#ci.x86_64-linux.rmpWorkspaceBuild",
                 shadow_recipe: "pre-merge-rmp-shadow",
             },
             Self::PreMergePikachatRust => StagedLinuxRustTargetConfig {
@@ -489,11 +540,13 @@ impl StagedLinuxRustTarget {
                 target_description: "Run the VM-backed Rust tests from the pikachat lane",
                 shared_prepare_node_prefix: "pikachat-linux-rust",
                 shared_prepare_description: "pikachat staged Linux Rust lane",
-                workspace_deps_output_name: "ci.x86_64-linux.pikachatWorkspaceDeps",
-                workspace_build_output_name: "ci.x86_64-linux.pikachatWorkspaceBuild",
+                payload_specs: staged_linux_target_payload_specs(
+                    "ci.x86_64-linux.pikachatWorkspaceDeps",
+                    ".#ci.x86_64-linux.pikachatWorkspaceDeps",
+                    "ci.x86_64-linux.pikachatWorkspaceBuild",
+                    ".#ci.x86_64-linux.pikachatWorkspaceBuild",
+                ),
                 workspace_output_system: "x86_64-linux",
-                workspace_deps_installable: ".#ci.x86_64-linux.pikachatWorkspaceDeps",
-                workspace_build_installable: ".#ci.x86_64-linux.pikachatWorkspaceBuild",
                 shadow_recipe: "pre-merge-pikachat-rust-shadow",
             },
             Self::PreMergePikachatTypescript => StagedLinuxRustTargetConfig {
@@ -501,11 +554,13 @@ impl StagedLinuxRustTarget {
                 target_description: "Run the VM-backed TypeScript tests from the pikachat lane",
                 shared_prepare_node_prefix: "pikachat-linux-rust",
                 shared_prepare_description: "pikachat staged Linux Rust lane",
-                workspace_deps_output_name: "ci.x86_64-linux.pikachatWorkspaceDeps",
-                workspace_build_output_name: "ci.x86_64-linux.pikachatWorkspaceBuild",
+                payload_specs: staged_linux_target_payload_specs(
+                    "ci.x86_64-linux.pikachatWorkspaceDeps",
+                    ".#ci.x86_64-linux.pikachatWorkspaceDeps",
+                    "ci.x86_64-linux.pikachatWorkspaceBuild",
+                    ".#ci.x86_64-linux.pikachatWorkspaceBuild",
+                ),
                 workspace_output_system: "x86_64-linux",
-                workspace_deps_installable: ".#ci.x86_64-linux.pikachatWorkspaceDeps",
-                workspace_build_installable: ".#ci.x86_64-linux.pikachatWorkspaceBuild",
                 shadow_recipe: "",
             },
             Self::PreMergePikachatOpenclawE2e => StagedLinuxRustTargetConfig {
@@ -513,14 +568,34 @@ impl StagedLinuxRustTarget {
                 target_description: "Run the VM-backed heavy OpenClaw gateway end-to-end scenario",
                 shared_prepare_node_prefix: "pikachat-openclaw-linux-rust",
                 shared_prepare_description: "pikachat OpenClaw staged Linux lane",
-                workspace_deps_output_name: "ci.x86_64-linux.pikachatWorkspaceDeps",
-                workspace_build_output_name: "ci.x86_64-linux.pikachatWorkspaceBuild",
+                payload_specs: staged_linux_target_payload_specs(
+                    "ci.x86_64-linux.pikachatWorkspaceDeps",
+                    ".#ci.x86_64-linux.pikachatWorkspaceDeps",
+                    "ci.x86_64-linux.pikachatWorkspaceBuild",
+                    ".#ci.x86_64-linux.pikachatWorkspaceBuild",
+                ),
                 workspace_output_system: "x86_64-linux",
-                workspace_deps_installable: ".#ci.x86_64-linux.pikachatWorkspaceDeps",
-                workspace_build_installable: ".#ci.x86_64-linux.pikachatWorkspaceBuild",
                 shadow_recipe: "",
             },
         }
+    }
+
+    pub fn payload_specs(self) -> [StagedLinuxRustTargetPayloadSpec; 2] {
+        self.config().payload_specs
+    }
+
+    pub fn payload_spec(
+        self,
+        role: StagedLinuxRustPayloadRole,
+    ) -> StagedLinuxRustTargetPayloadSpec {
+        self.payload_specs()
+            .into_iter()
+            .find(|spec| spec.role == role)
+            .expect("staged Linux Rust target is missing required payload spec")
+    }
+
+    pub fn payload_nix_installable(self, role: StagedLinuxRustPayloadRole) -> &'static str {
+        self.payload_spec(role).nix_installable
     }
 }
 
@@ -1034,11 +1109,11 @@ mod tests {
 
         assert_eq!(notifications_config.target_id, "pre-merge-notifications");
         assert_eq!(
-            notifications_config.workspace_deps_installable,
+            notifications.payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceDeps),
             ".#ci.x86_64-linux.notificationsWorkspaceDeps"
         );
         assert_eq!(
-            notifications_config.workspace_build_installable,
+            notifications.payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceBuild),
             ".#ci.x86_64-linux.notificationsWorkspaceBuild"
         );
         assert_eq!(
@@ -1056,11 +1131,11 @@ mod tests {
 
         assert_eq!(followup_config.target_id, "pre-merge-pika-followup");
         assert_eq!(
-            followup_config.workspace_deps_installable,
+            followup.payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceDeps),
             ".#ci.x86_64-linux.pikaFollowupWorkspaceDeps"
         );
         assert_eq!(
-            followup_config.workspace_build_installable,
+            followup.payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceBuild),
             ".#ci.x86_64-linux.pikaFollowupWorkspaceBuild"
         );
         assert_eq!(followup_config.shadow_recipe, "");
@@ -1079,11 +1154,11 @@ mod tests {
 
         assert_eq!(fixture_config.target_id, "pre-merge-fixture-rust");
         assert_eq!(
-            fixture_config.workspace_deps_installable,
+            fixture.payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceDeps),
             ".#ci.x86_64-linux.fixtureWorkspaceDeps"
         );
         assert_eq!(
-            fixture_config.workspace_build_installable,
+            fixture.payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceBuild),
             ".#ci.x86_64-linux.fixtureWorkspaceBuild"
         );
         assert_eq!(fixture_config.shadow_recipe, "");
@@ -1100,11 +1175,11 @@ mod tests {
 
         assert_eq!(pikachat_config.target_id, "pre-merge-pikachat-rust");
         assert_eq!(
-            pikachat_config.workspace_deps_installable,
+            pikachat.payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceDeps),
             ".#ci.x86_64-linux.pikachatWorkspaceDeps"
         );
         assert_eq!(
-            pikachat_config.workspace_build_installable,
+            pikachat.payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceBuild),
             ".#ci.x86_64-linux.pikachatWorkspaceBuild"
         );
         assert_eq!(
@@ -1126,11 +1201,11 @@ mod tests {
             "pre-merge-pikachat-typescript"
         );
         assert_eq!(
-            pikachat_typescript_config.workspace_deps_installable,
+            pikachat_typescript.payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceDeps),
             ".#ci.x86_64-linux.pikachatWorkspaceDeps"
         );
         assert_eq!(
-            pikachat_typescript_config.workspace_build_installable,
+            pikachat_typescript.payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceBuild),
             ".#ci.x86_64-linux.pikachatWorkspaceBuild"
         );
         assert_eq!(pikachat_typescript_config.shadow_recipe, "");
@@ -1145,11 +1220,11 @@ mod tests {
         let pikachat_openclaw_config = pikachat_openclaw.config();
 
         assert_eq!(
-            pikachat_openclaw_config.workspace_deps_installable,
+            pikachat_openclaw.payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceDeps),
             ".#ci.x86_64-linux.pikachatWorkspaceDeps"
         );
         assert_eq!(
-            pikachat_openclaw_config.workspace_build_installable,
+            pikachat_openclaw.payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceBuild),
             ".#ci.x86_64-linux.pikachatWorkspaceBuild"
         );
         assert_eq!(pikachat_openclaw_config.shadow_recipe, "");
@@ -1197,16 +1272,19 @@ mod tests {
             StagedLinuxRustTarget::PreMergePikachatTypescript,
             StagedLinuxRustTarget::PreMergePikachatOpenclawE2e,
         ] {
-            let config = target.config();
+            let workspace_deps_installable =
+                target.payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceDeps);
+            let workspace_build_installable =
+                target.payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceBuild);
             assert!(
-                helper.contains(config.workspace_deps_installable),
+                helper.contains(workspace_deps_installable),
                 "strict staged remote helper must allow {}",
-                config.workspace_deps_installable
+                workspace_deps_installable
             );
             assert!(
-                helper.contains(config.workspace_build_installable),
+                helper.contains(workspace_build_installable),
                 "strict staged remote helper must allow {}",
-                config.workspace_build_installable
+                workspace_build_installable
             );
         }
     }

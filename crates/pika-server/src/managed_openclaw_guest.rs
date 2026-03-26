@@ -15,173 +15,48 @@ pub(crate) const GUEST_OPENCLAW_CONFIG_PATH: &str = "workspace/pika-agent/opencl
 pub(crate) const GUEST_OPENCLAW_EXTENSION_ROOT: &str =
     "workspace/pika-agent/openclaw/extensions/pikachat-openclaw";
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum GuestServiceKind {
-    PikachatDaemon,
-    OpenclawGateway,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum GuestServiceBackendMode {
-    Native,
-    Acp,
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct GuestStartupPlan {
-    service_kind: GuestServiceKind,
-    backend_mode: GuestServiceBackendMode,
+struct OpenclawStartupPlan {
     daemon_state_dir: String,
-    service: GuestServiceLaunch,
-    readiness_check: GuestServiceReadinessCheck,
+    openclaw: OpenclawLaunchPlan,
+    readiness: OpenclawReadinessPlan,
     #[serde(default)]
     artifacts: GuestStartupArtifacts,
     exit_failure_reason: String,
 }
 
-impl GuestStartupPlan {
+impl OpenclawStartupPlan {
     fn validate(&self) -> Result<(), String> {
-        if self.service.kind() != self.service_kind {
+        if self.openclaw.config_path != GUEST_OPENCLAW_CONFIG_PATH {
             return Err(format!(
-                "guest startup plan service_kind mismatch: {:?} vs {:?}",
-                self.service_kind,
-                self.service.kind()
+                "openclaw startup plan config_path must use canonical path {:?}, got {:?}",
+                GUEST_OPENCLAW_CONFIG_PATH, self.openclaw.config_path
             ));
         }
-
-        match (&self.service, self.backend_mode) {
-            (
-                GuestServiceLaunch::PikachatDaemon {
-                    acp_backend: Some(_),
-                },
-                GuestServiceBackendMode::Acp,
-            )
-            | (
-                GuestServiceLaunch::PikachatDaemon { acp_backend: None },
-                GuestServiceBackendMode::Native,
-            ) => {}
-            (
-                GuestServiceLaunch::PikachatDaemon { acp_backend: None },
-                GuestServiceBackendMode::Acp,
-            ) => {
-                return Err(
-                    "guest startup plan backend_mode=acp requires PikachatDaemon.acp_backend"
-                        .to_string(),
-                );
-            }
-            (
-                GuestServiceLaunch::PikachatDaemon {
-                    acp_backend: Some(_),
-                },
-                GuestServiceBackendMode::Native,
-            ) => {
-                return Err(
-                    "guest startup plan backend_mode=native requires PikachatDaemon.acp_backend to be absent"
-                        .to_string(),
-                );
-            }
-            (
-                GuestServiceLaunch::OpenclawGateway {
-                    daemon_backend: GuestOpenclawDaemonBackend::Acp { .. },
-                    ..
-                },
-                GuestServiceBackendMode::Acp,
-            )
-            | (
-                GuestServiceLaunch::OpenclawGateway {
-                    daemon_backend: GuestOpenclawDaemonBackend::Native,
-                    ..
-                },
-                GuestServiceBackendMode::Native,
-            ) => {}
-            (
-                GuestServiceLaunch::OpenclawGateway {
-                    daemon_backend: GuestOpenclawDaemonBackend::Native,
-                    ..
-                },
-                GuestServiceBackendMode::Acp,
-            ) => {
-                return Err(
-                    "guest startup plan backend_mode=acp requires OpenclawGateway.daemon_backend=acp"
-                        .to_string(),
-                );
-            }
-            (
-                GuestServiceLaunch::OpenclawGateway {
-                    daemon_backend: GuestOpenclawDaemonBackend::Acp { .. },
-                    ..
-                },
-                GuestServiceBackendMode::Native,
-            ) => {
-                return Err(
-                    "guest startup plan backend_mode=native requires OpenclawGateway.daemon_backend=native"
-                        .to_string(),
-                );
-            }
+        if self.openclaw.gateway_port != DEFAULT_OPENCLAW_GATEWAY_PORT {
+            return Err(format!(
+                "openclaw startup plan gateway_port must stay pinned to {:?}, got {:?}",
+                DEFAULT_OPENCLAW_GATEWAY_PORT, self.openclaw.gateway_port
+            ));
         }
-
         self.artifacts.validate_canonical_paths()?;
         Ok(())
     }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum GuestServiceLaunch {
-    PikachatDaemon {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        acp_backend: Option<GuestAcpBackend>,
-    },
-    OpenclawGateway {
-        exec_command: String,
-        state_dir: String,
-        config_path: String,
-        gateway_port: u16,
-        daemon_backend: GuestOpenclawDaemonBackend,
-    },
-}
-
-impl GuestServiceLaunch {
-    fn kind(&self) -> GuestServiceKind {
-        match self {
-            Self::PikachatDaemon { .. } => GuestServiceKind::PikachatDaemon,
-            Self::OpenclawGateway { .. } => GuestServiceKind::OpenclawGateway,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct GuestAcpBackend {
+struct OpenclawLaunchPlan {
     exec_command: String,
-    cwd: String,
+    state_dir: String,
+    config_path: String,
+    gateway_port: u16,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum GuestOpenclawDaemonBackend {
-    Native,
-    Acp {
-        #[serde(flatten)]
-        acp_backend: GuestAcpBackend,
-    },
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum GuestServiceReadinessCheck {
-    LogContains {
-        path: String,
-        pattern: String,
-        ready_probe: String,
-        timeout_failure_reason: String,
-    },
-    HttpGetOk {
-        url: String,
-        ready_probe: String,
-        timeout_failure_reason: String,
-    },
+struct OpenclawReadinessPlan {
+    url: String,
+    ready_probe: String,
+    timeout_failure_reason: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -299,7 +174,7 @@ pub struct ManagedVmCreateInput<'a> {
 }
 
 pub fn build_managed_guest_autostart(input: ManagedVmCreateInput<'_>) -> ManagedGuestAutostart {
-    let startup_plan = guest_startup_plan();
+    let startup_plan = openclaw_startup_plan();
     let mut env = BTreeMap::new();
     env.insert("PIKA_OWNER_PUBKEY".to_string(), input.owner_pubkey.to_hex());
     env.insert("PIKA_RELAY_URLS".to_string(), input.relay_urls.join(","));
@@ -342,19 +217,16 @@ pub fn build_managed_guest_autostart(input: ManagedVmCreateInput<'_>) -> Managed
     }
 }
 
-fn guest_startup_plan() -> GuestStartupPlan {
-    GuestStartupPlan {
-        service_kind: GuestServiceKind::OpenclawGateway,
-        backend_mode: GuestServiceBackendMode::Native,
+fn openclaw_startup_plan() -> OpenclawStartupPlan {
+    OpenclawStartupPlan {
         daemon_state_dir: DEFAULT_DAEMON_STATE_DIR.to_string(),
-        service: GuestServiceLaunch::OpenclawGateway {
+        openclaw: OpenclawLaunchPlan {
             exec_command: resolved_openclaw_exec_command(),
             state_dir: DEFAULT_OPENCLAW_STATE_DIR.to_string(),
             config_path: GUEST_OPENCLAW_CONFIG_PATH.to_string(),
             gateway_port: DEFAULT_OPENCLAW_GATEWAY_PORT,
-            daemon_backend: GuestOpenclawDaemonBackend::Native,
         },
-        readiness_check: GuestServiceReadinessCheck::HttpGetOk {
+        readiness: OpenclawReadinessPlan {
             url: format!("http://127.0.0.1:{DEFAULT_OPENCLAW_GATEWAY_PORT}/health"),
             ready_probe: "openclaw_gateway_health".to_string(),
             timeout_failure_reason: "timeout_waiting_for_openclaw_health".to_string(),
@@ -372,7 +244,7 @@ fn resolved_openclaw_exec_command() -> String {
         .unwrap_or_else(|| DEFAULT_OPENCLAW_EXEC_COMMAND.to_string())
 }
 
-fn startup_plan_file(startup_plan: &GuestStartupPlan) -> String {
+fn startup_plan_file(startup_plan: &OpenclawStartupPlan) -> String {
     startup_plan
         .validate()
         .expect("startup plan must be internally consistent");
@@ -700,9 +572,9 @@ wait_for_service_ready() {{
   local service_pid="$1"
   local timeout_sec="${{PIKA_AGENT_READY_TIMEOUT_SECS:-120}}"
   local deadline=$((SECONDS + timeout_sec))
-  local ready_probe="$(plan_value '.readiness_check.ready_probe')"
-  local readiness_url="$(plan_value '.readiness_check.url')"
-  local timeout_failure_reason="$(plan_value '.readiness_check.timeout_failure_reason')"
+  local ready_probe="$(plan_value '.readiness.ready_probe')"
+  local readiness_url="$(plan_value '.readiness.url')"
+  local timeout_failure_reason="$(plan_value '.readiness.timeout_failure_reason')"
 
   while (( SECONDS < deadline )); do
     if ! kill -0 "$service_pid" 2>/dev/null; then
@@ -743,12 +615,12 @@ wait_for_keypackage_publish() {{
   return 1
 }}
 
-openclaw_exec="$(plan_value '.service.exec_command')"
-openclaw_state_dir="$(plan_value '.service.state_dir')"
-openclaw_config_path="$(plan_path "$(plan_value '.service.config_path')")"
+openclaw_exec="$(plan_value '.openclaw.exec_command')"
+openclaw_state_dir="$(plan_value '.openclaw.state_dir')"
+openclaw_config_path="$(plan_path "$(plan_value '.openclaw.config_path')")"
 openclaw_workspace_root="$(dirname "$openclaw_config_path")"
 openclaw_package_root="${{PIKA_OPENCLAW_PACKAGE_ROOT:-$(dirname "$(dirname "$openclaw_exec")")/lib/openclaw}}"
-gateway_port="$(plan_value '.service.gateway_port | tostring')"
+gateway_port="$(plan_value '.openclaw.gateway_port | tostring')"
 
 mkdir -p "$openclaw_state_dir"
 mkdir -p "$openclaw_state_dir/node_modules"
@@ -783,7 +655,7 @@ else
   if [[ "$wait_status" -eq 2 ]]; then
     mark_guest_failed "openclaw_gateway_exited_before_service_ready" "${{service_exit_status:-1}}" false
   else
-    mark_guest_failed "$(plan_value '.readiness_check.timeout_failure_reason')" 1 false
+    mark_guest_failed "$(plan_value '.readiness.timeout_failure_reason')" 1 false
   fi
   exit 1
 fi
@@ -813,7 +685,7 @@ exit $status
     )
 }
 
-fn openclaw_gateway_config(relay_urls: &[String], startup_plan: &GuestStartupPlan) -> String {
+fn openclaw_gateway_config(relay_urls: &[String], startup_plan: &OpenclawStartupPlan) -> String {
     startup_plan
         .validate()
         .expect("openclaw startup plan must be internally consistent");
@@ -984,7 +856,7 @@ mod tests {
 
     #[test]
     fn guest_startup_plan_uses_shared_lifecycle_artifacts() {
-        let plan = guest_startup_plan();
+        let plan = openclaw_startup_plan();
 
         assert_eq!(plan.artifacts.lifecycle_artifacts.status_path, STATUS_PATH);
         assert_eq!(plan.artifacts.lifecycle_artifacts.events_path, EVENTS_PATH);
@@ -993,7 +865,7 @@ mod tests {
 
     #[test]
     fn guest_startup_plan_file_round_trips_through_request_payload() {
-        let plan = guest_startup_plan();
+        let plan = openclaw_startup_plan();
         let request = ManagedGuestAutostart {
             command: GUEST_AUTOSTART_COMMAND.to_string(),
             env: BTreeMap::from([("PIKA_OWNER_PUBKEY".to_string(), "owner".to_string())]),
@@ -1007,51 +879,41 @@ mod tests {
             .files
             .get(GUEST_STARTUP_PLAN_PATH)
             .expect("startup plan file present");
-        let decoded: GuestStartupPlan =
+        let decoded: OpenclawStartupPlan =
             serde_json::from_str(startup_plan).expect("decode startup plan");
 
         assert_eq!(decoded, plan);
     }
 
     #[test]
-    fn guest_startup_plan_validate_rejects_mismatched_service_kind() {
-        let mut plan = guest_startup_plan();
-        plan.service_kind = GuestServiceKind::PikachatDaemon;
+    fn guest_startup_plan_serializes_openclaw_only_shape() {
+        let plan = openclaw_startup_plan();
+        let encoded = serde_json::to_value(&plan).expect("encode startup plan");
 
-        let err = plan
-            .validate()
-            .expect_err("plan should reject mismatched service kind");
-
-        assert!(err.contains("service_kind mismatch"));
+        assert!(encoded.get("openclaw").is_some());
+        assert!(encoded.get("readiness").is_some());
+        assert!(encoded.get("service_kind").is_none());
+        assert!(encoded.get("backend_mode").is_none());
+        assert!(encoded.get("service").is_none());
+        assert!(encoded.get("readiness_check").is_none());
     }
 
     #[test]
-    fn guest_startup_plan_validate_rejects_openclaw_native_mode_with_acp_daemon_backend() {
-        let mut plan = guest_startup_plan();
-        plan.service = GuestServiceLaunch::OpenclawGateway {
-            exec_command: "npx -y openclaw".to_string(),
-            state_dir: "/root/pika-agent/openclaw".to_string(),
-            config_path: GUEST_OPENCLAW_CONFIG_PATH.to_string(),
-            gateway_port: 18789,
-            daemon_backend: GuestOpenclawDaemonBackend::Acp {
-                acp_backend: GuestAcpBackend {
-                    exec_command: "npx -y pi-acp".to_string(),
-                    cwd: "/root/pika-agent/acp".to_string(),
-                },
-            },
-        };
+    fn guest_startup_plan_validate_rejects_non_canonical_openclaw_config_path() {
+        let mut plan = openclaw_startup_plan();
+        plan.openclaw.config_path = "workspace/custom/openclaw.json".to_string();
 
         let err = plan
             .validate()
-            .expect_err("plan should reject OpenClaw native mode with ACP daemon backend");
+            .expect_err("plan should reject non-canonical config path");
 
-        assert!(err.contains("backend_mode=native"));
-        assert!(err.contains("OpenclawGateway.daemon_backend=native"));
+        assert!(err.contains("config_path"));
+        assert!(err.contains(GUEST_OPENCLAW_CONFIG_PATH));
     }
 
     #[test]
     fn guest_startup_plan_validate_rejects_non_canonical_artifact_paths() {
-        let mut plan = guest_startup_plan();
+        let mut plan = openclaw_startup_plan();
         plan.artifacts = GuestStartupArtifacts {
             lifecycle_artifacts: RuntimeArtifactPaths {
                 status_path: "/run/custom/status.json".to_string(),
@@ -1075,6 +937,14 @@ mod tests {
         assert!(script.contains(".artifacts.status_path"));
         assert!(script.contains(".artifacts.events_path"));
         assert!(script.contains(".artifacts.result_path"));
+        assert!(script.contains(".openclaw.exec_command"));
+        assert!(script.contains(".openclaw.state_dir"));
+        assert!(script.contains(".openclaw.config_path"));
+        assert!(script.contains(".readiness.url"));
+        assert!(script.contains(".readiness.ready_probe"));
+        assert!(script.contains(".readiness.timeout_failure_reason"));
+        assert!(!script.contains(".service."));
+        assert!(!script.contains(".readiness_check."));
         assert!(!script.contains("ready_marker_path"));
         assert!(!script.contains("failed_marker_path"));
         assert!(!script.contains("service-ready.json"));

@@ -1,5 +1,6 @@
 mod auth;
 mod branch_store;
+mod chat_store;
 mod ci;
 mod ci_manifest;
 mod ci_state;

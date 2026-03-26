@@ -36,11 +36,11 @@ use crate::nostr_auth::{
 };
 use crate::{RequestContext, State};
 use pika_cloud::{
-    decode_runtime_status, incus_mount_device_config, incus_runtime_config, AgentProvisionRequest,
-    AgentStartupPhase, IncusProvisionParams, IncusRuntimeConfig, IncusRuntimePlan, LifecycleState,
-    ManagedOpenClawLaunchAuth, ManagedRuntimeBackupStatus, ManagedRuntimeStatus,
-    ManagedVmProvisionParams as ManagedRuntimeProvisionParams, MountKind, MountMode,
-    RuntimeIdentity, RuntimeMount, RuntimeResources, RuntimeSpec, RuntimeStatusSnapshot,
+    decode_runtime_status_artifact, incus_mount_device_config, incus_runtime_config,
+    AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams, IncusRuntimeConfig,
+    IncusRuntimePlan, LifecycleState, ManagedOpenClawLaunchAuth, ManagedRuntimeBackupStatus,
+    ManagedRuntimeStatus, ManagedVmProvisionParams as ManagedRuntimeProvisionParams, MountKind,
+    MountMode, RuntimeIdentity, RuntimeMount, RuntimeResources, RuntimeSpec, RuntimeStatusSnapshot,
     VmBackupFreshness, VmBackupUnitKind, VmRecoveryPointKind, STATUS_PATH,
 };
 use pika_relay_profiles::default_message_relays;
@@ -1896,7 +1896,7 @@ impl IncusManagedRuntimeProvider {
                 return None;
             }
         };
-        match decode_guest_lifecycle_status(&status_bytes) {
+        match decode_runtime_status_artifact(&status_path, &status_bytes) {
             Ok(status) => Some(status),
             Err(err) => {
                 tracing::warn!(
@@ -2450,10 +2450,6 @@ impl IncusManagedRuntimeProvider {
             err
         }
     }
-}
-
-fn decode_guest_lifecycle_status(status_bytes: &[u8]) -> serde_json::Result<RuntimeStatusSnapshot> {
-    decode_runtime_status(status_bytes)
 }
 
 fn is_incus_not_found_error(err: &anyhow::Error) -> bool {
@@ -4296,8 +4292,9 @@ mod tests {
     }
 
     #[test]
-    fn decode_guest_lifecycle_status_rejects_malformed_snapshot() {
-        let err = decode_guest_lifecycle_status(
+    fn decode_runtime_status_artifact_rejects_malformed_snapshot() {
+        let err = decode_runtime_status_artifact(
+            STATUS_PATH,
             br#"{
                 "schema_version": 1,
                 "state": "passed",

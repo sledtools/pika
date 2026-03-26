@@ -10,10 +10,12 @@ pub use incus::{
     incus_mount_device_config, incus_runtime_config,
 };
 pub use lifecycle::{
-    LIFECYCLE_SCHEMA_VERSION, LifecycleEvent, LifecycleState, RuntimeResultStatus,
-    RuntimeStatusSnapshot, RuntimeTerminalResult, decode_runtime_event_line, decode_runtime_status,
-    decode_runtime_terminal_result, encode_runtime_event_line, encode_runtime_status_pretty,
-    encode_runtime_terminal_result_pretty, runtime_terminal_result_for_exit_code,
+    LIFECYCLE_SCHEMA_VERSION, LifecycleEvent, LifecycleState, RuntimeLifecycleLoadError,
+    RuntimeResultStatus, RuntimeStatusSnapshot, RuntimeTerminalResult, decode_runtime_event_line,
+    decode_runtime_status, decode_runtime_status_artifact, decode_runtime_terminal_result,
+    decode_runtime_terminal_result_artifact, encode_runtime_event_line,
+    encode_runtime_status_pretty, encode_runtime_terminal_result_pretty, load_runtime_events,
+    load_runtime_status, load_runtime_terminal_result, runtime_terminal_result_for_exit_code,
 };
 pub use mount::{MountKind, MountMode, RuntimeMount};
 pub use paths::{

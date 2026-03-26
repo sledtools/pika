@@ -802,14 +802,15 @@ fn add_declared_payload_mount(
 
 fn staged_payload_source_root(
     local_mount_path: Option<&PathBuf>,
-    remote_output_root: &Path,
+    local_job_dir: &Path,
+    remote_job_dir: &Path,
     remote_host: &str,
 ) -> anyhow::Result<PathBuf> {
     if ssh_host_is_local(remote_host) {
         let local_mount_path = local_mount_path.ok_or_else(|| {
             anyhow!(
-                "missing local staged payload mount for localhost source {}",
-                remote_output_root.display()
+                "missing local staged payload mount for localhost job {}",
+                local_job_dir.display()
             )
         })?;
         return fs::canonicalize(local_mount_path).with_context(|| {
@@ -819,16 +820,23 @@ fn staged_payload_source_root(
             )
         });
     }
-    Ok(remote_output_root.to_path_buf())
+    let local_mount_path = local_mount_path.ok_or_else(|| {
+        anyhow!(
+            "missing local staged payload mount path for remote job {}",
+            local_job_dir.display()
+        )
+    })?;
+    remote_job_path(local_job_dir, remote_job_dir, local_mount_path)
 }
 
 #[cfg(test)]
 pub(super) fn resolve_staged_payload_source_root_for_test(
     local_mount_path: Option<&PathBuf>,
-    remote_output_root: &Path,
+    local_job_dir: &Path,
+    remote_job_dir: &Path,
     remote_host: &str,
 ) -> anyhow::Result<PathBuf> {
-    staged_payload_source_root(local_mount_path, remote_output_root, remote_host)
+    staged_payload_source_root(local_mount_path, local_job_dir, remote_job_dir, remote_host)
 }
 
 fn configure_remote_incus_devices(
@@ -845,13 +853,15 @@ fn configure_remote_incus_devices(
     if job.staged_linux_rust_lane().is_some() {
         let workspace_deps_root = staged_payload_source_root(
             ctx.staged_linux_rust_workspace_deps_dir.as_ref(),
-            &remote.shared.remote_workspace_deps_dir,
+            &ctx.job_dir,
+            &remote.shared.remote_job_dir,
             &remote.shared.remote_host,
         )?;
         add_declared_payload_mounts(remote, &workspace_deps_root, "workspace-deps", log_path)?;
         let workspace_build_root = staged_payload_source_root(
             ctx.staged_linux_rust_workspace_build_dir.as_ref(),
-            &remote.shared.remote_workspace_build_dir,
+            &ctx.job_dir,
+            &remote.shared.remote_job_dir,
             &remote.shared.remote_host,
         )?;
         add_declared_payload_mounts(remote, &workspace_build_root, "workspace-build", log_path)?;

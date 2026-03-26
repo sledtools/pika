@@ -68,8 +68,6 @@ struct RemoteLinuxVmSharedContext {
     remote_artifacts_dir: PathBuf,
     remote_cargo_home_dir: PathBuf,
     remote_target_dir: PathBuf,
-    remote_workspace_deps_dir: PathBuf,
-    remote_workspace_build_dir: PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -961,7 +959,7 @@ fn run_remote_linux_vm_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<J
     let mut phases = RemoteLinuxVmPhaseRecorder::new(backend);
     let execution = (|| -> anyhow::Result<JobOutcome> {
         phases.record(RemoteLinuxVmPhase::PrepareDirectories, || {
-            ensure_remote_linux_vm_directories(&shared, &ctx.host_log_path)
+            ensure_remote_linux_vm_directories(ctx, &shared, &ctx.host_log_path)
         })?;
         phases.record(RemoteLinuxVmPhase::StageWorkspaceSnapshot, || {
             sync_snapshot_to_remote(
@@ -1044,7 +1042,7 @@ pub(crate) fn prepare_remote_linux_vm_backend(
 ) -> anyhow::Result<()> {
     let remote = remote_linux_vm_context(job, ctx)?;
     let shared = remote.shared().clone();
-    ensure_remote_linux_vm_directories(&shared, log_path)?;
+    ensure_remote_linux_vm_directories(ctx, &shared, log_path)?;
     sync_snapshot_to_remote(
         &ctx.workspace_snapshot_dir,
         &shared.remote_snapshot_dir,
@@ -1777,12 +1775,6 @@ fn remote_linux_vm_context(
         remote_artifacts_dir: remote_job_dir.join("artifacts"),
         remote_cargo_home_dir: remote_work_dir.join("cache").join("cargo-home"),
         remote_target_dir: remote_work_dir.join("cache").join("cargo-target"),
-        remote_workspace_deps_dir: remote_job_dir
-            .join("staged-linux-rust")
-            .join("workspace-deps"),
-        remote_workspace_build_dir: remote_job_dir
-            .join("staged-linux-rust")
-            .join("workspace-build"),
     };
     Ok(RemoteLinuxVmContext::Incus(RemoteIncusContext {
         shared,
@@ -1894,7 +1886,37 @@ fn run_ssh_command(remote_host: &str, command: &str) -> Command {
     cmd
 }
 
+fn remote_job_path(
+    local_job_dir: &Path,
+    remote_job_dir: &Path,
+    local_path: &Path,
+) -> anyhow::Result<PathBuf> {
+    let relative = local_path.strip_prefix(local_job_dir).with_context(|| {
+        format!(
+            "derive remote job path for {} under {}",
+            local_path.display(),
+            local_job_dir.display()
+        )
+    })?;
+    Ok(remote_job_dir.join(relative))
+}
+
+fn staged_payload_remote_dirs(
+    ctx: &HostContext,
+    shared: &RemoteLinuxVmSharedContext,
+) -> anyhow::Result<Vec<PathBuf>> {
+    [
+        ctx.staged_linux_rust_workspace_deps_dir.as_ref(),
+        ctx.staged_linux_rust_workspace_build_dir.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|path| remote_job_path(&ctx.job_dir, &shared.remote_job_dir, path))
+    .collect()
+}
+
 fn ensure_remote_linux_vm_directories(
+    ctx: &HostContext,
     shared: &RemoteLinuxVmSharedContext,
     log_path: &Path,
 ) -> anyhow::Result<()> {
@@ -1904,17 +1926,21 @@ fn ensure_remote_linux_vm_directories(
             shared.remote_snapshot_dir.display()
         )
     })?;
-    let command = format!(
-        "set -euo pipefail; mkdir -p {} {} {} {} {} {} {} {}",
-        shell_single_quote(&shared.remote_job_dir.display().to_string()),
-        shell_single_quote(&remote_snapshot_parent.display().to_string()),
-        shell_single_quote(&shared.remote_job_dir.join("vm").display().to_string()),
-        shell_single_quote(&shared.remote_artifacts_dir.display().to_string()),
-        shell_single_quote(&shared.remote_cargo_home_dir.display().to_string()),
-        shell_single_quote(&shared.remote_target_dir.display().to_string()),
-        shell_single_quote(&shared.remote_workspace_deps_dir.display().to_string()),
-        shell_single_quote(&shared.remote_workspace_build_dir.display().to_string()),
-    );
+    let mut dirs = vec![
+        shared.remote_job_dir.clone(),
+        remote_snapshot_parent.to_path_buf(),
+        shared.remote_job_dir.join("vm"),
+        shared.remote_artifacts_dir.clone(),
+        shared.remote_cargo_home_dir.clone(),
+        shared.remote_target_dir.clone(),
+    ];
+    dirs.extend(staged_payload_remote_dirs(ctx, shared)?);
+    let quoted_dirs = dirs
+        .iter()
+        .map(|path| shell_single_quote(&path.display().to_string()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let command = format!("set -euo pipefail; mkdir -p {quoted_dirs}");
     run_command_to_log(
         &mut run_ssh_command(&shared.remote_host, &command),
         log_path,
@@ -2423,7 +2449,8 @@ mod tests {
         remote_linux_vm_execution_from_error, remote_snapshot_ready_for_use,
         render_tart_guest_script, run_job_on_runner, run_status_from_terminal_result,
         shell_single_quote, staged_linux_remote_defaults, staged_linux_remote_snapshot_dir,
-        write_host_local_dev_env_script, write_host_local_dev_env_state,
+        staged_payload_remote_dirs, write_host_local_dev_env_script,
+        write_host_local_dev_env_state,
     };
     use crate::model::{
         GuestCommand, JobSpec, PreparedOutputPayloadManifestRecord,
@@ -2465,14 +2492,6 @@ mod tests {
                 .to_path_buf(),
             remote_cargo_home_dir: Path::new("/var/tmp/pikaci/cache/cargo-home").to_path_buf(),
             remote_target_dir: Path::new("/var/tmp/pikaci/cache/cargo-target").to_path_buf(),
-            remote_workspace_deps_dir: Path::new(
-                "/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-deps",
-            )
-            .to_path_buf(),
-            remote_workspace_build_dir: Path::new(
-                "/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-build",
-            )
-            .to_path_buf(),
         }
     }
 
@@ -3603,6 +3622,25 @@ mod tests {
 
     #[test]
     fn ensure_remote_linux_vm_directories_create_declared_staged_output_dirs() {
+        let ctx = HostContext {
+            source_root: PathBuf::from("/tmp/source"),
+            workspace_snapshot_dir: PathBuf::from("/tmp/snapshot"),
+            host_local_cache_dir: None,
+            workspace_source_dir: None,
+            workspace_source_content_hash: None,
+            workspace_read_only: true,
+            job_dir: PathBuf::from("/tmp/run/jobs/job"),
+            host_log_path: PathBuf::from("/tmp/run/jobs/job/host.log"),
+            guest_log_path: PathBuf::from("/tmp/run/jobs/job/artifacts/guest.log"),
+            shared_cargo_home_dir: PathBuf::from("/tmp/cargo-home"),
+            shared_target_dir: PathBuf::from("/tmp/target"),
+            staged_linux_rust_workspace_deps_dir: Some(PathBuf::from(
+                "/tmp/run/jobs/job/staged-linux-rust/workspace-deps",
+            )),
+            staged_linux_rust_workspace_build_dir: Some(PathBuf::from(
+                "/tmp/run/jobs/job/staged-linux-rust/workspace-build",
+            )),
+        };
         let shared = RemoteLinuxVmSharedContext {
             remote_host: "localhost".to_string(),
             remote_job_dir: PathBuf::from("/var/tmp/pikaci/runs/run/jobs/job"),
@@ -3610,30 +3648,26 @@ mod tests {
             remote_artifacts_dir: PathBuf::from("/var/tmp/pikaci/runs/run/jobs/job/artifacts"),
             remote_cargo_home_dir: PathBuf::from("/var/tmp/pikaci/cache/cargo-home"),
             remote_target_dir: PathBuf::from("/var/tmp/pikaci/cache/cargo-target"),
-            remote_workspace_deps_dir: PathBuf::from(
-                "/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-deps",
-            ),
-            remote_workspace_build_dir: PathBuf::from(
-                "/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-build",
-            ),
         };
+        let mut dirs = vec![
+            shared.remote_job_dir.clone(),
+            shared
+                .remote_snapshot_dir
+                .parent()
+                .expect("snapshot parent")
+                .to_path_buf(),
+            shared.remote_job_dir.join("vm"),
+            shared.remote_artifacts_dir.clone(),
+            shared.remote_cargo_home_dir.clone(),
+            shared.remote_target_dir.clone(),
+        ];
+        dirs.extend(staged_payload_remote_dirs(&ctx, &shared).expect("payload dirs"));
         let command = format!(
-            "set -euo pipefail; mkdir -p {} {} {} {} {} {} {} {}",
-            shell_single_quote(&shared.remote_job_dir.display().to_string()),
-            shell_single_quote(
-                &shared
-                    .remote_snapshot_dir
-                    .parent()
-                    .expect("snapshot parent")
-                    .display()
-                    .to_string()
-            ),
-            shell_single_quote(&shared.remote_job_dir.join("vm").display().to_string()),
-            shell_single_quote(&shared.remote_artifacts_dir.display().to_string()),
-            shell_single_quote(&shared.remote_cargo_home_dir.display().to_string()),
-            shell_single_quote(&shared.remote_target_dir.display().to_string()),
-            shell_single_quote(&shared.remote_workspace_deps_dir.display().to_string()),
-            shell_single_quote(&shared.remote_workspace_build_dir.display().to_string()),
+            "set -euo pipefail; mkdir -p {}",
+            dirs.iter()
+                .map(|path| shell_single_quote(&path.display().to_string()))
+                .collect::<Vec<_>>()
+                .join(" ")
         );
 
         assert!(
@@ -3654,11 +3688,13 @@ mod tests {
             Utc::now().timestamp_nanos_opt().expect("nanos")
         ));
         fs::create_dir_all(&root).expect("create root");
-        let local_mount = root.join("workspace-build");
+        let local_job_dir = root.join("job");
+        let local_mount = local_job_dir.join("staged-linux-rust/workspace-build");
         fs::create_dir_all(&local_mount).expect("create local mount");
         let source = incus::resolve_staged_payload_source_root_for_test(
             Some(&local_mount),
-            Path::new("/var/tmp/pikaci-prepared-output/runs/run/jobs/job/staged-linux-rust/workspace-build"),
+            &local_job_dir,
+            Path::new("/var/tmp/pikaci-prepared-output/runs/run/jobs/job"),
             "localhost",
         )
         .expect("resolve localhost source");
@@ -3671,12 +3707,19 @@ mod tests {
 
     #[test]
     fn remote_linux_incus_preserves_remote_staged_payload_root_for_non_localhost() {
-        let remote_root = Path::new(
+        let local_job_dir = Path::new("/tmp/run/jobs/job");
+        let local_mount = PathBuf::from("/tmp/run/jobs/job/staged-linux-rust/workspace-build");
+        let remote_job_dir = Path::new("/var/tmp/pikaci-prepared-output/runs/run/jobs/job");
+        let remote_root = PathBuf::from(
             "/var/tmp/pikaci-prepared-output/runs/run/jobs/job/staged-linux-rust/workspace-build",
         );
-        let source =
-            incus::resolve_staged_payload_source_root_for_test(None, remote_root, "pika-build")
-                .expect("resolve remote source");
+        let source = incus::resolve_staged_payload_source_root_for_test(
+            Some(&local_mount),
+            local_job_dir,
+            remote_job_dir,
+            "pika-build",
+        )
+        .expect("resolve remote source");
         assert_eq!(source, remote_root);
     }
 }

@@ -1,6 +1,7 @@
 { lib, pkgs, modulesPath, ... }:
 
 let
+  pikaCloudLifecycle = import ./pika-cloud-lifecycle-helper.nix { inherit pkgs; };
   pikaciIncusRun = pkgs.writeScriptBin "pikaci-incus-run" ''
     #!${pkgs.python3}/bin/python3
     import json
@@ -14,61 +15,8 @@ let
     PIKACI_UID = 1000
     USERS_GID = 100
     SYSTEM_BIN = "/run/current-system/sw/bin"
+    LIFECYCLE_HELPER = "/run/current-system/sw/bin/pika-cloud-lifecycle"
     INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION = 2
-    LIFECYCLE_SCHEMA_VERSION = 1
-    EVENT_SEQ = 0
-
-
-    def finished_at() -> str:
-        return datetime.now().astimezone().isoformat(timespec="seconds")
-
-
-    def write_json(path: pathlib.Path, payload: dict) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-
-
-    def write_status(state_dir: pathlib.Path, state: str, message: str, **fields) -> None:
-        payload = {
-            "schema_version": LIFECYCLE_SCHEMA_VERSION,
-            "state": state,
-            "updated_at": finished_at(),
-            "message": message,
-        }
-        if fields:
-            payload["details"] = fields
-        write_json(state_dir / "status.json", payload)
-
-
-    def append_event(events_path: pathlib.Path, kind: str, message: str, **fields) -> None:
-        global EVENT_SEQ
-        EVENT_SEQ += 1
-        events_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "schema_version": LIFECYCLE_SCHEMA_VERSION,
-            "seq": EVENT_SEQ,
-            "kind": kind,
-            "timestamp": finished_at(),
-            "message": message,
-        }
-        if fields:
-            payload["details"] = fields
-        with events_path.open("a", encoding="utf-8") as file:
-            file.write(json.dumps(payload) + "\n")
-
-
-    def write_result(state_dir: pathlib.Path, exit_code: int, message: str) -> None:
-        status = "completed" if exit_code == 0 else "failed"
-        write_json(
-            state_dir / "result.json",
-            {
-                "schema_version": 1,
-                "status": status,
-                "exit_code": exit_code,
-                "finished_at": finished_at(),
-                "message": message,
-            },
-        )
 
 
     def path_has_parent_traversal(path: pathlib.Path) -> bool:
@@ -114,6 +62,73 @@ let
                 output.flush()
 
 
+    def run_lifecycle_helper(*args) -> None:
+        subprocess.run([LIFECYCLE_HELPER, *args], check=True)
+
+
+    def write_status(
+        status_path: pathlib.Path,
+        state: str,
+        message: str,
+        details_json: str | None = None,
+    ) -> None:
+        helper_args = [
+            "status",
+            "--status-path",
+            str(status_path),
+            "--state",
+            state,
+            "--message",
+            message,
+        ]
+        if details_json is not None:
+            helper_args.extend(["--details-json", details_json])
+        run_lifecycle_helper(*helper_args)
+
+
+    def append_event(
+        events_path: pathlib.Path,
+        kind: str,
+        message: str,
+        details_json: str | None = None,
+    ) -> None:
+        helper_args = [
+            "event",
+            "--events-path",
+            str(events_path),
+            "--kind",
+            kind,
+            "--message",
+            message,
+        ]
+        if details_json is not None:
+            helper_args.extend(["--details-json", details_json])
+        run_lifecycle_helper(*helper_args)
+
+
+    def write_result(
+        result_path: pathlib.Path,
+        exit_code: int,
+        message: str,
+        details_json: str | None = None,
+    ) -> None:
+        status = "completed" if exit_code == 0 else "failed"
+        helper_args = [
+            "result",
+            "--result-path",
+            str(result_path),
+            "--status",
+            status,
+            "--exit-code",
+            str(exit_code),
+            "--message",
+            message,
+        ]
+        if details_json is not None:
+            helper_args.extend(["--details-json", details_json])
+        run_lifecycle_helper(*helper_args)
+
+
     request_path = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "")
     if not request_path:
         print("usage: pikaci-incus-run <request-path>", file=sys.stderr)
@@ -132,7 +147,9 @@ let
     logs_dir.mkdir(parents=True, exist_ok=True)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     guest_log_path = logs_dir / "guest.log"
+    status_path = state_dir / "status.json"
     events_path = state_dir / "events.jsonl"
+    result_path = state_dir / "result.json"
     with guest_log_path.open("a", encoding="utf-8") as log_file:
         boot_line = (
             f"[pikaci] incus guest booted at "
@@ -140,7 +157,7 @@ let
         )
         print(boot_line, flush=True)
         print(boot_line, file=log_file, flush=True)
-        write_status(state_dir, "booted", "incus guest booted")
+        write_status(status_path, "booted", "incus guest booted")
         append_event(events_path, "booted", "incus guest booted")
         try:
             request = json.loads(request_path.read_text(encoding="utf-8"))
@@ -204,18 +221,16 @@ let
                 child_command = ["runuser", "-u", "pikaci", "-m", "--", *command_prefix]
 
             write_status(
-                state_dir,
+                status_path,
                 "starting",
                 "launching guest command",
-                command=command,
-                run_as_root=run_as_root,
+                json.dumps({"command": command, "run_as_root": run_as_root}),
             )
             append_event(
                 events_path,
                 "starting",
                 "launching guest command",
-                command=command,
-                run_as_root=run_as_root,
+                json.dumps({"command": command, "run_as_root": run_as_root}),
             )
             completed = subprocess.Popen(
                 child_command,
@@ -235,18 +250,18 @@ let
             )
             lifecycle_state = "completed" if exit_code == 0 else "failed"
             write_status(
-                state_dir,
+                status_path,
                 lifecycle_state,
                 message,
-                exit_code=exit_code,
+                json.dumps({"exit_code": exit_code}),
             )
             append_event(
                 events_path,
                 lifecycle_state,
                 message,
-                exit_code=exit_code,
+                json.dumps({"exit_code": exit_code}),
             )
-            write_result(state_dir, exit_code, message)
+            write_result(result_path, exit_code, message)
             raise SystemExit(exit_code)
         except Exception as exc:
             print(
@@ -259,9 +274,9 @@ let
                 file=log_file,
                 flush=True,
             )
-            write_status(state_dir, "failed", f"Incus guest bootstrap failed: {exc}")
+            write_status(status_path, "failed", f"Incus guest bootstrap failed: {exc}")
             append_event(events_path, "failed", f"Incus guest bootstrap failed: {exc}")
-            write_result(state_dir, 2, f"Incus guest bootstrap failed: {exc}")
+            write_result(result_path, 2, f"Incus guest bootstrap failed: {exc}")
             raise SystemExit(2)
   '';
 in
@@ -351,6 +366,7 @@ in
     postgresql
     procps
     python3
+    pikaCloudLifecycle
     rustc
     util-linux
     vulkan-loader

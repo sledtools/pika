@@ -1,0 +1,204 @@
+#!@python3@
+import argparse
+import fcntl
+import json
+import os
+import pathlib
+import tempfile
+from datetime import datetime
+
+
+LIFECYCLE_SCHEMA_VERSION = 1
+RUNTIME_STATES = (
+    "requested",
+    "provisioning",
+    "booted",
+    "unreachable",
+    "stopped",
+    "destroyed",
+    "starting",
+    "ready",
+    "failed",
+    "completed",
+)
+TERMINAL_STATUSES = ("completed", "failed")
+
+
+def finished_at() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def current_boot_id() -> str | None:
+    try:
+        boot_id = pathlib.Path("/proc/sys/kernel/random/boot_id").read_text(
+            encoding="utf-8"
+        ).strip()
+    except OSError:
+        return None
+    return boot_id or None
+
+
+def parse_details_json(details_json: str | None):
+    if details_json is None:
+        return None
+    details = json.loads(details_json)
+    if details is None:
+        return None
+    return details
+
+
+def write_json_atomically(path: pathlib.Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".tmp.{path.name}.",
+            delete=False,
+        ) as file:
+            json.dump(payload, file, indent=2)
+            file.write("\n")
+            file.flush()
+            os.fsync(file.fileno())
+            tmp_path = pathlib.Path(file.name)
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+
+def default_seq_path(events_path: pathlib.Path) -> pathlib.Path:
+    return events_path.with_suffix(f"{events_path.suffix}.seq")
+
+
+def write_status(
+    status_path: pathlib.Path,
+    state: str,
+    message: str,
+    details,
+) -> None:
+    payload = {
+        "schema_version": LIFECYCLE_SCHEMA_VERSION,
+        "state": state,
+        "updated_at": finished_at(),
+        "message": message,
+    }
+    boot_id = current_boot_id()
+    if boot_id is not None:
+        payload["boot_id"] = boot_id
+    if details is not None:
+        payload["details"] = details
+    write_json_atomically(status_path, payload)
+
+
+def append_event(
+    events_path: pathlib.Path,
+    seq_path: pathlib.Path,
+    kind: str,
+    message: str,
+    details,
+) -> None:
+    payload = {
+        "schema_version": LIFECYCLE_SCHEMA_VERSION,
+        "kind": kind,
+        "timestamp": finished_at(),
+        "message": message,
+    }
+    boot_id = current_boot_id()
+    if boot_id is not None:
+        payload["boot_id"] = boot_id
+    if details is not None:
+        payload["details"] = details
+
+    seq_path.parent.mkdir(parents=True, exist_ok=True)
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    with seq_path.open("a+", encoding="utf-8") as seq_file:
+        fcntl.flock(seq_file.fileno(), fcntl.LOCK_EX)
+        seq_file.seek(0)
+        raw_seq = seq_file.read().strip()
+        seq = int(raw_seq) if raw_seq else 0
+        seq += 1
+        seq_file.seek(0)
+        seq_file.truncate(0)
+        seq_file.write(f"{seq}\n")
+        seq_file.flush()
+        os.fsync(seq_file.fileno())
+
+        payload["seq"] = seq
+        with events_path.open("a", encoding="utf-8") as events_file:
+            events_file.write(json.dumps(payload) + "\n")
+            events_file.flush()
+            os.fsync(events_file.fileno())
+
+
+def write_result(
+    result_path: pathlib.Path,
+    status: str,
+    exit_code: int,
+    message: str,
+    details,
+) -> None:
+    payload = {
+        "schema_version": LIFECYCLE_SCHEMA_VERSION,
+        "status": status,
+        "exit_code": exit_code,
+        "finished_at": finished_at(),
+        "message": message,
+    }
+    if details is not None:
+        payload["details"] = details
+    write_json_atomically(result_path, payload)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="pika-cloud-lifecycle",
+        description="Write shared pika-cloud guest lifecycle artifacts",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    status_parser = subparsers.add_parser("status")
+    status_parser.add_argument("--status-path", required=True, type=pathlib.Path)
+    status_parser.add_argument("--state", required=True, choices=RUNTIME_STATES)
+    status_parser.add_argument("--message", required=True)
+    status_parser.add_argument("--details-json")
+
+    event_parser = subparsers.add_parser("event")
+    event_parser.add_argument("--events-path", required=True, type=pathlib.Path)
+    event_parser.add_argument("--seq-path", type=pathlib.Path)
+    event_parser.add_argument("--kind", required=True, choices=RUNTIME_STATES)
+    event_parser.add_argument("--message", required=True)
+    event_parser.add_argument("--details-json")
+
+    result_parser = subparsers.add_parser("result")
+    result_parser.add_argument("--result-path", required=True, type=pathlib.Path)
+    result_parser.add_argument("--status", required=True, choices=TERMINAL_STATUSES)
+    result_parser.add_argument("--exit-code", required=True, type=int)
+    result_parser.add_argument("--message", required=True)
+    result_parser.add_argument("--details-json")
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    details = parse_details_json(getattr(args, "details_json", None))
+
+    if args.command == "status":
+        write_status(args.status_path, args.state, args.message, details)
+        return 0
+    if args.command == "event":
+        seq_path = args.seq_path or default_seq_path(args.events_path)
+        append_event(args.events_path, seq_path, args.kind, args.message, details)
+        return 0
+    if args.command == "result":
+        write_result(args.result_path, args.status, args.exit_code, args.message, details)
+        return 0
+    parser.error(f"unsupported command: {args.command}")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

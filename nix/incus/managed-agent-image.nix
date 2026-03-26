@@ -1,6 +1,7 @@
 { lib, pkgs, modulesPath, pikachatPkg, openclawGatewayPkg, ... }:
 
 let
+  pikaCloudLifecycle = import ./pika-cloud-lifecycle-helper.nix { inherit pkgs; };
   launcherPath = "/workspace/pika-agent/incus-launcher.sh";
   stateSetupPath = "/workspace/pika-agent/incus-state-volume-setup.sh";
 in
@@ -64,6 +65,7 @@ in
     python3
     pikachatPkg
     openclawGatewayPkg
+    pikaCloudLifecycle
   ];
 
   systemd.tmpfiles.rules = [
@@ -88,6 +90,7 @@ in
       pikachatPkg
       python3
       openclawGatewayPkg
+      pikaCloudLifecycle
     ];
     unitConfig = {
       ConditionPathExists = launcherPath;

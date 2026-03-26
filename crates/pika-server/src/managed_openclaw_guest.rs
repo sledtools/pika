@@ -6,7 +6,7 @@ use pika_cloud::{
     GuestServiceReadinessCheck, GuestStartupArtifacts, GuestStartupPlan, ManagedVmCreateRequest,
     ManagedVmGuestAutostartRequest, GUEST_AUTOSTART_COMMAND, GUEST_AUTOSTART_IDENTITY_PATH,
     GUEST_AUTOSTART_SCRIPT_PATH, GUEST_OPENCLAW_CONFIG_PATH, GUEST_OPENCLAW_EXTENSION_ROOT,
-    GUEST_STARTUP_PLAN_PATH, LIFECYCLE_SCHEMA_VERSION,
+    GUEST_STARTUP_PLAN_PATH,
 };
 use serde_json::json;
 
@@ -126,8 +126,7 @@ fn guest_autostart_script() -> String {
 set -euo pipefail
 
 STARTUP_PLAN_PATH="/{startup_plan_path}"
-LIFECYCLE_SCHEMA_VERSION={lifecycle_schema_version}
-event_seq=0
+LIFECYCLE_HELPER="/run/current-system/sw/bin/pika-cloud-lifecycle"
 service_exit_status=""
 agent_pid=""
 gateway_proxy_pid=""
@@ -156,12 +155,6 @@ plan_path() {{
   fi
 }}
 
-current_boot_id() {{
-  if [[ -r /proc/sys/kernel/random/boot_id ]]; then
-    tr -d '\n' < /proc/sys/kernel/random/boot_id
-  fi
-}}
-
 runtime_status_path() {{
   plan_path "$(plan_value '.artifacts.status_path')"
 }}
@@ -172,17 +165,6 @@ runtime_events_path() {{
 
 runtime_result_path() {{
   plan_path "$(plan_value '.artifacts.result_path')"
-}}
-
-write_json_atomically() {{
-  local path="$1"
-  local payload="$2"
-  local dir
-  dir="$(dirname "$path")"
-  mkdir -p "$dir"
-  local tmp="$dir/.tmp.$(basename "$path").$$"
-  printf '%s\n' "$payload" > "$tmp"
-  mv "$tmp" "$path"
 }}
 
 lifecycle_details_json() {{
@@ -212,60 +194,32 @@ write_status() {{
   local state="$1"
   local message="$2"
   local details_json="${{3:-null}}"
-  local payload
-  payload="$(
-    jq -nc \
-      --argjson schema_version "$LIFECYCLE_SCHEMA_VERSION" \
-      --arg state "$state" \
-      --arg updated_at "$(date --iso-8601=seconds)" \
-      --arg message "$message" \
-      --arg boot_id "$(current_boot_id)" \
-      --argjson details "$details_json" \
-      '
-        {{
-          schema_version: $schema_version,
-          state: $state,
-          updated_at: $updated_at,
-          message: $message
-        }}
-        + (if $boot_id == "" then {{}} else {{ boot_id: $boot_id }} end)
-        + (if $details == null then {{}} else {{ details: $details }} end)
-      '
-  )"
-  write_json_atomically "$(runtime_status_path)" "$payload"
+  local -a args=(
+    status
+    --status-path "$(runtime_status_path)"
+    --state "$state"
+    --message "$message"
+  )
+  if [[ "$details_json" != "null" ]]; then
+    args+=(--details-json "$details_json")
+  fi
+  "$LIFECYCLE_HELPER" "${{args[@]}}"
 }}
 
 append_event() {{
   local kind="$1"
   local message="$2"
   local details_json="${{3:-null}}"
-  event_seq=$((event_seq + 1))
-  local payload
-  payload="$(
-    jq -nc \
-      --argjson schema_version "$LIFECYCLE_SCHEMA_VERSION" \
-      --argjson seq "$event_seq" \
-      --arg timestamp "$(date --iso-8601=seconds)" \
-      --arg kind "$kind" \
-      --arg message "$message" \
-      --arg boot_id "$(current_boot_id)" \
-      --argjson details "$details_json" \
-      '
-        {{
-          schema_version: $schema_version,
-          seq: $seq,
-          timestamp: $timestamp,
-          kind: $kind,
-          message: $message
-        }}
-        + (if $boot_id == "" then {{}} else {{ boot_id: $boot_id }} end)
-        + (if $details == null then {{}} else {{ details: $details }} end)
-      '
-  )"
-  local path
-  path="$(runtime_events_path)"
-  mkdir -p "$(dirname "$path")"
-  printf '%s\n' "$payload" >> "$path"
+  local -a args=(
+    event
+    --events-path "$(runtime_events_path)"
+    --kind "$kind"
+    --message "$message"
+  )
+  if [[ "$details_json" != "null" ]]; then
+    args+=(--details-json "$details_json")
+  fi
+  "$LIFECYCLE_HELPER" "${{args[@]}}"
 }}
 
 write_result() {{
@@ -273,27 +227,17 @@ write_result() {{
   local exit_code="$2"
   local message="$3"
   local details_json="${{4:-null}}"
-  local payload
-  payload="$(
-    jq -nc \
-      --argjson schema_version "$LIFECYCLE_SCHEMA_VERSION" \
-      --arg status "$status" \
-      --arg finished_at "$(date --iso-8601=seconds)" \
-      --arg message "$message" \
-      --argjson exit_code "$exit_code" \
-      --argjson details "$details_json" \
-      '
-        {{
-          schema_version: $schema_version,
-          status: $status,
-          finished_at: $finished_at,
-          message: $message,
-          exit_code: $exit_code
-        }}
-        + (if $details == null then {{}} else {{ details: $details }} end)
-      '
-  )"
-  write_json_atomically "$(runtime_result_path)" "$payload"
+  local -a args=(
+    result
+    --result-path "$(runtime_result_path)"
+    --status "$status"
+    --exit-code "$exit_code"
+    --message "$message"
+  )
+  if [[ "$details_json" != "null" ]]; then
+    args+=(--details-json "$details_json")
+  fi
+  "$LIFECYCLE_HELPER" "${{args[@]}}"
 }}
 
 mark_runtime_booted() {{
@@ -597,7 +541,6 @@ fi
 exit $status
 "#,
         startup_plan_path = GUEST_STARTUP_PLAN_PATH,
-        lifecycle_schema_version = LIFECYCLE_SCHEMA_VERSION,
     )
 }
 
@@ -787,10 +730,12 @@ mod tests {
             &script,
             &[
                 "write_status() {",
-                "schema_version: $schema_version",
-                "state: $state",
-                "updated_at: $updated_at",
-                "message: $message",
+                "LIFECYCLE_HELPER=\"/run/current-system/sw/bin/pika-cloud-lifecycle\"",
+                "\"$LIFECYCLE_HELPER\" \"${args[@]}\"",
+                "--status-path \"$(runtime_status_path)\"",
+                "--state \"$state\"",
+                "--message \"$message\"",
+                "args+=(--details-json \"$details_json\")",
                 "write_status \"booted\" \"managed OpenClaw guest booted\"",
                 "write_status \"starting\" \"waiting for OpenClaw health\"",
                 "write_status \"starting\" \"OpenClaw health ready; publishing keypackage\"",
@@ -798,10 +743,9 @@ mod tests {
                 "write_status \"completed\" \"$message\" \"$details_json\"",
                 "write_status \"failed\" \"$reason\" \"$details_json\"",
                 "append_event() {",
-                "seq: $seq",
-                "timestamp: $timestamp",
-                "kind: $kind",
-                "message: $message",
+                "--events-path \"$(runtime_events_path)\"",
+                "--kind \"$kind\"",
+                "--message \"$message\"",
                 "append_event \"booted\" \"managed OpenClaw guest booted\"",
                 "append_event \"starting\" \"waiting for OpenClaw health\"",
                 "append_event \"starting\" \"OpenClaw health ready; publishing keypackage\"",
@@ -810,6 +754,9 @@ mod tests {
                 "append_event \"failed\" \"$reason\" \"$details_json\"",
             ],
         );
+        assert!(!script.contains("event_seq="));
+        assert!(!script.contains("write_json_atomically"));
+        assert!(!script.contains("current_boot_id"));
         assert!(!script.contains("\"status\": \"passed\""));
     }
 
@@ -821,11 +768,11 @@ mod tests {
             &script,
             &[
                 "write_result() {",
-                "schema_version: $schema_version",
-                "status: $status",
-                "finished_at: $finished_at",
-                "message: $message",
-                "exit_code: $exit_code",
+                "--result-path \"$(runtime_result_path)\"",
+                "--status \"$status\"",
+                "--exit-code \"$exit_code\"",
+                "--message \"$message\"",
+                "args+=(--details-json \"$details_json\")",
                 "write_result \"completed\" \"$exit_code\" \"$message\" \"$details_json\"",
                 "write_result \"failed\" \"$exit_code\" \"$reason\" \"$details_json\"",
             ],

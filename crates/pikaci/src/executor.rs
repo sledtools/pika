@@ -228,10 +228,6 @@ const REMOTE_LINUX_VM_INCUS_IMAGE_ALIAS_DEFAULT: &str = "pikaci/dev";
 const REMOTE_LINUX_VM_INCUS_READ_ONLY_DISK_IO_BUS: &str = "virtiofs";
 const REMOTE_LINUX_VM_INCUS_RUN_BINARY: &str = "/run/current-system/sw/bin/pikaci-incus-run";
 const REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH: &str = "/workspace/snapshot";
-#[cfg(test)]
-const REMOTE_LINUX_VM_INCUS_WORKSPACE_DEPS_MOUNT_PATH: &str = "/staged/linux-rust/workspace-deps";
-#[cfg(test)]
-const REMOTE_LINUX_VM_INCUS_WORKSPACE_BUILD_MOUNT_PATH: &str = "/staged/linux-rust/workspace-build";
 
 struct TartRunProcess {
     child: std::process::Child,
@@ -2447,10 +2443,8 @@ mod tests {
 
     use super::{
         HostContext, HostLocalCommandMode, HostLocalDevEnvState, HostLocalEnvironmentRefresh,
-        REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH,
-        REMOTE_LINUX_VM_INCUS_WORKSPACE_BUILD_MOUNT_PATH,
-        REMOTE_LINUX_VM_INCUS_WORKSPACE_DEPS_MOUNT_PATH, RemoteIncusContext,
-        RemoteLinuxVmSharedContext, StagedPreparedPayload, attach_remote_linux_vm_execution,
+        REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH, RemoteIncusContext, RemoteLinuxVmSharedContext,
+        StagedPreparedPayload, attach_remote_linux_vm_execution,
         build_sync_directory_finalize_command, cached_host_local_dev_env_is_usable,
         host_local_command_mode, host_local_dev_env_script_path, host_local_dev_env_shell_program,
         incus, prepare_host_local_cached_dev_env_with, read_host_local_dev_env_state,
@@ -2464,6 +2458,7 @@ mod tests {
         GuestCommand, JobSpec, PreparedOutputPayloadManifestRecord,
         PreparedOutputPayloadMountRecord, RemoteLinuxVmBackend, RemoteLinuxVmExecutionRecord,
         RemoteLinuxVmImageRecord, RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord, RunStatus,
+        StagedLinuxRustPayloadRole,
     };
     use crate::snapshot::SnapshotMetadata;
 
@@ -2740,7 +2735,7 @@ mod tests {
             &sample_incus_context(),
             "pikaci-workspace-deps",
             Path::new("/nix/store/workspace-deps"),
-            REMOTE_LINUX_VM_INCUS_WORKSPACE_DEPS_MOUNT_PATH,
+            StagedLinuxRustPayloadRole::WorkspaceDeps.guest_mount_path(),
             true,
             "virtiofs",
         );
@@ -2752,7 +2747,7 @@ mod tests {
         assert!(args.contains(&"source=/nix/store/workspace-deps".to_string()));
         assert!(args.contains(&format!(
             "path={}",
-            REMOTE_LINUX_VM_INCUS_WORKSPACE_DEPS_MOUNT_PATH
+            StagedLinuxRustPayloadRole::WorkspaceDeps.guest_mount_path()
         )));
         assert!(args.contains(&"readonly=true".to_string()));
         assert!(args.contains(&"shift=false".to_string()));
@@ -2809,7 +2804,9 @@ mod tests {
             vec![PreparedOutputPayloadMountRecord {
                 name: "workspace_build_root".to_string(),
                 relative_path: ".".to_string(),
-                guest_path: REMOTE_LINUX_VM_INCUS_WORKSPACE_BUILD_MOUNT_PATH.to_string(),
+                guest_path: StagedLinuxRustPayloadRole::WorkspaceBuild
+                    .guest_mount_path()
+                    .to_string(),
                 read_only: true,
             }]
         );

@@ -1722,9 +1722,7 @@ fn staged_linux_payload_specs(
             prepare_node_id: format!("prepare-{prefix}-{}", role.prepare_node_suffix()),
             installable: staged_linux_rust_installable(snapshot_dir, lane, role),
             output_name: lane.payload_output_name(role),
-            local_mount_path: job_dir
-                .join("staged-linux-rust")
-                .join(role.mount_dir_name()),
+            local_mount_path: role.local_mount_path(job_dir),
             prepare_description: format!(
                 "{} for {}",
                 role.prepare_description(),

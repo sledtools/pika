@@ -97,25 +97,16 @@
 
         const authStorage = window.localStorage;
 
-        function oldAuthKey(key) {
-          if (!key.startsWith('pika_git_')) return key;
-          return 'pika_news_' + key.slice('pika_git_'.length);
-        }
-
         function getAuthValue(key) {
-          const current = authStorage.getItem(key);
-          if (current !== null) return current;
-          return authStorage.getItem(oldAuthKey(key));
+          return authStorage.getItem(key);
         }
 
         function setAuthValue(key, value) {
           authStorage.setItem(key, value);
-          authStorage.removeItem(oldAuthKey(key));
         }
 
         function removeAuthValue(key) {
           authStorage.removeItem(key);
-          authStorage.removeItem(oldAuthKey(key));
         }
 
         function readAuthSnapshot() {
@@ -272,10 +263,7 @@
         loginBtn.addEventListener('click', doLogin);
 
         window.addEventListener('storage', function (event) {
-          if (
-            !event.key
-            || (!event.key.startsWith('pika_git_') && !event.key.startsWith('pika_news_'))
-          ) return;
+          if (!event.key || !event.key.startsWith('pika_git_')) return;
           const snapshot = readAuthSnapshot();
           if (snapshot.token && snapshot.npub) {
             showAuthed(snapshot.npub, snapshot.isAdmin, snapshot.canForgeWrite);

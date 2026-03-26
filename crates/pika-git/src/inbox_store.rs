@@ -111,13 +111,10 @@ impl Store {
                 .query_map(params![npub, limit, offset], |row| {
                     Ok(InboxItem {
                         review_id: row.get(0)?,
-                        branch_id: Some(row.get(0)?),
-                        pr_id: None,
+                        branch_id: row.get(0)?,
                         repo: row.get(1)?,
-                        branch_name: Some(row.get(2)?),
-                        pr_number: None,
+                        branch_name: row.get(2)?,
                         title: row.get(3)?,
-                        url: None,
                         state: row.get(4)?,
                         updated_at: row.get(5)?,
                         generation_status: row

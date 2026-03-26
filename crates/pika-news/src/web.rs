@@ -33,13 +33,13 @@ use sha2::Sha256;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::auth::{normalize_npub, AuthState};
-use crate::branch_store::{
-    BranchCiLaneRecord, BranchCiRunRecord, BranchDetailRecord, BranchFeedItem, NightlyFeedItem,
-    NightlyLaneRecord, NightlyRunRecord,
-};
+use crate::branch_store::{BranchDetailRecord, BranchFeedItem};
 use crate::ci;
 use crate::ci_state::{
     CiLaneExecutionReason, CiLaneFailureKind, CiTargetHealthSnapshot, CiTargetHealthState,
+};
+use crate::ci_store::{
+    BranchCiLaneRecord, BranchCiRunRecord, NightlyFeedItem, NightlyLaneRecord, NightlyRunRecord,
 };
 use crate::config::Config;
 use crate::forge_runtime::{ForgeRuntime, ForgeRuntimeContext, ManualMirrorPassStatus};

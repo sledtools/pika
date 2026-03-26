@@ -748,6 +748,15 @@ mod tests {
     use super::*;
     use pika_cloud::{EVENTS_PATH, RESULT_PATH, STATUS_PATH};
 
+    fn assert_contains_all(haystack: &str, needles: &[&str]) {
+        for needle in needles {
+            assert!(
+                haystack.contains(needle),
+                "expected generated guest script to contain `{needle}`"
+            );
+        }
+    }
+
     #[test]
     fn guest_startup_plan_uses_shared_lifecycle_artifacts() {
         let plan = guest_startup_plan();
@@ -768,5 +777,59 @@ mod tests {
         assert!(!script.contains("failed_marker_path"));
         assert!(!script.contains("service-ready.json"));
         assert!(!script.contains("service-failed.json"));
+    }
+
+    #[test]
+    fn guest_autostart_script_pins_shared_status_and_event_contract() {
+        let script = guest_autostart_script();
+
+        assert_contains_all(
+            &script,
+            &[
+                "write_status() {",
+                "schema_version: $schema_version",
+                "state: $state",
+                "updated_at: $updated_at",
+                "message: $message",
+                "write_status \"booted\" \"managed OpenClaw guest booted\"",
+                "write_status \"starting\" \"waiting for OpenClaw health\"",
+                "write_status \"starting\" \"OpenClaw health ready; publishing keypackage\"",
+                "write_status \"ready\" \"managed OpenClaw guest ready\"",
+                "write_status \"completed\" \"$message\" \"$details_json\"",
+                "write_status \"failed\" \"$reason\" \"$details_json\"",
+                "append_event() {",
+                "seq: $seq",
+                "timestamp: $timestamp",
+                "kind: $kind",
+                "message: $message",
+                "append_event \"booted\" \"managed OpenClaw guest booted\"",
+                "append_event \"starting\" \"waiting for OpenClaw health\"",
+                "append_event \"starting\" \"OpenClaw health ready; publishing keypackage\"",
+                "append_event \"ready\" \"managed OpenClaw guest ready\"",
+                "append_event \"completed\" \"$message\" \"$details_json\"",
+                "append_event \"failed\" \"$reason\" \"$details_json\"",
+            ],
+        );
+        assert!(!script.contains("\"status\": \"passed\""));
+    }
+
+    #[test]
+    fn guest_autostart_script_pins_shared_terminal_result_contract() {
+        let script = guest_autostart_script();
+
+        assert_contains_all(
+            &script,
+            &[
+                "write_result() {",
+                "schema_version: $schema_version",
+                "status: $status",
+                "finished_at: $finished_at",
+                "message: $message",
+                "exit_code: $exit_code",
+                "write_result \"completed\" \"$exit_code\" \"$message\" \"$details_json\"",
+                "write_result \"failed\" \"$exit_code\" \"$reason\" \"$details_json\"",
+            ],
+        );
+        assert!(!script.contains("write_result \"passed\""));
     }
 }

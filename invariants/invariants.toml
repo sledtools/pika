@@ -1,0 +1,34 @@
+version = 1
+name = "pika-project-invariants"
+
+[[invariant]]
+id = "PIKACI-001"
+area = "pikaci"
+kind = "allowed"
+statement = "pikaci may depend on pika-cloud."
+scope = [
+  "crates/pikaci/**",
+  "crates/pika-news/**",
+]
+
+[[invariant]]
+id = "PIKACI-002"
+area = "pikaci"
+kind = "must"
+statement = "The reusable pikaci execution layer does not hardcode Pika-specific CI lanes, targets, or package-specific test commands."
+scope = [
+  "crates/pikaci/**",
+]
+hint = "Pay close attention to exported library types and execution models, not just the forge manifest."
+
+[[invariant]]
+id = "PIKACI-003"
+area = "pikaci"
+kind = "must"
+statement = "Pika-specific path filters and lane catalogs live outside the reusable pikaci execution layer."
+scope = [
+  "crates/pikaci/**",
+  "ci/**",
+  "crates/pika-news/**",
+]
+hint = "Look for duplicated lane/path-filter policy between the forge manifest and pikaci code."

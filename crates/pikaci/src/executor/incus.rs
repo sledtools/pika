@@ -287,6 +287,7 @@ pub(super) fn load_image_record(
 
 pub(super) fn ensure_remote_incus_runtime(
     job: &JobSpec,
+    ctx: &HostContext,
     remote: &RemoteIncusContext,
     log_path: &Path,
 ) -> anyhow::Result<()> {
@@ -325,7 +326,7 @@ pub(super) fn ensure_remote_incus_runtime(
         log_path,
         "[pikaci] create remote Linux VM backend `incus` instance",
     )?;
-    configure_remote_incus_devices(job, remote, &runtime_plan, log_path)?;
+    configure_remote_incus_devices(job, ctx, remote, &runtime_plan, log_path)?;
     run_remote_incus_to_log(
         &remote.shared.remote_host,
         &[
@@ -342,10 +343,11 @@ pub(super) fn ensure_remote_incus_runtime(
 
 pub(super) fn prepare_runtime(
     job: &JobSpec,
+    ctx: &HostContext,
     remote: &RemoteIncusContext,
     log_path: &Path,
 ) -> anyhow::Result<()> {
-    ensure_remote_incus_runtime(job, remote, log_path)
+    ensure_remote_incus_runtime(job, ctx, remote, log_path)
 }
 
 pub(super) fn delete_remote_incus_instance(
@@ -797,8 +799,40 @@ fn add_declared_payload_mount(
     )
 }
 
+fn staged_payload_source_root(
+    local_mount_path: Option<&PathBuf>,
+    remote_output_root: &Path,
+    remote_host: &str,
+) -> anyhow::Result<PathBuf> {
+    if ssh_host_is_local(remote_host) {
+        let local_mount_path = local_mount_path.ok_or_else(|| {
+            anyhow!(
+                "missing local staged payload mount for localhost source {}",
+                remote_output_root.display()
+            )
+        })?;
+        return fs::canonicalize(local_mount_path).with_context(|| {
+            format!(
+                "resolve local staged payload source {}",
+                local_mount_path.display()
+            )
+        });
+    }
+    Ok(remote_output_root.to_path_buf())
+}
+
+#[cfg(test)]
+pub(super) fn resolve_staged_payload_source_root_for_test(
+    local_mount_path: Option<&PathBuf>,
+    remote_output_root: &Path,
+    remote_host: &str,
+) -> anyhow::Result<PathBuf> {
+    staged_payload_source_root(local_mount_path, remote_output_root, remote_host)
+}
+
 fn configure_remote_incus_devices(
     job: &JobSpec,
+    ctx: &HostContext,
     remote: &RemoteIncusContext,
     runtime_plan: &IncusRuntimePlan,
     log_path: &Path,
@@ -808,18 +842,18 @@ fn configure_remote_incus_devices(
     }
     add_snapshot_mount(remote, runtime_plan, log_path)?;
     if job.staged_linux_rust_lane().is_some() {
-        add_declared_payload_mounts(
-            remote,
+        let workspace_deps_root = staged_payload_source_root(
+            ctx.staged_linux_rust_workspace_deps_dir.as_ref(),
             &remote.shared.remote_workspace_deps_dir,
-            "workspace-deps",
-            log_path,
+            &remote.shared.remote_host,
         )?;
-        add_declared_payload_mounts(
-            remote,
+        add_declared_payload_mounts(remote, &workspace_deps_root, "workspace-deps", log_path)?;
+        let workspace_build_root = staged_payload_source_root(
+            ctx.staged_linux_rust_workspace_build_dir.as_ref(),
             &remote.shared.remote_workspace_build_dir,
-            "workspace-build",
-            log_path,
+            &remote.shared.remote_host,
         )?;
+        add_declared_payload_mounts(remote, &workspace_build_root, "workspace-build", log_path)?;
     }
     Ok(())
 }

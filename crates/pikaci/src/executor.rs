@@ -1923,12 +1923,7 @@ fn ensure_remote_linux_vm_directories(
         )
     })?;
     let command = format!(
-        concat!(
-            "set -euo pipefail; ",
-            "mkdir -p {} {} {} {} {} {}; ",
-            "if [ ! -e {} ] && [ ! -L {} ]; then mkdir -p {}; fi; ",
-            "if [ ! -e {} ] && [ ! -L {} ]; then mkdir -p {}; fi"
-        ),
+        "set -euo pipefail; mkdir -p {} {} {} {} {} {} {} {}",
         shell_single_quote(&shared.remote_job_dir.display().to_string()),
         shell_single_quote(&remote_snapshot_parent.display().to_string()),
         shell_single_quote(&shared.remote_job_dir.join("vm").display().to_string()),
@@ -1936,10 +1931,6 @@ fn ensure_remote_linux_vm_directories(
         shell_single_quote(&shared.remote_cargo_home_dir.display().to_string()),
         shell_single_quote(&shared.remote_target_dir.display().to_string()),
         shell_single_quote(&shared.remote_workspace_deps_dir.display().to_string()),
-        shell_single_quote(&shared.remote_workspace_deps_dir.display().to_string()),
-        shell_single_quote(&shared.remote_workspace_deps_dir.display().to_string()),
-        shell_single_quote(&shared.remote_workspace_build_dir.display().to_string()),
-        shell_single_quote(&shared.remote_workspace_build_dir.display().to_string()),
         shell_single_quote(&shared.remote_workspace_build_dir.display().to_string()),
     );
     run_command_to_log(
@@ -2238,70 +2229,14 @@ fn build_sync_directory_finalize_command(
     )
 }
 
-fn remote_symlink(
-    target: &Path,
-    link: &Path,
-    remote_host: &str,
-    log_path: &Path,
-) -> anyhow::Result<()> {
-    let command = format!(
-        "set -euo pipefail; mkdir -p {}; ln -sfn {} {}",
-        shell_single_quote(
-            &link
-                .parent()
-                .ok_or_else(|| anyhow!("remote link {} has no parent", link.display()))?
-                .display()
-                .to_string()
-        ),
-        shell_single_quote(&target.display().to_string()),
-        shell_single_quote(&link.display().to_string()),
-    );
-    run_command_to_log(
-        &mut run_ssh_command(remote_host, &command),
-        log_path,
-        "[pikaci] install remote Linux VM runtime symlink",
-    )
-}
-
 fn prepare_remote_linux_vm_runtime(
     job: &JobSpec,
     ctx: &HostContext,
     remote: &RemoteLinuxVmContext,
     log_path: &Path,
 ) -> anyhow::Result<()> {
-    let shared = remote.shared();
-    if ssh_host_is_local(&shared.remote_host) {
-        if let Some(local_workspace_deps) = &ctx.staged_linux_rust_workspace_deps_dir {
-            let realized = fs::canonicalize(local_workspace_deps).with_context(|| {
-                format!(
-                    "resolve staged Linux Rust workspace deps mount {}",
-                    local_workspace_deps.display()
-                )
-            })?;
-            remote_symlink(
-                &realized,
-                &shared.remote_workspace_deps_dir,
-                &shared.remote_host,
-                log_path,
-            )?;
-        }
-        if let Some(local_workspace_build) = &ctx.staged_linux_rust_workspace_build_dir {
-            let realized = fs::canonicalize(local_workspace_build).with_context(|| {
-                format!(
-                    "resolve staged Linux Rust workspace build mount {}",
-                    local_workspace_build.display()
-                )
-            })?;
-            remote_symlink(
-                &realized,
-                &shared.remote_workspace_build_dir,
-                &shared.remote_host,
-                log_path,
-            )?;
-        }
-    }
     match remote {
-        RemoteLinuxVmContext::Incus(remote) => incus::prepare_runtime(job, remote, log_path),
+        RemoteLinuxVmContext::Incus(remote) => incus::prepare_runtime(job, ctx, remote, log_path),
     }
 }
 
@@ -2480,6 +2415,7 @@ fn shell_escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -3663,7 +3599,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_remote_linux_vm_directories_skips_existing_staged_output_symlinks() {
+    fn ensure_remote_linux_vm_directories_create_declared_staged_output_dirs() {
         let shared = RemoteLinuxVmSharedContext {
             remote_host: "localhost".to_string(),
             remote_job_dir: PathBuf::from("/var/tmp/pikaci/runs/run/jobs/job"),
@@ -3679,12 +3615,7 @@ mod tests {
             ),
         };
         let command = format!(
-            concat!(
-                "set -euo pipefail; ",
-                "mkdir -p {} {} {} {} {} {}; ",
-                "if [ ! -e {} ] && [ ! -L {} ]; then mkdir -p {}; fi; ",
-                "if [ ! -e {} ] && [ ! -L {} ]; then mkdir -p {}; fi"
-            ),
+            "set -euo pipefail; mkdir -p {} {} {} {} {} {} {} {}",
             shell_single_quote(&shared.remote_job_dir.display().to_string()),
             shell_single_quote(
                 &shared
@@ -3699,15 +3630,50 @@ mod tests {
             shell_single_quote(&shared.remote_cargo_home_dir.display().to_string()),
             shell_single_quote(&shared.remote_target_dir.display().to_string()),
             shell_single_quote(&shared.remote_workspace_deps_dir.display().to_string()),
-            shell_single_quote(&shared.remote_workspace_deps_dir.display().to_string()),
-            shell_single_quote(&shared.remote_workspace_deps_dir.display().to_string()),
-            shell_single_quote(&shared.remote_workspace_build_dir.display().to_string()),
-            shell_single_quote(&shared.remote_workspace_build_dir.display().to_string()),
             shell_single_quote(&shared.remote_workspace_build_dir.display().to_string()),
         );
 
-        assert!(command.contains("if [ ! -e '/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-deps' ] && [ ! -L '/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-deps' ]; then mkdir -p '/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-deps'; fi;"));
-        assert!(command.contains("if [ ! -e '/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-build' ] && [ ! -L '/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-build' ]; then mkdir -p '/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-build'; fi"));
-        assert!(!command.contains("mkdir -p '/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-deps' '/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-build'"));
+        assert!(
+            command
+                .contains("'/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-deps'")
+        );
+        assert!(
+            command
+                .contains("'/var/tmp/pikaci/runs/run/jobs/job/staged-linux-rust/workspace-build'")
+        );
+        assert!(!command.contains("if [ ! -e"));
+    }
+
+    #[test]
+    fn remote_linux_incus_uses_local_staged_payload_mount_for_localhost() {
+        let root = std::env::temp_dir().join(format!(
+            "pikaci-incus-payload-localhost-{}",
+            Utc::now().timestamp_nanos_opt().expect("nanos")
+        ));
+        fs::create_dir_all(&root).expect("create root");
+        let local_mount = root.join("workspace-build");
+        fs::create_dir_all(&local_mount).expect("create local mount");
+        let source = incus::resolve_staged_payload_source_root_for_test(
+            Some(&local_mount),
+            Path::new("/var/tmp/pikaci-prepared-output/runs/run/jobs/job/staged-linux-rust/workspace-build"),
+            "localhost",
+        )
+        .expect("resolve localhost source");
+        assert_eq!(
+            source,
+            fs::canonicalize(&local_mount).expect("canonicalize")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remote_linux_incus_preserves_remote_staged_payload_root_for_non_localhost() {
+        let remote_root = Path::new(
+            "/var/tmp/pikaci-prepared-output/runs/run/jobs/job/staged-linux-rust/workspace-build",
+        );
+        let source =
+            incus::resolve_staged_payload_source_root_for_test(None, remote_root, "pika-build")
+                .expect("resolve remote source");
+        assert_eq!(source, remote_root);
     }
 }

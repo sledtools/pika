@@ -182,6 +182,7 @@
         fileset = lib.fileset.unions [
           ./Cargo.toml
           ./Cargo.lock
+          ./ci
           ./flake.nix
           ./flake.lock
           ./cli
@@ -327,31 +328,6 @@
       };
 
       pikaciServerPkg = mkPikaciPkg serverPkgs (mkPikaciSrc serverPkgs.lib);
-
-      piAgentPkg = serverPkgs.buildNpmPackage rec {
-        pname = "pi-coding-agent-runtime";
-        version = "0.54.2";
-        src = ./nix/pi-agent;
-
-        npmDepsHash = "sha256-A4lcAOsPMd9IeFcURce4zjSuEyjSjdITrqBfPjF7V2I=";
-        dontNpmBuild = true;
-
-        installPhase = ''
-          runHook preInstall
-          mkdir -p "$out/libexec/pi-agent-runtime"
-          cp -R node_modules package.json package-lock.json "$out/libexec/pi-agent-runtime"/
-          mkdir -p "$out/bin"
-          ln -s "$out/libexec/pi-agent-runtime/node_modules/.bin/pi" "$out/bin/pi"
-          runHook postInstall
-        '';
-
-        meta = with serverPkgs.lib; {
-          description = "Pinned runtime for the pi coding agent";
-          homepage = "https://www.npmjs.com/package/@mariozechner/pi-coding-agent";
-          license = licenses.mit;
-          platforms = platforms.linux;
-        };
-      };
 
       openclawGatewayPkg = nix-openclaw.packages."x86_64-linux"."openclaw-gateway";
 
@@ -1086,7 +1062,6 @@ EOF
       };
 
       packages."x86_64-linux" = {
-        pi-agent-runtime = piAgentPkg;
         openclaw-gateway = openclawGatewayPkg;
         pikachat = pikachatPkg;
         pikaci = pikaciServerPkg;

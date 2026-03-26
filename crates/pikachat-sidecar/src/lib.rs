@@ -2,15 +2,14 @@
 //!
 //! - [`protocol`] is the stable JSONL/socket contract external adapters target.
 //! - [`daemon`] is the concrete runtime host that serves that contract over stdio/socket/exec.
-//! - [`acp`] is the generic ACP backend/session bridge the daemon can host alongside
-//!   the native protocol surface.
+//! - the daemon only serves the native protocol surface; no secondary ACP backend bridge
+//!   is hosted here anymore.
 
 use anyhow::Context;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
-pub mod acp;
 mod call_audio;
 mod call_tts;
 pub mod daemon;

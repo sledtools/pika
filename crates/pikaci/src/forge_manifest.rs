@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-use std::path::Path;
-
 use anyhow::{Context, anyhow};
 use serde::Deserialize;
+use std::collections::HashMap;
+
+const FORGE_MANIFEST_TOML: &str = include_str!("../../../ci/forge-lanes.toml");
 
 #[derive(Debug, Deserialize)]
 struct ManifestFile {
@@ -32,10 +32,8 @@ pub(crate) fn branch_lane_paths_for_staged_target(
 }
 
 fn load_branch_lane_paths() -> anyhow::Result<HashMap<String, Vec<String>>> {
-    let raw = std::fs::read_to_string(manifest_path())
-        .with_context(|| format!("read {}", manifest_path().display()))?;
-    let manifest: ManifestFile =
-        toml::from_str(&raw).context("parse forge lane manifest TOML for pikaci")?;
+    let manifest: ManifestFile = toml::from_str(FORGE_MANIFEST_TOML)
+        .context("parse embedded forge lane manifest TOML for pikaci")?;
     if manifest.version != 1 {
         return Err(anyhow!(
             "unsupported forge lane manifest version {}",
@@ -63,12 +61,6 @@ fn load_branch_lane_paths() -> anyhow::Result<HashMap<String, Vec<String>>> {
     }
 
     Ok(paths_by_target)
-}
-
-fn manifest_path() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("ci/forge-lanes.toml")
 }
 
 #[cfg(test)]

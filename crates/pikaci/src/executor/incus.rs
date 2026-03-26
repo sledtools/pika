@@ -839,9 +839,9 @@ fn configure_remote_incus_devices(
     }
     add_snapshot_mount(remote, runtime_plan, log_path)?;
     if job.staged_linux_rust_lane().is_some() {
-        for staged_mount in &ctx.staged_payload_mounts {
+        for staged_payload in &ctx.staged_payloads {
             let source_root = staged_payload_source_root(
-                &staged_mount.local_mount_path,
+                &staged_payload.local_mount_path,
                 &ctx.job_dir,
                 &remote.shared.remote_job_dir,
                 &remote.shared.remote_host,
@@ -849,7 +849,7 @@ fn configure_remote_incus_devices(
             add_declared_payload_mounts(
                 remote,
                 &source_root,
-                &staged_mount.device_prefix,
+                &staged_payload.device_prefix,
                 log_path,
             )?;
         }

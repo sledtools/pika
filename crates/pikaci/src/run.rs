@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::executor::{
-    HostContext, StagedPayloadMount, compiled_guest_command, prepare_remote_linux_vm_backend,
+    HostContext, StagedPreparedPayload, compiled_guest_command, prepare_remote_linux_vm_backend,
     prepared_output_remote_helper_binary, prepared_output_remote_launcher_binary,
     prepared_output_remote_work_dir, prepared_output_ssh_host,
     remote_linux_vm_execution_from_error, run_job_on_runner, ssh_nix_binary,
@@ -1442,6 +1442,10 @@ fn build_run_plan(
         let job_dir = prepared.jobs_dir.join(job.id);
         fs::create_dir_all(&job_dir).with_context(|| format!("create {}", job_dir.display()))?;
         let runner_kind = job.runner_kind();
+        let staged_payloads = job
+            .staged_linux_rust_lane()
+            .map(|lane| staged_linux_payload_specs(&snapshot.snapshot_dir, &job_dir, lane))
+            .unwrap_or_default();
         let ctx = HostContext {
             source_root: PathBuf::from(&snapshot.source_root),
             workspace_snapshot_dir: prepare_job_workspace(
@@ -1467,88 +1471,59 @@ fn build_run_plan(
                 .filter(|_| runner_kind == RunnerKind::HostLocal)
                 .map(|layout| layout.target_dir.clone())
                 .unwrap_or_else(|| prepared.run_target_dir.clone()),
-            staged_payload_mounts: job
-                .staged_linux_rust_lane()
-                .map(|lane| {
-                    lane.payload_roles()
-                        .into_iter()
-                        .map(|role| StagedPayloadMount {
-                            local_mount_path: job_dir
-                                .join("staged-linux-rust")
-                                .join(role.mount_dir_name()),
-                            device_prefix: role.device_prefix().to_string(),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
+            staged_payloads: staged_payloads.clone(),
         };
         ensure_log_file(&ctx.host_log_path)?;
         ensure_log_file(&ctx.guest_log_path)?;
 
         let mut depends_on = Vec::new();
-        if let Some(lane) = job.staged_linux_rust_lane() {
-            let prefix = lane.shared_prepare_node_prefix();
+        if job.staged_linux_rust_lane().is_some() {
             let mut previous_node_id = None;
-            for role in lane.payload_roles() {
-                let node_id = format!("prepare-{prefix}-{}", role.prepare_node_suffix());
-                let installable = staged_linux_rust_installable(&snapshot.snapshot_dir, lane, role);
+            for payload in &staged_payloads {
                 let depends_on_nodes = previous_node_id.iter().cloned().collect::<Vec<_>>();
-                prepare_nodes.entry(node_id.clone()).or_insert_with(|| {
-                    planned_prepares.push(PlannedPrepare {
-                        node_id: node_id.clone(),
-                        depends_on: depends_on_nodes.clone(),
-                        action: PrepareAction::NixBuildOutput {
-                            installable: installable.clone(),
-                            output_name: lane.payload_output_name(role),
-                            residency: PreparedOutputResidency::RemoteAuthoritativeStagedLinux,
-                            handoff: Some(PreparedOutputHandoff {
-                                protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
-                                exposures: Vec::new(),
-                            }),
-                            mount_paths: Vec::new(),
-                            log_paths: Vec::new(),
-                        },
+                prepare_nodes
+                    .entry(payload.prepare_node_id.clone())
+                    .or_insert_with(|| {
+                        planned_prepares.push(PlannedPrepare {
+                            node_id: payload.prepare_node_id.clone(),
+                            depends_on: depends_on_nodes.clone(),
+                            action: PrepareAction::NixBuildOutput {
+                                installable: payload.installable.clone(),
+                                output_name: payload.output_name,
+                                residency: PreparedOutputResidency::RemoteAuthoritativeStagedLinux,
+                                handoff: Some(PreparedOutputHandoff {
+                                    protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+                                    exposures: Vec::new(),
+                                }),
+                                mount_paths: Vec::new(),
+                                log_paths: Vec::new(),
+                            },
+                        });
+                        PlanNodeRecord::Prepare {
+                            id: payload.prepare_node_id.clone(),
+                            description: payload.prepare_description.clone(),
+                            executor: PlanExecutorKind::HostLocal,
+                            depends_on: depends_on_nodes.clone(),
+                            prepare: PrepareNode::NixBuild {
+                                installable: payload.installable.clone(),
+                                output_name: payload.output_name.to_string(),
+                                residency: PreparedOutputResidency::RemoteAuthoritativeStagedLinux,
+                                handoff: Some(PreparedOutputHandoff {
+                                    protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
+                                    exposures: Vec::new(),
+                                }),
+                            },
+                        }
                     });
-                    PlanNodeRecord::Prepare {
-                        id: node_id.clone(),
-                        description: format!(
-                            "{} for {}",
-                            role.prepare_description(),
-                            lane.shared_prepare_description()
-                        ),
-                        executor: PlanExecutorKind::HostLocal,
-                        depends_on: depends_on_nodes.clone(),
-                        prepare: PrepareNode::NixBuild {
-                            installable: installable.clone(),
-                            output_name: lane.payload_output_name(role).to_string(),
-                            residency: PreparedOutputResidency::RemoteAuthoritativeStagedLinux,
-                            handoff: Some(PreparedOutputHandoff {
-                                protocol: PreparedOutputHandoffProtocol::NixStorePathV1,
-                                exposures: Vec::new(),
-                            }),
-                        },
-                    }
-                });
-                let mount = ctx
-                    .staged_payload_mounts
-                    .iter()
-                    .find(|mount| mount.device_prefix == role.device_prefix())
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "missing staged Linux Rust payload mount `{}` for job `{}`",
-                            role.device_prefix(),
-                            job.id
-                        )
-                    })?;
                 add_staged_mount_consumer(
                     &mut planned_prepares,
                     &mut prepare_nodes,
-                    &node_id,
-                    &mount.local_mount_path,
+                    &payload.prepare_node_id,
+                    &payload.local_mount_path,
                     &ctx.host_log_path,
                 );
-                depends_on.push(node_id.clone());
-                previous_node_id = Some(node_id);
+                depends_on.push(payload.prepare_node_id.clone());
+                previous_node_id = Some(payload.prepare_node_id.clone());
             }
         }
         if job.runner_kind() == RunnerKind::RemoteLinuxVm {
@@ -1732,6 +1707,31 @@ fn staged_linux_rust_installable(
 ) -> String {
     let output_name = lane.payload_output_name(role);
     format!("path:{}#{output_name}", snapshot_dir.display())
+}
+
+fn staged_linux_payload_specs(
+    snapshot_dir: &Path,
+    job_dir: &Path,
+    lane: StagedLinuxRustLane,
+) -> Vec<StagedPreparedPayload> {
+    let prefix = lane.shared_prepare_node_prefix();
+    lane.payload_roles()
+        .into_iter()
+        .map(|role| StagedPreparedPayload {
+            prepare_node_id: format!("prepare-{prefix}-{}", role.prepare_node_suffix()),
+            installable: staged_linux_rust_installable(snapshot_dir, lane, role),
+            output_name: lane.payload_output_name(role),
+            local_mount_path: job_dir
+                .join("staged-linux-rust")
+                .join(role.mount_dir_name()),
+            device_prefix: role.device_prefix().to_string(),
+            prepare_description: format!(
+                "{} for {}",
+                role.prepare_description(),
+                lane.shared_prepare_description()
+            ),
+        })
+        .collect()
 }
 
 fn add_staged_mount_consumer(

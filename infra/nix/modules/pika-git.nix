@@ -70,7 +70,7 @@ let
   };
 in
 {
-  sops.secrets."pika_git_github_token" = {
+  sops.secrets."pika_news_github_token" = {
     format = "yaml";
     sopsFile = ../../secrets/pika-git.yaml;
     owner = serviceUser;
@@ -78,7 +78,7 @@ in
     mode = "0400";
   };
 
-  sops.secrets."pika_git_claude_oauth_token" = {
+  sops.secrets."pika_news_claude_oauth_token" = {
     format = "yaml";
     sopsFile = ../../secrets/pika-git.yaml;
     owner = serviceUser;
@@ -86,7 +86,7 @@ in
     mode = "0400";
   };
 
-  sops.secrets."pika_git_webhook_secret" = {
+  sops.secrets."pika_news_webhook_secret" = {
     format = "yaml";
     sopsFile = ../../secrets/pika-git.yaml;
     owner = serviceUser;
@@ -107,9 +107,9 @@ in
     group = serviceGroup;
     mode = "0400";
     content = ''
-      GITHUB_TOKEN=${config.sops.placeholder."pika_git_github_token"}
-      CLAUDE_CODE_OAUTH_TOKEN=${config.sops.placeholder."pika_git_claude_oauth_token"}
-      PIKA_GIT_WEBHOOK_SECRET=${config.sops.placeholder."pika_git_webhook_secret"}
+      GITHUB_TOKEN=${config.sops.placeholder."pika_news_github_token"}
+      CLAUDE_CODE_OAUTH_TOKEN=${config.sops.placeholder."pika_news_claude_oauth_token"}
+      PIKA_GIT_WEBHOOK_SECRET=${config.sops.placeholder."pika_news_webhook_secret"}
       RUST_LOG=info
       PIKACI_APPLE_SSH_KEY_FILE=${config.sops.secrets."pikaci_apple_ssh_key".path}
       PIKACI_APPLE_SSH_HOST=pika-mini.tail029da2.ts.net

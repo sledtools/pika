@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::executor::{
-    HostContext, compiled_guest_command, prepare_remote_linux_vm_backend,
+    HostContext, StagedPayloadMount, compiled_guest_command, prepare_remote_linux_vm_backend,
     prepared_output_remote_helper_binary, prepared_output_remote_launcher_binary,
     prepared_output_remote_work_dir, prepared_output_ssh_host,
     remote_linux_vm_execution_from_error, run_job_on_runner, ssh_nix_binary,
@@ -1466,12 +1466,25 @@ fn build_run_plan(
                 .filter(|_| runner_kind == RunnerKind::HostLocal)
                 .map(|layout| layout.target_dir.clone())
                 .unwrap_or_else(|| prepared.run_target_dir.clone()),
-            staged_linux_rust_workspace_deps_dir: job
+            staged_payload_mounts: job
                 .staged_linux_rust_lane()
-                .map(|_| job_dir.join("staged-linux-rust").join("workspace-deps")),
-            staged_linux_rust_workspace_build_dir: job
-                .staged_linux_rust_lane()
-                .map(|_| job_dir.join("staged-linux-rust").join("workspace-build")),
+                .map(|_| {
+                    vec![
+                        StagedPayloadMount {
+                            local_mount_path: job_dir
+                                .join("staged-linux-rust")
+                                .join("workspace-deps"),
+                            device_prefix: "workspace-deps".to_string(),
+                        },
+                        StagedPayloadMount {
+                            local_mount_path: job_dir
+                                .join("staged-linux-rust")
+                                .join("workspace-build"),
+                            device_prefix: "workspace-build".to_string(),
+                        },
+                    ]
+                })
+                .unwrap_or_default(),
         };
         ensure_log_file(&ctx.host_log_path)?;
         ensure_log_file(&ctx.guest_log_path)?;
@@ -1561,26 +1574,28 @@ fn build_run_plan(
                     }
                 });
 
-            add_staged_mount_consumer(
-                &mut planned_prepares,
-                &mut prepare_nodes,
-                &deps_node_id,
-                ctx.staged_linux_rust_workspace_deps_dir
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("missing staged Linux Rust workspaceDeps mount path"))?,
-                &ctx.host_log_path,
-            );
-            add_staged_mount_consumer(
-                &mut planned_prepares,
-                &mut prepare_nodes,
-                &build_node_id,
-                ctx.staged_linux_rust_workspace_build_dir
-                    .as_ref()
+            for (node_id, device_prefix) in [
+                (&deps_node_id, "workspace-deps"),
+                (&build_node_id, "workspace-build"),
+            ] {
+                let mount = ctx
+                    .staged_payload_mounts
+                    .iter()
+                    .find(|mount| mount.device_prefix == device_prefix)
                     .ok_or_else(|| {
-                        anyhow!("missing staged Linux Rust workspaceBuild mount path")
-                    })?,
-                &ctx.host_log_path,
-            );
+                        anyhow!(
+                            "missing staged Linux Rust payload mount `{device_prefix}` for job `{}`",
+                            job.id
+                        )
+                    })?;
+                add_staged_mount_consumer(
+                    &mut planned_prepares,
+                    &mut prepare_nodes,
+                    node_id,
+                    &mount.local_mount_path,
+                    &ctx.host_log_path,
+                );
+            }
             depends_on.push(deps_node_id);
             depends_on.push(build_node_id);
         }

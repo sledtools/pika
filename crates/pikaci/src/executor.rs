@@ -27,6 +27,12 @@ use crate::snapshot::{SnapshotMetadata, materialize_workspace, read_snapshot_met
 mod incus;
 
 #[derive(Clone, Debug)]
+pub struct StagedPayloadMount {
+    pub local_mount_path: PathBuf,
+    pub device_prefix: String,
+}
+
+#[derive(Clone, Debug)]
 pub struct HostContext {
     pub source_root: PathBuf,
     pub workspace_snapshot_dir: PathBuf,
@@ -39,8 +45,7 @@ pub struct HostContext {
     pub guest_log_path: PathBuf,
     pub shared_cargo_home_dir: PathBuf,
     pub shared_target_dir: PathBuf,
-    pub staged_linux_rust_workspace_deps_dir: Option<PathBuf>,
-    pub staged_linux_rust_workspace_build_dir: Option<PathBuf>,
+    pub staged_payload_mounts: Vec<StagedPayloadMount>,
 }
 
 fn resolved_host_local_openclaw_dir(ctx: &HostContext) -> Option<PathBuf> {
@@ -1905,14 +1910,16 @@ fn staged_payload_remote_dirs(
     ctx: &HostContext,
     shared: &RemoteLinuxVmSharedContext,
 ) -> anyhow::Result<Vec<PathBuf>> {
-    [
-        ctx.staged_linux_rust_workspace_deps_dir.as_ref(),
-        ctx.staged_linux_rust_workspace_build_dir.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-    .map(|path| remote_job_path(&ctx.job_dir, &shared.remote_job_dir, path))
-    .collect()
+    ctx.staged_payload_mounts
+        .iter()
+        .map(|mount| {
+            remote_job_path(
+                &ctx.job_dir,
+                &shared.remote_job_dir,
+                &mount.local_mount_path,
+            )
+        })
+        .collect()
 }
 
 fn ensure_remote_linux_vm_directories(
@@ -2442,7 +2449,7 @@ mod tests {
         REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH,
         REMOTE_LINUX_VM_INCUS_WORKSPACE_BUILD_MOUNT_PATH,
         REMOTE_LINUX_VM_INCUS_WORKSPACE_DEPS_MOUNT_PATH, RemoteIncusContext,
-        RemoteLinuxVmSharedContext, attach_remote_linux_vm_execution,
+        RemoteLinuxVmSharedContext, StagedPayloadMount, attach_remote_linux_vm_execution,
         build_sync_directory_finalize_command, cached_host_local_dev_env_is_usable,
         host_local_command_mode, host_local_dev_env_script_path, host_local_dev_env_shell_program,
         incus, prepare_host_local_cached_dev_env_with, read_host_local_dev_env_state,
@@ -2911,8 +2918,7 @@ mod tests {
             guest_log_path: job_dir.join("artifacts/guest.log"),
             shared_cargo_home_dir: root.join("cargo-home"),
             shared_target_dir: root.join("target"),
-            staged_linux_rust_workspace_deps_dir: None,
-            staged_linux_rust_workspace_build_dir: None,
+            staged_payload_mounts: Vec::new(),
         };
         let old_expected_workspace_dir = std::env::var_os("EXPECTED_WORKSPACE_DIR");
         unsafe {
@@ -2981,8 +2987,7 @@ mod tests {
             guest_log_path: job_dir.join("artifacts/guest.log"),
             shared_cargo_home_dir: root.join("cargo-home"),
             shared_target_dir: root.join("target"),
-            staged_linux_rust_workspace_deps_dir: None,
-            staged_linux_rust_workspace_build_dir: None,
+            staged_payload_mounts: Vec::new(),
         };
 
         let outcome = run_job_on_runner(&job, &ctx).expect("run host-local job");
@@ -3017,8 +3022,7 @@ mod tests {
             guest_log_path: root.join("job/artifacts/guest.log"),
             shared_cargo_home_dir: root.join("cargo-home"),
             shared_target_dir: root.join("target"),
-            staged_linux_rust_workspace_deps_dir: None,
-            staged_linux_rust_workspace_build_dir: None,
+            staged_payload_mounts: Vec::new(),
         };
         let old_in_nix_shell = std::env::var_os("IN_NIX_SHELL");
         unsafe {
@@ -3066,8 +3070,7 @@ mod tests {
             guest_log_path: root.join("job/artifacts/guest.log"),
             shared_cargo_home_dir: root.join("cargo-home"),
             shared_target_dir: root.join("target"),
-            staged_linux_rust_workspace_deps_dir: None,
-            staged_linux_rust_workspace_build_dir: None,
+            staged_payload_mounts: Vec::new(),
         };
         let old_in_nix_shell = std::env::var_os("IN_NIX_SHELL");
         unsafe {
@@ -3114,8 +3117,7 @@ mod tests {
             guest_log_path: root.join("job/artifacts/guest.log"),
             shared_cargo_home_dir: root.join("cargo-home"),
             shared_target_dir: root.join("target"),
-            staged_linux_rust_workspace_deps_dir: None,
-            staged_linux_rust_workspace_build_dir: None,
+            staged_payload_mounts: Vec::new(),
         };
         let old_in_nix_shell = std::env::var_os("IN_NIX_SHELL");
         unsafe {
@@ -3446,8 +3448,7 @@ mod tests {
             guest_log_path: job_dir.join("artifacts/guest.log"),
             shared_cargo_home_dir: root.join("cargo-home"),
             shared_target_dir: root.join("target"),
-            staged_linux_rust_workspace_deps_dir: None,
-            staged_linux_rust_workspace_build_dir: None,
+            staged_payload_mounts: Vec::new(),
         };
 
         let old_openclaw_dir = std::env::var_os("OPENCLAW_DIR");
@@ -3512,8 +3513,7 @@ mod tests {
             guest_log_path: job_dir.join("artifacts/guest.log"),
             shared_cargo_home_dir: root.join("cargo-home"),
             shared_target_dir: root.join("target"),
-            staged_linux_rust_workspace_deps_dir: None,
-            staged_linux_rust_workspace_build_dir: None,
+            staged_payload_mounts: Vec::new(),
         };
 
         let started = Instant::now();
@@ -3570,8 +3570,7 @@ mod tests {
             guest_log_path: first_job_dir.join("artifacts/guest.log"),
             shared_cargo_home_dir: root.join("cargo-home"),
             shared_target_dir: root.join("target"),
-            staged_linux_rust_workspace_deps_dir: None,
-            staged_linux_rust_workspace_build_dir: None,
+            staged_payload_mounts: Vec::new(),
         };
         let second_ctx = HostContext {
             source_root: root.clone(),
@@ -3585,8 +3584,7 @@ mod tests {
             guest_log_path: second_job_dir.join("artifacts/guest.log"),
             shared_cargo_home_dir: root.join("cargo-home"),
             shared_target_dir: root.join("target"),
-            staged_linux_rust_workspace_deps_dir: None,
-            staged_linux_rust_workspace_build_dir: None,
+            staged_payload_mounts: Vec::new(),
         };
 
         let started = Instant::now();
@@ -3634,12 +3632,20 @@ mod tests {
             guest_log_path: PathBuf::from("/tmp/run/jobs/job/artifacts/guest.log"),
             shared_cargo_home_dir: PathBuf::from("/tmp/cargo-home"),
             shared_target_dir: PathBuf::from("/tmp/target"),
-            staged_linux_rust_workspace_deps_dir: Some(PathBuf::from(
-                "/tmp/run/jobs/job/staged-linux-rust/workspace-deps",
-            )),
-            staged_linux_rust_workspace_build_dir: Some(PathBuf::from(
-                "/tmp/run/jobs/job/staged-linux-rust/workspace-build",
-            )),
+            staged_payload_mounts: vec![
+                StagedPayloadMount {
+                    local_mount_path: PathBuf::from(
+                        "/tmp/run/jobs/job/staged-linux-rust/workspace-deps",
+                    ),
+                    device_prefix: "workspace-deps".to_string(),
+                },
+                StagedPayloadMount {
+                    local_mount_path: PathBuf::from(
+                        "/tmp/run/jobs/job/staged-linux-rust/workspace-build",
+                    ),
+                    device_prefix: "workspace-build".to_string(),
+                },
+            ],
         };
         let shared = RemoteLinuxVmSharedContext {
             remote_host: "localhost".to_string(),
@@ -3692,7 +3698,7 @@ mod tests {
         let local_mount = local_job_dir.join("staged-linux-rust/workspace-build");
         fs::create_dir_all(&local_mount).expect("create local mount");
         let source = incus::resolve_staged_payload_source_root_for_test(
-            Some(&local_mount),
+            &local_mount,
             &local_job_dir,
             Path::new("/var/tmp/pikaci-prepared-output/runs/run/jobs/job"),
             "localhost",
@@ -3714,7 +3720,7 @@ mod tests {
             "/var/tmp/pikaci-prepared-output/runs/run/jobs/job/staged-linux-rust/workspace-build",
         );
         let source = incus::resolve_staged_payload_source_root_for_test(
-            Some(&local_mount),
+            &local_mount,
             local_job_dir,
             remote_job_dir,
             "pika-build",

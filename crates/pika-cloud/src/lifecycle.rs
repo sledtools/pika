@@ -129,6 +129,14 @@ pub fn decode_runtime_terminal_result(bytes: &[u8]) -> serde_json::Result<Runtim
     serde_json::from_slice(bytes)
 }
 
+pub fn encode_runtime_status_pretty(status: &RuntimeStatusSnapshot) -> serde_json::Result<Vec<u8>> {
+    serde_json::to_vec_pretty(status)
+}
+
+pub fn decode_runtime_status(bytes: &[u8]) -> serde_json::Result<RuntimeStatusSnapshot> {
+    serde_json::from_slice(bytes)
+}
+
 pub type LifecycleState = RuntimeState;
 pub type RuntimeStatusSnapshot = LifecycleStatus;
 pub type RuntimeResultStatus = LifecycleTerminalStatus;
@@ -166,6 +174,38 @@ mod tests {
         };
         let encoded = serde_json::to_string(&status).expect("encode");
         assert!(encoded.contains("\"provisioning\""));
+    }
+
+    #[test]
+    fn runtime_status_helpers_round_trip() {
+        let status = RuntimeStatusSnapshot {
+            schema_version: LIFECYCLE_SCHEMA_VERSION,
+            state: RuntimeState::Ready,
+            updated_at: "2026-03-25T20:00:00Z".to_string(),
+            message: "guest declared readiness".to_string(),
+            boot_id: Some("boot-123".to_string()),
+            details: Some(serde_json::json!({ "service": "openclaw" })),
+        };
+
+        let encoded = encode_runtime_status_pretty(&status).expect("encode");
+        let decoded = decode_runtime_status(&encoded).expect("decode");
+
+        assert_eq!(decoded, status);
+    }
+
+    #[test]
+    fn runtime_status_rejects_unknown_state() {
+        let err = decode_runtime_status(
+            br#"{
+                "schema_version": 1,
+                "state": "passed",
+                "updated_at": "2026-03-25T20:00:00Z",
+                "message": "guest declared readiness"
+            }"#,
+        )
+        .expect_err("unknown state should fail");
+
+        assert!(err.to_string().contains("unknown variant"));
     }
 
     #[test]

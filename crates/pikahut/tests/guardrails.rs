@@ -363,7 +363,7 @@ fn selector_references_in_docs_and_lanes_exist() -> Result<()> {
         root.join("docs/testing/ci-selectors.md"),
         root.join("docs/testing/integration-matrix.md"),
         root.join("justfile"),
-        root.join(".github/workflows/pre-merge.yml"),
+        root.join("just/checks.just"),
     ] {
         let text = fs::read_to_string(path)?;
         referenced.extend(parse_cli_selector_refs(&text));
@@ -395,7 +395,7 @@ fn selector_references_in_docs_and_lanes_exist() -> Result<()> {
 #[test]
 fn required_lanes_do_not_regress_to_cli_test_harness() -> Result<()> {
     let root = workspace_root();
-    let workflow = fs::read_to_string(root.join(".github/workflows/pre-merge.yml"))?;
+    let checks = fs::read_to_string(root.join("just/checks.just"))?;
 
     let forbidden = [
         "cargo run -q -p pikahut -- test",
@@ -405,8 +405,8 @@ fn required_lanes_do_not_regress_to_cli_test_harness() -> Result<()> {
 
     for needle in forbidden {
         assert!(
-            !workflow.contains(needle),
-            "forbidden lane path present in pre-merge workflow: {needle}"
+            !checks.contains(needle),
+            "forbidden lane path present in checks.just: {needle}"
         );
     }
 
@@ -1263,25 +1263,6 @@ fn pre_merge_fixture_filter_tracks_checked_in_lane_surface() -> Result<()> {
 }
 
 #[test]
-fn pre_merge_fixture_remote_lane_skips_fork_pull_requests() -> Result<()> {
-    let root = workspace_root();
-    let workflow = fs::read_to_string(root.join(".github/workflows/pre-merge.yml"))?;
-
-    assert!(
-        workflow.contains("PIKA_BUILD_SSH_KEY: ${{ secrets.PIKA_BUILD_SSH_KEY }}"),
-        "staged Linux branch lanes must keep reading PIKA_BUILD_SSH_KEY from repository secrets"
-    );
-    assert!(
-        workflow.contains(
-            "error: set repository secret PIKA_BUILD_SSH_KEY for staged Linux shadow lanes"
-        ),
-        "staged Linux branch lanes must fail fast with an explicit missing-secret error when remote secrets are unavailable"
-    );
-
-    Ok(())
-}
-
-#[test]
 fn pre_merge_pikachat_apple_split_stays_explicit() -> Result<()> {
     let root = workspace_root();
     let checks = fs::read_to_string(root.join("just/checks.just"))?;
@@ -1360,10 +1341,7 @@ fn pre_merge_pikachat_apple_split_stays_explicit() -> Result<()> {
 fn no_public_infra_selectors_in_ci_lanes() -> Result<()> {
     let root = workspace_root();
 
-    for path in [
-        root.join("justfile"),
-        root.join(".github/workflows/pre-merge.yml"),
-    ] {
+    for path in [root.join("justfile"), root.join("just/checks.just")] {
         let text = fs::read_to_string(&path)?;
         assert!(
             !text.contains("integration_public"),

@@ -77,7 +77,6 @@ paths = [
   "justfile",
   "just/checks.just",
   "just/infra.just",
-  ".github/workflows/pre-merge.yml",
   "scripts/pikaci-staged-linux-remote.sh",
   "scripts/ci-add-known-host.sh",
   "crates/pika-git/**",
@@ -114,7 +113,6 @@ paths = [
   "justfile",
   "just/checks.just",
   "just/infra.just",
-  ".github/workflows/pre-merge.yml",
   "scripts/pikaci-staged-linux-remote.sh",
   "scripts/ci-add-known-host.sh",
   "crates/pika-git/**",
@@ -150,7 +148,6 @@ paths = [
   "flake.lock",
   "nix/**",
   "justfile",
-  ".github/workflows/pre-merge.yml",
   "crates/rmp-cli/**",
   "scripts/pikaci-staged-linux-remote.sh",
   "scripts/ci-add-known-host.sh",
@@ -175,7 +172,6 @@ paths = [
   "nix/**",
   "justfile",
   "just/checks.just",
-  ".github/workflows/pre-merge.yml",
   "cli/**",
   "crates/pikaci/**",
   "crates/pika-cloud/**",
@@ -207,10 +203,8 @@ title = "check-pikachat-typescript"
 staged_linux_target = "pre-merge-pikachat-typescript"
 paths = [
   "ci/forge-lanes.toml",
-  ".github/workflows/pre-merge.yml",
   "crates/pikaci/**",
   "nix/ci/linux-rust.nix",
-  "scripts/forge-github-ci-shim.py",
   "scripts/pikaci-staged-linux-remote.sh",
   "scripts/pikachat-typescript-ci.sh",
   "pikachat-claude/package.json",
@@ -225,8 +219,8 @@ paths = [
 [[branch.lanes]]
 id = "apple_host_sanity"
 title = "check-apple-host-sanity"
-entrypoint = "./scripts/pikaci-apple-github-step remote-run --just-recipe apple-host-sanity"
-command = ["./scripts/pikaci-apple-github-step", "remote-run", "--just-recipe", "apple-host-sanity"]
+entrypoint = "./scripts/pikaci-apple-remote.sh run --just-recipe apple-host-sanity"
+command = ["./scripts/pikaci-apple-remote.sh", "run", "--just-recipe", "apple-host-sanity"]
 concurrency_group = "apple-host"
 paths = [
   "ci/forge-lanes.toml",
@@ -237,7 +231,6 @@ paths = [
   "nix/**",
   "justfile",
   "just/checks.just",
-  ".github/workflows/pre-merge.yml",
   ".github/pikaci-apple.env",
   "crates/pika-cloud/**",
   "crates/pika-desktop/**",
@@ -249,9 +242,7 @@ paths = [
   "rust/**",
   "scripts/apple-host-prepare.sh",
   "scripts/lib/release-secrets.sh",
-  "scripts/pikaci-apple-github-step",
   "scripts/pikaci-apple-remote.sh",
-  "scripts/with-pikaci-apple-ci-env",
   "tools/cargo-with-xcode",
   "tools/xcode-dev-dir",
   "tools/xcode-run",
@@ -271,7 +262,6 @@ paths = [
   "fixtures/**",
   "nix/**",
   "justfile",
-  ".github/workflows/pre-merge.yml",
   "cli/**",
   "crates/pikaci/**",
   "crates/pikahut/**",
@@ -307,7 +297,6 @@ paths = [
   "just/agent.just",
   "just/checks.just",
   "just/infra.just",
-  ".github/workflows/pre-merge.yml",
   "docs/testing/ci-selectors.md",
   "docs/testing/integration-matrix.md",
   "docs/testing/wrapper-deprecation-policy.md",
@@ -372,6 +361,6 @@ concurrency_group = "nightly-android"
 [[nightly.lanes]]
 id = "nightly_apple_host_bundle"
 title = "nightly-apple-host-bundle"
-entrypoint = "./scripts/pikaci-apple-github-step remote-run --just-recipe apple-host-bundle"
-command = ["./scripts/pikaci-apple-github-step", "remote-run", "--just-recipe", "apple-host-bundle"]
+entrypoint = "./scripts/pikaci-apple-remote.sh run --just-recipe apple-host-bundle"
+command = ["./scripts/pikaci-apple-remote.sh", "run", "--just-recipe", "apple-host-bundle"]
 concurrency_group = "apple-host"

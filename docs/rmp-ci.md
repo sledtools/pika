@@ -13,13 +13,9 @@ RMP checks are integrated into the repo's single CI entrypoint, not a separate w
 
 - Canonical orchestrator: the forge on `git.pikachat.org`
 - Authoritative lane catalog and path filters: `ci/forge-lanes.toml`
-- GitHub workflow: `.github/workflows/pre-merge.yml` as advisory shadow CI
 - Internal lanes:
   - `check-pika`: existing app checks via `just pre-merge-pika`
   - `check-rmp`: RMP template/CLI checks via `just pre-merge-rmp`
-- GitHub shadow approval gate:
-  - if PR actor is `justinmoon`, pre-merge shadow lanes run immediately
-  - otherwise shadow lanes target `ci-approval` and require approval
 
 `just pre-merge-rmp` is Linux-safe and validates:
 
@@ -30,7 +26,6 @@ RMP checks are integrated into the repo's single CI entrypoint, not a separate w
 
 - Canonical scheduler: the forge service on `git.pikachat.org`
 - Authoritative lane catalog: `ci/forge-lanes.toml`
-- GitHub workflow: `.github/workflows/pre-merge.yml` in `mode=nightly` as an advisory mirror
 - Linux lane (`nightly-linux`): `just rmp-nightly-linux`
   - scaffolds project
   - ensures Android AVD
@@ -53,6 +48,5 @@ Retained manual-only macOS compatibility smoke:
 
 ## Notes
 
-- GitHub pre-merge and nightly runs now defer to `scripts/forge-github-ci-shim.py`, which reads `ci/forge-lanes.toml` instead of hand-copying lane filters into workflow YAML.
 - `rmp run android` now allows headless emulators in CI (`CI=1` or `RMP_ANDROID_ALLOW_HEADLESS=1`).
 - The generated project intentionally keeps MVP internal names aligned with current `rmp run`/`rmp bindings` assumptions for fast iteration.

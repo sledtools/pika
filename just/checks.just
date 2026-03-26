@@ -59,31 +59,6 @@ pre-merge-pika-followup:
     nix run .#pikaci -- run pre-merge-pika-followup
     echo "pre-merge-pika complete"
 
-# Advisory shadow CI lane for the staged Linux Rust remote VM path.
-pre-merge-pika-rust-shadow:
-    just pikaci-remote-fulfill-pre-merge-pika-rust
-    echo "pre-merge-pika-rust-shadow complete"
-
-# Advisory shadow CI lane for the staged Linux notifications remote VM path.
-pre-merge-notifications-shadow:
-    just pikaci-remote-fulfill-pre-merge-notifications
-    echo "pre-merge-notifications-shadow complete"
-
-# Advisory shadow CI lane for the staged Linux agent-contracts remote VM path.
-pre-merge-agent-contracts-shadow:
-    just pikaci-remote-fulfill-pre-merge-agent-contracts
-    echo "pre-merge-agent-contracts-shadow complete"
-
-# Advisory shadow CI lane for the staged Linux RMP remote VM path.
-pre-merge-rmp-shadow:
-    just pikaci-remote-fulfill-pre-merge-rmp
-    echo "pre-merge-rmp-shadow complete"
-
-# Advisory shadow CI lane for the staged Linux pikachat remote VM path.
-pre-merge-pikachat-rust-shadow:
-    just pikaci-remote-fulfill-pre-merge-pikachat-rust
-    echo "pre-merge-pikachat-rust-shadow complete"
-
 # CI-safe pre-merge for the heavy OpenClaw gateway E2E lane under pikaci.
 pre-merge-pikachat-openclaw-e2e:
     #!/usr/bin/env bash

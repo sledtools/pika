@@ -27,7 +27,6 @@ pub(crate) struct PikaStagedLinuxTargetConfig {
     pub shared_prepare_description: &'static str,
     pub payload_specs: [StagedLinuxRustTargetPayloadSpec; 2],
     pub workspace_output_system: &'static str,
-    pub shadow_recipe: &'static str,
 }
 
 impl PikaStagedLinuxTargetConfig {
@@ -242,7 +241,6 @@ impl PikaStagedLinuxTarget {
                     ".#ci.x86_64-linux.workspaceBuild",
                 ),
                 workspace_output_system: "x86_64-linux",
-                shadow_recipe: "pre-merge-pika-rust-shadow",
             },
             Self::PreMergePikaFollowup => PikaStagedLinuxTargetConfig {
                 target_id: "pre-merge-pika-followup",
@@ -257,7 +255,6 @@ impl PikaStagedLinuxTarget {
                     ".#ci.x86_64-linux.pikaFollowupWorkspaceBuild",
                 ),
                 workspace_output_system: "x86_64-linux",
-                shadow_recipe: "",
             },
             Self::PreMergeAgentContracts => PikaStagedLinuxTargetConfig {
                 target_id: "pre-merge-agent-contracts",
@@ -272,7 +269,6 @@ impl PikaStagedLinuxTarget {
                     ".#ci.x86_64-linux.agentContractsWorkspaceBuild",
                 ),
                 workspace_output_system: "x86_64-linux",
-                shadow_recipe: "pre-merge-agent-contracts-shadow",
             },
             Self::PreMergeNotifications => PikaStagedLinuxTargetConfig {
                 target_id: "pre-merge-notifications",
@@ -287,7 +283,6 @@ impl PikaStagedLinuxTarget {
                     ".#ci.x86_64-linux.notificationsWorkspaceBuild",
                 ),
                 workspace_output_system: "x86_64-linux",
-                shadow_recipe: "pre-merge-notifications-shadow",
             },
             Self::PreMergeFixtureRust => PikaStagedLinuxTargetConfig {
                 target_id: "pre-merge-fixture-rust",
@@ -302,7 +297,6 @@ impl PikaStagedLinuxTarget {
                     ".#ci.x86_64-linux.fixtureWorkspaceBuild",
                 ),
                 workspace_output_system: "x86_64-linux",
-                shadow_recipe: "",
             },
             Self::PreMergeRmp => PikaStagedLinuxTargetConfig {
                 target_id: "pre-merge-rmp",
@@ -317,7 +311,6 @@ impl PikaStagedLinuxTarget {
                     ".#ci.x86_64-linux.rmpWorkspaceBuild",
                 ),
                 workspace_output_system: "x86_64-linux",
-                shadow_recipe: "pre-merge-rmp-shadow",
             },
             Self::PreMergePikachatRust => PikaStagedLinuxTargetConfig {
                 target_id: "pre-merge-pikachat-rust",
@@ -332,7 +325,6 @@ impl PikaStagedLinuxTarget {
                     ".#ci.x86_64-linux.pikachatWorkspaceBuild",
                 ),
                 workspace_output_system: "x86_64-linux",
-                shadow_recipe: "pre-merge-pikachat-rust-shadow",
             },
             Self::PreMergePikachatTypescript => PikaStagedLinuxTargetConfig {
                 target_id: "pre-merge-pikachat-typescript",
@@ -347,7 +339,6 @@ impl PikaStagedLinuxTarget {
                     ".#ci.x86_64-linux.pikachatWorkspaceBuild",
                 ),
                 workspace_output_system: "x86_64-linux",
-                shadow_recipe: "",
             },
             Self::PreMergePikachatOpenclawE2e => PikaStagedLinuxTargetConfig {
                 target_id: "pre-merge-pikachat-openclaw-e2e",
@@ -362,7 +353,6 @@ impl PikaStagedLinuxTarget {
                     ".#ci.x86_64-linux.pikachatWorkspaceBuild",
                 ),
                 workspace_output_system: "x86_64-linux",
-                shadow_recipe: "",
             },
         }
     }
@@ -379,7 +369,6 @@ pub(crate) struct PikaStagedLinuxTargetInfoJson {
     pub workspace_output_system: &'static str,
     pub workspace_deps_installable: &'static str,
     pub workspace_build_installable: &'static str,
-    pub shadow_recipe: &'static str,
 }
 
 impl From<PikaStagedLinuxTargetConfig> for PikaStagedLinuxTargetInfoJson {
@@ -398,7 +387,6 @@ impl From<PikaStagedLinuxTargetConfig> for PikaStagedLinuxTargetInfoJson {
                 .payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceDeps),
             workspace_build_installable: value
                 .payload_nix_installable(StagedLinuxRustPayloadRole::WorkspaceBuild),
-            shadow_recipe: value.shadow_recipe,
         }
     }
 }

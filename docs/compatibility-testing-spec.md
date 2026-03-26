@@ -294,7 +294,7 @@ Always print fixed seed for reproducibility.
 
 Pika already has nightly lanes in:
 
-- `.github/workflows/pre-merge.yml`
+- `ci/forge-lanes.toml`
 
 Rollout plan:
 

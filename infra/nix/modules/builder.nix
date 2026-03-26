@@ -184,7 +184,7 @@ in
       host-version
       echo ""
       echo "=== pika-git ==="
-      systemctl status pika-news --no-pager -n 20
+      systemctl status pika-git --no-pager -n 20
       echo ""
       echo "=== nix-serve ==="
       systemctl status nix-serve --no-pager -n 20

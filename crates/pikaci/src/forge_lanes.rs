@@ -237,13 +237,18 @@ pub fn compiled_forge_ci_manifest() -> ForgeCiManifest {
                 ],
             ),
             pikaci_target_lane(
-                "apple_host_sanity",
-                "check-apple-host-sanity",
-                "apple_host_sanity",
-                Some("apple-host"),
+                "apple_desktop_compile",
+                "check-apple-desktop-compile",
+                "apple_desktop_compile",
+                Some("apple-compile"),
                 &[
+                    "ci/apple-host-assets.toml",
+                    "VERSION",
                     "Cargo.toml",
                     "Cargo.lock",
+                    "cli/Cargo.toml",
+                    "config/**",
+                    "crates/**/Cargo.toml",
                     "flake.nix",
                     "flake.lock",
                     "nix/**",
@@ -253,17 +258,71 @@ pub fn compiled_forge_ci_manifest() -> ForgeCiManifest {
                     "crates/pika-cloud/**",
                     "crates/pika-desktop/**",
                     "crates/hypernote-protocol/**",
+                    "crates/pika-managed-agent-contract/**",
                     "crates/pika-media/**",
                     "crates/pika-marmot-runtime/**",
                     "crates/pika-relay-profiles/**",
                     "crates/pika-tls/**",
                     "rust/**",
                     "scripts/apple-host-prepare.sh",
+                    "scripts/apple-host-cache-key",
+                    "scripts/apple-host-record-phase",
+                    "scripts/apple-host-record-prepared-entry",
                     "scripts/lib/release-secrets.sh",
                     "scripts/pikaci-apple-remote.sh",
+                    "tools/apple-host-asset",
                     "tools/cargo-with-xcode",
+                    "uniffi-bindgen/Cargo.toml",
                     "tools/xcode-dev-dir",
                     "tools/xcode-run",
+                ],
+            ),
+            pikaci_target_lane(
+                "apple_ios_compile",
+                "check-apple-ios-compile",
+                "apple_ios_compile",
+                Some("apple-compile"),
+                &[
+                    "ci/apple-host-assets.toml",
+                    "VERSION",
+                    "Cargo.toml",
+                    "Cargo.lock",
+                    "cli/Cargo.toml",
+                    "config/**",
+                    "crates/**/Cargo.toml",
+                    "flake.nix",
+                    "flake.lock",
+                    "ios/**",
+                    "nix/**",
+                    "justfile",
+                    "just/checks.just",
+                    ".github/pikaci-apple.env",
+                    "crates/hypernote-protocol/**",
+                    "crates/pika-cloud/**",
+                    "crates/pika-managed-agent-contract/**",
+                    "crates/pika-media/**",
+                    "crates/pika-marmot-runtime/**",
+                    "crates/pika-nse/**",
+                    "crates/pika-relay-profiles/**",
+                    "crates/pika-share/**",
+                    "crates/pika-tls/**",
+                    "rust/**",
+                    "scripts/apple-host-prepare.sh",
+                    "scripts/apple-host-cache-key",
+                    "scripts/apple-host-record-phase",
+                    "scripts/apple-host-record-prepared-entry",
+                    "scripts/ios-build",
+                    "scripts/lib/mobile-build.sh",
+                    "scripts/pikaci-apple-host-bootstrap.sh",
+                    "scripts/pikaci-apple-remote.sh",
+                    "tools/apple-host-asset",
+                    "tools/lib/dotenv.sh",
+                    "tools/ios-runtime-doctor",
+                    "tools/ios-sim-ensure",
+                    "tools/xcode-dev-dir",
+                    "tools/xcode-run",
+                    "tools/xcodebuild-compact",
+                    "uniffi-bindgen/**",
                 ],
             ),
             staged_linux_lane(
@@ -371,7 +430,7 @@ pub fn compiled_forge_ci_manifest() -> ForgeCiManifest {
                 "nightly_apple_host_bundle",
                 "nightly-apple-host-bundle",
                 "nightly_apple_host_bundle",
-                Some("apple-host"),
+                Some("apple-runtime"),
                 &[],
             ),
         ],
@@ -514,7 +573,8 @@ mod tests {
         assert!(ids.contains(&"pika_rust".to_string()));
         assert!(ids.contains(&"pika_followup".to_string()));
         assert!(ids.contains(&"pikachat".to_string()));
-        assert!(ids.contains(&"apple_host_sanity".to_string()));
+        assert!(ids.contains(&"apple_desktop_compile".to_string()));
+        assert!(ids.contains(&"apple_ios_compile".to_string()));
         assert!(ids.contains(&"fixture".to_string()));
     }
 
@@ -574,8 +634,8 @@ mod tests {
         let apple_lane = manifest
             .branch_lanes
             .iter()
-            .find(|lane| lane.id == "apple_host_sanity")
-            .expect("apple host branch lane");
+            .find(|lane| lane.id == "apple_desktop_compile")
+            .expect("apple desktop branch lane");
         assert_eq!(
             apple_lane.command,
             vec![
@@ -584,16 +644,17 @@ mod tests {
                 ".#pikaci".to_string(),
                 "--".to_string(),
                 "run".to_string(),
-                "apple_host_sanity".to_string(),
+                "apple_desktop_compile".to_string(),
             ]
         );
         assert!(apple_lane.staged_linux_target.is_none());
+        assert_eq!(apple_lane.concurrency_group.as_deref(), Some("apple-compile"));
 
         let nightly_lane = manifest
             .nightly_lanes
             .iter()
-            .find(|lane| lane.id == "nightly_pika")
-            .expect("nightly pika lane");
+            .find(|lane| lane.id == "nightly_apple_host_bundle")
+            .expect("nightly apple lane");
         assert_eq!(
             nightly_lane.command,
             vec![
@@ -602,10 +663,11 @@ mod tests {
                 ".#pikaci".to_string(),
                 "--".to_string(),
                 "run".to_string(),
-                "nightly_pika".to_string(),
+                "nightly_apple_host_bundle".to_string(),
             ]
         );
         assert!(nightly_lane.staged_linux_target.is_none());
+        assert_eq!(nightly_lane.concurrency_group.as_deref(), Some("apple-runtime"));
     }
 
     #[test]

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+kind="${1:-}"
+
+if [[ -z "$kind" ]]; then
+  echo "usage: ./scripts/apple-host-cache-key <kind>" >&2
+  exit 2
+fi
+
+(
+  cd "$ROOT"
+  printf 'kind=%s\n' "$kind"
+  printf 'xcode_version=%s\n' "$("$ROOT/tools/apple-host-asset" xcode_version)"
+  printf 'ios_runtime=%s\n' "$("$ROOT/tools/apple-host-asset" ios_runtime)"
+  shasum -a 256 flake.lock ci/apple-host-assets.toml
+) | shasum -a 256 | awk '{print $1}'

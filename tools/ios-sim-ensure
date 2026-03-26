@@ -9,6 +9,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEV_DIR="$("$ROOT/tools/xcode-dev-dir")"
 export DEVELOPER_DIR="$DEV_DIR"
+target_runtime="$("$ROOT/tools/apple-host-asset" ios_runtime)"
+target_device_type="$("$ROOT/tools/apple-host-asset" ios_device_type)"
+target_device_name="$("$ROOT/tools/apple-host-asset" ios_device_name)"
 
 reset_device=0
 while [[ $# -gt 0 ]]; do
@@ -64,6 +67,7 @@ import sys
 
 j = json.load(sys.stdin)
 supported = sys.argv[1].strip()
+target_runtime = sys.argv[2].strip()
 supported_tuple = None
 if supported:
     parts = supported.split(".")
@@ -85,15 +89,20 @@ for rt in j.get("runtimes", []):
     if not m:
         continue
     version = (int(m.group(1)), int(m.group(2)))
-    runtimes.append((version, ident))
+    runtimes.append((version, ident, name))
 
 if not runtimes:
     sys.exit(0)
 
 runtimes.sort()
 
+for version, ident, name in runtimes:
+    if name == target_runtime:
+        sys.stdout.write(ident)
+        sys.exit(0)
+
 if supported_tuple is not None:
-    for version, ident in runtimes:
+    for version, ident, _name in runtimes:
         if version == supported_tuple:
             sys.stdout.write(ident)
             sys.exit(0)
@@ -103,7 +112,7 @@ if supported_tuple is not None:
         sys.exit(0)
 
 sys.stdout.write(runtimes[-1][1])
-' "$supported_runtime_version"
+' "$supported_runtime_version" "$target_runtime"
 )"
 if [ -z "${runtime_id:-}" ]; then
   echo "error: Failed to determine an iOS runtime identifier from simctl." >&2
@@ -111,7 +120,7 @@ if [ -z "${runtime_id:-}" ]; then
   exit 1
 fi
 
-device_type_id="$("$SIMCTL" list devicetypes | awk -F '[()]' '/iPhone 15/ {print $2; exit}')"
+device_type_id="$("$SIMCTL" list devicetypes | awk -F '[()]' -v target="$target_device_type" '$0 ~ target {print $2; exit}')"
 if [ -z "${device_type_id:-}" ]; then
   # Fallback to first iPhone device type if "iPhone 15" isn't available.
   device_type_id="$("$SIMCTL" list devicetypes | awk -F '[()]' '/iPhone/ {print $2; exit}')"
@@ -122,7 +131,7 @@ if [ -z "${device_type_id:-}" ]; then
   exit 1
 fi
 
-device_name="Pika iPhone 15"
+device_name="$target_device_name"
 udid="$(
   "$SIMCTL" list -j devices | python3 -c '
 import json, sys

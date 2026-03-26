@@ -36,7 +36,8 @@ mod tests {
         assert!(ids.contains(&"pika_rust".to_string()));
         assert!(ids.contains(&"pika_followup".to_string()));
         assert!(ids.contains(&"pikachat".to_string()));
-        assert!(ids.contains(&"apple_host_sanity".to_string()));
+        assert!(ids.contains(&"apple_desktop_compile".to_string()));
+        assert!(ids.contains(&"apple_ios_compile".to_string()));
         assert!(ids.contains(&"fixture".to_string()));
     }
 

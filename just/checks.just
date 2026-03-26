@@ -117,20 +117,48 @@ pre-merge-pikachat:
     fi
     echo "pre-merge-pikachat complete"
 
-# Canonical pre-merge Apple-host sanity bundle for the provisioned mini.
-apple-host-sanity:
+# Compile-only Apple desktop smoke for pre-merge CI.
+apple-host-desktop-compile:
     #!/usr/bin/env bash
     set -euo pipefail
     if [[ "$(uname -s)" != "Darwin" ]] || [[ "$(uname -m)" != "arm64" ]]; then
-        echo "error: apple-host-sanity requires Apple Silicon macOS" >&2
+        echo "error: apple-host-desktop-compile requires Apple Silicon macOS" >&2
         exit 1
     fi
     if [[ "${PIKA_DEV_SHELL:-}" != "apple-host" ]]; then
         export PIKA_XCODE_INSTALL_PROMPT="${PIKA_XCODE_INSTALL_PROMPT:-0}"
-        exec nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c just apple-host-sanity
+        exec nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c just checks::apple-host-desktop-compile
     fi
-    ./scripts/apple-host-record-phase apple-host-sanity.desktop-ui-test rust-prepared -- just desktop-ui-test
-    echo "apple-host-sanity complete"
+    ./scripts/apple-host-record-phase apple-host-desktop-compile.nix rust-nix -- nix build .#appleDesktopCompile --no-link
+    echo "apple-host-desktop-compile complete"
+
+# Compile-only Apple iOS smoke for pre-merge CI.
+apple-host-ios-compile:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname -s)" != "Darwin" ]] || [[ "$(uname -m)" != "arm64" ]]; then
+        echo "error: apple-host-ios-compile requires Apple Silicon macOS" >&2
+        exit 1
+    fi
+    if [[ "${PIKA_DEV_SHELL:-}" != "apple-host" ]]; then
+        export PIKA_XCODE_INSTALL_PROMPT="${PIKA_XCODE_INSTALL_PROMPT:-0}"
+        exec nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c just checks::apple-host-ios-compile
+    fi
+    cache_key="$(./scripts/apple-host-cache-key ios-generic-sim)"
+    derived_data_path="${PIKA_IOS_DERIVED_DATA_PATH:-$PWD/.pikaci/ios-derived-data/$cache_key}"
+    mkdir -p "$(dirname "$derived_data_path")"
+    ./scripts/apple-host-record-phase apple-host-ios-compile.nix rust-nix -- nix build .#appleIosXcframework --no-link
+    result_path="$(nix build .#appleIosXcframework --print-out-paths --no-link)"
+    ./scripts/apple-host-record-phase apple-host-ios-compile.xcodebuild apple-native -- \
+      env PIKACI_APPLE_IOS_XCFRAMEWORK_RESULT="$result_path" PIKA_IOS_DERIVED_DATA_PATH="$derived_data_path" \
+      ./scripts/ios-build ios-build-generic-sim
+    echo "apple-host-ios-compile complete"
+
+# Canonical compile-only Apple-host sanity bundle for the provisioned mini.
+apple-host-sanity:
+    just checks::apple-host-desktop-compile
+    just checks::apple-host-ios-compile
+    @echo "apple-host-sanity complete"
 
 # Canonical nightly Apple-host bundle for the provisioned mini / future thin triggers.
 apple-host-bundle:
@@ -142,9 +170,10 @@ apple-host-bundle:
     fi
     if [[ "${PIKA_DEV_SHELL:-}" != "apple-host" ]]; then
         export PIKA_XCODE_INSTALL_PROMPT="${PIKA_XCODE_INSTALL_PROMPT:-0}"
-        exec nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c just apple-host-bundle
+        exec nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c just checks::apple-host-bundle
     fi
-    just apple-host-sanity
+    just checks::apple-host-sanity
+    ./scripts/apple-host-record-phase apple-host-bundle.desktop-ui-test rust-prepared -- just desktop-ui-test
     if [[ -n "${PIKACI_APPLE_RUST_PREPARED_MANIFEST:-}" ]] && [[ -x "${CARGO_TARGET_DIR:-target}/debug/pikaci" ]]; then
       ./scripts/apple-host-record-phase apple-host-bundle.pre-merge-pikachat-apple-followup rust-live -- "${CARGO_TARGET_DIR:-target}/debug/pikaci" run pre-merge-pikachat-apple-followup
     else
@@ -153,7 +182,8 @@ apple-host-bundle:
     ./scripts/apple-host-record-phase apple-host-bundle.cli-smoke rust-prepared -- just cli-smoke
     ./scripts/apple-host-record-phase apple-host-bundle.openclaw-pikachat-deterministic rust-prepared -- just openclaw-pikachat-deterministic
     ./scripts/apple-host-record-phase apple-host-bundle.shared-runtime-regression rust-prepared -- just shared-runtime-regression
-    ./scripts/apple-host-record-phase apple-host-bundle.ios-ui-test apple-native -- just ios-ui-test
+    result_path="$(nix build .#appleIosXcframework --print-out-paths --no-link)"
+    ./scripts/apple-host-record-phase apple-host-bundle.ios-ui-test apple-native -- env PIKACI_APPLE_IOS_XCFRAMEWORK_RESULT="$result_path" just ios-ui-test
     echo "apple-host-bundle complete"
 
 # Checked-in staged Linux agent provider contracts.

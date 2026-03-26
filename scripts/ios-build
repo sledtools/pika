@@ -19,7 +19,7 @@ cd "$ROOT"
 
 usage() {
   cat <<'EOF'
-usage: ./scripts/ios-build <ios-gen-swift|ios-rust|ios-xcframework|ios-xcodeproj|ios-build-sim|ios-build-swift-sim>
+usage: ./scripts/ios-build <ios-gen-swift|ios-rust|ios-xcframework|ios-xcodeproj|ios-build-sim|ios-build-swift-sim|ios-build-generic-sim>
 EOF
 }
 
@@ -29,6 +29,44 @@ ios_rust_profile() {
 
 ios_rust_targets() {
   printf '%s\n' "${PIKA_IOS_RUST_TARGETS:-aarch64-apple-ios aarch64-apple-ios-sim}"
+}
+
+sync_prebuilt_ios_xcframework_result() {
+  local result_path="${PIKACI_APPLE_IOS_XCFRAMEWORK_RESULT:-}"
+  local path
+  if [[ -z "$result_path" ]]; then
+    return 1
+  fi
+  if [[ ! -d "$result_path/Frameworks" ]]; then
+    echo "error: prebuilt iOS xcframework result missing Frameworks/: $result_path" >&2
+    return 1
+  fi
+
+  for path in \
+    "$IOS_BINDINGS_DIR" \
+    "$IOS_NSE_BINDINGS_DIR" \
+    "$IOS_SHARE_BINDINGS_DIR" \
+    "$IOS_FRAMEWORKS_DIR"; do
+    if [[ -e "$path" ]]; then
+      chmod -R u+w "$path"
+    fi
+  done
+
+  rm -rf \
+    "$IOS_BINDINGS_DIR" \
+    "$IOS_NSE_BINDINGS_DIR" \
+    "$IOS_SHARE_BINDINGS_DIR" \
+    "$IOS_FRAMEWORKS_DIR"
+  mkdir -p "$IOS_DIR"
+  cp -R "$result_path/Bindings" "$IOS_BINDINGS_DIR"
+  cp -R "$result_path/NSEBindings" "$IOS_NSE_BINDINGS_DIR"
+  cp -R "$result_path/ShareBindings" "$IOS_SHARE_BINDINGS_DIR"
+  cp -R "$result_path/Frameworks" "$IOS_FRAMEWORKS_DIR"
+  chmod -R u+w \
+    "$IOS_BINDINGS_DIR" \
+    "$IOS_NSE_BINDINGS_DIR" \
+    "$IOS_SHARE_BINDINGS_DIR" \
+    "$IOS_FRAMEWORKS_DIR"
 }
 
 normalize_generated_swift() {
@@ -212,6 +250,10 @@ run_ios_xcframework() {
 
   profile="$(ios_rust_profile)"
   targets="$(ios_rust_targets)"
+  if [[ -n "${PIKACI_APPLE_IOS_XCFRAMEWORK_RESULT:-}" ]]; then
+    sync_prebuilt_ios_xcframework_result
+    return 0
+  fi
   run_ios_gen_swift
   run_ios_rust
   rm -rf \
@@ -286,6 +328,23 @@ run_ios_simulator_xcodebuild() {
     PIKA_IOS_URL_SCHEME="${PIKA_IOS_URL_SCHEME:-pika}"
 }
 
+run_ios_generic_simulator_xcodebuild() {
+  local derived_data_path="${PIKA_IOS_DERIVED_DATA_PATH:-ios/build-generic}"
+  ./tools/xcodebuild-compact \
+    -project ios/Pika.xcodeproj \
+    -scheme Pika \
+    -configuration Debug \
+    -destination 'generic/platform=iOS Simulator' \
+    -derivedDataPath "$derived_data_path" \
+    build \
+    -skipMacroValidation \
+    ARCHS=arm64 \
+    ONLY_ACTIVE_ARCH=YES \
+    CODE_SIGNING_ALLOWED=NO \
+    PIKA_APP_BUNDLE_ID="${PIKA_IOS_BUNDLE_ID:-org.pikachat.pika.dev}" \
+    PIKA_IOS_URL_SCHEME="${PIKA_IOS_URL_SCHEME:-pika}"
+}
+
 run_ios_build_sim() {
   run_ios_xcframework
   run_ios_xcodeproj
@@ -294,6 +353,12 @@ run_ios_build_sim() {
 
 run_ios_build_swift_sim() {
   run_ios_simulator_xcodebuild
+}
+
+run_ios_build_generic_sim() {
+  run_ios_xcframework
+  run_ios_xcodeproj
+  run_ios_generic_simulator_xcodebuild
 }
 
 main() {
@@ -315,6 +380,9 @@ main() {
       ;;
     ios-build-swift-sim)
       run_ios_build_swift_sim
+      ;;
+    ios-build-generic-sim)
+      run_ios_build_generic_sim
       ;;
     -h | --help | help)
       usage

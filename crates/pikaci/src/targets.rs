@@ -289,6 +289,20 @@ pub(crate) fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
             3600,
             "./scripts/pikaci-apple-remote.sh run --just-recipe apple-host-sanity",
         )),
+        "apple_desktop_compile" => Ok(host_shell_target_spec(
+            "apple_desktop_compile",
+            "Run the Apple desktop compile lane via pikaci",
+            &[],
+            3600,
+            "./scripts/pikaci-apple-remote.sh run --just-recipe apple-host-desktop-compile",
+        )),
+        "apple_ios_compile" => Ok(host_shell_target_spec(
+            "apple_ios_compile",
+            "Run the Apple iOS compile lane via pikaci",
+            &[],
+            3600,
+            "./scripts/pikaci-apple-remote.sh run --just-recipe apple-host-ios-compile",
+        )),
         "nightly_linux" => Ok(host_shell_target_spec(
             "nightly_linux",
             "Run the nightly Linux lane via pikaci",

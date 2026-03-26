@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Explain how to get an iOS Simulator runtime installed.
+# Explain how to get the pinned iOS Simulator runtime installed.
 # We intentionally do NOT auto-install by default because it can require
 # Apple credentials and downloads many GB.
 
@@ -12,53 +12,87 @@ DEV_DIR="$("$ROOT/tools/xcode-dev-dir")"
 export DEVELOPER_DIR="$DEV_DIR"
 
 SIMCTL="$DEV_DIR/usr/bin/simctl"
+target_runtime="$("$ROOT/tools/apple-host-asset" ios_runtime)"
+
+ensure_mode=0
+quiet_check=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --ensure)
+      ensure_mode=1
+      shift
+      ;;
+    --quiet-check)
+      quiet_check=1
+      shift
+      ;;
+    -h|--help)
+      cat <<'EOF'
+usage: ./tools/ios-runtime-doctor [--ensure] [--quiet-check]
+
+Check or install the repo-pinned iOS Simulator runtime.
+EOF
+      exit 0
+      ;;
+    *)
+      echo "error: unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
 
 has_runtimes() {
   # `simctl list runtimes` prints a header line, then entries (or nothing).
   [ -n "$("$SIMCTL" list runtimes | sed -n '2,$p' | tr -d '[:space:]')" ]
 }
 
-if has_runtimes; then
-  echo "ok: iOS Simulator runtimes are installed."
-  "$SIMCTL" list runtimes | sed -n '1,40p' || true
+has_target_runtime() {
+  "$SIMCTL" list runtimes | grep -Fq "$target_runtime"
+}
+
+if has_runtimes && has_target_runtime; then
+  if [[ "$quiet_check" -eq 0 ]]; then
+    echo "ok: pinned iOS Simulator runtime is installed: $target_runtime"
+    "$SIMCTL" list runtimes | sed -n '1,40p' || true
+  fi
   exit 0
 fi
 
 XCODES_BIN="$(command -v xcodes 2>/dev/null || true)"
-LATEST_IOS_RUNTIME_NAME=""
-if [ -n "${XCODES_BIN:-}" ]; then
-  # `xcodes runtimes` prints a sectioned list:
-  #   -- iOS --
-  #   iOS 18.6
-  #   ...
-  # Keep this best-effort; don't fail the doctor if xcodes can't fetch.
-  ios_versions="$("$XCODES_BIN" runtimes 2>/dev/null | awk '
-    $0=="-- iOS --" {in_ios=1; next}
-    /^-- / {in_ios=0}
-    in_ios && /^iOS[[:space:]]+[0-9]/ {sub(/^iOS[[:space:]]+/, "", $0); print $0}
-  ' || true)"
-  if [ -n "${ios_versions:-}" ]; then
-    latest_ver="$(printf '%s\n' "$ios_versions" | sort -Vu | tail -n 1 || true)"
-    if [ -n "${latest_ver:-}" ]; then
-      LATEST_IOS_RUNTIME_NAME="iOS $latest_ver"
+if [[ "$ensure_mode" -eq 1 ]]; then
+  if [ -n "${XCODES_BIN:-}" ]; then
+    "$XCODES_BIN" runtimes install "$target_runtime"
+    if has_target_runtime; then
+      echo "ok: installed pinned iOS Simulator runtime: $target_runtime"
+      exit 0
     fi
   fi
+  xcodebuild -downloadPlatform iOS
+  if has_target_runtime; then
+    echo "ok: installed pinned iOS Simulator runtime: $target_runtime"
+    exit 0
+  fi
+  echo "error: failed to install pinned iOS Simulator runtime: $target_runtime" >&2
+  exit 1
+fi
+
+if [[ "$quiet_check" -eq 1 ]]; then
+  exit 1
 fi
 
 cat >&2 <<EOF
-error: No iOS Simulator runtimes installed (simctl list runtimes is empty).
+error: Pinned iOS Simulator runtime is not installed: ${target_runtime}
 
 Pika can build the iOS simulator app, but it cannot boot a simulator without an iOS runtime.
 
 Recommended (most reliable):
   1) Open Xcode
   2) Xcode -> Settings -> Platforms
-  3) Download an "iOS Simulator" runtime
+  3) Download "${target_runtime}"
 
 Optional (scriptable) if you have the \`xcodes\` tool installed:
   1) List runtimes:   xcodes runtimes
-  2) Install one:     xcodes runtimes install "<runtime name>"
-     Example:         xcodes runtimes install "${LATEST_IOS_RUNTIME_NAME:-iOS <latest>}"
+  2) Install one:     xcodes runtimes install "${target_runtime}"
   Notes:
   - This can require Apple ID auth (xcodes will prompt).
   - Downloads are large (many GB).

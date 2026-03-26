@@ -546,8 +546,9 @@
           };
         };
 
-        # Xcode version pinned for the team. Install with: xcodes install 26.2
-        xcodeVersion = "26.2";
+        appleHostAssets = builtins.fromTOML (builtins.readFile ./ci/apple-host-assets.toml);
+        # Xcode version pinned for the team. Install with: xcodes install <version>
+        xcodeVersion = appleHostAssets.xcode_version;
         # Local dev machines (xcodes) use dash; CI runners use underscore.
         xcodeBaseDir = "/Applications/Xcode-${xcodeVersion}.0.app";
         xcodeBaseDirAlt = "/Applications/Xcode_${xcodeVersion}.0.app";
@@ -660,6 +661,48 @@
             ./scripts
           ];
         };
+        appleDesktopWorkspaceSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./VERSION
+            ./Cargo.toml
+            ./Cargo.lock
+            ./flake.nix
+            ./flake.lock
+            ./ci/apple-host-assets.toml
+            ./config
+            ./crates
+            ./rust
+            ./cli
+            ./tests
+            ./tools
+            ./scripts
+            ./uniffi-bindgen
+            ./just
+            ./justfile
+            ./nix
+          ];
+        };
+        appleIosWorkspaceSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./VERSION
+            ./Cargo.toml
+            ./Cargo.lock
+            ./flake.nix
+            ./flake.lock
+            ./ci/apple-host-assets.toml
+            ./config
+            ./crates
+            ./rust
+            ./cli
+            ./ios
+            ./tools
+            ./scripts
+            ./uniffi-bindgen
+            ./nix
+          ];
+        };
         pikaFollowupGradleDepsHost =
           if hasAndroidSdk then
             import ./nix/ci/pika-followup-gradle-deps.nix {
@@ -671,6 +714,22 @@
           else
             null;
         pikachatOpenclawExtensionPkg = mkPikachatOpenclawExtensionPkg pkgs (mkPikachatOpenclawExtensionSrc pkgs.lib);
+        appleRustCi =
+          if pkgs.stdenv.isDarwin then
+            import ./nix/ci/apple-rust.nix {
+              inherit pkgs rustToolchain xcodeWrapper;
+              src = appleIosWorkspaceSrc;
+            }
+          else
+            null;
+        appleDesktopCi =
+          if pkgs.stdenv.isDarwin then
+            import ./nix/ci/apple-rust.nix {
+              inherit pkgs rustToolchain xcodeWrapper;
+              src = appleDesktopWorkspaceSrc;
+            }
+          else
+            null;
         mkPikaDevShell = { includeAndroid ? hasAndroidSdk, shellName ? "default" }:
           let
             withAndroid = includeAndroid && hasAndroidSdk;
@@ -937,6 +996,10 @@ EOF
             rustToolchain = rustToolchain;
             pikachat = pikachatPkgHost;
             pikachat-openclaw-extension = pikachatOpenclawExtensionPkg;
+          }
+          // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
+            appleDesktopCompile = appleDesktopCi.desktopCompile;
+            appleIosXcframework = appleRustCi.iosXcframework;
           }
           // pkgs.lib.optionalAttrs hasAndroidSdk {
             androidSdk = androidSdk;

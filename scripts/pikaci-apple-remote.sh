@@ -79,8 +79,14 @@ prepare_profile_for_recipe() {
     apple-host-bundle)
       printf '%s\n' "bundle"
       ;;
+    apple-host-desktop-compile)
+      printf '%s\n' "desktop"
+      ;;
+    apple-host-ios-compile)
+      printf '%s\n' "ios"
+      ;;
     apple-host-sanity)
-      printf '%s\n' "sanity"
+      printf '%s\n' "compile"
       ;;
     *)
       printf '%s\n' "generic"
@@ -411,8 +417,10 @@ bundle_duration_sec=0
 prepare_profile_rank() {
   case "$1" in
     generic) printf '%s\n' 0 ;;
-    sanity) printf '%s\n' 1 ;;
-    bundle) printf '%s\n' 2 ;;
+    desktop) printf '%s\n' 1 ;;
+    ios) printf '%s\n' 1 ;;
+    compile) printf '%s\n' 2 ;;
+    bundle) printf '%s\n' 3 ;;
     *) printf '%s\n' -1 ;;
   esac
 }
@@ -420,7 +428,26 @@ prepare_profile_rank() {
 prepare_profile_satisfies() {
   local available="$1"
   local desired="$2"
-  [[ "$(prepare_profile_rank "$available")" -ge "$(prepare_profile_rank "$desired")" ]]
+  case "$desired" in
+    generic)
+      return 0
+      ;;
+    desktop)
+      [[ "$available" == "desktop" || "$available" == "compile" || "$available" == "bundle" ]]
+      ;;
+    ios)
+      [[ "$available" == "ios" || "$available" == "compile" || "$available" == "bundle" ]]
+      ;;
+    compile)
+      [[ "$available" == "compile" || "$available" == "bundle" ]]
+      ;;
+    bundle)
+      [[ "$available" == "bundle" ]]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 mkdir -p "$artifacts_dir" "$logs_dir"

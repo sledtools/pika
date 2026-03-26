@@ -57,7 +57,8 @@ if [[ ! -f "$repo_root/flake.nix" ]]; then
   exit 1
 fi
 
-xcode_version="26.2"
+xcode_version="$("$repo_root/tools/apple-host-asset" xcode_version)"
+ios_runtime="$("$repo_root/tools/apple-host-asset" ios_runtime)"
 xcode_app_dash="/Applications/Xcode-${xcode_version}.0.app"
 xcode_app_underscore="/Applications/Xcode_${xcode_version}.0.app"
 
@@ -221,9 +222,40 @@ run_simulator_preflight() {
   )
 }
 
+ensure_ios_runtime() {
+  if [[ "$check_only" -eq 1 ]]; then
+    say "verifying pinned iOS simulator runtime: $ios_runtime"
+  else
+    say "ensuring pinned iOS simulator runtime: $ios_runtime"
+  fi
+  (
+    cd "$repo_root"
+    export PIKA_XCODE_INSTALL_PROMPT=0
+    if [[ "$check_only" -eq 1 ]]; then
+      nix --extra-experimental-features 'nix-command flakes' \
+        develop .#apple-host \
+        -c bash -lc '
+          set -euo pipefail
+          if ! ./tools/ios-runtime-doctor --quiet-check; then
+            echo "error: pinned iOS simulator runtime is not installed" >&2
+            exit 1
+          fi
+        '
+    else
+      nix --extra-experimental-features 'nix-command flakes' \
+        develop .#apple-host \
+        -c bash -lc '
+          set -euo pipefail
+          ./tools/ios-runtime-doctor --ensure
+        '
+    fi
+  )
+}
+
 say "repo root: $repo_root"
 ensure_nix
 ensure_xcode
 run_dev_shell_preflight
+ensure_ios_runtime
 run_simulator_preflight
 say "apple host bootstrap complete"

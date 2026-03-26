@@ -2470,6 +2470,19 @@ mod tests {
     };
     use crate::snapshot::SnapshotMetadata;
 
+    fn assert_contains_all(haystack: &str, needles: &[&str]) {
+        for needle in needles {
+            assert!(
+                haystack.contains(needle),
+                "expected Incus guest image source to contain `{needle}`"
+            );
+        }
+    }
+
+    fn incus_guest_image_source() -> &'static str {
+        include_str!("../../../nix/incus/pikaci-image.nix")
+    }
+
     fn write_snapshot_metadata(snapshot_dir: &Path, content_hash: &str) {
         fs::create_dir_all(snapshot_dir).expect("create snapshot dir");
         fs::write(
@@ -2561,6 +2574,57 @@ mod tests {
         assert_eq!(STATUS_PATH, "/run/pika-cloud/status.json");
         assert_eq!(EVENTS_PATH, "/run/pika-cloud/events.jsonl");
         assert_eq!(RESULT_PATH, "/run/pika-cloud/result.json");
+    }
+
+    #[test]
+    fn remote_linux_incus_image_pins_shared_status_and_event_contract() {
+        let source = incus_guest_image_source();
+
+        assert_contains_all(
+            source,
+            &[
+                "def write_status(state_dir: pathlib.Path, state: str, message: str, **fields) -> None:",
+                "\"schema_version\": LIFECYCLE_SCHEMA_VERSION",
+                "\"state\": state",
+                "\"updated_at\": finished_at()",
+                "\"message\": message",
+                "def append_event(events_path: pathlib.Path, kind: str, message: str, **fields) -> None:",
+                "\"seq\": EVENT_SEQ",
+                "\"kind\": kind",
+                "\"timestamp\": finished_at()",
+                "\"message\": message",
+                "write_status(state_dir, \"booted\", \"incus guest booted\")",
+                "append_event(events_path, \"booted\", \"incus guest booted\")",
+                "\"launching guest command\"",
+                "lifecycle_state = \"completed\" if exit_code == 0 else \"failed\"",
+                "write_status(state_dir, \"failed\", f\"Incus guest bootstrap failed: {exc}\")",
+                "append_event(events_path, \"failed\", f\"Incus guest bootstrap failed: {exc}\")",
+            ],
+        );
+        assert!(!source.contains("lifecycle_state = \"passed\""));
+        assert!(!source.contains("\"status\": \"passed\""));
+    }
+
+    #[test]
+    fn remote_linux_incus_image_pins_shared_terminal_result_contract() {
+        let source = incus_guest_image_source();
+
+        assert_contains_all(
+            source,
+            &[
+                "def write_result(state_dir: pathlib.Path, exit_code: int, message: str) -> None:",
+                "status = \"completed\" if exit_code == 0 else \"failed\"",
+                "state_dir / \"result.json\"",
+                "\"schema_version\": 1",
+                "\"status\": status",
+                "\"exit_code\": exit_code",
+                "\"finished_at\": finished_at()",
+                "\"message\": message",
+                "write_result(state_dir, exit_code, message)",
+                "write_result(state_dir, 2, f\"Incus guest bootstrap failed: {exc}\")",
+            ],
+        );
+        assert!(!source.contains("status = \"passed\""));
     }
 
     #[test]

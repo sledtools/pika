@@ -3730,7 +3730,6 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
     use std::sync::Arc;
 
@@ -3775,22 +3774,9 @@ mod tests {
     use crate::poller;
     use crate::storage::ChatAllowlistEntry;
     use crate::storage::Store;
+    use crate::test_support::GitTestRepo;
 
     const TRUSTED_NPUB: &str = "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y";
-
-    fn git<P: AsRef<std::path::Path>>(cwd: P, args: &[&str]) {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(cwd.as_ref())
-            .output()
-            .expect("run git");
-        assert!(
-            output.status.success(),
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
 
     fn branch_upsert_input(branch_name: &str, head_sha: &str) -> BranchUpsertInput {
         BranchUpsertInput {
@@ -3842,6 +3828,32 @@ mod tests {
             .expect("forge repo")
             .canonical_git_dir = canonical_git_dir.to_string_lossy().into_owned();
         config
+    }
+
+    struct WebTestContext {
+        _dir: tempfile::TempDir,
+        store: Store,
+    }
+
+    impl WebTestContext {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().expect("create temp dir");
+            let db_path = dir.path().join("pika-git.db");
+            let store = Store::open(&db_path).expect("open store");
+            Self { _dir: dir, store }
+        }
+
+        fn store(&self) -> Store {
+            self.store.clone()
+        }
+
+        fn state(&self, config: Config) -> Arc<AppState> {
+            test_state(self.store(), config)
+        }
+
+        fn trusted_headers(&self, npub: &str) -> HeaderMap {
+            trusted_headers(&self.store, npub)
+        }
     }
 
     fn write_pikaci_run_fixture(config: &Config, run_id: &str) {
@@ -4331,10 +4343,8 @@ oldsha newsha refs/tags/v1
         use hmac::{Hmac, Mac};
         use sha2::Sha256;
 
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let db_path = dir.path().join("pika-git.db");
-        let store = Store::open(&db_path).expect("open store");
-        let mut state = test_state(store, forge_test_config());
+        let ctx = WebTestContext::new();
+        let mut state = ctx.state(forge_test_config());
         let secret = "webhook-secret".to_string();
         Arc::get_mut(&mut state)
             .expect("unique app state")
@@ -4362,10 +4372,8 @@ oldsha newsha refs/tags/v1
         use hmac::{Hmac, Mac};
         use sha2::Sha256;
 
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let db_path = dir.path().join("pika-git.db");
-        let store = Store::open(&db_path).expect("open store");
-        let mut state = test_state(store, forge_test_config());
+        let ctx = WebTestContext::new();
+        let mut state = ctx.state(forge_test_config());
         let secret = "webhook-secret".to_string();
         Arc::get_mut(&mut state)
             .expect("unique app state")
@@ -4438,9 +4446,8 @@ oldsha newsha refs/tags/v1
 
     #[tokio::test]
     async fn forge_only_writer_can_list_branch_inbox() {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let db_path = dir.path().join("pika-git.db");
-        let store = Store::open(&db_path).expect("open store");
+        let ctx = WebTestContext::new();
+        let store = ctx.store();
         let branch = store
             .upsert_branch_record(&branch_upsert_input("feature/forge-only-inbox", "head-1"))
             .expect("insert branch");
@@ -4476,8 +4483,8 @@ oldsha newsha refs/tags/v1
             .backfill_branch_inbox_for_npub(forge_only)
             .expect("backfill inbox");
 
-        let state = test_state(store.clone(), forge_test_config());
-        let headers = trusted_headers(&store, forge_only);
+        let state = ctx.state(forge_test_config());
+        let headers = ctx.trusted_headers(forge_only);
         let response = api_inbox_list_handler(
             State(state.clone()),
             headers.clone(),
@@ -4494,9 +4501,8 @@ oldsha newsha refs/tags/v1
 
     #[tokio::test]
     async fn forge_inbox_mark_reviewed_updates_review_needed_count() {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let db_path = dir.path().join("pika-git.db");
-        let store = Store::open(&db_path).expect("open store");
+        let ctx = WebTestContext::new();
+        let store = ctx.store();
         let branch = store
             .upsert_branch_record(&branch_upsert_input("feature/review-progress", "head-1"))
             .expect("insert branch");
@@ -4529,8 +4535,8 @@ oldsha newsha refs/tags/v1
             .populate_branch_inbox(artifact_id, &[reviewer.to_string()])
             .expect("populate branch inbox");
 
-        let state = test_state(store.clone(), forge_test_config());
-        let headers = trusted_headers(&store, reviewer);
+        let state = ctx.state(forge_test_config());
+        let headers = ctx.trusted_headers(reviewer);
         let response = api_inbox_mark_reviewed_handler(
             State(state.clone()),
             Path(branch.branch_id),
@@ -4553,9 +4559,8 @@ oldsha newsha refs/tags/v1
 
     #[tokio::test]
     async fn inbox_review_route_resolves_branch_ids_in_forge_mode() {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let db_path = dir.path().join("pika-git.db");
-        let store = Store::open(&db_path).expect("open store");
+        let ctx = WebTestContext::new();
+        let store = ctx.store();
         let branch = store
             .upsert_branch_record(&branch_upsert_input("feature/review", "head-1"))
             .expect("insert branch");
@@ -4588,7 +4593,7 @@ oldsha newsha refs/tags/v1
             .expect("populate branch inbox");
 
         let config = forge_test_config_without_admins();
-        let state = test_state(store, config);
+        let state = ctx.state(config);
 
         let response = inbox_review_handler(State(state), Path(branch.branch_id))
             .await
@@ -4598,9 +4603,8 @@ oldsha newsha refs/tags/v1
 
     #[tokio::test]
     async fn api_forge_branch_resolve_returns_open_branch() {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let db_path = dir.path().join("pika-git.db");
-        let store = Store::open(&db_path).expect("open store");
+        let ctx = WebTestContext::new();
+        let store = ctx.store();
         let branch = store
             .upsert_branch_record(&branch_upsert_input("feature/api-resolve", "head-resolve"))
             .expect("insert branch");
@@ -4610,8 +4614,8 @@ oldsha newsha refs/tags/v1
             .as_mut()
             .expect("forge repo")
             .ci_concurrency = None;
-        let headers = trusted_headers(&store, TRUSTED_NPUB);
-        let state = test_state(store, config);
+        let headers = ctx.trusted_headers(TRUSTED_NPUB);
+        let state = ctx.state(config);
 
         let response = api_forge_branch_resolve_handler(
             State(state),
@@ -4634,9 +4638,8 @@ oldsha newsha refs/tags/v1
 
     #[tokio::test]
     async fn api_forge_branch_resolve_returns_closed_branch_history() {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let db_path = dir.path().join("pika-git.db");
-        let store = Store::open(&db_path).expect("open store");
+        let ctx = WebTestContext::new();
+        let store = ctx.store();
         let branch = store
             .upsert_branch_record(&branch_upsert_input("feature/api-history", "head-history"))
             .expect("insert branch");
@@ -4649,8 +4652,8 @@ oldsha newsha refs/tags/v1
             .as_mut()
             .expect("forge repo")
             .ci_concurrency = None;
-        let headers = trusted_headers(&store, TRUSTED_NPUB);
-        let state = test_state(store, config);
+        let headers = ctx.trusted_headers(TRUSTED_NPUB);
+        let state = ctx.state(config);
 
         let response = api_forge_branch_resolve_handler(
             State(state),
@@ -4673,9 +4676,8 @@ oldsha newsha refs/tags/v1
 
     #[tokio::test]
     async fn auth_challenge_handler_allows_forge_only_auth_mode() {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let db_path = dir.path().join("pika-git.db");
-        let store = Store::open(&db_path).expect("open store");
+        let ctx = WebTestContext::new();
+        let store = ctx.store();
         store
             .upsert_chat_allowlist_entry(
                 TRUSTED_NPUB,
@@ -4691,7 +4693,7 @@ oldsha newsha refs/tags/v1
             .as_mut()
             .expect("forge repo")
             .ci_concurrency = None;
-        let state = test_state(store, config);
+        let state = ctx.state(config);
 
         let response = auth_challenge_handler(State(state)).await.into_response();
         assert_eq!(response.status(), StatusCode::OK);
@@ -5943,27 +5945,14 @@ oldsha newsha refs/tags/v1
 
     #[test]
     fn merged_branch_page_renders_after_source_branch_deletion() {
-        let root = tempfile::tempdir().expect("create temp root");
-        let bare = root.path().join("pika.git");
-        let seed = root.path().join("seed");
-        let db_path = root.path().join("pika-git.db");
-
-        git(
-            root.path(),
-            &["init", "--bare", bare.to_str().expect("bare path")],
-        );
-        git(root.path(), &["init", seed.to_str().expect("seed path")]);
-        git(&seed, &["config", "user.name", "Test User"]);
-        git(&seed, &["config", "user.email", "test@example.com"]);
-        fs::write(seed.join("README.md"), "hello\n").expect("write readme");
-        fs::write(
-            seed.join("ci.sh"),
+        let repo = GitTestRepo::new();
+        repo.write_seed("README.md", "hello\n");
+        repo.write_seed(
+            "ci.sh",
             "#!/usr/bin/env bash\nset -euo pipefail\necho branch-ci-ok\n",
-        )
-        .expect("write ci script");
-        fs::create_dir_all(seed.join("ci")).expect("create ci dir");
-        fs::write(
-            seed.join("ci/forge-lanes.toml"),
+        );
+        repo.write_seed(
+            "ci/forge-lanes.toml",
             r#"
 version = 1
 nightly_schedule_utc = "23:59"
@@ -5975,31 +5964,21 @@ entrypoint = "./ci.sh"
 command = ["./ci.sh"]
 paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
 "#,
-        )
-        .expect("write forge lane manifest");
-        let mut perms = fs::metadata(seed.join("ci.sh"))
-            .expect("ci metadata")
-            .permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(seed.join("ci.sh"), perms).expect("chmod ci script");
-        git(&seed, &["add", "README.md", "ci.sh", "ci/forge-lanes.toml"]);
-        git(&seed, &["commit", "-m", "initial"]);
-        git(&seed, &["branch", "-M", "master"]);
-        git(
-            &seed,
-            &["remote", "add", "origin", bare.to_str().expect("bare path")],
         );
-        git(&seed, &["push", "origin", "master"]);
-        git(&seed, &["checkout", "-b", "feature/render-history"]);
-        fs::write(seed.join("feature.txt"), "branch work\n").expect("write feature file");
-        git(&seed, &["add", "feature.txt"]);
-        git(&seed, &["commit", "-m", "branch render history"]);
-        git(&seed, &["push", "origin", "feature/render-history"]);
+        repo.chmod_seed_executable("ci.sh");
+        repo.seed_add(&["README.md", "ci.sh", "ci/forge-lanes.toml"]);
+        repo.seed_commit("initial");
+        repo.seed_push_master();
+        repo.seed_checkout_new_branch("feature/render-history");
+        repo.write_seed("feature.txt", "branch work\n");
+        repo.seed_add(&["feature.txt"]);
+        repo.seed_commit("branch render history");
+        repo.seed_push_branch("feature/render-history");
 
-        let store = Store::open(&db_path).expect("open store");
+        let store = repo.open_store();
         let config = Config::test_with_forge_repo(ForgeRepoConfig {
             repo: "sledtools/pika".to_string(),
-            canonical_git_dir: bare.to_str().expect("bare path").to_string(),
+            canonical_git_dir: repo.bare_path().to_str().expect("bare path").to_string(),
             default_branch: "master".to_string(),
             ci_concurrency: Some(2),
             mirror_remote: None,

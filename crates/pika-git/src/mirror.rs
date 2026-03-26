@@ -212,21 +212,7 @@ mod tests {
 
     use super::{run_background_mirror_pass, run_mirror_pass};
     use crate::config::{Config, ForgeRepoConfig};
-    use crate::storage::Store;
-
-    fn git<P: AsRef<std::path::Path>>(cwd: P, args: &[&str]) {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(cwd.as_ref())
-            .output()
-            .expect("run git");
-        assert!(
-            output.status.success(),
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    use crate::test_support::GitTestRepo;
 
     fn base_config(canonical_git_dir: &str, mirror_remote: Option<&str>) -> Config {
         Config::test_with_forge_repo(ForgeRepoConfig {
@@ -244,43 +230,36 @@ mod tests {
 
     #[test]
     fn mirror_pass_records_success_and_zero_lag() {
-        let root = tempfile::tempdir().expect("create temp root");
-        let canonical = root.path().join("canonical.git");
-        let mirror = root.path().join("mirror.git");
-        let seed = root.path().join("seed");
-        git(
-            root.path(),
-            &["init", "--bare", canonical.to_str().unwrap()],
-        );
-        git(root.path(), &["init", "--bare", mirror.to_str().unwrap()]);
-        git(root.path(), &["init", seed.to_str().unwrap()]);
-        git(&seed, &["config", "user.name", "Test User"]);
-        git(&seed, &["config", "user.email", "test@example.com"]);
-        std::fs::write(seed.join("README.md"), "hello\n").unwrap();
-        git(&seed, &["add", "README.md"]);
-        git(&seed, &["commit", "-m", "initial"]);
-        git(&seed, &["branch", "-M", "master"]);
-        git(
-            &seed,
-            &["remote", "add", "origin", canonical.to_str().unwrap()],
-        );
-        git(&seed, &["push", "origin", "master"]);
+        let repo = GitTestRepo::new();
+        let mirror = repo.seed_path().parent().expect("root").join("mirror.git");
+        Command::new("git")
+            .args(["init", "--bare", mirror.to_str().expect("mirror path")])
+            .current_dir(repo.seed_path().parent().expect("root"))
+            .status()
+            .expect("init mirror repo");
+        repo.write_seed("README.md", "hello\n");
+        repo.seed_add(&["README.md"]);
+        repo.seed_commit("initial");
+        repo.seed_push_master();
         Command::new("git")
             .args([
                 "--git-dir",
-                canonical.to_str().unwrap(),
+                repo.bare_path().to_str().expect("bare path"),
                 "remote",
                 "add",
                 "github",
-                mirror.to_str().unwrap(),
+                mirror.to_str().expect("mirror path"),
             ])
             .status()
             .expect("add mirror remote");
 
-        let store = Store::open(&root.path().join("pika-git.db")).expect("open store");
+        let store = repo.open_store();
         let result = run_mirror_pass(
             &store,
-            &base_config(canonical.to_str().unwrap(), Some("github")),
+            &base_config(
+                repo.bare_path().to_str().expect("bare path"),
+                Some("github"),
+            ),
             "background",
         )
         .expect("run mirror pass");
@@ -300,23 +279,21 @@ mod tests {
 
     #[test]
     fn mirror_pass_records_failure_for_bad_remote() {
-        let root = tempfile::tempdir().expect("create temp root");
-        let canonical = root.path().join("canonical.git");
-        git(
-            root.path(),
-            &["init", "--bare", canonical.to_str().unwrap()],
-        );
-        let store = Store::open(&root.path().join("pika-git.db")).expect("open store");
+        let repo = GitTestRepo::new();
         let result = run_mirror_pass(
-            &store,
-            &base_config(canonical.to_str().unwrap(), Some("github")),
+            &repo.open_store(),
+            &base_config(
+                repo.bare_path().to_str().expect("bare path"),
+                Some("github"),
+            ),
             "manual",
         )
         .expect("run failed mirror pass");
         assert!(result.attempted);
         assert_eq!(result.status.as_deref(), Some("failed"));
 
-        let status = store
+        let status = repo
+            .open_store()
             .get_mirror_status("sledtools/pika", "github")
             .expect("mirror status")
             .expect("status exists");
@@ -333,41 +310,34 @@ mod tests {
 
     #[test]
     fn background_mirror_pass_respects_configured_interval() {
-        let root = tempfile::tempdir().expect("create temp root");
-        let canonical = root.path().join("canonical.git");
-        let mirror = root.path().join("mirror.git");
-        let seed = root.path().join("seed");
-        git(
-            root.path(),
-            &["init", "--bare", canonical.to_str().unwrap()],
-        );
-        git(root.path(), &["init", "--bare", mirror.to_str().unwrap()]);
-        git(root.path(), &["init", seed.to_str().unwrap()]);
-        git(&seed, &["config", "user.name", "Test User"]);
-        git(&seed, &["config", "user.email", "test@example.com"]);
-        std::fs::write(seed.join("README.md"), "hello\n").unwrap();
-        git(&seed, &["add", "README.md"]);
-        git(&seed, &["commit", "-m", "initial"]);
-        git(&seed, &["branch", "-M", "master"]);
-        git(
-            &seed,
-            &["remote", "add", "origin", canonical.to_str().unwrap()],
-        );
-        git(&seed, &["push", "origin", "master"]);
+        let repo = GitTestRepo::new();
+        let mirror = repo.seed_path().parent().expect("root").join("mirror.git");
+        Command::new("git")
+            .args(["init", "--bare", mirror.to_str().expect("mirror path")])
+            .current_dir(repo.seed_path().parent().expect("root"))
+            .status()
+            .expect("init mirror repo");
+        repo.write_seed("README.md", "hello\n");
+        repo.seed_add(&["README.md"]);
+        repo.seed_commit("initial");
+        repo.seed_push_master();
         Command::new("git")
             .args([
                 "--git-dir",
-                canonical.to_str().unwrap(),
+                repo.bare_path().to_str().expect("bare path"),
                 "remote",
                 "add",
                 "github",
-                mirror.to_str().unwrap(),
+                mirror.to_str().expect("mirror path"),
             ])
             .status()
             .expect("add mirror remote");
 
-        let store = Store::open(&root.path().join("pika-git.db")).expect("open store");
-        let config = base_config(canonical.to_str().unwrap(), Some("github"));
+        let store = repo.open_store();
+        let config = base_config(
+            repo.bare_path().to_str().expect("bare path"),
+            Some("github"),
+        );
         assert!(
             run_background_mirror_pass(&store, &config)
                 .expect("first background pass")

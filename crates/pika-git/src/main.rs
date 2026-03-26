@@ -20,6 +20,8 @@ mod pikaci_store;
 mod poller;
 mod render;
 mod storage;
+#[cfg(test)]
+mod test_support;
 mod tutorial;
 mod web;
 mod worker;

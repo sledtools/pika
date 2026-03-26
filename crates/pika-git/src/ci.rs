@@ -636,6 +636,7 @@ mod tests {
     use crate::ci_state::CiLaneStatus;
     use crate::config::{Config, ForgeRepoConfig};
     use crate::storage::Store;
+    use crate::test_support::GitTestRepo;
 
     fn git<P: AsRef<std::path::Path>>(cwd: P, args: &[&str]) {
         let output = Command::new("git")
@@ -709,18 +710,10 @@ mod tests {
 
     #[test]
     fn nightly_schedule_creates_durable_history_once_per_slot() {
-        let root = tempfile::tempdir().expect("create temp root");
-        let bare = root.path().join("pika.git");
-        let seed = root.path().join("seed");
-        let db_path = root.path().join("pika-git.db");
-
-        git(
-            root.path(),
-            &["init", "--bare", bare.to_str().expect("bare path")],
-        );
-        git(root.path(), &["init", seed.to_str().expect("seed path")]);
-        git(&seed, &["config", "user.name", "Test User"]);
-        git(&seed, &["config", "user.email", "test@example.com"]);
+        let repo = GitTestRepo::new();
+        let bare = repo.bare_path();
+        let seed = repo.seed_path();
+        let db_path = repo.db_path();
         fs::create_dir_all(seed.join("ci")).expect("create ci dir");
         fs::write(seed.join("README.md"), "hello\n").expect("write readme");
         fs::write(
@@ -749,16 +742,16 @@ command = ["./nightly.sh"]
         )
         .expect("write nightly manifest");
         git(
-            &seed,
+            seed,
             &["add", "README.md", "nightly.sh", "ci/forge-lanes.toml"],
         );
-        git(&seed, &["commit", "-m", "initial"]);
-        git(&seed, &["branch", "-M", "master"]);
+        git(seed, &["commit", "-m", "initial"]);
+        git(seed, &["branch", "-M", "master"]);
         git(
-            &seed,
+            seed,
             &["remote", "add", "origin", bare.to_str().expect("bare path")],
         );
-        git(&seed, &["push", "origin", "master"]);
+        git(seed, &["push", "origin", "master"]);
 
         let forge_repo = ForgeRepoConfig {
             repo: "sledtools/pika".to_string(),
@@ -772,7 +765,7 @@ command = ["./nightly.sh"]
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
         let manifest = load_manifest_from_default_branch(&forge_repo).expect("load manifest");
-        let store = Store::open(&db_path).expect("open store");
+        let store = Store::open(db_path).expect("open store");
         let now = chrono::Utc
             .with_ymd_and_hms(2026, 3, 17, 9, 30, 0)
             .single()
@@ -800,18 +793,10 @@ command = ["./nightly.sh"]
 
     #[test]
     fn run_ci_pass_drains_all_queued_branch_lanes_without_waiting_for_next_poll() {
-        let root = tempfile::tempdir().expect("create temp root");
-        let bare = root.path().join("pika.git");
-        let seed = root.path().join("seed");
-        let db_path = root.path().join("pika-git.db");
-
-        git(
-            root.path(),
-            &["init", "--bare", bare.to_str().expect("bare path")],
-        );
-        git(root.path(), &["init", seed.to_str().expect("seed path")]);
-        git(&seed, &["config", "user.name", "Test User"]);
-        git(&seed, &["config", "user.email", "test@example.com"]);
+        let repo = GitTestRepo::new();
+        let bare = repo.bare_path();
+        let seed = repo.seed_path();
+        let db_path = repo.db_path();
         fs::create_dir_all(seed.join("ci")).expect("create ci dir");
         fs::write(seed.join("README.md"), "hello\n").expect("write readme");
         fs::write(
@@ -841,7 +826,7 @@ nightly_schedule_utc = "08:00"
         )
         .expect("write manifest");
         git(
-            &seed,
+            seed,
             &[
                 "add",
                 "README.md",
@@ -850,14 +835,14 @@ nightly_schedule_utc = "08:00"
                 "ci/forge-lanes.toml",
             ],
         );
-        git(&seed, &["commit", "-m", "initial"]);
-        git(&seed, &["branch", "-M", "master"]);
+        git(seed, &["commit", "-m", "initial"]);
+        git(seed, &["branch", "-M", "master"]);
         git(
-            &seed,
+            seed,
             &["remote", "add", "origin", bare.to_str().expect("bare path")],
         );
-        git(&seed, &["push", "origin", "master"]);
-        let head_sha = git_stdout(&seed, &["rev-parse", "HEAD"]);
+        git(seed, &["push", "origin", "master"]);
+        let head_sha = git_stdout(seed, &["rev-parse", "HEAD"]);
 
         let forge_repo = ForgeRepoConfig {
             repo: "sledtools/pika".to_string(),
@@ -871,7 +856,7 @@ nightly_schedule_utc = "08:00"
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
         let config = Config::test_with_forge_repo(forge_repo.clone());
-        let store = Store::open(&db_path).expect("open store");
+        let store = Store::open(db_path).expect("open store");
         let repo_id = store
             .ensure_forge_repo_metadata(
                 &forge_repo.repo,
@@ -941,18 +926,10 @@ nightly_schedule_utc = "08:00"
 
     #[test]
     fn run_ci_pass_respects_configured_parallel_branch_cap() {
-        let root = tempfile::tempdir().expect("create temp root");
-        let bare = root.path().join("pika.git");
-        let seed = root.path().join("seed");
-        let db_path = root.path().join("pika-git.db");
-
-        git(
-            root.path(),
-            &["init", "--bare", bare.to_str().expect("bare path")],
-        );
-        git(root.path(), &["init", seed.to_str().expect("seed path")]);
-        git(&seed, &["config", "user.name", "Test User"]);
-        git(&seed, &["config", "user.email", "test@example.com"]);
+        let repo = GitTestRepo::new();
+        let bare = repo.bare_path();
+        let seed = repo.seed_path();
+        let db_path = repo.db_path();
         fs::create_dir_all(seed.join("ci")).expect("create ci dir");
         fs::write(seed.join("README.md"), "hello\n").expect("write readme");
         let start_log = seed.join("starts.log");
@@ -980,7 +957,7 @@ nightly_schedule_utc = "08:00"
         )
         .expect("write manifest");
         git(
-            &seed,
+            seed,
             &[
                 "add",
                 "README.md",
@@ -990,14 +967,14 @@ nightly_schedule_utc = "08:00"
                 "ci/forge-lanes.toml",
             ],
         );
-        git(&seed, &["commit", "-m", "initial"]);
-        git(&seed, &["branch", "-M", "master"]);
+        git(seed, &["commit", "-m", "initial"]);
+        git(seed, &["branch", "-M", "master"]);
         git(
-            &seed,
+            seed,
             &["remote", "add", "origin", bare.to_str().expect("bare path")],
         );
-        git(&seed, &["push", "origin", "master"]);
-        let head_sha = git_stdout(&seed, &["rev-parse", "HEAD"]);
+        git(seed, &["push", "origin", "master"]);
+        let head_sha = git_stdout(seed, &["rev-parse", "HEAD"]);
 
         let forge_repo = ForgeRepoConfig {
             repo: "sledtools/pika".to_string(),
@@ -1011,7 +988,7 @@ nightly_schedule_utc = "08:00"
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
         let config = Config::test_with_forge_repo(forge_repo.clone());
-        let store = Store::open(&db_path).expect("open store");
+        let store = Store::open(db_path).expect("open store");
         let branch = store
             .upsert_branch_record(&crate::branch_store::BranchUpsertInput {
                 repo: forge_repo.repo.clone(),
@@ -1077,18 +1054,10 @@ nightly_schedule_utc = "08:00"
 
     #[test]
     fn run_ci_pass_starts_all_claimable_branch_lanes_when_unbounded() {
-        let root = tempfile::tempdir().expect("create temp root");
-        let bare = root.path().join("pika.git");
-        let seed = root.path().join("seed");
-        let db_path = root.path().join("pika-git.db");
-
-        git(
-            root.path(),
-            &["init", "--bare", bare.to_str().expect("bare path")],
-        );
-        git(root.path(), &["init", seed.to_str().expect("seed path")]);
-        git(&seed, &["config", "user.name", "Test User"]);
-        git(&seed, &["config", "user.email", "test@example.com"]);
+        let repo = GitTestRepo::new();
+        let bare = repo.bare_path();
+        let seed = repo.seed_path();
+        let db_path = repo.db_path();
         fs::create_dir_all(seed.join("ci")).expect("create ci dir");
         fs::write(seed.join("README.md"), "hello\n").expect("write readme");
         let start_log = seed.join("starts.log");
@@ -1116,7 +1085,7 @@ nightly_schedule_utc = "08:00"
         )
         .expect("write manifest");
         git(
-            &seed,
+            seed,
             &[
                 "add",
                 "README.md",
@@ -1126,14 +1095,14 @@ nightly_schedule_utc = "08:00"
                 "ci/forge-lanes.toml",
             ],
         );
-        git(&seed, &["commit", "-m", "initial"]);
-        git(&seed, &["branch", "-M", "master"]);
+        git(seed, &["commit", "-m", "initial"]);
+        git(seed, &["branch", "-M", "master"]);
         git(
-            &seed,
+            seed,
             &["remote", "add", "origin", bare.to_str().expect("bare path")],
         );
-        git(&seed, &["push", "origin", "master"]);
-        let head_sha = git_stdout(&seed, &["rev-parse", "HEAD"]);
+        git(seed, &["push", "origin", "master"]);
+        let head_sha = git_stdout(seed, &["rev-parse", "HEAD"]);
 
         let forge_repo = ForgeRepoConfig {
             repo: "sledtools/pika".to_string(),
@@ -1147,7 +1116,7 @@ nightly_schedule_utc = "08:00"
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
         let config = Config::test_with_forge_repo(forge_repo.clone());
-        let store = Store::open(&db_path).expect("open store");
+        let store = Store::open(db_path).expect("open store");
         let branch = store
             .upsert_branch_record(&crate::branch_store::BranchUpsertInput {
                 repo: forge_repo.repo.clone(),
@@ -1213,18 +1182,10 @@ nightly_schedule_utc = "08:00"
 
     #[test]
     fn scheduler_pass_returns_while_running_lane_does_not_block_later_claims() {
-        let root = tempfile::tempdir().expect("create temp root");
-        let bare = root.path().join("pika.git");
-        let seed = root.path().join("seed");
-        let db_path = root.path().join("pika-git.db");
-
-        git(
-            root.path(),
-            &["init", "--bare", bare.to_str().expect("bare path")],
-        );
-        git(root.path(), &["init", seed.to_str().expect("seed path")]);
-        git(&seed, &["config", "user.name", "Test User"]);
-        git(&seed, &["config", "user.email", "test@example.com"]);
+        let repo = GitTestRepo::new();
+        let bare = repo.bare_path();
+        let seed = repo.seed_path();
+        let db_path = repo.db_path();
         fs::create_dir_all(seed.join("ci")).expect("create ci dir");
         fs::write(seed.join("README.md"), "hello\n").expect("write readme");
         let start_log = seed.join("starts.log");
@@ -1258,7 +1219,7 @@ nightly_schedule_utc = "08:00"
         )
         .expect("write manifest");
         git(
-            &seed,
+            seed,
             &[
                 "add",
                 "README.md",
@@ -1267,14 +1228,14 @@ nightly_schedule_utc = "08:00"
                 "ci/forge-lanes.toml",
             ],
         );
-        git(&seed, &["commit", "-m", "initial"]);
-        git(&seed, &["branch", "-M", "master"]);
+        git(seed, &["commit", "-m", "initial"]);
+        git(seed, &["branch", "-M", "master"]);
         git(
-            &seed,
+            seed,
             &["remote", "add", "origin", bare.to_str().expect("bare path")],
         );
-        git(&seed, &["push", "origin", "master"]);
-        let head_sha = git_stdout(&seed, &["rev-parse", "HEAD"]);
+        git(seed, &["push", "origin", "master"]);
+        let head_sha = git_stdout(seed, &["rev-parse", "HEAD"]);
 
         let forge_repo = ForgeRepoConfig {
             repo: "sledtools/pika".to_string(),
@@ -1288,7 +1249,7 @@ nightly_schedule_utc = "08:00"
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
         let config = Config::test_with_forge_repo(forge_repo.clone());
-        let store = Store::open(&db_path).expect("open store");
+        let store = Store::open(db_path).expect("open store");
 
         let slow_branch = store
             .upsert_branch_record(&crate::branch_store::BranchUpsertInput {
@@ -1388,18 +1349,10 @@ nightly_schedule_utc = "08:00"
 
     #[test]
     fn run_ci_pass_refills_parallel_slots_when_a_lane_finishes_early() {
-        let root = tempfile::tempdir().expect("create temp root");
-        let bare = root.path().join("pika.git");
-        let seed = root.path().join("seed");
-        let db_path = root.path().join("pika-git.db");
-
-        git(
-            root.path(),
-            &["init", "--bare", bare.to_str().expect("bare path")],
-        );
-        git(root.path(), &["init", seed.to_str().expect("seed path")]);
-        git(&seed, &["config", "user.name", "Test User"]);
-        git(&seed, &["config", "user.email", "test@example.com"]);
+        let repo = GitTestRepo::new();
+        let bare = repo.bare_path();
+        let seed = repo.seed_path();
+        let db_path = repo.db_path();
         fs::create_dir_all(seed.join("ci")).expect("create ci dir");
         fs::write(seed.join("README.md"), "hello\n").expect("write readme");
         let start_log = seed.join("starts.log");
@@ -1441,7 +1394,7 @@ nightly_schedule_utc = "08:00"
         )
         .expect("write manifest");
         git(
-            &seed,
+            seed,
             &[
                 "add",
                 "README.md",
@@ -1451,14 +1404,14 @@ nightly_schedule_utc = "08:00"
                 "ci/forge-lanes.toml",
             ],
         );
-        git(&seed, &["commit", "-m", "initial"]);
-        git(&seed, &["branch", "-M", "master"]);
+        git(seed, &["commit", "-m", "initial"]);
+        git(seed, &["branch", "-M", "master"]);
         git(
-            &seed,
+            seed,
             &["remote", "add", "origin", bare.to_str().expect("bare path")],
         );
-        git(&seed, &["push", "origin", "master"]);
-        let head_sha = git_stdout(&seed, &["rev-parse", "HEAD"]);
+        git(seed, &["push", "origin", "master"]);
+        let head_sha = git_stdout(seed, &["rev-parse", "HEAD"]);
 
         let forge_repo = ForgeRepoConfig {
             repo: "sledtools/pika".to_string(),
@@ -1472,7 +1425,7 @@ nightly_schedule_utc = "08:00"
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
         let config = Config::test_with_forge_repo(forge_repo.clone());
-        let store = Store::open(&db_path).expect("open store");
+        let store = Store::open(db_path).expect("open store");
         let branch = store
             .upsert_branch_record(&crate::branch_store::BranchUpsertInput {
                 repo: forge_repo.repo.clone(),
@@ -1549,18 +1502,10 @@ nightly_schedule_utc = "08:00"
 
     #[test]
     fn live_heartbeat_prevents_long_running_lane_from_being_requeued() {
-        let root = tempfile::tempdir().expect("create temp root");
-        let bare = root.path().join("pika.git");
-        let seed = root.path().join("seed");
-        let db_path = root.path().join("pika-git.db");
-
-        git(
-            root.path(),
-            &["init", "--bare", bare.to_str().expect("bare path")],
-        );
-        git(root.path(), &["init", seed.to_str().expect("seed path")]);
-        git(&seed, &["config", "user.name", "Test User"]);
-        git(&seed, &["config", "user.email", "test@example.com"]);
+        let repo = GitTestRepo::new();
+        let bare = repo.bare_path();
+        let seed = repo.seed_path();
+        let db_path = repo.db_path();
         fs::create_dir_all(seed.join("ci")).expect("create ci dir");
         fs::write(seed.join("README.md"), "hello\n").expect("write readme");
         fs::write(
@@ -1583,17 +1528,17 @@ nightly_schedule_utc = "08:00"
         )
         .expect("write manifest");
         git(
-            &seed,
+            seed,
             &["add", "README.md", "slow-lane.sh", "ci/forge-lanes.toml"],
         );
-        git(&seed, &["commit", "-m", "initial"]);
-        git(&seed, &["branch", "-M", "master"]);
+        git(seed, &["commit", "-m", "initial"]);
+        git(seed, &["branch", "-M", "master"]);
         git(
-            &seed,
+            seed,
             &["remote", "add", "origin", bare.to_str().expect("bare path")],
         );
-        git(&seed, &["push", "origin", "master"]);
-        let head_sha = git_stdout(&seed, &["rev-parse", "HEAD"]);
+        git(seed, &["push", "origin", "master"]);
+        let head_sha = git_stdout(seed, &["rev-parse", "HEAD"]);
 
         let forge_repo = ForgeRepoConfig {
             repo: "sledtools/pika".to_string(),
@@ -1607,7 +1552,7 @@ nightly_schedule_utc = "08:00"
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
         let config = Config::test_with_forge_repo(forge_repo.clone());
-        let store = Store::open(&db_path).expect("open store");
+        let store = Store::open(db_path).expect("open store");
         let branch = store
             .upsert_branch_record(&crate::branch_store::BranchUpsertInput {
                 repo: forge_repo.repo.clone(),
@@ -1669,18 +1614,10 @@ nightly_schedule_utc = "08:00"
 
     #[test]
     fn due_nightly_is_queued_and_run_in_same_ci_pass() {
-        let root = tempfile::tempdir().expect("create temp root");
-        let bare = root.path().join("pika.git");
-        let seed = root.path().join("seed");
-        let db_path = root.path().join("pika-git.db");
-
-        git(
-            root.path(),
-            &["init", "--bare", bare.to_str().expect("bare path")],
-        );
-        git(root.path(), &["init", seed.to_str().expect("seed path")]);
-        git(&seed, &["config", "user.name", "Test User"]);
-        git(&seed, &["config", "user.email", "test@example.com"]);
+        let repo = GitTestRepo::new();
+        let bare = repo.bare_path();
+        let seed = repo.seed_path();
+        let db_path = repo.db_path();
         fs::create_dir_all(seed.join("ci")).expect("create ci dir");
         fs::write(seed.join("README.md"), "hello\n").expect("write readme");
         fs::write(
@@ -1716,7 +1653,7 @@ command = ["./nightly.sh"]
         )
         .expect("write manifest");
         git(
-            &seed,
+            seed,
             &[
                 "add",
                 "README.md",
@@ -1725,14 +1662,14 @@ command = ["./nightly.sh"]
                 "ci/forge-lanes.toml",
             ],
         );
-        git(&seed, &["commit", "-m", "initial"]);
-        git(&seed, &["branch", "-M", "master"]);
+        git(seed, &["commit", "-m", "initial"]);
+        git(seed, &["branch", "-M", "master"]);
         git(
-            &seed,
+            seed,
             &["remote", "add", "origin", bare.to_str().expect("bare path")],
         );
-        git(&seed, &["push", "origin", "master"]);
-        let head_sha = git_stdout(&seed, &["rev-parse", "HEAD"]);
+        git(seed, &["push", "origin", "master"]);
+        let head_sha = git_stdout(seed, &["rev-parse", "HEAD"]);
 
         let forge_repo = ForgeRepoConfig {
             repo: "sledtools/pika".to_string(),
@@ -1746,7 +1683,7 @@ command = ["./nightly.sh"]
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
         let config = Config::test_with_forge_repo(forge_repo.clone());
-        let store = Store::open(&db_path).expect("open store");
+        let store = Store::open(db_path).expect("open store");
         let branch = store
             .upsert_branch_record(&crate::branch_store::BranchUpsertInput {
                 repo: forge_repo.repo.clone(),

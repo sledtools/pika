@@ -1819,7 +1819,10 @@ mod tests {
         assert!(matches_filter("Cargo.toml", "Cargo.toml"));
         assert!(!matches_filter("Cargo.lock", "Cargo.toml"));
         assert!(matches_filter("rust/src/core/agent.rs", "rust/**"));
-        assert!(matches_filter(".github/workflows/release.yml", ".github/**"));
+        assert!(matches_filter(
+            ".github/workflows/release.yml",
+            ".github/**"
+        ));
         assert!(!matches_filter("docs/agent-ci.md", "rust/**"));
     }
 

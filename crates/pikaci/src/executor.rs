@@ -19,8 +19,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::model::{
-    GuestCommand, JobOutcome, JobSpec, RemoteLinuxVmBackend, RemoteLinuxVmExecutionRecord,
-    RemoteLinuxVmImageRecord, RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord, RunStatus, RunnerKind,
+    GuestCommand, JobOutcome, JobPlacementKind, JobRuntimeKind, JobSpec, RemoteLinuxVmBackend,
+    RemoteLinuxVmExecutionRecord, RemoteLinuxVmImageRecord, RemoteLinuxVmPhase,
+    RemoteLinuxVmPhaseRecord, RunStatus,
 };
 use crate::snapshot::{SnapshotMetadata, materialize_workspace, read_snapshot_metadata};
 
@@ -274,10 +275,21 @@ pub fn staged_linux_remote_defaults() -> StagedLinuxRemoteDefaults {
 }
 
 pub fn run_job_on_runner(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
-    match job.runner_kind() {
-        RunnerKind::HostLocal => run_host_local_job(job, ctx),
-        RunnerKind::RemoteLinuxVm => run_remote_linux_vm_job(job, ctx),
-        RunnerKind::TartLocal => run_tart_job(job, ctx),
+    match job.runtime_kind() {
+        JobRuntimeKind::HostProcess => match job.placement_kind() {
+            JobPlacementKind::Local => run_host_local_job(job, ctx),
+            JobPlacementKind::RemoteSsh => {
+                bail!("remote SSH host-process jobs are not implemented yet")
+            }
+        },
+        JobRuntimeKind::Incus => match job.placement_kind() {
+            JobPlacementKind::RemoteSsh => run_remote_linux_vm_job(job, ctx),
+            JobPlacementKind::Local => bail!("local Incus jobs are not implemented"),
+        },
+        JobRuntimeKind::Tart => match job.placement_kind() {
+            JobPlacementKind::Local => run_tart_job(job, ctx),
+            JobPlacementKind::RemoteSsh => bail!("remote SSH Tart jobs are not implemented yet"),
+        },
     }
 }
 
@@ -951,9 +963,11 @@ fn join_output_copy_pump(
 }
 
 fn run_remote_linux_vm_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
-    let lane = job
-        .staged_linux_rust_lane()
-        .ok_or_else(|| anyhow!("remote Linux VM execute requires a staged Linux Rust lane"))?;
+    let (guest_command, _) = compiled_guest_command(job);
+    let workspace_output_system = job
+        .staged_linux_command()
+        .map(|command| command.workspace_output_system)
+        .unwrap_or("direct_guest_command");
     let backend = job
         .remote_linux_vm_backend()
         .ok_or_else(|| anyhow!("job `{}` does not select a remote Linux VM backend", job.id))?;
@@ -985,11 +999,12 @@ fn run_remote_linux_vm_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<J
         append_line(
             &ctx.host_log_path,
             &format!(
-                "[pikaci] starting remote Linux VM backend `{}` for staged lane `{}` on {} at {}",
+                "[pikaci] starting remote Linux VM backend `{}` for `{}` on {} at {}: {}",
                 remote_linux_vm_backend_label(backend),
-                lane.workspace_output_system(),
+                workspace_output_system,
                 shared.remote_host,
-                Utc::now().to_rfc3339()
+                Utc::now().to_rfc3339(),
+                guest_command
             ),
         )?;
 
@@ -1498,7 +1513,7 @@ fn tart_tagged_share(path: &Path, read_only: bool, tag: &str) -> String {
 }
 
 fn tart_job_uses_host_rust_toolchain(job: &JobSpec) -> bool {
-    job.id == "tart-env-probe" || job.id.starts_with("tart-desktop")
+    job.mount_host_rust_toolchain()
 }
 
 fn host_rust_toolchain_root() -> anyhow::Result<PathBuf> {
@@ -1767,7 +1782,7 @@ fn remote_linux_vm_context(
         .and_then(|name| name.to_str())
         .ok_or_else(|| anyhow!("derive run id from {}", run_dir.display()))?;
     let remote_run_dir = remote_work_dir.join("runs").join(run_id);
-    let remote_snapshot_dir = if job.staged_linux_rust_lane().is_some() {
+    let remote_snapshot_dir = if job.staged_linux_command().is_some() {
         staged_linux_remote_snapshot_dir(&ctx.workspace_snapshot_dir, &remote_work_dir, run_id)?
     } else {
         remote_run_dir.join("snapshot")
@@ -2377,8 +2392,8 @@ fn cleanup_remote_linux_vm_runtime(
 }
 
 pub(crate) fn compiled_guest_command(job: &JobSpec) -> (String, bool) {
-    if let Some(lane) = job.staged_linux_rust_lane() {
-        return (lane.execute_wrapper_command().to_string(), false);
+    if let Some(command) = job.staged_linux_command() {
+        return (command.execute_wrapper_command.to_string(), false);
     }
 
     match job.guest_command {
@@ -2458,7 +2473,7 @@ mod tests {
         write_host_local_dev_env_state,
     };
     use crate::model::{
-        GuestCommand, JobSpec, PreparedOutputPayloadManifestRecord,
+        GuestCommand, JobExecutionConfig, JobSpec, PreparedOutputPayloadManifestRecord,
         PreparedOutputPayloadMountRecord, RemoteLinuxVmBackend, RemoteLinuxVmExecutionRecord,
         RemoteLinuxVmImageRecord, RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord, RunStatus,
         StagedLinuxRustPayloadRole,
@@ -2503,6 +2518,34 @@ mod tests {
         .expect("write snapshot metadata");
     }
 
+    fn remote_incus_job_base() -> JobSpec {
+        JobSpec {
+            id: "",
+            description: "",
+            timeout_secs: 0,
+            writable_workspace: false,
+            execution: JobExecutionConfig::REMOTE_SSH_INCUS,
+            guest_command: GuestCommand::ShellCommand { command: "" },
+            staged_linux_command: None,
+            host_setup_command: None,
+            mount_host_rust_toolchain: false,
+        }
+    }
+
+    fn host_local_job_base() -> JobSpec {
+        JobSpec {
+            id: "",
+            description: "",
+            timeout_secs: 0,
+            writable_workspace: false,
+            execution: JobExecutionConfig::HOST_LOCAL,
+            guest_command: GuestCommand::HostShellCommand { command: "" },
+            staged_linux_command: None,
+            host_setup_command: None,
+            mount_host_rust_toolchain: false,
+        }
+    }
+
     fn sample_shell_job(command: &'static str) -> JobSpec {
         JobSpec {
             id: "pika-actionlint",
@@ -2510,7 +2553,8 @@ mod tests {
             timeout_secs: 120,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand { command },
-            staged_linux_rust_lane: None,
+            staged_linux_command: None,
+            ..remote_incus_job_base()
         }
     }
 
@@ -2568,7 +2612,8 @@ mod tests {
             timeout_secs: 45,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommandAsRoot { command: "id -u" },
-            staged_linux_rust_lane: None,
+            staged_linux_command: None,
+            ..remote_incus_job_base()
         });
         assert_eq!(root_request.command, "bash --noprofile --norc -lc 'id -u'");
         assert_eq!(root_request.timeout_secs, 45);
@@ -3081,7 +3126,8 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "python3 -c 'from pathlib import Path; import os; cwd = Path.cwd().resolve(); expected = Path(os.environ[\"EXPECTED_WORKSPACE_DIR\"]).resolve(); assert cwd == expected; assert (cwd / \"pikaci-host-local-marker\").is_file(); assert not (cwd / \"stale-marker\").exists(); assert os.environ[\"CARGO_HOME\"]; assert os.environ[\"CARGO_TARGET_DIR\"]; print(\"ok\")'",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_command: None,
+            ..host_local_job_base()
         };
         let ctx = HostContext {
             source_root: root.clone(),
@@ -3150,7 +3196,8 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "python3 -c 'from pathlib import Path; assert Path(\"cache-sentinel\").is_file(); assert Path(\"pikaci-host-local-marker\").is_file(); print(\"ok\")'",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_command: None,
+            ..host_local_job_base()
         };
         let ctx = HostContext {
             source_root: root.clone(),
@@ -3611,7 +3658,8 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "python3 -c 'from pathlib import Path; import os; assert Path(os.environ[\"OPENCLAW_DIR\"]).resolve() == Path(os.environ[\"EXPECTED_OPENCLAW_DIR\"]).resolve(); print(\"ok\")'",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_command: None,
+            ..host_local_job_base()
         };
         let ctx = HostContext {
             source_root: source_root.clone(),
@@ -3676,7 +3724,8 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "python3 -c 'import time; time.sleep(2)'",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_command: None,
+            ..host_local_job_base()
         };
         let ctx = HostContext {
             source_root: root.clone(),
@@ -3733,7 +3782,8 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "python3 -c 'from pathlib import Path; import time; assert Path(\"marker\").is_file(); time.sleep(1.0); assert Path(\"marker\").is_file(); print(\"ok\")'",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_command: None,
+            ..host_local_job_base()
         };
         let first_ctx = HostContext {
             source_root: root.clone(),
@@ -3775,7 +3825,8 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "python3 -c 'from pathlib import Path; import time; assert Path(\"marker\").is_file(); time.sleep(1.0); assert Path(\"marker\").is_file(); print(\"ok\")'",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_command: None,
+            ..host_local_job_base()
         };
         let second = thread::spawn(move || run_job_on_runner(&second_job, &second_ctx));
 

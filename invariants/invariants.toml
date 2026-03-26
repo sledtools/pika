@@ -8,27 +8,37 @@ kind = "allowed"
 statement = "pikaci may depend on pika-cloud."
 scope = [
   "crates/pikaci/**",
-  "crates/pika-news/**",
+  "crates/pika-git/**",
 ]
 
 [[invariant]]
 id = "PIKACI-002"
 area = "pikaci"
 kind = "must"
-statement = "The reusable pikaci execution layer does not hardcode Pika-specific CI lanes, targets, or package-specific test commands."
+statement = "The reusable pikaci library layer does not define the Pika staged-lane catalog, target catalog, or forge target-selection table. Those Pika-specific catalogs live in the pikaci binary modules."
 scope = [
   "crates/pikaci/**",
 ]
-hint = "Pay close attention to exported library types and execution models, not just the forge manifest."
+hint = "Focus on whether production library modules like lib.rs, model.rs, run.rs, and executor.rs define Pika-specific target IDs or staged-lane tables. It is fine for the library to expose generic command helpers and executor machinery."
 
 [[invariant]]
 id = "PIKACI-003"
 area = "pikaci"
 kind = "must"
-statement = "Pika-specific path filters and lane catalogs live outside the reusable pikaci execution layer."
+statement = "For forge branch lanes, branch-lane path-filter policy has a single source of truth in ci/forge-lanes.toml. pikaci may define local-only targets and may map staged targets to local CLI entries, but it must not duplicate forge branch-lane path filters."
 scope = [
   "crates/pikaci/**",
   "ci/**",
-  "crates/pika-news/**",
+  "crates/pika-git/**",
 ]
-hint = "Look for duplicated lane/path-filter policy between the forge manifest and pikaci code."
+hint = "Look specifically for duplicated branch-lane path filters between ci/forge-lanes.toml, pika-git manifest loading, and pikaci target selection. Do not fail this invariant just because pikaci has a local catalog of staged targets."
+
+[[invariant]]
+id = "PIKACI-004"
+area = "pikaci"
+kind = "must"
+statement = "pikaci models execution placement separately from runtime backend. Production code does not choose host vs Incus vs Tart execution from job IDs, tart-* prefixes, or guest-command shape; those choices come from explicit JobSpec fields."
+scope = [
+  "crates/pikaci/**",
+]
+hint = "Focus on JobSpec, planner records, and executor dispatch. It is fine for backend-specific command compilation or cache behavior to depend on explicit job fields. Fail only if production code still chooses the runtime backend from naming conventions or command-shape heuristics."

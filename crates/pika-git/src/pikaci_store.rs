@@ -5,7 +5,8 @@ use pikaci::{load_logs, load_run_bundle, load_run_record, LogKind, Logs, RunBund
 
 #[cfg(test)]
 use pikaci::{
-    JobRecord, PreparedOutputsRecord, RemoteLinuxVmExecutionRecord, RunLifecycleEvent, RunStatus,
+    JobPlacementKind, JobRecord, JobRuntimeKind, PreparedOutputsRecord,
+    RemoteLinuxVmExecutionRecord, RunLifecycleEvent, RunStatus,
 };
 #[cfg(test)]
 use std::fs;
@@ -65,6 +66,8 @@ impl TestPikaciJobFixture {
             description: self.description,
             status: self.status,
             executor: self.executor,
+            placement: Some(JobPlacementKind::RemoteSsh),
+            runtime: Some(JobRuntimeKind::Incus),
             plan_node_id: None,
             timeout_secs: self.timeout_secs,
             host_log_path,

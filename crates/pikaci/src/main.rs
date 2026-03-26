@@ -1,11 +1,15 @@
+mod catalog;
+mod forge_manifest;
+
 use anyhow::{Context, anyhow, bail};
+use catalog::{PikaStagedLinuxLane, PikaStagedLinuxTarget, PikaStagedLinuxTargetInfoJson};
 use clap::{Parser, Subcommand, ValueEnum};
+use forge_manifest::branch_lane_paths_for_staged_target;
 use pikaci::{
-    GuestCommand, JobSpec, LogKind, RunLifecycleEvent, RunMetadata, RunOptions, RunRecord,
-    RunStatus, StagedLinuxRemoteDefaults, StagedLinuxRustLane, StagedLinuxRustTarget,
-    fulfill_prepared_output_request, gc_runs, git_changed_files, list_runs, load_logs,
-    load_logs_metadata, load_prepared_outputs_record, load_run_record,
-    record_skipped_run_with_reporter, rerun_jobs_with_metadata_and_reporter,
+    GuestCommand, JobExecutionConfig, JobSpec, LogKind, RunLifecycleEvent, RunMetadata, RunOptions,
+    RunRecord, RunStatus, StagedLinuxRemoteDefaults, fulfill_prepared_output_request, gc_runs,
+    git_changed_files, list_runs, load_logs, load_logs_metadata, load_prepared_outputs_record,
+    load_run_record, record_skipped_run_with_reporter, rerun_jobs_with_metadata_and_reporter,
     run_jobs_with_metadata_and_reporter, staged_linux_remote_defaults,
 };
 use std::path::PathBuf;
@@ -13,8 +17,56 @@ use std::path::PathBuf;
 struct TargetSpec {
     id: &'static str,
     description: &'static str,
-    filters: &'static [&'static str],
+    filters: Vec<String>,
     jobs: Vec<JobSpec>,
+}
+
+const TART_HOST_SETUP_COMMAND: &str = concat!(
+    "set -euo pipefail; ",
+    "export DEVELOPER_DIR=\"${PIKACI_TART_DEVELOPER_DIR:-${PIKACI_TART_XCODE_APP:-/Applications/Xcode-16.4.0.app}/Contents/Developer}\"; ",
+    "just ios-xcframework ios-xcodeproj",
+);
+
+fn remote_incus_job_base() -> JobSpec {
+    JobSpec {
+        id: "",
+        description: "",
+        timeout_secs: 0,
+        writable_workspace: false,
+        execution: JobExecutionConfig::REMOTE_SSH_INCUS,
+        guest_command: GuestCommand::ShellCommand { command: "" },
+        staged_linux_command: None,
+        host_setup_command: None,
+        mount_host_rust_toolchain: false,
+    }
+}
+
+fn host_local_job_base() -> JobSpec {
+    JobSpec {
+        id: "",
+        description: "",
+        timeout_secs: 0,
+        writable_workspace: false,
+        execution: JobExecutionConfig::HOST_LOCAL,
+        guest_command: GuestCommand::HostShellCommand { command: "" },
+        staged_linux_command: None,
+        host_setup_command: None,
+        mount_host_rust_toolchain: false,
+    }
+}
+
+fn tart_job_base() -> JobSpec {
+    JobSpec {
+        id: "",
+        description: "",
+        timeout_secs: 0,
+        writable_workspace: false,
+        execution: JobExecutionConfig::LOCAL_TART,
+        guest_command: GuestCommand::ShellCommand { command: "" },
+        staged_linux_command: None,
+        host_setup_command: Some(TART_HOST_SETUP_COMMAND),
+        mount_host_rust_toolchain: false,
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -213,7 +265,7 @@ fn main() -> anyhow::Result<()> {
             let target = staged_linux_target(&target)?;
             let config = target.config();
             if json {
-                print_json(&config)?;
+                print_json(&PikaStagedLinuxTargetInfoJson::from(config))?;
             } else {
                 println!("target_id={}", config.target_id);
                 println!(
@@ -400,23 +452,28 @@ fn rerun_target_with_output(
     }
 }
 
-fn staged_linux_target(target_id: &str) -> anyhow::Result<StagedLinuxRustTarget> {
-    StagedLinuxRustTarget::from_target_id(target_id)
+fn staged_linux_target(target_id: &str) -> anyhow::Result<PikaStagedLinuxTarget> {
+    PikaStagedLinuxTarget::from_target_id(target_id)
         .ok_or_else(|| anyhow::anyhow!("unsupported staged Linux Rust target `{target_id}`"))
 }
 
 fn staged_linux_target_spec(
-    target: StagedLinuxRustTarget,
-    filters: &'static [&'static str],
+    target: PikaStagedLinuxTarget,
     jobs: Vec<JobSpec>,
-) -> TargetSpec {
+) -> anyhow::Result<TargetSpec> {
     let config = target.config();
-    TargetSpec {
+    let filters = branch_lane_paths_for_staged_target(config.target_id)?.ok_or_else(|| {
+        anyhow!(
+            "missing forge lane manifest entry for `{}`",
+            config.target_id
+        )
+    })?;
+    Ok(TargetSpec {
         id: config.target_id,
         description: config.target_description,
         filters,
         jobs,
-    }
+    })
 }
 
 fn single_job_target_spec(
@@ -432,9 +489,16 @@ fn single_job_target_spec(
     Ok(TargetSpec {
         id,
         description,
-        filters,
+        filters: static_filters(filters),
         jobs: vec![job],
     })
+}
+
+fn static_filters(filters: &'static [&'static str]) -> Vec<String> {
+    filters
+        .iter()
+        .map(|pattern| (*pattern).to_string())
+        .collect()
 }
 
 fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
@@ -442,7 +506,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
         "tart-beachhead" => Ok(TargetSpec {
             id: "tart-beachhead",
             description: "Run one tiny iOS unit test in a Tart macOS guest",
-            filters: &[],
+            filters: Vec::new(),
             jobs: vec![tart_agent_button_job(
                 "tart-beachhead",
                 "Run one tiny iOS unit test in a Tart macOS guest",
@@ -469,182 +533,36 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
         "agent-contracts-smoke" => Ok(TargetSpec {
             id: "agent-contracts-smoke",
             description: "Run the VM-backed agent contracts smoke lane",
-            filters: &[],
+            filters: Vec::new(),
             jobs: agent_contract_jobs(),
         }),
-        "pre-merge-agent-contracts" => Ok(staged_linux_target_spec(
-            StagedLinuxRustTarget::PreMergeAgentContracts,
-            &[
-                "Cargo.toml",
-                "Cargo.lock",
-                "flake.nix",
-                "flake.lock",
-                "nix/**",
-                "justfile",
-                ".github/workflows/pre-merge.yml",
-                "docs/agent-ci.md",
-                "crates/pikaci/**",
-                "crates/pika-cloud/**",
-                "crates/pika-server/**",
-                "crates/pika-media/**",
-                "crates/pika-marmot-runtime/**",
-                "crates/pika-relay-profiles/**",
-                "crates/pika-test-utils/**",
-                "crates/pika-tls/**",
-                "rust/**",
-            ],
+        "pre-merge-agent-contracts" => staged_linux_target_spec(
+            PikaStagedLinuxTarget::PreMergeAgentContracts,
             agent_contract_jobs(),
-        )),
-        "pre-merge-pika-rust" => Ok(staged_linux_target_spec(
-            StagedLinuxRustTarget::PreMergePikaRust,
-            &[
-                "Cargo.toml",
-                "Cargo.lock",
-                "flake.nix",
-                "flake.lock",
-                "nix/**",
-                "justfile",
-                ".github/workflows/pre-merge.yml",
-                "crates/pikaci/**",
-                "rust/**",
-                "crates/pika-media/**",
-                "crates/pika-marmot-runtime/**",
-                "crates/pika-relay-profiles/**",
-                "crates/pika-tls/**",
-            ],
-            pika_rust_jobs(),
-        )),
-        "pre-merge-notifications" => Ok(staged_linux_target_spec(
-            StagedLinuxRustTarget::PreMergeNotifications,
-            &[
-                "Cargo.toml",
-                "Cargo.lock",
-                "flake.nix",
-                "flake.lock",
-                "nix/**",
-                "justfile",
-                ".github/workflows/pre-merge.yml",
-                "crates/pikaci/**",
-                "crates/pika-cloud/**",
-                "crates/pika-desktop/**",
-                "crates/pika-server/**",
-                "crates/pikahut/**",
-                "crates/pika-marmot-runtime/**",
-                "crates/pika-relay-profiles/**",
-                "crates/pika-test-utils/**",
-                "crates/pika-tls/**",
-            ],
+        ),
+        "pre-merge-pika-rust" => {
+            staged_linux_target_spec(PikaStagedLinuxTarget::PreMergePikaRust, pika_rust_jobs())
+        }
+        "pre-merge-notifications" => staged_linux_target_spec(
+            PikaStagedLinuxTarget::PreMergeNotifications,
             notification_jobs(),
-        )),
-        "pre-merge-pikachat-rust" => Ok(staged_linux_target_spec(
-            StagedLinuxRustTarget::PreMergePikachatRust,
-            &[
-                "Cargo.toml",
-                "Cargo.lock",
-                "cmd/pika-relay/**",
-                "cli/**",
-                "flake.nix",
-                "flake.lock",
-                "fixtures/**",
-                "nix/**",
-                "justfile",
-                ".github/workflows/pre-merge.yml",
-                "pikachat-openclaw/**",
-                "crates/pikaci/**",
-                "crates/pika-cloud/**",
-                "crates/pika-desktop/**",
-                "crates/hypernote-protocol/**",
-                "crates/pikachat-sidecar/**",
-                "crates/pikahut/**",
-                "crates/pika-agent-protocol/**",
-                "crates/pika-marmot-runtime/**",
-                "crates/pika-media/**",
-                "crates/pika-relay-profiles/**",
-                "crates/pika-test-utils/**",
-                "crates/pika-tls/**",
-                "rust/**",
-                "tests/**",
-            ],
+        ),
+        "pre-merge-pikachat-rust" => staged_linux_target_spec(
+            PikaStagedLinuxTarget::PreMergePikachatRust,
             pikachat_rust_jobs(),
-        )),
-        "pre-merge-pikachat-typescript" => Ok(staged_linux_target_spec(
-            StagedLinuxRustTarget::PreMergePikachatTypescript,
-            &[
-                ".github/workflows/pre-merge.yml",
-                "ci/forge-lanes.toml",
-                "crates/pikaci/**",
-                "nix/ci/linux-rust.nix",
-                "scripts/forge-github-ci-shim.py",
-                "scripts/pikaci-staged-linux-remote.sh",
-                "scripts/pikachat-typescript-ci.sh",
-                "pikachat-claude/package.json",
-                "pikachat-claude/tsconfig.json",
-                "pikachat-claude/src/**",
-                "pikachat-openclaw/openclaw/extensions/pikachat-openclaw/package.json",
-                "pikachat-openclaw/openclaw/extensions/pikachat-openclaw/tsconfig.json",
-                "pikachat-openclaw/openclaw/extensions/pikachat-openclaw/index.ts",
-                "pikachat-openclaw/openclaw/extensions/pikachat-openclaw/src/**",
-            ],
+        ),
+        "pre-merge-pikachat-typescript" => staged_linux_target_spec(
+            PikaStagedLinuxTarget::PreMergePikachatTypescript,
             pikachat_typescript_jobs(),
-        )),
-        "pre-merge-pikachat-openclaw-e2e" => Ok(staged_linux_target_spec(
-            StagedLinuxRustTarget::PreMergePikachatOpenclawE2e,
-            &[
-                "Cargo.toml",
-                "Cargo.lock",
-                "flake.nix",
-                "flake.lock",
-                "fixtures/**",
-                "nix/**",
-                "justfile",
-                ".github/workflows/pre-merge.yml",
-                "cli/**",
-                "crates/pikaci/**",
-                "crates/pikahut/**",
-                "crates/pikachat-sidecar/**",
-                "crates/pika-marmot-runtime/**",
-                "crates/pika-relay-profiles/**",
-                "crates/pika-media/**",
-                "crates/pika-tls/**",
-                "tests/**",
-                "tools/**",
-                "pikachat-openclaw/**",
-                "scripts/pikaci-staged-linux-remote.sh",
-                "scripts/pika-build-prewarm-workspace-deps.sh",
-                "scripts/pika-build-run-workspace-deps.sh",
-                "scripts/lib/pikaci-tools.sh",
-            ],
+        ),
+        "pre-merge-pikachat-openclaw-e2e" => staged_linux_target_spec(
+            PikaStagedLinuxTarget::PreMergePikachatOpenclawE2e,
             pikachat_openclaw_e2e_jobs(),
-        )),
-        "pre-merge-pika-followup" => Ok(staged_linux_target_spec(
-            StagedLinuxRustTarget::PreMergePikaFollowup,
-            &[
-                "Cargo.toml",
-                "Cargo.lock",
-                "flake.nix",
-                "flake.lock",
-                "nix/**",
-                "justfile",
-                "just/**",
-                ".github/actionlint.yaml",
-                ".github/workflows/pre-merge.yml",
-                "android/**",
-                "docs/**",
-                "scripts/**",
-                "cli/**",
-                "crates/pikaci/**",
-                "crates/pika-desktop/**",
-                "crates/pika-media/**",
-                "crates/pika-marmot-runtime/**",
-                "crates/pika-relay-profiles/**",
-                "crates/pika-tls/**",
-                "crates/pikahut/**",
-                "crates/pikachat-sidecar/**",
-                "rust/**",
-                "uniffi-bindgen/**",
-            ],
+        ),
+        "pre-merge-pika-followup" => staged_linux_target_spec(
+            PikaStagedLinuxTarget::PreMergePikaFollowup,
             pika_followup_jobs(),
-        )),
+        ),
         "pika-actionlint" => single_job_target_spec(
             "pika-actionlint",
             "Run the staged Pika actionlint follow-up lane",
@@ -690,7 +608,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
         "pre-merge-pikachat-apple-followup" => Ok(TargetSpec {
             id: "pre-merge-pikachat-apple-followup",
             description: "Run the Apple-host pikachat follow-up after the staged Linux Rust lane",
-            filters: &[
+            filters: static_filters(&[
                 "Cargo.toml",
                 "Cargo.lock",
                 "flake.nix",
@@ -711,7 +629,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "crates/pikahut/**",
                 "pikachat-openclaw/**",
                 "rust/**",
-            ],
+            ]),
             jobs: pikachat_apple_followup_jobs(),
         }),
         "pika-desktop-package-tests" => single_job_target_spec(
@@ -720,53 +638,14 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
             &[],
             pikachat_rust_jobs(),
         ),
-        "pre-merge-fixture-rust" => Ok(staged_linux_target_spec(
-            StagedLinuxRustTarget::PreMergeFixtureRust,
-            &[
-                "Cargo.toml",
-                "Cargo.lock",
-                "flake.nix",
-                "flake.lock",
-                "nix/**",
-                "justfile",
-                "just/agent.just",
-                "just/checks.just",
-                "just/infra.just",
-                ".github/workflows/pre-merge.yml",
-                "docs/testing/ci-selectors.md",
-                "docs/testing/integration-matrix.md",
-                "docs/testing/wrapper-deprecation-policy.md",
-                "cli/Cargo.toml",
-                "crates/pikaci/**",
-                "crates/hypernote-protocol/**",
-                "crates/pika-cloud/**",
-                "crates/pika-desktop/**",
-                "crates/pikahut/**",
-                "crates/pika-marmot-runtime/**",
-                "crates/pika-media/**",
-                "crates/pikachat-sidecar/Cargo.toml",
-                "crates/pika-relay-profiles/**",
-                "crates/pika-server/Cargo.toml",
-                "crates/pika-tls/**",
-                "pikachat-openclaw/scripts/run-openclaw-e2e.sh",
-                "pikachat-openclaw/scripts/run-scenario.sh",
-                "cmd/pika-relay/**",
-                "rust/**",
-                "rust/tests/e2e_calls.rs",
-                "scripts/agent-chat-demo.sh",
-                "scripts/agent-demo.sh",
-                "tools/cli-smoke",
-                "tools/interop-rust-baseline",
-                "tools/primal-ios-interop-nightly",
-                "tools/ui-e2e-local",
-                "tools/ui-e2e-public",
-            ],
+        "pre-merge-fixture-rust" => staged_linux_target_spec(
+            PikaStagedLinuxTarget::PreMergeFixtureRust,
             fixture_rust_jobs(),
-        )),
+        ),
         "android-sdk-probe" => Ok(TargetSpec {
             id: "android-sdk-probe",
             description: "Verify Android SDK tooling is available inside a Linux guest",
-            filters: &[],
+            filters: Vec::new(),
             jobs: vec![JobSpec {
                 id: "android-sdk-probe",
                 description: "Verify Android tooling and AVD provisioning in a Linux guest",
@@ -796,13 +675,14 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                         "emulator -list-avds",
                     ),
                 },
-                staged_linux_rust_lane: None,
+                staged_linux_command: None,
+                ..remote_incus_job_base()
             }],
         }),
         "android-nostr-connect-intent-test" => Ok(TargetSpec {
             id: "android-nostr-connect-intent-test",
             description: "Run the smallest Android instrumentation class in a Linux guest",
-            filters: &[],
+            filters: Vec::new(),
             jobs: vec![JobSpec {
                 id: "android-nostr-connect-intent-test",
                 description: "Run NostrConnectIntentTest on a headless Android emulator in a Linux guest",
@@ -827,13 +707,14 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                         "./tools/android-ui-test-ci",
                     ),
                 },
-                staged_linux_rust_lane: None,
+                staged_linux_command: None,
+                ..remote_incus_job_base()
             }],
         }),
         "tart-env-probe" => Ok(TargetSpec {
             id: "tart-env-probe",
             description: "Probe the local Tart macOS guest environment",
-            filters: &[],
+            filters: Vec::new(),
             jobs: vec![JobSpec {
                 id: "tart-env-probe",
                 description: "Verify that a Tart macOS guest has the tools needed for iOS/macOS tests",
@@ -850,13 +731,15 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                         "./tools/ios-sim-ensure",
                     ),
                 },
-                staged_linux_rust_lane: None,
+                staged_linux_command: None,
+                mount_host_rust_toolchain: true,
+                ..tart_job_base()
             }],
         }),
         "tart-ios-agent-button-state-test" => Ok(TargetSpec {
             id: "tart-ios-agent-button-state-test",
             description: "Run one iOS unit test in a Tart macOS guest",
-            filters: &[],
+            filters: Vec::new(),
             jobs: vec![tart_agent_button_job(
                 "tart-ios-agent-button-state-test",
                 "Run AgentTests.testAgentButtonStateReflectsBusyFlag in a Tart macOS guest",
@@ -865,13 +748,13 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
         "tart-ios-unit-tests" => Ok(TargetSpec {
             id: "tart-ios-unit-tests",
             description: "Run deterministic iOS unit-test suites in a Tart macOS guest",
-            filters: &[],
+            filters: Vec::new(),
             jobs: tart_ios_unit_jobs(),
         }),
         "tart-ios-ui-test" => Ok(TargetSpec {
             id: "tart-ios-ui-test",
             description: "Run the deterministic ios-ui-test lane in a Tart macOS guest",
-            filters: &[],
+            filters: Vec::new(),
             jobs: vec![tart_ios_ui_test_job(
                 "tart-ios-ui-test",
                 "Run the deterministic ios-ui-test lane in a Tart macOS guest",
@@ -880,7 +763,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
         "tart-ios-ui-note-to-self" => Ok(TargetSpec {
             id: "tart-ios-ui-note-to-self",
             description: "Run one deterministic iOS UI test in a Tart macOS guest",
-            filters: &[],
+            filters: Vec::new(),
             jobs: vec![tart_ios_ui_note_to_self_job(
                 "tart-ios-ui-note-to-self",
                 "Run the note-to-self UI test in a Tart macOS guest",
@@ -889,7 +772,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
         "tart-desktop-package-tests" => Ok(TargetSpec {
             id: "tart-desktop-package-tests",
             description: "Run pika-desktop package tests in a Tart macOS guest",
-            filters: &[],
+            filters: Vec::new(),
             jobs: vec![tart_desktop_package_tests_job(
                 "tart-desktop-package-tests",
                 "Run pika-desktop package tests in a Tart macOS guest",
@@ -898,7 +781,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
         "pre-merge-apple-deterministic" => Ok(TargetSpec {
             id: "pre-merge-apple-deterministic",
             description: "Run deterministic Apple-platform tests in a Tart macOS guest",
-            filters: &[
+            filters: static_filters(&[
                 "Cargo.toml",
                 "Cargo.lock",
                 "flake.nix",
@@ -915,7 +798,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "tools/xcode-dev-dir",
                 "tools/xcode-run",
                 "tools/xcodebuild-compact",
-            ],
+            ]),
             jobs: {
                 let mut jobs = tart_ios_unit_jobs();
                 jobs.push(tart_ios_ui_test_job(
@@ -929,22 +812,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 jobs
             },
         }),
-        "pre-merge-rmp" => Ok(staged_linux_target_spec(
-            StagedLinuxRustTarget::PreMergeRmp,
-            &[
-                "Cargo.toml",
-                "Cargo.lock",
-                "flake.nix",
-                "flake.lock",
-                "nix/**",
-                "justfile",
-                ".github/workflows/pre-merge.yml",
-                "crates/pikaci/**",
-                "crates/rmp-cli/**",
-                "crates/pika-relay-profiles/**",
-            ],
-            rmp_jobs(),
-        )),
+        "pre-merge-rmp" => staged_linux_target_spec(PikaStagedLinuxTarget::PreMergeRmp, rmp_jobs()),
         "rmp-init-smoke-ci" => single_job_target_spec(
             "rmp-init-smoke-ci",
             "Run the staged RMP init smoke lane",
@@ -1098,7 +966,10 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::PackageUnitTests {
                 package: "pika-cloud",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit),
+            staged_linux_command: Some(
+                PikaStagedLinuxLane::AgentContractsControlPlaneUnit.command_config(),
+            ),
+            ..remote_incus_job_base()
         },
         JobSpec {
             id: "server-agent-api-tests",
@@ -1109,7 +980,10 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
                 package: "pika-server",
                 filter: "agent_api::tests",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsServerAgentApi),
+            staged_linux_command: Some(
+                PikaStagedLinuxLane::AgentContractsServerAgentApi.command_config(),
+            ),
+            ..remote_incus_job_base()
         },
         JobSpec {
             id: "core-agent-nip98-test",
@@ -1120,7 +994,10 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
                 package: "pika_core",
                 test_name: "core::agent::tests::run_agent_flow_signs_requests_with_nip98_authorization",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsCoreNip98),
+            staged_linux_command: Some(
+                PikaStagedLinuxLane::AgentContractsCoreNip98.command_config(),
+            ),
+            ..remote_incus_job_base()
         },
     ]
 }
@@ -1135,7 +1012,8 @@ fn pika_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreLibAppFlows),
+            staged_linux_command: Some(PikaStagedLinuxLane::PikaCoreLibAppFlows.command_config()),
+            ..remote_incus_job_base()
         },
         JobSpec {
             id: "pika-core-messaging-e2e-tests",
@@ -1145,7 +1023,8 @@ fn pika_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaCoreMessagingE2e),
+            staged_linux_command: Some(PikaStagedLinuxLane::PikaCoreMessagingE2e.command_config()),
+            ..remote_incus_job_base()
         },
     ]
 }
@@ -1167,7 +1046,10 @@ fn notification_jobs() -> Vec<JobSpec> {
                 "cargo test -p pika-server -- --test-threads=1 --nocapture"
             ),
         },
-        staged_linux_rust_lane: Some(StagedLinuxRustLane::NotificationsServerPackageTests),
+        staged_linux_command: Some(
+            PikaStagedLinuxLane::NotificationsServerPackageTests.command_config(),
+        ),
+        ..remote_incus_job_base()
     }]
 }
 
@@ -1181,7 +1063,8 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::PackageTests {
                 package: "pikachat",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikachatPackageTests),
+            staged_linux_command: Some(PikaStagedLinuxLane::PikachatPackageTests.command_config()),
+            ..remote_incus_job_base()
         },
         JobSpec {
             id: "pikachat-sidecar-package-tests",
@@ -1191,7 +1074,10 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "PIKACHAT_TTS_FIXTURE=1 cargo test -p pikachat-sidecar -- --nocapture",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikachatSidecarPackageTests),
+            staged_linux_command: Some(
+                PikaStagedLinuxLane::PikachatSidecarPackageTests.command_config(),
+            ),
+            ..remote_incus_job_base()
         },
         JobSpec {
             id: "pika-desktop-package-tests",
@@ -1201,7 +1087,10 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::PackageTests {
                 package: "pika-desktop",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikachatDesktopPackageTests),
+            staged_linux_command: Some(
+                PikaStagedLinuxLane::PikachatDesktopPackageTests.command_config(),
+            ),
+            ..remote_incus_job_base()
         },
         JobSpec {
             id: "pikachat-cli-smoke-local",
@@ -1211,7 +1100,8 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikachatCliSmokeLocal),
+            staged_linux_command: Some(PikaStagedLinuxLane::PikachatCliSmokeLocal.command_config()),
+            ..remote_incus_job_base()
         },
         JobSpec {
             id: "pikachat-post-rebase-invalid-event",
@@ -1221,7 +1111,10 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic post_rebase_invalid_event_rejection_boundary -- --ignored --nocapture",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikachatPostRebaseInvalidEvent),
+            staged_linux_command: Some(
+                PikaStagedLinuxLane::PikachatPostRebaseInvalidEvent.command_config(),
+            ),
+            ..remote_incus_job_base()
         },
         JobSpec {
             id: "pikachat-post-rebase-logout-session",
@@ -1231,7 +1124,10 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic post_rebase_logout_session_convergence_boundary -- --ignored --nocapture",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikachatPostRebaseLogoutSession),
+            staged_linux_command: Some(
+                PikaStagedLinuxLane::PikachatPostRebaseLogoutSession.command_config(),
+            ),
+            ..remote_incus_job_base()
         },
         JobSpec {
             id: "openclaw-invite-and-chat",
@@ -1241,7 +1137,8 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat -- --ignored --nocapture",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::OpenclawInviteAndChat),
+            staged_linux_command: Some(PikaStagedLinuxLane::OpenclawInviteAndChat.command_config()),
+            ..remote_incus_job_base()
         },
         JobSpec {
             id: "openclaw-invite-and-chat-rust-bot",
@@ -1251,7 +1148,10 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat_rust_bot -- --ignored --nocapture",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::OpenclawInviteAndChatRustBot),
+            staged_linux_command: Some(
+                PikaStagedLinuxLane::OpenclawInviteAndChatRustBot.command_config(),
+            ),
+            ..remote_incus_job_base()
         },
         JobSpec {
             id: "openclaw-invite-and-chat-daemon",
@@ -1261,7 +1161,10 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat_daemon -- --ignored --nocapture",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::OpenclawInviteAndChatDaemon),
+            staged_linux_command: Some(
+                PikaStagedLinuxLane::OpenclawInviteAndChatDaemon.command_config(),
+            ),
+            ..remote_incus_job_base()
         },
         JobSpec {
             id: "openclaw-audio-echo",
@@ -1271,7 +1174,8 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic openclaw_scenario_audio_echo -- --ignored --nocapture",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::OpenclawAudioEcho),
+            staged_linux_command: Some(PikaStagedLinuxLane::OpenclawAudioEcho.command_config()),
+            ..remote_incus_job_base()
         },
     ]
 }
@@ -1286,7 +1190,10 @@ fn pika_followup_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cd android && ./gradlew :app:compileDebugAndroidTestKotlin",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupAndroidTestCompile),
+            staged_linux_command: Some(
+                PikaStagedLinuxLane::PikaFollowupAndroidTestCompile.command_config(),
+            ),
+            ..remote_incus_job_base()
         },
         JobSpec {
             id: "pikachat-build",
@@ -1296,7 +1203,10 @@ fn pika_followup_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo build -p pikachat",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupPikachatBuild),
+            staged_linux_command: Some(
+                PikaStagedLinuxLane::PikaFollowupPikachatBuild.command_config(),
+            ),
+            ..remote_incus_job_base()
         },
         JobSpec {
             id: "pika-desktop-check",
@@ -1306,7 +1216,10 @@ fn pika_followup_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "just desktop-check",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupDesktopCheck),
+            staged_linux_command: Some(
+                PikaStagedLinuxLane::PikaFollowupDesktopCheck.command_config(),
+            ),
+            ..remote_incus_job_base()
         },
         JobSpec {
             id: "pika-actionlint",
@@ -1316,7 +1229,10 @@ fn pika_followup_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "actionlint",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupActionlint),
+            staged_linux_command: Some(
+                PikaStagedLinuxLane::PikaFollowupActionlint.command_config(),
+            ),
+            ..remote_incus_job_base()
         },
         JobSpec {
             id: "pika-doc-contracts",
@@ -1326,7 +1242,10 @@ fn pika_followup_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "npx --yes @justinmoon/agent-tools check-docs && npx --yes @justinmoon/agent-tools check-justfile",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupDocContracts),
+            staged_linux_command: Some(
+                PikaStagedLinuxLane::PikaFollowupDocContracts.command_config(),
+            ),
+            ..remote_incus_job_base()
         },
         JobSpec {
             id: "pika-rust-deps-hygiene",
@@ -1336,7 +1255,10 @@ fn pika_followup_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "./scripts/check-cargo-machete",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupRustDepsHygiene),
+            staged_linux_command: Some(
+                PikaStagedLinuxLane::PikaFollowupRustDepsHygiene.command_config(),
+            ),
+            ..remote_incus_job_base()
         },
     ]
 }
@@ -1348,7 +1270,8 @@ fn pikachat_openclaw_e2e_jobs() -> Vec<JobSpec> {
         timeout_secs: 3600,
         writable_workspace: false,
         guest_command: GuestCommand::ShellCommand { command: "ignored" },
-        staged_linux_rust_lane: Some(StagedLinuxRustLane::OpenclawGatewayE2e),
+        staged_linux_command: Some(PikaStagedLinuxLane::OpenclawGatewayE2e.command_config()),
+        ..remote_incus_job_base()
     }]
 }
 
@@ -1359,7 +1282,8 @@ fn pikachat_typescript_jobs() -> Vec<JobSpec> {
         timeout_secs: 1800,
         writable_workspace: false,
         guest_command: GuestCommand::ShellCommand { command: "ignored" },
-        staged_linux_rust_lane: Some(StagedLinuxRustLane::PikachatTypescript),
+        staged_linux_command: Some(PikaStagedLinuxLane::PikachatTypescript.command_config()),
+        ..remote_incus_job_base()
     }]
 }
 
@@ -1371,7 +1295,8 @@ fn fixture_rust_jobs() -> Vec<JobSpec> {
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand { command: "ignored" },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::FixturePikahutClippy),
+            staged_linux_command: Some(PikaStagedLinuxLane::FixturePikahutClippy.command_config()),
+            ..remote_incus_job_base()
         },
         JobSpec {
             id: "fixture-relay-smoke",
@@ -1379,7 +1304,8 @@ fn fixture_rust_jobs() -> Vec<JobSpec> {
             timeout_secs: 300,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand { command: "ignored" },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::FixtureRelaySmoke),
+            staged_linux_command: Some(PikaStagedLinuxLane::FixtureRelaySmoke.command_config()),
+            ..remote_incus_job_base()
         },
     ]
 }
@@ -1398,7 +1324,8 @@ fn pikachat_apple_followup_jobs() -> Vec<JobSpec> {
                     "cargo clippy -p pikachat -- -D warnings"
                 ),
             },
-            staged_linux_rust_lane: None,
+            staged_linux_command: None,
+            ..host_local_job_base()
         },
         JobSpec {
             id: "pikachat-sidecar-clippy",
@@ -1412,7 +1339,8 @@ fn pikachat_apple_followup_jobs() -> Vec<JobSpec> {
                     "cargo clippy -p pikachat-sidecar -- -D warnings"
                 ),
             },
-            staged_linux_rust_lane: None,
+            staged_linux_command: None,
+            ..host_local_job_base()
         },
         JobSpec {
             id: "pikachat-ui-e2e-local-desktop",
@@ -1430,7 +1358,8 @@ fn pikachat_apple_followup_jobs() -> Vec<JobSpec> {
                     "fi'"
                 ),
             },
-            staged_linux_rust_lane: None,
+            staged_linux_command: None,
+            ..host_local_job_base()
         },
         JobSpec {
             id: "pikachat-openclaw-channel-behavior",
@@ -1445,7 +1374,8 @@ fn pikachat_apple_followup_jobs() -> Vec<JobSpec> {
                     "pikachat-openclaw/openclaw/extensions/pikachat-openclaw/src/channel-behavior.test.ts"
                 ),
             },
-            staged_linux_rust_lane: None,
+            staged_linux_command: None,
+            ..host_local_job_base()
         },
     ]
 }
@@ -1477,7 +1407,8 @@ fn rmp_jobs() -> Vec<JobSpec> {
                 "echo 'ok: rmp init ci smoke passed'"
             ),
         },
-        staged_linux_rust_lane: Some(StagedLinuxRustLane::RmpInitSmokeCi),
+        staged_linux_command: Some(PikaStagedLinuxLane::RmpInitSmokeCi.command_config()),
+        ..remote_incus_job_base()
     }]
 }
 
@@ -1515,7 +1446,9 @@ fn tart_agent_button_job(id: &'static str, description: &'static str) -> JobSpec
                 "-skip-testing:PikaUITests",
             ),
         },
-        staged_linux_rust_lane: None,
+        staged_linux_command: None,
+        mount_host_rust_toolchain: true,
+        ..tart_job_base()
     }
 }
 
@@ -1590,7 +1523,8 @@ fn tart_ios_unit_suite_job(
         guest_command: GuestCommand::ShellCommand {
             command: Box::leak(command.into_boxed_str()),
         },
-        staged_linux_rust_lane: None,
+        staged_linux_command: None,
+        ..tart_job_base()
     }
 }
 
@@ -1629,7 +1563,8 @@ fn tart_ios_ui_test_job(id: &'static str, description: &'static str) -> JobSpec 
                 "-skip-testing:PikaUITests/PikaUITests/testE2E_multiImageGrid",
             ),
         },
-        staged_linux_rust_lane: None,
+        staged_linux_command: None,
+        ..tart_job_base()
     }
 }
 
@@ -1667,7 +1602,8 @@ fn tart_ios_ui_note_to_self_job(id: &'static str, description: &'static str) -> 
                 "-skip-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong",
             ),
         },
-        staged_linux_rust_lane: None,
+        staged_linux_command: None,
+        ..tart_job_base()
     }
 }
 
@@ -1688,7 +1624,8 @@ fn tart_desktop_package_tests_job(id: &'static str, description: &'static str) -
                 "./tools/cargo-with-xcode test -p pika-desktop -- --nocapture",
             ),
         },
-        staged_linux_rust_lane: None,
+        staged_linux_command: None,
+        ..tart_job_base()
     }
 }
 
@@ -1716,11 +1653,7 @@ fn run_target_with_reporter(
         prepared_output_launcher_transport_remote_helper_program: None,
         prepared_output_launcher_transport_remote_work_dir: None,
         changed_files: changed_files.clone().unwrap_or_default(),
-        filters: target
-            .filters
-            .iter()
-            .map(|pattern| (*pattern).to_string())
-            .collect(),
+        filters: target.filters.clone(),
         message: None,
     };
 
@@ -1747,7 +1680,7 @@ fn run_target_with_reporter(
 
     if changed_files
         .iter()
-        .any(|path| matches_any_filter(path, target.filters))
+        .any(|path| matches_any_filter(path, &target.filters))
     {
         return run_jobs_with_metadata_and_reporter(
             target.jobs.as_slice(),
@@ -1855,8 +1788,10 @@ fn status_text(status: RunStatus) -> &'static str {
     }
 }
 
-fn matches_any_filter(path: &str, filters: &[&str]) -> bool {
-    filters.iter().any(|pattern| matches_filter(path, pattern))
+fn matches_any_filter<S: AsRef<str>>(path: &str, filters: &[S]) -> bool {
+    filters
+        .iter()
+        .any(|pattern| matches_filter(path, pattern.as_ref()))
 }
 
 fn matches_filter(path: &str, pattern: &str) -> bool {
@@ -1870,13 +1805,14 @@ fn matches_filter(path: &str, pattern: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, Command, format_status_lines, matches_any_filter, matches_filter, rerun_metadata,
-        resolve_state_root, staged_linux_remote_defaults_json, target_spec, target_spec_for_rerun,
+        Cli, Command, PikaStagedLinuxLane, PikaStagedLinuxTarget, format_status_lines,
+        matches_any_filter, matches_filter, rerun_metadata, resolve_state_root,
+        staged_linux_remote_defaults_json, target_spec, target_spec_for_rerun,
     };
     use clap::Parser;
     use pikaci::{
-        JobRecord, PreparedOutputConsumerKind, RemoteLinuxVmBackend, RunLifecycleEvent, RunRecord,
-        RunStatus, RunnerKind, StagedLinuxRustLane, StagedLinuxRustTarget,
+        JobPlacementKind, JobRecord, JobRuntimeKind, PreparedOutputConsumerKind,
+        RemoteLinuxVmBackend, RunLifecycleEvent, RunRecord, RunStatus, RunnerKind,
         staged_linux_remote_defaults,
     };
 
@@ -1918,8 +1854,8 @@ mod tests {
         assert_eq!(standalone.jobs.len(), 1);
         assert_eq!(standalone.jobs[0].runner_kind(), RunnerKind::RemoteLinuxVm);
         assert_eq!(
-            standalone.jobs[0].staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit)
+            standalone.jobs[0].staged_linux_command(),
+            Some(PikaStagedLinuxLane::AgentContractsControlPlaneUnit.command_config())
         );
 
         assert_eq!(pre_merge.jobs.len(), 3);
@@ -1943,8 +1879,8 @@ mod tests {
 
         assert_eq!(target.jobs.len(), 1);
         assert_eq!(
-            target.jobs[0].staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::NotificationsServerPackageTests)
+            target.jobs[0].staged_linux_command(),
+            Some(PikaStagedLinuxLane::NotificationsServerPackageTests.command_config())
         );
         assert_eq!(target.jobs[0].runner_kind(), RunnerKind::RemoteLinuxVm);
         assert_eq!(
@@ -1959,13 +1895,13 @@ mod tests {
 
         assert_eq!(target.jobs.len(), 2);
         assert_eq!(
-            target.jobs[0].staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::FixturePikahutClippy)
+            target.jobs[0].staged_linux_command(),
+            Some(PikaStagedLinuxLane::FixturePikahutClippy.command_config())
         );
         assert_eq!(target.jobs[0].runner_kind(), RunnerKind::RemoteLinuxVm);
         assert_eq!(
-            target.jobs[1].staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::FixtureRelaySmoke)
+            target.jobs[1].staged_linux_command(),
+            Some(PikaStagedLinuxLane::FixtureRelaySmoke.command_config())
         );
         assert_eq!(target.jobs[1].runner_kind(), RunnerKind::RemoteLinuxVm);
     }
@@ -1973,14 +1909,14 @@ mod tests {
     #[test]
     fn pre_merge_rmp_target_uses_staged_linux_lane() {
         let target = target_spec("pre-merge-rmp").expect("rmp target");
-        let config = StagedLinuxRustTarget::PreMergeRmp.config();
+        let config = PikaStagedLinuxTarget::PreMergeRmp.config();
 
         assert_eq!(target.jobs.len(), 1);
         assert_eq!(target.id, config.target_id);
         assert_eq!(target.description, config.target_description);
         assert_eq!(
-            target.jobs[0].staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::RmpInitSmokeCi)
+            target.jobs[0].staged_linux_command(),
+            Some(PikaStagedLinuxLane::RmpInitSmokeCi.command_config())
         );
         assert_eq!(target.jobs[0].runner_kind(), RunnerKind::RemoteLinuxVm);
     }
@@ -1991,16 +1927,16 @@ mod tests {
 
         assert_eq!(target.jobs.len(), 10);
         assert_eq!(
-            target.jobs[0].staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::PikachatPackageTests)
+            target.jobs[0].staged_linux_command(),
+            Some(PikaStagedLinuxLane::PikachatPackageTests.command_config())
         );
         assert_eq!(
-            target.jobs[3].staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::PikachatCliSmokeLocal)
+            target.jobs[3].staged_linux_command(),
+            Some(PikaStagedLinuxLane::PikachatCliSmokeLocal.command_config())
         );
         assert_eq!(
-            target.jobs[9].staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::OpenclawAudioEcho)
+            target.jobs[9].staged_linux_command(),
+            Some(PikaStagedLinuxLane::OpenclawAudioEcho.command_config())
         );
         assert!(
             target
@@ -2017,8 +1953,8 @@ mod tests {
 
         assert_eq!(target.jobs.len(), 1);
         assert_eq!(
-            target.jobs[0].staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::PikachatTypescript)
+            target.jobs[0].staged_linux_command(),
+            Some(PikaStagedLinuxLane::PikachatTypescript.command_config())
         );
         assert_eq!(target.jobs[0].runner_kind(), RunnerKind::RemoteLinuxVm);
     }
@@ -2030,8 +1966,8 @@ mod tests {
 
         assert_eq!(target.jobs.len(), 1);
         assert_eq!(
-            target.jobs[0].staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::OpenclawGatewayE2e)
+            target.jobs[0].staged_linux_command(),
+            Some(PikaStagedLinuxLane::OpenclawGatewayE2e.command_config())
         );
         assert_eq!(target.jobs[0].runner_kind(), RunnerKind::RemoteLinuxVm);
     }
@@ -2049,12 +1985,12 @@ mod tests {
         );
         assert!(!target.jobs[0].writable_workspace);
         assert_eq!(
-            target.jobs[0].staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::PikaFollowupAndroidTestCompile)
+            target.jobs[0].staged_linux_command(),
+            Some(PikaStagedLinuxLane::PikaFollowupAndroidTestCompile.command_config())
         );
         assert_eq!(
-            target.jobs[5].staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::PikaFollowupRustDepsHygiene)
+            target.jobs[5].staged_linux_command(),
+            Some(PikaStagedLinuxLane::PikaFollowupRustDepsHygiene.command_config())
         );
         assert!(
             target
@@ -2065,61 +2001,74 @@ mod tests {
     }
 
     #[test]
+    fn staged_pre_merge_target_filters_come_from_forge_manifest() {
+        let target = target_spec("pre-merge-pika-rust").expect("pika rust target");
+
+        assert!(
+            target
+                .filters
+                .iter()
+                .any(|pattern| pattern == "ci/forge-lanes.toml")
+        );
+        assert!(target.filters.iter().any(|pattern| pattern == "scripts/**"));
+    }
+
+    #[test]
     fn standalone_experimental_targets_can_address_single_staged_linux_lanes() {
         let actionlint = target_spec("pika-actionlint").expect("actionlint target");
         assert_eq!(actionlint.jobs.len(), 1);
         assert_eq!(actionlint.jobs[0].id, "pika-actionlint");
         assert_eq!(
-            actionlint.jobs[0].staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::PikaFollowupActionlint)
+            actionlint.jobs[0].staged_linux_command(),
+            Some(PikaStagedLinuxLane::PikaFollowupActionlint.command_config())
         );
 
         let rmp = target_spec("rmp-init-smoke-ci").expect("rmp target");
         assert_eq!(rmp.jobs.len(), 1);
         assert_eq!(rmp.jobs[0].id, "rmp-init-smoke-ci");
         assert_eq!(
-            rmp.jobs[0].staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::RmpInitSmokeCi)
+            rmp.jobs[0].staged_linux_command(),
+            Some(PikaStagedLinuxLane::RmpInitSmokeCi.command_config())
         );
 
         let rust_deps = target_spec("pika-rust-deps-hygiene").expect("rust deps hygiene target");
         assert_eq!(rust_deps.jobs.len(), 1);
         assert_eq!(rust_deps.jobs[0].id, "pika-rust-deps-hygiene");
         assert_eq!(
-            rust_deps.jobs[0].staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::PikaFollowupRustDepsHygiene)
+            rust_deps.jobs[0].staged_linux_command(),
+            Some(PikaStagedLinuxLane::PikaFollowupRustDepsHygiene.command_config())
         );
 
         let app_flows = target_spec("pika-core-lib-app-flows-tests").expect("app flows target");
         assert_eq!(app_flows.jobs.len(), 1);
         assert_eq!(app_flows.jobs[0].id, "pika-core-lib-app-flows-tests");
         assert_eq!(
-            app_flows.jobs[0].staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::PikaCoreLibAppFlows)
+            app_flows.jobs[0].staged_linux_command(),
+            Some(PikaStagedLinuxLane::PikaCoreLibAppFlows.command_config())
         );
 
         let notifications = target_spec("pika-server-package-tests").expect("notifications target");
         assert_eq!(notifications.jobs.len(), 1);
         assert_eq!(notifications.jobs[0].id, "pika-server-package-tests");
         assert_eq!(
-            notifications.jobs[0].staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::NotificationsServerPackageTests)
+            notifications.jobs[0].staged_linux_command(),
+            Some(PikaStagedLinuxLane::NotificationsServerPackageTests.command_config())
         );
 
         let pikachat = target_spec("pikachat-package-tests").expect("pikachat package target");
         assert_eq!(pikachat.jobs.len(), 1);
         assert_eq!(pikachat.jobs[0].id, "pikachat-package-tests");
         assert_eq!(
-            pikachat.jobs[0].staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::PikachatPackageTests)
+            pikachat.jobs[0].staged_linux_command(),
+            Some(PikaStagedLinuxLane::PikachatPackageTests.command_config())
         );
 
         let fixture = target_spec("pikahut-clippy").expect("fixture target");
         assert_eq!(fixture.jobs.len(), 1);
         assert_eq!(fixture.jobs[0].id, "pikahut-clippy");
         assert_eq!(
-            fixture.jobs[0].staged_linux_rust_lane(),
-            Some(StagedLinuxRustLane::FixturePikahutClippy)
+            fixture.jobs[0].staged_linux_command(),
+            Some(PikaStagedLinuxLane::FixturePikahutClippy.command_config())
         );
     }
 
@@ -2144,16 +2093,56 @@ mod tests {
                 .iter()
                 .all(|job| job.runner_kind() == RunnerKind::HostLocal)
         );
-        assert!(target.filters.contains(&"just/checks.just"));
-        assert!(target.filters.contains(&"cli/**"));
-        assert!(target.filters.contains(&"crates/pikachat-sidecar/**"));
-        assert!(target.filters.contains(&"crates/pikahut/**"));
-        assert!(target.filters.contains(&"crates/pika-desktop/**"));
-        assert!(target.filters.contains(&"crates/pika-marmot-runtime/**"));
-        assert!(target.filters.contains(&"crates/pika-media/**"));
-        assert!(target.filters.contains(&"crates/pika-relay-profiles/**"));
-        assert!(target.filters.contains(&"pikachat-openclaw/**"));
-        assert!(target.filters.contains(&"rust/**"));
+        assert!(
+            target
+                .filters
+                .iter()
+                .any(|pattern| pattern == "just/checks.just")
+        );
+        assert!(target.filters.iter().any(|pattern| pattern == "cli/**"));
+        assert!(
+            target
+                .filters
+                .iter()
+                .any(|pattern| pattern == "crates/pikachat-sidecar/**")
+        );
+        assert!(
+            target
+                .filters
+                .iter()
+                .any(|pattern| pattern == "crates/pikahut/**")
+        );
+        assert!(
+            target
+                .filters
+                .iter()
+                .any(|pattern| pattern == "crates/pika-desktop/**")
+        );
+        assert!(
+            target
+                .filters
+                .iter()
+                .any(|pattern| pattern == "crates/pika-marmot-runtime/**")
+        );
+        assert!(
+            target
+                .filters
+                .iter()
+                .any(|pattern| pattern == "crates/pika-media/**")
+        );
+        assert!(
+            target
+                .filters
+                .iter()
+                .any(|pattern| pattern == "crates/pika-relay-profiles/**")
+        );
+        assert!(
+            target
+                .filters
+                .iter()
+                .any(|pattern| pattern == "pikachat-openclaw/**")
+        );
+        assert!(target.filters.iter().any(|pattern| pattern == "rust/**"));
     }
 
     #[test]
@@ -2429,7 +2418,7 @@ mod tests {
 
     #[test]
     fn staged_linux_target_config_serializes_machine_readably() {
-        let payload = serde_json::to_value(StagedLinuxRustTarget::PreMergePikaRust.config())
+        let payload = serde_json::to_value(PikaStagedLinuxTarget::PreMergePikaRust.config())
             .expect("encode target config");
         assert_eq!(payload["target_id"], "pre-merge-pika-rust");
         assert_eq!(
@@ -2483,6 +2472,8 @@ mod tests {
             description: "job".to_string(),
             status: RunStatus::Passed,
             executor: "remote_linux_vm".to_string(),
+            placement: Some(JobPlacementKind::RemoteSsh),
+            runtime: Some(JobRuntimeKind::Incus),
             plan_node_id: None,
             timeout_secs: 1,
             host_log_path: "/tmp/host.log".to_string(),

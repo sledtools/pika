@@ -105,6 +105,7 @@ def build_prompt(spec: dict[str, Any], spec_path: Path) -> str:
         Study the current codebase and grade each invariant as either "pass" or "fail".
         Treat "fail" as the default when the code is mixed, ambiguous, partially compliant, or clearly violates the statement.
         Focus on the current implementation, not on design intent.
+        Ignore code inside `#[cfg(test)]` modules unless an invariant explicitly mentions tests.
         Do not modify files.
 
         Return JSON matching the provided schema.

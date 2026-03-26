@@ -644,10 +644,13 @@ pub(super) fn build_snapshot_mount_plan_for_test(
             description: "test",
             timeout_secs: 120,
             writable_workspace: false,
+            execution: super::super::JobExecutionConfig::REMOTE_SSH_INCUS,
             guest_command: GuestCommand::ShellCommand {
                 command: "actionlint",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_command: None,
+            host_setup_command: None,
+            mount_host_rust_toolchain: false,
         },
         remote,
     )?)?
@@ -838,7 +841,7 @@ fn configure_remote_incus_devices(
         bail!("remote Linux VM backend `incus` does not support writable workspace jobs");
     }
     add_snapshot_mount(remote, runtime_plan, log_path)?;
-    if job.staged_linux_rust_lane().is_some() {
+    if job.staged_linux_command().is_some() {
         for staged_payload in &ctx.staged_payloads {
             let source_root = staged_payload_source_root(
                 &staged_payload.local_mount_path,

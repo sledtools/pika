@@ -36,8 +36,11 @@ pub struct JobSpec {
     pub description: &'static str,
     pub timeout_secs: u64,
     pub writable_workspace: bool,
+    pub execution: JobExecutionConfig,
     pub guest_command: GuestCommand,
-    pub staged_linux_rust_lane: Option<StagedLinuxRustLane>,
+    pub staged_linux_command: Option<StagedLinuxCommandConfig>,
+    pub host_setup_command: Option<&'static str>,
+    pub mount_host_rust_toolchain: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -60,6 +63,85 @@ impl RunnerKind {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
+pub enum JobPlacementKind {
+    Local,
+    RemoteSsh,
+}
+
+impl JobPlacementKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::RemoteSsh => "remote_ssh",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum JobRuntimeKind {
+    HostProcess,
+    Incus,
+    Tart,
+}
+
+impl JobRuntimeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::HostProcess => "host_process",
+            Self::Incus => "incus",
+            Self::Tart => "tart",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct JobExecutionConfig {
+    pub placement: JobPlacementKind,
+    pub runtime: JobRuntimeKind,
+}
+
+impl JobExecutionConfig {
+    pub const HOST_LOCAL: Self = Self {
+        placement: JobPlacementKind::Local,
+        runtime: JobRuntimeKind::HostProcess,
+    };
+
+    pub const REMOTE_SSH_INCUS: Self = Self {
+        placement: JobPlacementKind::RemoteSsh,
+        runtime: JobRuntimeKind::Incus,
+    };
+
+    pub const LOCAL_TART: Self = Self {
+        placement: JobPlacementKind::Local,
+        runtime: JobRuntimeKind::Tart,
+    };
+
+    pub fn runner_kind(self) -> RunnerKind {
+        match (self.placement, self.runtime) {
+            (JobPlacementKind::Local, JobRuntimeKind::HostProcess) => RunnerKind::HostLocal,
+            (JobPlacementKind::RemoteSsh, JobRuntimeKind::Incus) => RunnerKind::RemoteLinuxVm,
+            (JobPlacementKind::Local, JobRuntimeKind::Tart) => RunnerKind::TartLocal,
+            (JobPlacementKind::RemoteSsh, JobRuntimeKind::HostProcess) => RunnerKind::HostLocal,
+            (JobPlacementKind::Local, JobRuntimeKind::Incus) => RunnerKind::RemoteLinuxVm,
+            (JobPlacementKind::RemoteSsh, JobRuntimeKind::Tart) => RunnerKind::TartLocal,
+        }
+    }
+
+    pub fn executor_label(self) -> &'static str {
+        match (self.placement, self.runtime) {
+            (JobPlacementKind::Local, JobRuntimeKind::HostProcess) => "host_local",
+            (JobPlacementKind::RemoteSsh, JobRuntimeKind::Incus) => "remote_linux_vm",
+            (JobPlacementKind::Local, JobRuntimeKind::Tart) => "tart_local",
+            (JobPlacementKind::RemoteSsh, JobRuntimeKind::HostProcess) => "remote_ssh_host_process",
+            (JobPlacementKind::Local, JobRuntimeKind::Incus) => "local_incus",
+            (JobPlacementKind::RemoteSsh, JobRuntimeKind::Tart) => "remote_ssh_tart",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum PlanExecutorKind {
     HostLocal,
     RemoteLinuxVm,
@@ -76,9 +158,9 @@ impl PlanExecutorKind {
     }
 }
 
-impl From<RunnerKind> for PlanExecutorKind {
-    fn from(value: RunnerKind) -> Self {
-        match value {
+impl From<JobExecutionConfig> for PlanExecutorKind {
+    fn from(value: JobExecutionConfig) -> Self {
+        match value.runner_kind() {
             RunnerKind::HostLocal => Self::HostLocal,
             RunnerKind::RemoteLinuxVm => Self::RemoteLinuxVm,
             RunnerKind::TartLocal => Self::TartLocal,
@@ -96,75 +178,50 @@ const REMOTE_LINUX_VM_BACKEND_ENV: &str = "PIKACI_REMOTE_LINUX_VM_BACKEND";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV: &str = "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST";
 
 impl JobSpec {
+    pub fn execution(&self) -> JobExecutionConfig {
+        self.execution
+    }
+
+    pub fn placement_kind(&self) -> JobPlacementKind {
+        self.execution.placement
+    }
+
+    pub fn runtime_kind(&self) -> JobRuntimeKind {
+        self.execution.runtime
+    }
+
     pub fn runner_kind(&self) -> RunnerKind {
-        if matches!(self.guest_command, GuestCommand::HostShellCommand { .. }) {
-            RunnerKind::HostLocal
-        } else if self.id.starts_with("tart-") {
-            RunnerKind::TartLocal
-        } else if self.staged_linux_rust_lane().is_some() {
-            RunnerKind::RemoteLinuxVm
-        } else {
-            panic!(
-                "job `{}` no longer maps to the removed vfkit runner; assign staged_linux_rust_lane, use HostShellCommand, or use a tart-* target",
-                self.id
-            )
-        }
+        self.execution.runner_kind()
+    }
+
+    pub fn executor_label(&self) -> &'static str {
+        self.execution.executor_label()
     }
 
     pub fn remote_linux_vm_backend(&self) -> Option<RemoteLinuxVmBackend> {
-        match self.runner_kind() {
-            RunnerKind::RemoteLinuxVm => Some(select_remote_linux_vm_backend(self)),
+        match (self.placement_kind(), self.runtime_kind()) {
+            (JobPlacementKind::RemoteSsh, JobRuntimeKind::Incus) => {
+                Some(select_remote_linux_vm_backend(self))
+            }
             _ => None,
         }
     }
 
-    pub fn staged_linux_rust_lane(&self) -> Option<StagedLinuxRustLane> {
-        self.staged_linux_rust_lane
+    pub fn staged_linux_command(&self) -> Option<StagedLinuxCommandConfig> {
+        self.staged_linux_command
     }
 
     pub fn supports_parallel_execute(&self) -> bool {
-        self.staged_linux_rust_lane().is_some()
+        self.staged_linux_command().is_some()
     }
 
     pub fn host_setup_command(&self) -> Option<&'static str> {
-        match self.id {
-            "tart-beachhead" => Some(concat!(
-                "set -euo pipefail; ",
-                "export DEVELOPER_DIR=\"${PIKACI_TART_DEVELOPER_DIR:-${PIKACI_TART_XCODE_APP:-/Applications/Xcode-16.4.0.app}/Contents/Developer}\"; ",
-                "just ios-xcframework ios-xcodeproj",
-            )),
-            id if id.starts_with("tart-ios") => Some(concat!(
-                "set -euo pipefail; ",
-                "export DEVELOPER_DIR=\"${PIKACI_TART_DEVELOPER_DIR:-${PIKACI_TART_XCODE_APP:-/Applications/Xcode-16.4.0.app}/Contents/Developer}\"; ",
-                "just ios-xcframework ios-xcodeproj",
-            )),
-            _ => None,
-        }
+        self.host_setup_command
     }
-}
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StagedLinuxRustTarget {
-    PreMergePikaRust,
-    PreMergePikaFollowup,
-    PreMergeAgentContracts,
-    PreMergeNotifications,
-    PreMergeFixtureRust,
-    PreMergeRmp,
-    PreMergePikachatRust,
-    PreMergePikachatTypescript,
-    PreMergePikachatOpenclawE2e,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
-pub struct StagedLinuxRustTargetConfig {
-    pub target_id: &'static str,
-    pub target_description: &'static str,
-    pub shared_prepare_node_prefix: &'static str,
-    pub shared_prepare_description: &'static str,
-    pub payload_specs: [StagedLinuxRustTargetPayloadSpec; 2],
-    pub workspace_output_system: &'static str,
-    pub shadow_recipe: &'static str,
+    pub fn mount_host_rust_toolchain(&self) -> bool {
+        self.mount_host_rust_toolchain
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -179,26 +236,6 @@ pub struct StagedLinuxRustTargetPayloadSpec {
     pub role: StagedLinuxRustPayloadRole,
     pub output_name: &'static str,
     pub nix_installable: &'static str,
-}
-
-fn staged_linux_target_payload_specs(
-    workspace_deps_output_name: &'static str,
-    workspace_deps_installable: &'static str,
-    workspace_build_output_name: &'static str,
-    workspace_build_installable: &'static str,
-) -> [StagedLinuxRustTargetPayloadSpec; 2] {
-    [
-        StagedLinuxRustTargetPayloadSpec {
-            role: StagedLinuxRustPayloadRole::WorkspaceDeps,
-            output_name: workspace_deps_output_name,
-            nix_installable: workspace_deps_installable,
-        },
-        StagedLinuxRustTargetPayloadSpec {
-            role: StagedLinuxRustPayloadRole::WorkspaceBuild,
-            output_name: workspace_build_output_name,
-            nix_installable: workspace_build_installable,
-        },
-    ]
 }
 
 impl StagedLinuxRustPayloadRole {
@@ -248,110 +285,36 @@ impl StagedLinuxRustPayloadRole {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StagedLinuxRustLane {
-    PikaFollowupAndroidTestCompile,
-    PikaFollowupPikachatBuild,
-    PikaFollowupDesktopCheck,
-    PikaFollowupActionlint,
-    PikaFollowupDocContracts,
-    PikaFollowupRustDepsHygiene,
-    PikaCoreLibAppFlows,
-    PikaCoreMessagingE2e,
-    AgentContractsControlPlaneUnit,
-    AgentContractsServerAgentApi,
-    AgentContractsCoreNip98,
-    NotificationsServerPackageTests,
-    FixturePikahutClippy,
-    FixtureRelaySmoke,
-    RmpInitSmokeCi,
-    PikachatPackageTests,
-    PikachatSidecarPackageTests,
-    PikachatDesktopPackageTests,
-    PikachatCliSmokeLocal,
-    PikachatPostRebaseInvalidEvent,
-    PikachatPostRebaseLogoutSession,
-    PikachatTypescript,
-    OpenclawInviteAndChat,
-    OpenclawInviteAndChatRustBot,
-    OpenclawInviteAndChatDaemon,
-    OpenclawAudioEcho,
-    OpenclawGatewayE2e,
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum StagedLinuxSnapshotProfile {
+    Rust,
+    Followup,
 }
 
-impl StagedLinuxRustLane {
-    pub fn target(self) -> StagedLinuxRustTarget {
-        match self {
-            Self::PikaFollowupAndroidTestCompile
-            | Self::PikaFollowupPikachatBuild
-            | Self::PikaFollowupDesktopCheck
-            | Self::PikaFollowupActionlint
-            | Self::PikaFollowupDocContracts
-            | Self::PikaFollowupRustDepsHygiene => StagedLinuxRustTarget::PreMergePikaFollowup,
-            Self::PikaCoreLibAppFlows | Self::PikaCoreMessagingE2e => {
-                StagedLinuxRustTarget::PreMergePikaRust
-            }
-            Self::AgentContractsControlPlaneUnit
-            | Self::AgentContractsServerAgentApi
-            | Self::AgentContractsCoreNip98 => StagedLinuxRustTarget::PreMergeAgentContracts,
-            Self::NotificationsServerPackageTests => StagedLinuxRustTarget::PreMergeNotifications,
-            Self::FixturePikahutClippy | Self::FixtureRelaySmoke => {
-                StagedLinuxRustTarget::PreMergeFixtureRust
-            }
-            Self::RmpInitSmokeCi => StagedLinuxRustTarget::PreMergeRmp,
-            Self::PikachatPackageTests
-            | Self::PikachatSidecarPackageTests
-            | Self::PikachatDesktopPackageTests
-            | Self::PikachatCliSmokeLocal
-            | Self::PikachatPostRebaseInvalidEvent
-            | Self::PikachatPostRebaseLogoutSession
-            | Self::OpenclawInviteAndChat
-            | Self::OpenclawInviteAndChatRustBot
-            | Self::OpenclawInviteAndChatDaemon
-            | Self::OpenclawAudioEcho => StagedLinuxRustTarget::PreMergePikachatRust,
-            Self::PikachatTypescript => StagedLinuxRustTarget::PreMergePikachatTypescript,
-            Self::OpenclawGatewayE2e => StagedLinuxRustTarget::PreMergePikachatOpenclawE2e,
-        }
-    }
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct StagedLinuxCommandConfig {
+    pub snapshot_profile: StagedLinuxSnapshotProfile,
+    pub prepare_node_prefix: &'static str,
+    pub prepare_description: &'static str,
+    pub payload_specs: [StagedLinuxRustTargetPayloadSpec; 2],
+    pub execute_wrapper_command: &'static str,
+    pub workspace_output_system: &'static str,
+}
 
-    pub fn shared_prepare_node_prefix(self) -> &'static str {
-        self.target().config().shared_prepare_node_prefix
-    }
-
-    pub fn shared_prepare_description(self) -> &'static str {
-        self.target().config().shared_prepare_description
-    }
-
-    pub fn workspace_deps_output_name(self) -> &'static str {
-        self.payload_spec(StagedLinuxRustPayloadRole::WorkspaceDeps)
-            .output_name
-    }
-
-    pub fn workspace_build_output_name(self) -> &'static str {
-        self.payload_spec(StagedLinuxRustPayloadRole::WorkspaceBuild)
-            .output_name
-    }
-
-    pub fn workspace_output_system(self) -> &'static str {
-        self.target().config().workspace_output_system
-    }
-
+impl StagedLinuxCommandConfig {
     pub fn payload_roles(self) -> [StagedLinuxRustPayloadRole; 2] {
-        self.payload_specs().map(|spec| spec.role)
-    }
-
-    pub fn payload_specs(self) -> [StagedLinuxRustTargetPayloadSpec; 2] {
-        self.target().config().payload_specs
+        self.payload_specs.map(|spec| spec.role)
     }
 
     pub fn payload_spec(
         self,
         role: StagedLinuxRustPayloadRole,
     ) -> StagedLinuxRustTargetPayloadSpec {
-        self.payload_specs()
+        self.payload_specs
             .into_iter()
             .find(|spec| spec.role == role)
-            .expect("staged Linux Rust lane is missing required payload spec")
+            .expect("staged Linux command config is missing required payload spec")
     }
 
     pub fn payload_nix_installable(self, role: StagedLinuxRustPayloadRole) -> &'static str {
@@ -360,256 +323,6 @@ impl StagedLinuxRustLane {
 
     pub fn payload_output_name(self, role: StagedLinuxRustPayloadRole) -> &'static str {
         self.payload_spec(role).output_name
-    }
-
-    pub fn execute_wrapper_command(self) -> &'static str {
-        match self {
-            Self::PikaFollowupAndroidTestCompile => {
-                "/staged/linux-rust/workspace-build/bin/run-pika-android-test-compile"
-            }
-            Self::PikaFollowupPikachatBuild => {
-                "/staged/linux-rust/workspace-build/bin/run-pika-followup-pikachat-build"
-            }
-            Self::PikaFollowupDesktopCheck => {
-                "/staged/linux-rust/workspace-build/bin/run-pika-desktop-check"
-            }
-            Self::PikaFollowupActionlint => {
-                "/staged/linux-rust/workspace-build/bin/run-pika-actionlint"
-            }
-            Self::PikaFollowupDocContracts => {
-                "/staged/linux-rust/workspace-build/bin/run-pika-doc-contracts"
-            }
-            Self::PikaFollowupRustDepsHygiene => {
-                "/staged/linux-rust/workspace-build/bin/run-pika-rust-deps-hygiene"
-            }
-            Self::PikaCoreLibAppFlows => {
-                "/staged/linux-rust/workspace-build/bin/run-pika-core-lib-app-flows-tests"
-            }
-            Self::PikaCoreMessagingE2e => {
-                "/staged/linux-rust/workspace-build/bin/run-pika-core-messaging-e2e-tests"
-            }
-            Self::AgentContractsControlPlaneUnit => {
-                "/staged/linux-rust/workspace-build/bin/run-pika-cloud-unit-tests"
-            }
-            Self::AgentContractsServerAgentApi => {
-                "/staged/linux-rust/workspace-build/bin/run-server-agent-api-tests"
-            }
-            Self::AgentContractsCoreNip98 => {
-                "/staged/linux-rust/workspace-build/bin/run-core-agent-nip98-test"
-            }
-            Self::NotificationsServerPackageTests => {
-                "/staged/linux-rust/workspace-build/bin/run-pika-server-package-tests"
-            }
-            Self::FixturePikahutClippy => {
-                "/staged/linux-rust/workspace-build/bin/run-pikahut-clippy"
-            }
-            Self::FixtureRelaySmoke => {
-                "/staged/linux-rust/workspace-build/bin/run-fixture-relay-smoke"
-            }
-            Self::RmpInitSmokeCi => "/staged/linux-rust/workspace-build/bin/run-rmp-init-smoke-ci",
-            Self::PikachatPackageTests => {
-                "/staged/linux-rust/workspace-build/bin/run-pikachat-package-tests"
-            }
-            Self::PikachatSidecarPackageTests => {
-                "/staged/linux-rust/workspace-build/bin/run-pikachat-sidecar-package-tests"
-            }
-            Self::PikachatDesktopPackageTests => {
-                "/staged/linux-rust/workspace-build/bin/run-pika-desktop-package-tests"
-            }
-            Self::PikachatCliSmokeLocal => {
-                "/staged/linux-rust/workspace-build/bin/run-pikachat-cli-smoke-local"
-            }
-            Self::PikachatPostRebaseInvalidEvent => {
-                "/staged/linux-rust/workspace-build/bin/run-pikachat-post-rebase-invalid-event"
-            }
-            Self::PikachatPostRebaseLogoutSession => {
-                "/staged/linux-rust/workspace-build/bin/run-pikachat-post-rebase-logout-session"
-            }
-            Self::PikachatTypescript => {
-                "/staged/linux-rust/workspace-build/bin/run-pikachat-typescript"
-            }
-            Self::OpenclawInviteAndChat => {
-                "/staged/linux-rust/workspace-build/bin/run-openclaw-invite-and-chat"
-            }
-            Self::OpenclawInviteAndChatRustBot => {
-                "/staged/linux-rust/workspace-build/bin/run-openclaw-invite-and-chat-rust-bot"
-            }
-            Self::OpenclawInviteAndChatDaemon => {
-                "/staged/linux-rust/workspace-build/bin/run-openclaw-invite-and-chat-daemon"
-            }
-            Self::OpenclawAudioEcho => {
-                "/staged/linux-rust/workspace-build/bin/run-openclaw-audio-echo"
-            }
-            Self::OpenclawGatewayE2e => {
-                "/staged/linux-rust/workspace-build/bin/run-openclaw-gateway-e2e"
-            }
-        }
-    }
-}
-
-impl StagedLinuxRustTarget {
-    pub fn from_target_id(target_id: &str) -> Option<Self> {
-        match target_id {
-            "pre-merge-pika-rust" => Some(Self::PreMergePikaRust),
-            "pre-merge-pika-followup" => Some(Self::PreMergePikaFollowup),
-            "pre-merge-agent-contracts" => Some(Self::PreMergeAgentContracts),
-            "pre-merge-notifications" => Some(Self::PreMergeNotifications),
-            "pre-merge-fixture-rust" => Some(Self::PreMergeFixtureRust),
-            "pre-merge-rmp" => Some(Self::PreMergeRmp),
-            "pre-merge-pikachat-rust" => Some(Self::PreMergePikachatRust),
-            "pre-merge-pikachat-typescript" => Some(Self::PreMergePikachatTypescript),
-            "pre-merge-pikachat-openclaw-e2e" => Some(Self::PreMergePikachatOpenclawE2e),
-            _ => None,
-        }
-    }
-
-    pub fn config(self) -> StagedLinuxRustTargetConfig {
-        match self {
-            Self::PreMergePikaRust => StagedLinuxRustTargetConfig {
-                target_id: "pre-merge-pika-rust",
-                target_description: "Run the VM-backed Rust tests from the pre-merge pika lane",
-                shared_prepare_node_prefix: "pika-core-linux-rust",
-                shared_prepare_description: "pika_core staged Linux Rust lane",
-                payload_specs: staged_linux_target_payload_specs(
-                    "ci.x86_64-linux.workspaceDeps",
-                    ".#ci.x86_64-linux.workspaceDeps",
-                    "ci.x86_64-linux.workspaceBuild",
-                    ".#ci.x86_64-linux.workspaceBuild",
-                ),
-                workspace_output_system: "x86_64-linux",
-                shadow_recipe: "pre-merge-pika-rust-shadow",
-            },
-            Self::PreMergePikaFollowup => StagedLinuxRustTargetConfig {
-                target_id: "pre-merge-pika-followup",
-                target_description: "Run the VM-backed non-Rust follow-up checks from the pre-merge pika lane",
-                shared_prepare_node_prefix: "pika-followup-linux-rust",
-                shared_prepare_description: "pika follow-up staged Linux lane",
-                payload_specs: staged_linux_target_payload_specs(
-                    "ci.x86_64-linux.pikaFollowupWorkspaceDeps",
-                    ".#ci.x86_64-linux.pikaFollowupWorkspaceDeps",
-                    "ci.x86_64-linux.pikaFollowupWorkspaceBuild",
-                    ".#ci.x86_64-linux.pikaFollowupWorkspaceBuild",
-                ),
-                workspace_output_system: "x86_64-linux",
-                shadow_recipe: "",
-            },
-            Self::PreMergeAgentContracts => StagedLinuxRustTargetConfig {
-                target_id: "pre-merge-agent-contracts",
-                target_description: "Run the Incus-backed pre-merge agent contracts lane",
-                shared_prepare_node_prefix: "agent-contracts-linux-rust",
-                shared_prepare_description: "agent contracts staged Linux Rust lane",
-                payload_specs: staged_linux_target_payload_specs(
-                    "ci.x86_64-linux.agentContractsWorkspaceDeps",
-                    ".#ci.x86_64-linux.agentContractsWorkspaceDeps",
-                    "ci.x86_64-linux.agentContractsWorkspaceBuild",
-                    ".#ci.x86_64-linux.agentContractsWorkspaceBuild",
-                ),
-                workspace_output_system: "x86_64-linux",
-                shadow_recipe: "pre-merge-agent-contracts-shadow",
-            },
-            Self::PreMergeNotifications => StagedLinuxRustTargetConfig {
-                target_id: "pre-merge-notifications",
-                target_description: "Run the VM-backed Rust tests from the notifications lane",
-                shared_prepare_node_prefix: "notifications-linux-rust",
-                shared_prepare_description: "notifications staged Linux Rust lane",
-                payload_specs: staged_linux_target_payload_specs(
-                    "ci.x86_64-linux.notificationsWorkspaceDeps",
-                    ".#ci.x86_64-linux.notificationsWorkspaceDeps",
-                    "ci.x86_64-linux.notificationsWorkspaceBuild",
-                    ".#ci.x86_64-linux.notificationsWorkspaceBuild",
-                ),
-                workspace_output_system: "x86_64-linux",
-                shadow_recipe: "pre-merge-notifications-shadow",
-            },
-            Self::PreMergeFixtureRust => StagedLinuxRustTargetConfig {
-                target_id: "pre-merge-fixture-rust",
-                target_description: "Run the VM-backed Rust tests from the fixture lane",
-                shared_prepare_node_prefix: "fixture-linux-rust",
-                shared_prepare_description: "fixture staged Linux Rust lane",
-                payload_specs: staged_linux_target_payload_specs(
-                    "ci.x86_64-linux.fixtureWorkspaceDeps",
-                    ".#ci.x86_64-linux.fixtureWorkspaceDeps",
-                    "ci.x86_64-linux.fixtureWorkspaceBuild",
-                    ".#ci.x86_64-linux.fixtureWorkspaceBuild",
-                ),
-                workspace_output_system: "x86_64-linux",
-                shadow_recipe: "",
-            },
-            Self::PreMergeRmp => StagedLinuxRustTargetConfig {
-                target_id: "pre-merge-rmp",
-                target_description: "Run the VM-backed pre-merge RMP lane",
-                shared_prepare_node_prefix: "rmp-linux-rust",
-                shared_prepare_description: "rmp staged Linux Rust lane",
-                payload_specs: staged_linux_target_payload_specs(
-                    "ci.x86_64-linux.rmpWorkspaceDeps",
-                    ".#ci.x86_64-linux.rmpWorkspaceDeps",
-                    "ci.x86_64-linux.rmpWorkspaceBuild",
-                    ".#ci.x86_64-linux.rmpWorkspaceBuild",
-                ),
-                workspace_output_system: "x86_64-linux",
-                shadow_recipe: "pre-merge-rmp-shadow",
-            },
-            Self::PreMergePikachatRust => StagedLinuxRustTargetConfig {
-                target_id: "pre-merge-pikachat-rust",
-                target_description: "Run the VM-backed Rust tests from the pikachat lane",
-                shared_prepare_node_prefix: "pikachat-linux-rust",
-                shared_prepare_description: "pikachat staged Linux Rust lane",
-                payload_specs: staged_linux_target_payload_specs(
-                    "ci.x86_64-linux.pikachatWorkspaceDeps",
-                    ".#ci.x86_64-linux.pikachatWorkspaceDeps",
-                    "ci.x86_64-linux.pikachatWorkspaceBuild",
-                    ".#ci.x86_64-linux.pikachatWorkspaceBuild",
-                ),
-                workspace_output_system: "x86_64-linux",
-                shadow_recipe: "pre-merge-pikachat-rust-shadow",
-            },
-            Self::PreMergePikachatTypescript => StagedLinuxRustTargetConfig {
-                target_id: "pre-merge-pikachat-typescript",
-                target_description: "Run the VM-backed TypeScript tests from the pikachat lane",
-                shared_prepare_node_prefix: "pikachat-linux-rust",
-                shared_prepare_description: "pikachat staged Linux Rust lane",
-                payload_specs: staged_linux_target_payload_specs(
-                    "ci.x86_64-linux.pikachatWorkspaceDeps",
-                    ".#ci.x86_64-linux.pikachatWorkspaceDeps",
-                    "ci.x86_64-linux.pikachatWorkspaceBuild",
-                    ".#ci.x86_64-linux.pikachatWorkspaceBuild",
-                ),
-                workspace_output_system: "x86_64-linux",
-                shadow_recipe: "",
-            },
-            Self::PreMergePikachatOpenclawE2e => StagedLinuxRustTargetConfig {
-                target_id: "pre-merge-pikachat-openclaw-e2e",
-                target_description: "Run the VM-backed heavy OpenClaw gateway end-to-end scenario",
-                shared_prepare_node_prefix: "pikachat-openclaw-linux-rust",
-                shared_prepare_description: "pikachat OpenClaw staged Linux lane",
-                payload_specs: staged_linux_target_payload_specs(
-                    "ci.x86_64-linux.pikachatWorkspaceDeps",
-                    ".#ci.x86_64-linux.pikachatWorkspaceDeps",
-                    "ci.x86_64-linux.pikachatWorkspaceBuild",
-                    ".#ci.x86_64-linux.pikachatWorkspaceBuild",
-                ),
-                workspace_output_system: "x86_64-linux",
-                shadow_recipe: "",
-            },
-        }
-    }
-
-    pub fn payload_specs(self) -> [StagedLinuxRustTargetPayloadSpec; 2] {
-        self.config().payload_specs
-    }
-
-    pub fn payload_spec(
-        self,
-        role: StagedLinuxRustPayloadRole,
-    ) -> StagedLinuxRustTargetPayloadSpec {
-        self.payload_specs()
-            .into_iter()
-            .find(|spec| spec.role == role)
-            .expect("staged Linux Rust target is missing required payload spec")
-    }
-
-    pub fn payload_nix_installable(self, role: StagedLinuxRustPayloadRole) -> &'static str {
-        self.payload_spec(role).nix_installable
     }
 }
 
@@ -687,18 +400,364 @@ fn should_default_remote_linux_vm_to_incus() -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        GuestCommand, JobSpec, RemoteLinuxVmBackend, RemoteLinuxVmExecutionRecord,
-        RemoteLinuxVmImageRecord, RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord,
-        StagedLinuxRustLane, StagedLinuxRustPayloadRole, StagedLinuxRustTarget,
+        GuestCommand, JobExecutionConfig, JobSpec, RemoteLinuxVmBackend,
+        RemoteLinuxVmExecutionRecord, RemoteLinuxVmImageRecord, RemoteLinuxVmPhase,
+        RemoteLinuxVmPhaseRecord, StagedLinuxCommandConfig, StagedLinuxRustPayloadRole,
+        StagedLinuxRustTargetPayloadSpec, StagedLinuxSnapshotProfile,
     };
     use std::fs;
     use std::path::Path;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum StagedLinuxRustTarget {
+        PreMergePikaRust,
+        PreMergePikaFollowup,
+        PreMergeAgentContracts,
+        PreMergeNotifications,
+        PreMergeFixtureRust,
+        PreMergeRmp,
+        PreMergePikachatRust,
+        PreMergePikachatTypescript,
+        PreMergePikachatOpenclawE2e,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct StagedLinuxRustTargetConfig {
+        target_id: &'static str,
+        shadow_recipe: &'static str,
+        snapshot_profile: StagedLinuxSnapshotProfile,
+        prepare_node_prefix: &'static str,
+        prepare_description: &'static str,
+        payload_specs: [StagedLinuxRustTargetPayloadSpec; 2],
+        workspace_output_system: &'static str,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum StagedLinuxRustLane {
+        PikaFollowupActionlint,
+        PikaFollowupDocContracts,
+        PikaFollowupRustDepsHygiene,
+        AgentContractsControlPlaneUnit,
+        NotificationsServerPackageTests,
+        FixturePikahutClippy,
+        FixtureRelaySmoke,
+        RmpInitSmokeCi,
+        PikachatCliSmokeLocal,
+        PikachatTypescript,
+        OpenclawGatewayE2e,
+    }
+
+    fn payload_specs(
+        workspace_deps_output_name: &'static str,
+        workspace_deps_installable: &'static str,
+        workspace_build_output_name: &'static str,
+        workspace_build_installable: &'static str,
+    ) -> [StagedLinuxRustTargetPayloadSpec; 2] {
+        [
+            StagedLinuxRustTargetPayloadSpec {
+                role: StagedLinuxRustPayloadRole::WorkspaceDeps,
+                output_name: workspace_deps_output_name,
+                nix_installable: workspace_deps_installable,
+            },
+            StagedLinuxRustTargetPayloadSpec {
+                role: StagedLinuxRustPayloadRole::WorkspaceBuild,
+                output_name: workspace_build_output_name,
+                nix_installable: workspace_build_installable,
+            },
+        ]
+    }
+
+    impl StagedLinuxRustTarget {
+        fn from_target_id(target_id: &str) -> Option<Self> {
+            match target_id {
+                "pre-merge-pika-rust" => Some(Self::PreMergePikaRust),
+                "pre-merge-pika-followup" => Some(Self::PreMergePikaFollowup),
+                "pre-merge-agent-contracts" => Some(Self::PreMergeAgentContracts),
+                "pre-merge-notifications" => Some(Self::PreMergeNotifications),
+                "pre-merge-fixture-rust" => Some(Self::PreMergeFixtureRust),
+                "pre-merge-rmp" => Some(Self::PreMergeRmp),
+                "pre-merge-pikachat-rust" => Some(Self::PreMergePikachatRust),
+                "pre-merge-pikachat-typescript" => Some(Self::PreMergePikachatTypescript),
+                "pre-merge-pikachat-openclaw-e2e" => Some(Self::PreMergePikachatOpenclawE2e),
+                _ => None,
+            }
+        }
+
+        fn config(self) -> StagedLinuxRustTargetConfig {
+            match self {
+                Self::PreMergePikaRust => StagedLinuxRustTargetConfig {
+                    target_id: "pre-merge-pika-rust",
+                    shadow_recipe: "pre-merge-pika-rust-shadow",
+                    snapshot_profile: StagedLinuxSnapshotProfile::Rust,
+                    prepare_node_prefix: "pika-core-linux-rust",
+                    prepare_description: "pika_core staged Linux Rust lane",
+                    payload_specs: payload_specs(
+                        "ci.x86_64-linux.workspaceDeps",
+                        ".#ci.x86_64-linux.workspaceDeps",
+                        "ci.x86_64-linux.workspaceBuild",
+                        ".#ci.x86_64-linux.workspaceBuild",
+                    ),
+                    workspace_output_system: "x86_64-linux",
+                },
+                Self::PreMergePikaFollowup => StagedLinuxRustTargetConfig {
+                    target_id: "pre-merge-pika-followup",
+                    shadow_recipe: "",
+                    snapshot_profile: StagedLinuxSnapshotProfile::Followup,
+                    prepare_node_prefix: "pika-followup-linux-rust",
+                    prepare_description: "pika follow-up staged Linux lane",
+                    payload_specs: payload_specs(
+                        "ci.x86_64-linux.pikaFollowupWorkspaceDeps",
+                        ".#ci.x86_64-linux.pikaFollowupWorkspaceDeps",
+                        "ci.x86_64-linux.pikaFollowupWorkspaceBuild",
+                        ".#ci.x86_64-linux.pikaFollowupWorkspaceBuild",
+                    ),
+                    workspace_output_system: "x86_64-linux",
+                },
+                Self::PreMergeAgentContracts => StagedLinuxRustTargetConfig {
+                    target_id: "pre-merge-agent-contracts",
+                    shadow_recipe: "pre-merge-agent-contracts-shadow",
+                    snapshot_profile: StagedLinuxSnapshotProfile::Rust,
+                    prepare_node_prefix: "agent-contracts-linux-rust",
+                    prepare_description: "agent contracts staged Linux lane",
+                    payload_specs: payload_specs(
+                        "ci.x86_64-linux.agentContractsWorkspaceDeps",
+                        ".#ci.x86_64-linux.agentContractsWorkspaceDeps",
+                        "ci.x86_64-linux.agentContractsWorkspaceBuild",
+                        ".#ci.x86_64-linux.agentContractsWorkspaceBuild",
+                    ),
+                    workspace_output_system: "x86_64-linux",
+                },
+                Self::PreMergeNotifications => StagedLinuxRustTargetConfig {
+                    target_id: "pre-merge-notifications",
+                    shadow_recipe: "pre-merge-notifications-shadow",
+                    snapshot_profile: StagedLinuxSnapshotProfile::Rust,
+                    prepare_node_prefix: "notifications-linux-rust",
+                    prepare_description: "notifications staged Linux lane",
+                    payload_specs: payload_specs(
+                        "ci.x86_64-linux.notificationsWorkspaceDeps",
+                        ".#ci.x86_64-linux.notificationsWorkspaceDeps",
+                        "ci.x86_64-linux.notificationsWorkspaceBuild",
+                        ".#ci.x86_64-linux.notificationsWorkspaceBuild",
+                    ),
+                    workspace_output_system: "x86_64-linux",
+                },
+                Self::PreMergeFixtureRust => StagedLinuxRustTargetConfig {
+                    target_id: "pre-merge-fixture-rust",
+                    shadow_recipe: "",
+                    snapshot_profile: StagedLinuxSnapshotProfile::Rust,
+                    prepare_node_prefix: "fixture-linux-rust",
+                    prepare_description: "fixture staged Linux lane",
+                    payload_specs: payload_specs(
+                        "ci.x86_64-linux.fixtureWorkspaceDeps",
+                        ".#ci.x86_64-linux.fixtureWorkspaceDeps",
+                        "ci.x86_64-linux.fixtureWorkspaceBuild",
+                        ".#ci.x86_64-linux.fixtureWorkspaceBuild",
+                    ),
+                    workspace_output_system: "x86_64-linux",
+                },
+                Self::PreMergeRmp => StagedLinuxRustTargetConfig {
+                    target_id: "pre-merge-rmp",
+                    shadow_recipe: "pre-merge-rmp-shadow",
+                    snapshot_profile: StagedLinuxSnapshotProfile::Rust,
+                    prepare_node_prefix: "rmp-linux-rust",
+                    prepare_description: "rmp staged Linux lane",
+                    payload_specs: payload_specs(
+                        "ci.x86_64-linux.rmpWorkspaceDeps",
+                        ".#ci.x86_64-linux.rmpWorkspaceDeps",
+                        "ci.x86_64-linux.rmpWorkspaceBuild",
+                        ".#ci.x86_64-linux.rmpWorkspaceBuild",
+                    ),
+                    workspace_output_system: "x86_64-linux",
+                },
+                Self::PreMergePikachatRust => StagedLinuxRustTargetConfig {
+                    target_id: "pre-merge-pikachat-rust",
+                    shadow_recipe: "pre-merge-pikachat-rust-shadow",
+                    snapshot_profile: StagedLinuxSnapshotProfile::Rust,
+                    prepare_node_prefix: "pikachat-linux-rust",
+                    prepare_description: "pikachat staged Linux lane",
+                    payload_specs: payload_specs(
+                        "ci.x86_64-linux.pikachatWorkspaceDeps",
+                        ".#ci.x86_64-linux.pikachatWorkspaceDeps",
+                        "ci.x86_64-linux.pikachatWorkspaceBuild",
+                        ".#ci.x86_64-linux.pikachatWorkspaceBuild",
+                    ),
+                    workspace_output_system: "x86_64-linux",
+                },
+                Self::PreMergePikachatTypescript => StagedLinuxRustTargetConfig {
+                    target_id: "pre-merge-pikachat-typescript",
+                    shadow_recipe: "",
+                    snapshot_profile: StagedLinuxSnapshotProfile::Rust,
+                    prepare_node_prefix: "pikachat-linux-rust",
+                    prepare_description: "pikachat staged Linux lane",
+                    payload_specs: payload_specs(
+                        "ci.x86_64-linux.pikachatWorkspaceDeps",
+                        ".#ci.x86_64-linux.pikachatWorkspaceDeps",
+                        "ci.x86_64-linux.pikachatWorkspaceBuild",
+                        ".#ci.x86_64-linux.pikachatWorkspaceBuild",
+                    ),
+                    workspace_output_system: "x86_64-linux",
+                },
+                Self::PreMergePikachatOpenclawE2e => StagedLinuxRustTargetConfig {
+                    target_id: "pre-merge-pikachat-openclaw-e2e",
+                    shadow_recipe: "",
+                    snapshot_profile: StagedLinuxSnapshotProfile::Rust,
+                    prepare_node_prefix: "pikachat-linux-rust",
+                    prepare_description: "pikachat staged Linux lane",
+                    payload_specs: payload_specs(
+                        "ci.x86_64-linux.pikachatWorkspaceDeps",
+                        ".#ci.x86_64-linux.pikachatWorkspaceDeps",
+                        "ci.x86_64-linux.pikachatWorkspaceBuild",
+                        ".#ci.x86_64-linux.pikachatWorkspaceBuild",
+                    ),
+                    workspace_output_system: "x86_64-linux",
+                },
+            }
+        }
+
+        fn payload_nix_installable(self, role: StagedLinuxRustPayloadRole) -> &'static str {
+            self.config()
+                .payload_specs
+                .into_iter()
+                .find(|spec| spec.role == role)
+                .expect("test target config missing payload role")
+                .nix_installable
+        }
+    }
+
+    impl StagedLinuxRustLane {
+        fn target(self) -> StagedLinuxRustTarget {
+            match self {
+                Self::PikaFollowupActionlint
+                | Self::PikaFollowupDocContracts
+                | Self::PikaFollowupRustDepsHygiene => StagedLinuxRustTarget::PreMergePikaFollowup,
+                Self::AgentContractsControlPlaneUnit => {
+                    StagedLinuxRustTarget::PreMergeAgentContracts
+                }
+                Self::NotificationsServerPackageTests => {
+                    StagedLinuxRustTarget::PreMergeNotifications
+                }
+                Self::FixturePikahutClippy | Self::FixtureRelaySmoke => {
+                    StagedLinuxRustTarget::PreMergeFixtureRust
+                }
+                Self::RmpInitSmokeCi => StagedLinuxRustTarget::PreMergeRmp,
+                Self::PikachatCliSmokeLocal => StagedLinuxRustTarget::PreMergePikachatRust,
+                Self::PikachatTypescript => StagedLinuxRustTarget::PreMergePikachatTypescript,
+                Self::OpenclawGatewayE2e => StagedLinuxRustTarget::PreMergePikachatOpenclawE2e,
+            }
+        }
+
+        fn command_config(self) -> StagedLinuxCommandConfig {
+            let target = self.target().config();
+            StagedLinuxCommandConfig {
+                snapshot_profile: target.snapshot_profile,
+                prepare_node_prefix: target.prepare_node_prefix,
+                prepare_description: target.prepare_description,
+                payload_specs: target.payload_specs,
+                execute_wrapper_command: match self {
+                    Self::PikaFollowupActionlint => {
+                        "/staged/linux-rust/workspace-build/bin/run-pika-actionlint"
+                    }
+                    Self::PikaFollowupDocContracts => {
+                        "/staged/linux-rust/workspace-build/bin/run-pika-doc-contracts"
+                    }
+                    Self::PikaFollowupRustDepsHygiene => {
+                        "/staged/linux-rust/workspace-build/bin/run-pika-rust-deps-hygiene"
+                    }
+                    Self::AgentContractsControlPlaneUnit => {
+                        "/staged/linux-rust/workspace-build/bin/run-pika-cloud-unit-tests"
+                    }
+                    Self::NotificationsServerPackageTests => {
+                        "/staged/linux-rust/workspace-build/bin/run-pika-server-package-tests"
+                    }
+                    Self::FixturePikahutClippy => {
+                        "/staged/linux-rust/workspace-build/bin/run-pikahut-clippy"
+                    }
+                    Self::FixtureRelaySmoke => {
+                        "/staged/linux-rust/workspace-build/bin/run-fixture-relay-smoke"
+                    }
+                    Self::RmpInitSmokeCi => {
+                        "/staged/linux-rust/workspace-build/bin/run-rmp-init-smoke-ci"
+                    }
+                    Self::PikachatCliSmokeLocal => {
+                        "/staged/linux-rust/workspace-build/bin/run-pikachat-cli-smoke-local"
+                    }
+                    Self::PikachatTypescript => {
+                        "/staged/linux-rust/workspace-build/bin/run-pikachat-typescript"
+                    }
+                    Self::OpenclawGatewayE2e => {
+                        "/staged/linux-rust/workspace-build/bin/run-openclaw-gateway-e2e"
+                    }
+                },
+                workspace_output_system: target.workspace_output_system,
+            }
+        }
+
+        fn workspace_deps_output_name(self) -> &'static str {
+            self.target()
+                .config()
+                .payload_specs
+                .into_iter()
+                .find(|spec| spec.role == StagedLinuxRustPayloadRole::WorkspaceDeps)
+                .expect("test lane config missing workspace deps")
+                .output_name
+        }
+
+        fn workspace_build_output_name(self) -> &'static str {
+            self.target()
+                .config()
+                .payload_specs
+                .into_iter()
+                .find(|spec| spec.role == StagedLinuxRustPayloadRole::WorkspaceBuild)
+                .expect("test lane config missing workspace build")
+                .output_name
+        }
+
+        fn execute_wrapper_command(self) -> &'static str {
+            self.command_config().execute_wrapper_command
+        }
+
+        fn payload_roles(self) -> [StagedLinuxRustPayloadRole; 2] {
+            self.command_config().payload_roles()
+        }
+
+        fn payload_output_name(self, role: StagedLinuxRustPayloadRole) -> &'static str {
+            self.command_config().payload_output_name(role)
+        }
+    }
 
     fn workspace_root() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .canonicalize()
             .unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+    }
+
+    fn remote_incus_job_base() -> JobSpec {
+        JobSpec {
+            id: "",
+            description: "",
+            timeout_secs: 0,
+            writable_workspace: false,
+            execution: JobExecutionConfig::REMOTE_SSH_INCUS,
+            guest_command: GuestCommand::ShellCommand { command: "" },
+            staged_linux_command: None,
+            host_setup_command: None,
+            mount_host_rust_toolchain: false,
+        }
+    }
+
+    fn host_local_job_base() -> JobSpec {
+        JobSpec {
+            id: "",
+            description: "",
+            timeout_secs: 0,
+            writable_workspace: false,
+            execution: JobExecutionConfig::HOST_LOCAL,
+            guest_command: GuestCommand::HostShellCommand { command: "" },
+            staged_linux_command: None,
+            host_setup_command: None,
+            mount_host_rust_toolchain: false,
+        }
     }
 
     #[test]
@@ -711,13 +770,16 @@ mod tests {
             guest_command: GuestCommand::PackageUnitTests {
                 package: "pika-cloud",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit),
+            staged_linux_command: Some(
+                StagedLinuxRustLane::AgentContractsControlPlaneUnit.command_config(),
+            ),
+            ..remote_incus_job_base()
         };
 
         with_remote_linux_vm_envs(None, None, || {
             assert_eq!(
-                spec.staged_linux_rust_lane(),
-                Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit)
+                spec.staged_linux_command(),
+                Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit.command_config())
             );
             assert_eq!(spec.runner_kind(), super::RunnerKind::RemoteLinuxVm);
             assert_eq!(
@@ -804,7 +866,10 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "actionlint",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupActionlint),
+            staged_linux_command: Some(
+                StagedLinuxRustLane::PikaFollowupActionlint.command_config(),
+            ),
+            ..remote_incus_job_base()
         };
 
         with_prepared_output_ssh_host_env(Some("pika-build"), || {
@@ -825,7 +890,8 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "/staged/linux-rust/workspace-build/bin/run-openclaw-gateway-e2e",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::OpenclawGatewayE2e),
+            staged_linux_command: Some(StagedLinuxRustLane::OpenclawGatewayE2e.command_config()),
+            ..remote_incus_job_base()
         };
 
         with_prepared_output_ssh_host_env(Some("pika-build"), || {
@@ -846,7 +912,10 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "actionlint",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupActionlint),
+            staged_linux_command: Some(
+                StagedLinuxRustLane::PikaFollowupActionlint.command_config(),
+            ),
+            ..remote_incus_job_base()
         };
 
         with_remote_linux_vm_envs(None, Some("example-linux-builder"), || {
@@ -867,7 +936,10 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "actionlint",
             },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupActionlint),
+            staged_linux_command: Some(
+                StagedLinuxRustLane::PikaFollowupActionlint.command_config(),
+            ),
+            ..remote_incus_job_base()
         };
 
         with_remote_linux_vm_backend_env(Some("incus"), || {
@@ -879,30 +951,25 @@ mod tests {
     }
 
     #[test]
-    fn unstaged_non_host_jobs_panic_after_vfkit_removal() {
+    fn unstaged_non_host_jobs_can_be_described_explicitly() {
         let spec = JobSpec {
             id: "agent-control-plane-unit",
-            description: "Run all pika-cloud unit tests without a supported runner kind",
+            description: "Run all pika-cloud unit tests in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::PackageUnitTests {
                 package: "pika-cloud",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_command: None,
+            ..remote_incus_job_base()
         };
 
-        assert_eq!(spec.staged_linux_rust_lane(), None);
-        let panic = std::panic::catch_unwind(|| spec.runner_kind()).expect_err("runner_kind panic");
-        let message = panic
-            .downcast_ref::<String>()
-            .cloned()
-            .or_else(|| {
-                panic
-                    .downcast_ref::<&'static str>()
-                    .map(|msg| (*msg).to_string())
-            })
-            .expect("panic message");
-        assert!(message.contains("removed vfkit runner"));
+        assert_eq!(spec.staged_linux_command(), None);
+        assert_eq!(spec.runner_kind(), super::RunnerKind::RemoteLinuxVm);
+        assert_eq!(
+            spec.remote_linux_vm_backend(),
+            Some(RemoteLinuxVmBackend::Incus)
+        );
     }
 
     #[test]
@@ -915,10 +982,11 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "cargo clippy -p pikachat -- -D warnings",
             },
-            staged_linux_rust_lane: None,
+            staged_linux_command: None,
+            ..host_local_job_base()
         };
 
-        assert_eq!(spec.staged_linux_rust_lane(), None);
+        assert_eq!(spec.staged_linux_command(), None);
         assert_eq!(spec.runner_kind(), super::RunnerKind::HostLocal);
         assert_eq!(spec.remote_linux_vm_backend(), None);
     }
@@ -1563,6 +1631,10 @@ pub enum PlanNodeRecord {
         description: String,
         executor: PlanExecutorKind,
         #[serde(default)]
+        placement: Option<JobPlacementKind>,
+        #[serde(default)]
+        runtime: Option<JobRuntimeKind>,
+        #[serde(default)]
         depends_on: Vec<String>,
         prepare: PrepareNode,
     },
@@ -1570,6 +1642,10 @@ pub enum PlanNodeRecord {
         id: String,
         description: String,
         executor: PlanExecutorKind,
+        #[serde(default)]
+        placement: Option<JobPlacementKind>,
+        #[serde(default)]
+        runtime: Option<JobRuntimeKind>,
         #[serde(default)]
         depends_on: Vec<String>,
         execute: ExecuteNode,
@@ -1739,6 +1815,10 @@ pub struct JobRecord {
     pub description: String,
     pub status: RunStatus,
     pub executor: String,
+    #[serde(default)]
+    pub placement: Option<JobPlacementKind>,
+    #[serde(default)]
+    pub runtime: Option<JobRuntimeKind>,
     #[serde(default)]
     pub plan_node_id: Option<String>,
     pub timeout_secs: u64,

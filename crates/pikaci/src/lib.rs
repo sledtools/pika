@@ -5,16 +5,17 @@ mod snapshot;
 
 pub use executor::{StagedLinuxRemoteDefaults, staged_linux_remote_defaults};
 pub use model::{
-    ExecuteNode, PlanExecutorKind, PlanNodeRecord, PlanScope, PrepareNode,
-    PreparedOutputConsumerKind, PreparedOutputFulfillmentLaunchRequest,
-    PreparedOutputFulfillmentResult, PreparedOutputFulfillmentStatus,
-    PreparedOutputFulfillmentTransportPathContract, PreparedOutputFulfillmentTransportRequest,
-    PreparedOutputInvocationMode, PreparedOutputLauncherTransportMode,
-    PreparedOutputPayloadManifestRecord, PreparedOutputPayloadPathRecord,
-    PreparedOutputRemoteExposureRequest, PreparedOutputsRecord, RealizedPreparedOutputRecord,
-    RemoteLinuxVmBackend, RemoteLinuxVmExecutionRecord, RemoteLinuxVmImageRecord,
-    RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord, RunBundle, RunLifecycleEvent, RunLogsMetadata,
-    RunPlanRecord, StagedLinuxRustLane, StagedLinuxRustTarget, StagedLinuxRustTargetConfig,
+    ExecuteNode, JobExecutionConfig, JobPlacementKind, JobRuntimeKind, PlanExecutorKind,
+    PlanNodeRecord, PlanScope, PrepareNode, PreparedOutputConsumerKind,
+    PreparedOutputFulfillmentLaunchRequest, PreparedOutputFulfillmentResult,
+    PreparedOutputFulfillmentStatus, PreparedOutputFulfillmentTransportPathContract,
+    PreparedOutputFulfillmentTransportRequest, PreparedOutputInvocationMode,
+    PreparedOutputLauncherTransportMode, PreparedOutputPayloadManifestRecord,
+    PreparedOutputPayloadPathRecord, PreparedOutputRemoteExposureRequest, PreparedOutputsRecord,
+    RealizedPreparedOutputRecord, RemoteLinuxVmBackend, RemoteLinuxVmExecutionRecord,
+    RemoteLinuxVmImageRecord, RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord, RunBundle,
+    RunLifecycleEvent, RunLogsMetadata, RunPlanRecord, StagedLinuxCommandConfig,
+    StagedLinuxRustPayloadRole, StagedLinuxRustTargetPayloadSpec, StagedLinuxSnapshotProfile,
 };
 pub use model::{
     GuestCommand, JobLogMetadata, JobOutcome, JobRecord, JobSpec, RunRecord, RunStatus, RunnerKind,

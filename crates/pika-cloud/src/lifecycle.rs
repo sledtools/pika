@@ -129,6 +129,14 @@ pub fn decode_runtime_terminal_result(bytes: &[u8]) -> serde_json::Result<Runtim
     serde_json::from_slice(bytes)
 }
 
+pub fn encode_runtime_event_line(event: &LifecycleEvent) -> serde_json::Result<String> {
+    serde_json::to_string(event)
+}
+
+pub fn decode_runtime_event_line(line: &str) -> serde_json::Result<LifecycleEvent> {
+    serde_json::from_str(line)
+}
+
 pub fn encode_runtime_status_pretty(status: &RuntimeStatusSnapshot) -> serde_json::Result<Vec<u8>> {
     serde_json::to_vec_pretty(status)
 }
@@ -160,6 +168,41 @@ mod tests {
         let encoded = serde_json::to_value(&event).expect("encode");
         let decoded: LifecycleEvent = serde_json::from_value(encoded).expect("decode");
         assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn runtime_event_line_helpers_round_trip() {
+        let event = LifecycleEvent {
+            schema_version: LIFECYCLE_SCHEMA_VERSION,
+            seq: 7,
+            timestamp: "2026-03-25T20:00:00Z".to_string(),
+            kind: LifecycleEventKind::Ready,
+            message: "guest declared readiness".to_string(),
+            boot_id: Some("boot-123".to_string()),
+            details: Some(serde_json::json!({ "service": "openclaw" })),
+        };
+
+        let encoded = encode_runtime_event_line(&event).expect("encode");
+        let decoded = decode_runtime_event_line(&encoded).expect("decode");
+
+        assert_eq!(decoded, event);
+        assert!(!encoded.ends_with('\n'));
+    }
+
+    #[test]
+    fn runtime_event_line_rejects_unknown_kind() {
+        let err = decode_runtime_event_line(
+            r#"{
+                "schema_version": 1,
+                "seq": 7,
+                "timestamp": "2026-03-25T20:00:00Z",
+                "kind": "passed",
+                "message": "guest declared readiness"
+            }"#,
+        )
+        .expect_err("unknown kind should fail");
+
+        assert!(err.to_string().contains("unknown variant"));
     }
 
     #[test]

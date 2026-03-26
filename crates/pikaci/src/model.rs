@@ -41,7 +41,6 @@ pub struct JobSpec {
 #[serde(rename_all = "snake_case")]
 pub enum RunnerKind {
     HostLocal,
-    VfkitLocal,
     #[serde(alias = "microvm_remote")]
     RemoteLinuxVm,
     TartLocal,
@@ -51,7 +50,6 @@ impl RunnerKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::HostLocal => "host_local",
-            Self::VfkitLocal => "vfkit_local",
             Self::RemoteLinuxVm => "remote_linux_vm",
             Self::TartLocal => "tart_local",
         }
@@ -62,7 +60,6 @@ impl RunnerKind {
 #[serde(rename_all = "snake_case")]
 pub enum PlanExecutorKind {
     HostLocal,
-    VfkitLocal,
     #[serde(alias = "microvm_remote")]
     RemoteLinuxVm,
     TartLocal,
@@ -72,7 +69,6 @@ impl PlanExecutorKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::HostLocal => "host_local",
-            Self::VfkitLocal => "vfkit_local",
             Self::RemoteLinuxVm => "remote_linux_vm",
             Self::TartLocal => "tart_local",
         }
@@ -83,7 +79,6 @@ impl From<RunnerKind> for PlanExecutorKind {
     fn from(value: RunnerKind) -> Self {
         match value {
             RunnerKind::HostLocal => Self::HostLocal,
-            RunnerKind::VfkitLocal => Self::VfkitLocal,
             RunnerKind::RemoteLinuxVm => Self::RemoteLinuxVm,
             RunnerKind::TartLocal => Self::TartLocal,
         }
@@ -109,7 +104,10 @@ impl JobSpec {
         } else if self.staged_linux_rust_lane().is_some() {
             RunnerKind::RemoteLinuxVm
         } else {
-            RunnerKind::VfkitLocal
+            panic!(
+                "job `{}` no longer maps to the removed vfkit runner; assign staged_linux_rust_lane, use HostShellCommand, or use a tart-* target",
+                self.id
+            )
         }
     }
 
@@ -574,7 +572,7 @@ mod tests {
     fn agent_contract_jobs_map_to_staged_linux_rust_lanes() {
         let spec = JobSpec {
             id: "agent-control-plane-unit",
-            description: "Run all pika-agent-control-plane unit tests in a vfkit guest",
+            description: "Run all pika-agent-control-plane unit tests in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::PackageUnitTests {
@@ -791,10 +789,10 @@ mod tests {
     }
 
     #[test]
-    fn standalone_agent_contract_jobs_can_stay_on_vfkit() {
+    fn unstaged_non_host_jobs_panic_after_vfkit_removal() {
         let spec = JobSpec {
             id: "agent-control-plane-unit",
-            description: "Run all pika-agent-control-plane unit tests in a vfkit guest",
+            description: "Run all pika-agent-control-plane unit tests without a supported runner kind",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::PackageUnitTests {
@@ -804,8 +802,17 @@ mod tests {
         };
 
         assert_eq!(spec.staged_linux_rust_lane(), None);
-        assert_eq!(spec.runner_kind(), super::RunnerKind::VfkitLocal);
-        assert_eq!(spec.remote_linux_vm_backend(), None);
+        let panic = std::panic::catch_unwind(|| spec.runner_kind()).expect_err("runner_kind panic");
+        let message = panic
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| {
+                panic
+                    .downcast_ref::<&'static str>()
+                    .map(|msg| (*msg).to_string())
+            })
+            .expect("panic message");
+        assert!(message.contains("removed vfkit runner"));
     }
 
     #[test]

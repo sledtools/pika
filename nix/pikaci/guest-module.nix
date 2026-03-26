@@ -9,8 +9,7 @@
   cargoTargetDir,
   stagedLinuxRustWorkspaceDepsDir ? null,
   stagedLinuxRustWorkspaceBuildDir ? null,
-  hypervisor ? "vfkit",
-  socketPath ? null,
+  hypervisor ? "cloud-hypervisor",
   rustToolchain ? null,
   moqRelay ? null,
   androidSdk ? null,
@@ -232,12 +231,6 @@ EOF
     vcpu = 2;
     mem = 4096;
     vmHostPackages = hostPkgs;
-  } // lib.optionalAttrs (hypervisor == "vfkit") {
-    virtiofsd.package = hostPkgs.writeShellScriptBin "virtiofsd-unused" ''
-      echo "vfkit uses built-in virtiofs on macOS" >&2
-      exit 1
-    '';
-    socket = socketPath;
   } // {
     interfaces = lib.optionals (hypervisor != "cloud-hypervisor") [
       {

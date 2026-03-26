@@ -30,7 +30,6 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Command {
     Run {
-        #[arg(default_value = "beachhead")]
         job: String,
         #[arg(long, value_enum, default_value = "human")]
         output: RunOutputArg,
@@ -441,22 +440,6 @@ fn single_job_target_spec(
 
 fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
     match name {
-        "beachhead" => Ok(TargetSpec {
-            id: "beachhead",
-            description: "Run one tiny exact unit test in a vfkit guest",
-            filters: &[],
-            jobs: vec![JobSpec {
-                id: "beachhead",
-                description: "Run one tiny exact unit test in a vfkit guest",
-                timeout_secs: 1800,
-                writable_workspace: false,
-                guest_command: GuestCommand::ExactCargoTest {
-                    package: "pika-agent-control-plane",
-                    test_name: "tests::command_envelope_round_trips",
-                },
-                staged_linux_rust_lane: None,
-            }],
-        }),
         "tart-beachhead" => Ok(TargetSpec {
             id: "tart-beachhead",
             description: "Run one tiny iOS unit test in a Tart macOS guest",
@@ -466,83 +449,30 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "Run one tiny iOS unit test in a Tart macOS guest",
             )],
         }),
-        "agent-control-plane-unit" => Ok(TargetSpec {
-            id: "agent-control-plane-unit",
-            description: "Run all pika-agent-control-plane unit tests in a remote Linux VM",
-            filters: &[],
-            jobs: vec![JobSpec {
-                id: "agent-control-plane-unit",
-                description: "Run all pika-agent-control-plane unit tests in a vfkit guest",
-                timeout_secs: 1800,
-                writable_workspace: false,
-                guest_command: GuestCommand::PackageUnitTests {
-                    package: "pika-agent-control-plane",
-                },
-                staged_linux_rust_lane: None,
-            }],
-        }),
-        "agent-microvm-tests" => Ok(TargetSpec {
-            id: "agent-microvm-tests",
-            description: "Run pika-agent-microvm tests in a remote Linux VM",
-            filters: &[],
-            jobs: vec![JobSpec {
-                id: "agent-microvm-tests",
-                description: "Run pika-agent-microvm tests in a vfkit guest",
-                timeout_secs: 1800,
-                writable_workspace: false,
-                guest_command: GuestCommand::PackageTests {
-                    package: "pika-agent-microvm",
-                },
-                staged_linux_rust_lane: None,
-            }],
-        }),
-        "agent-http-ensure-local" => Ok(TargetSpec {
-            id: "agent-http-ensure-local",
-            description: "Run the pikahut agent_http_ensure_local deterministic test in a vfkit guest",
-            filters: &[],
-            jobs: vec![JobSpec {
-                id: "agent-http-ensure-local",
-                description: "Run the pikahut agent_http_ensure_local deterministic test in a vfkit guest",
-                timeout_secs: 1800,
-                writable_workspace: false,
-                guest_command: GuestCommand::ShellCommand {
-                    command: "cargo test -p pikahut --test integration_deterministic agent_http_ensure_local -- --ignored --nocapture",
-                },
-                staged_linux_rust_lane: None,
-            }],
-        }),
-        "server-agent-api-tests" => Ok(TargetSpec {
-            id: "server-agent-api-tests",
-            description: "Run pika-server agent_api tests in a remote Linux VM",
-            filters: &[],
-            jobs: vec![JobSpec {
-                id: "server-agent-api-tests",
-                description: "Run pika-server agent_api tests in a vfkit guest",
-                timeout_secs: 1800,
-                writable_workspace: false,
-                guest_command: GuestCommand::FilteredCargoTests {
-                    package: "pika-server",
-                    filter: "agent_api::tests",
-                },
-                staged_linux_rust_lane: None,
-            }],
-        }),
-        "core-agent-nip98-test" => Ok(TargetSpec {
-            id: "core-agent-nip98-test",
-            description: "Run pika_core NIP-98 signing contract test in a remote Linux VM",
-            filters: &[],
-            jobs: vec![JobSpec {
-                id: "core-agent-nip98-test",
-                description: "Run pika_core NIP-98 signing contract test in a vfkit guest",
-                timeout_secs: 1800,
-                writable_workspace: false,
-                guest_command: GuestCommand::ExactCargoTest {
-                    package: "pika_core",
-                    test_name: "core::agent::tests::run_agent_flow_signs_requests_with_nip98_authorization",
-                },
-                staged_linux_rust_lane: None,
-            }],
-        }),
+        "agent-control-plane-unit" => single_job_target_spec(
+            "agent-control-plane-unit",
+            "Run all pika-agent-control-plane unit tests in a remote Linux VM",
+            &[],
+            agent_contract_jobs(),
+        ),
+        "agent-microvm-tests" => single_job_target_spec(
+            "agent-microvm-tests",
+            "Run pika-agent-microvm tests in a remote Linux VM",
+            &[],
+            agent_contract_jobs(),
+        ),
+        "server-agent-api-tests" => single_job_target_spec(
+            "server-agent-api-tests",
+            "Run pika-server agent_api tests in a remote Linux VM",
+            &[],
+            agent_contract_jobs(),
+        ),
+        "core-agent-nip98-test" => single_job_target_spec(
+            "core-agent-nip98-test",
+            "Run pika_core NIP-98 signing contract test in a remote Linux VM",
+            &[],
+            agent_contract_jobs(),
+        ),
         "agent-contracts-smoke" => Ok(TargetSpec {
             id: "agent-contracts-smoke",
             description: "Run the VM-backed agent contracts smoke lane",
@@ -793,51 +723,12 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
             ],
             jobs: pikachat_apple_followup_jobs(),
         }),
-        "pikachat-ui-e2e-local-desktop" => Ok(TargetSpec {
-            id: "pikachat-ui-e2e-local-desktop",
-            description: "Run the pikahut ui_e2e_local_desktop test in a vfkit guest",
-            filters: &[],
-            jobs: vec![JobSpec {
-                id: "pikachat-ui-e2e-local-desktop",
-                description: "Run the pikahut ui_e2e_local_desktop test in a vfkit guest",
-                timeout_secs: 1800,
-                writable_workspace: false,
-                guest_command: GuestCommand::ShellCommand {
-                    command: "cargo test -p pikahut --test integration_deterministic ui_e2e_local_desktop -- --ignored --nocapture",
-                },
-                staged_linux_rust_lane: None,
-            }],
-        }),
-        "pika-desktop-e2e-compile" => Ok(TargetSpec {
-            id: "pika-desktop-e2e-compile",
-            description: "Compile the selector-owned desktop local UI E2E path in a vfkit guest without running it",
-            filters: &[],
-            jobs: vec![JobSpec {
-                id: "pika-desktop-e2e-compile",
-                description: "Compile the selector-owned desktop local UI E2E path in a vfkit guest without running it",
-                timeout_secs: 1800,
-                writable_workspace: false,
-                guest_command: GuestCommand::ShellCommand {
-                    command: "cargo test -p pikahut --test integration_deterministic ui_e2e_local_desktop --no-run",
-                },
-                staged_linux_rust_lane: None,
-            }],
-        }),
-        "pika-desktop-package-tests" => Ok(TargetSpec {
-            id: "pika-desktop-package-tests",
-            description: "Run pika-desktop package tests in a vfkit guest",
-            filters: &[],
-            jobs: vec![JobSpec {
-                id: "pika-desktop-package-tests",
-                description: "Run pika-desktop package tests in a vfkit guest",
-                timeout_secs: 1800,
-                writable_workspace: false,
-                guest_command: GuestCommand::PackageTests {
-                    package: "pika-desktop",
-                },
-                staged_linux_rust_lane: None,
-            }],
-        }),
+        "pika-desktop-package-tests" => single_job_target_spec(
+            "pika-desktop-package-tests",
+            "Run pika-desktop package tests in a remote Linux VM",
+            &[],
+            pikachat_rust_jobs(),
+        ),
         "pre-merge-fixture-rust" => Ok(staged_linux_target_spec(
             StagedLinuxRustTarget::PreMergeFixtureRust,
             &[
@@ -1212,7 +1103,7 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
     vec![
         JobSpec {
             id: "agent-control-plane-unit",
-            description: "Run all pika-agent-control-plane unit tests in a vfkit guest",
+            description: "Run all pika-agent-control-plane unit tests in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::PackageUnitTests {
@@ -1222,7 +1113,7 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
         },
         JobSpec {
             id: "agent-microvm-tests",
-            description: "Run pika-agent-microvm tests in a vfkit guest",
+            description: "Run pika-agent-microvm tests in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::PackageTests {
@@ -1232,7 +1123,7 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
         },
         JobSpec {
             id: "server-agent-api-tests",
-            description: "Run pika-server agent_api tests in a vfkit guest",
+            description: "Run pika-server agent_api tests in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::FilteredCargoTests {
@@ -1243,7 +1134,7 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
         },
         JobSpec {
             id: "core-agent-nip98-test",
-            description: "Run pika_core NIP-98 signing contract test in a vfkit guest",
+            description: "Run pika_core NIP-98 signing contract test in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::ExactCargoTest {
@@ -2041,13 +1932,16 @@ mod tests {
     }
 
     #[test]
-    fn standalone_agent_contract_target_stays_vfkit_while_pre_merge_lane_is_staged() {
+    fn standalone_agent_contract_target_uses_staged_remote_linux_lane() {
         let standalone = target_spec("agent-control-plane-unit").expect("standalone target");
         let pre_merge = target_spec("pre-merge-agent-contracts").expect("pre-merge target");
 
         assert_eq!(standalone.jobs.len(), 1);
-        assert_eq!(standalone.jobs[0].runner_kind(), RunnerKind::VfkitLocal);
-        assert_eq!(standalone.jobs[0].staged_linux_rust_lane(), None);
+        assert_eq!(standalone.jobs[0].runner_kind(), RunnerKind::RemoteLinuxVm);
+        assert_eq!(
+            standalone.jobs[0].staged_linux_rust_lane(),
+            Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit)
+        );
 
         assert_eq!(pre_merge.jobs.len(), 4);
         assert!(
@@ -2306,10 +2200,10 @@ mod tests {
     fn rerun_falls_back_to_single_job_id() {
         let mut run = sample_run_record();
         run.target_id = None;
-        run.jobs = vec![sample_job_record("beachhead")];
+        run.jobs = vec![sample_job_record("agent-control-plane-unit")];
 
         let target = target_spec_for_rerun(&run).expect("target");
-        assert_eq!(target.id, "beachhead");
+        assert_eq!(target.id, "agent-control-plane-unit");
     }
 
     #[test]
@@ -2609,7 +2503,7 @@ mod tests {
             id: id.to_string(),
             description: "job".to_string(),
             status: RunStatus::Passed,
-            executor: "vfkit_local".to_string(),
+            executor: "remote_linux_vm".to_string(),
             plan_node_id: None,
             timeout_secs: 1,
             host_log_path: "/tmp/host.log".to_string(),

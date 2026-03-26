@@ -88,8 +88,6 @@ info:
     @echo "    just pikaci-remote-fulfill-pre-merge-pika-rust"
     @echo "  Realize both staged Linux Rust prepare outputs directly on pika-build:"
     @echo "    just pikaci-pre-merge-pika-rust-prepares-remote-build"
-    @echo "  Repair the legacy local aarch64-linux linux-builder staged-Rust cargo-path failure:"
-    @echo "    just linux-builder-repair"
     @echo
     @echo "RMP (new)"
     @echo "  Run iOS simulator:"
@@ -274,8 +272,6 @@ alias pikaci-remote-fulfill-pre-merge-notifications := infra::pikaci-remote-fulf
 alias pikaci-remote-fulfill-pre-merge-rmp := infra::pikaci-remote-fulfill-pre-merge-rmp
 alias pikaci-remote-fulfill-pre-merge-pikachat-rust := infra::pikaci-remote-fulfill-pre-merge-pikachat-rust
 alias pikaci-pre-merge-pika-rust-prepares-remote-build := infra::pikaci-pre-merge-pika-rust-prepares-remote-build
-alias linux-builder-repair := infra::linux-builder-repair
-alias linux-builder-recreate := infra::linux-builder-recreate
 alias news := infra::news
 alias release-bump := ship::release-bump
 alias release-commit := ship::release-commit

@@ -227,10 +227,6 @@ const REMOTE_LINUX_VM_INCUS_PROFILE_DEFAULT: &str = "pika-agent-dev";
 const REMOTE_LINUX_VM_INCUS_IMAGE_ALIAS_DEFAULT: &str = "pikaci/dev";
 const REMOTE_LINUX_VM_INCUS_READ_ONLY_DISK_IO_BUS: &str = "virtiofs";
 const REMOTE_LINUX_VM_INCUS_RUN_BINARY: &str = "/run/current-system/sw/bin/pikaci-incus-run";
-const REMOTE_LINUX_VM_INCUS_CARGO_HOME_DIR: &str = "/cargo-home";
-const REMOTE_LINUX_VM_INCUS_TARGET_DIR: &str = "/cargo-target";
-const REMOTE_LINUX_VM_INCUS_XDG_STATE_HOME_DIR: &str = "/run/pika-cloud/xdg-state";
-const REMOTE_LINUX_VM_INCUS_NON_ROOT_HOME_DIR: &str = "/home/pikaci";
 const REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH: &str = "/workspace/snapshot";
 #[cfg(test)]
 const REMOTE_LINUX_VM_INCUS_WORKSPACE_DEPS_MOUNT_PATH: &str = "/staged/linux-rust/workspace-deps";
@@ -2491,15 +2487,17 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use pika_cloud::{GUEST_REQUEST_PATH, INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION};
+    use pika_cloud::{
+        CLOUD_GUEST_LOG_PATH, EVENTS_PATH, GUEST_REQUEST_PATH,
+        INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION, RESULT_PATH, STATUS_PATH,
+    };
 
     use super::{
         HostContext, HostLocalCommandMode, HostLocalDevEnvState, HostLocalEnvironmentRefresh,
-        REMOTE_LINUX_VM_INCUS_CARGO_HOME_DIR, REMOTE_LINUX_VM_INCUS_NON_ROOT_HOME_DIR,
-        REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH, REMOTE_LINUX_VM_INCUS_TARGET_DIR,
+        REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH,
         REMOTE_LINUX_VM_INCUS_WORKSPACE_BUILD_MOUNT_PATH,
-        REMOTE_LINUX_VM_INCUS_WORKSPACE_DEPS_MOUNT_PATH, REMOTE_LINUX_VM_INCUS_XDG_STATE_HOME_DIR,
-        RemoteIncusContext, RemoteLinuxVmSharedContext, attach_remote_linux_vm_execution,
+        REMOTE_LINUX_VM_INCUS_WORKSPACE_DEPS_MOUNT_PATH, RemoteIncusContext,
+        RemoteLinuxVmSharedContext, attach_remote_linux_vm_execution,
         build_sync_directory_finalize_command, cached_host_local_dev_env_is_usable,
         host_local_command_mode, host_local_dev_env_script_path, host_local_dev_env_shell_program,
         incus, prepare_host_local_cached_dev_env_with, read_host_local_dev_env_state,
@@ -2593,17 +2591,6 @@ mod tests {
         assert_eq!(request.command, "bash --noprofile --norc -lc 'actionlint'");
         assert_eq!(request.timeout_secs, 120);
         assert!(!request.run_as_root);
-        assert_eq!(
-            request.workspace_dir,
-            REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH
-        );
-        assert_eq!(request.cargo_home_dir, REMOTE_LINUX_VM_INCUS_CARGO_HOME_DIR);
-        assert_eq!(request.target_dir, REMOTE_LINUX_VM_INCUS_TARGET_DIR);
-        assert_eq!(
-            request.xdg_state_home_dir,
-            REMOTE_LINUX_VM_INCUS_XDG_STATE_HOME_DIR
-        );
-        assert_eq!(request.home_dir, REMOTE_LINUX_VM_INCUS_NON_ROOT_HOME_DIR);
 
         let root_request = incus::build_guest_request(&JobSpec {
             id: "android-sdk-probe",
@@ -2616,7 +2603,14 @@ mod tests {
         assert_eq!(root_request.command, "bash --noprofile --norc -lc 'id -u'");
         assert_eq!(root_request.timeout_secs, 45);
         assert!(root_request.run_as_root);
-        assert_eq!(root_request.home_dir, "/root");
+    }
+
+    #[test]
+    fn remote_linux_incus_runtime_contract_paths_match_image_defaults() {
+        assert_eq!(CLOUD_GUEST_LOG_PATH, "/run/pika-cloud/logs/guest.log");
+        assert_eq!(STATUS_PATH, "/run/pika-cloud/status.json");
+        assert_eq!(EVENTS_PATH, "/run/pika-cloud/events.jsonl");
+        assert_eq!(RESULT_PATH, "/run/pika-cloud/result.json");
     }
 
     #[test]

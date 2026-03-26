@@ -43,6 +43,21 @@ let
   moqRelayPackages = lib.optionals (moqRelay != null) [ moqRelay ];
   rustPackages = if rustToolchain != null then [ rustToolchain ] else with pkgs; [ cargo rustc ];
   androidSdkRoot = if androidSdk != null then "${androidSdk}/share/android-sdk" else "";
+  localTerminalResultFragment = builtins.readFile ./local-terminal-result-fragment.sh.in;
+  renderLocalTerminalResultFragment =
+    resultPath: finishedAtCommand:
+    builtins.replaceStrings
+      [
+        "__PIKACI_RESULT_PATH__"
+        "__PIKACI_SCHEMA_VERSION__"
+        "__PIKACI_FINISHED_AT_COMMAND__"
+      ]
+      [
+        resultPath
+        "1"
+        finishedAtCommand
+      ]
+      localTerminalResultFragment;
 in
 {
   system.stateVersion = "24.11";
@@ -205,22 +220,7 @@ in
       code=$?
       set -e
 
-      status="completed"
-      message="test passed"
-      if [ "$code" -ne 0 ]; then
-        status="failed"
-        message="test command exited with $code"
-      fi
-
-      cat > /artifacts/result.json <<EOF
-      {
-        "schema_version": 1,
-        "status": "$status",
-        "exit_code": $code,
-        "finished_at": "$(date -Iseconds)",
-        "message": "$message"
-      }
-EOF
+      ${renderLocalTerminalResultFragment "/artifacts/result.json" "date -Iseconds"}
 
       sync || true
       systemctl poweroff --force --force || poweroff -f || true

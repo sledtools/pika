@@ -203,6 +203,8 @@ const TART_XCODE_TAG: &str = "pikaci-xcode";
 const TART_LIBRARY_DEVELOPER_TAG: &str = "pikaci-library-developer";
 const TART_RUST_TOOLCHAIN_NAME: &str = "rust-toolchain";
 const TART_NIX_STORE_TAG: &str = "pikaci-nix-store";
+const LOCAL_TERMINAL_RESULT_FRAGMENT_TEMPLATE: &str =
+    include_str!("../../../nix/pikaci/local-terminal-result-fragment.sh.in");
 const PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV: &str =
     "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_ENV: &str =
@@ -1624,6 +1626,10 @@ fi
     let path_setup = format!(
         "export PATH=\"$DEVELOPER_DIR/usr/bin:{cargo_bin_prefix}/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${{PATH:-}}\"\n"
     );
+    let terminal_result_fragment = render_local_terminal_result_fragment(
+        &format!("\"{artifacts_mount}/result.json\""),
+        r#"date -u +"%Y-%m-%dT%H:%M:%SZ""#,
+    );
     format!(
         r#"set -euo pipefail
 ARTIFACTS="{artifacts_mount}"
@@ -1640,23 +1646,19 @@ set +e
 {user_command}
 code=$?
 set -e
-status="completed"
-message="test passed"
-if [ "$code" -ne 0 ]; then
-  status="failed"
-  message="test command exited with $code"
-fi
-cat > "{artifacts_mount}/result.json" <<EOF
-{{
-  "schema_version": {LIFECYCLE_SCHEMA_VERSION},
-  "status": "$status",
-  "exit_code": $code,
-  "finished_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-  "message": "$message"
-}}
-EOF
+{terminal_result_fragment}
 "#,
     )
+}
+
+fn render_local_terminal_result_fragment(result_path: &str, finished_at_command: &str) -> String {
+    LOCAL_TERMINAL_RESULT_FRAGMENT_TEMPLATE
+        .replace("__PIKACI_RESULT_PATH__", result_path)
+        .replace(
+            "__PIKACI_SCHEMA_VERSION__",
+            &LIFECYCLE_SCHEMA_VERSION.to_string(),
+        )
+        .replace("__PIKACI_FINISHED_AT_COMMAND__", finished_at_command)
 }
 
 fn use_host_xcode_mounts() -> bool {
@@ -2484,6 +2486,10 @@ mod tests {
         include_str!("../../../nix/pikaci/guest-module.nix")
     }
 
+    fn local_terminal_result_fragment_source() -> &'static str {
+        include_str!("../../../nix/pikaci/local-terminal-result-fragment.sh.in")
+    }
+
     fn write_snapshot_metadata(snapshot_dir: &Path, content_hash: &str) {
         fs::create_dir_all(snapshot_dir).expect("create snapshot dir");
         fs::write(
@@ -2658,24 +2664,43 @@ mod tests {
     }
 
     #[test]
-    fn local_linux_guest_module_pins_shared_terminal_result_contract() {
-        let source = local_linux_guest_module_source();
+    fn local_terminal_result_fragment_pins_shared_terminal_result_contract() {
+        let source = local_terminal_result_fragment_source();
 
         assert_contains_all(
             source,
             &[
                 "status=\"completed\"",
                 "status=\"failed\"",
-                "cat > /artifacts/result.json <<EOF",
-                "\"schema_version\": 1",
+                "cat > __PIKACI_RESULT_PATH__ <<EOF",
+                "\"schema_version\": __PIKACI_SCHEMA_VERSION__",
                 "\"status\": \"$status\"",
                 "\"exit_code\": $code",
-                "\"finished_at\": \"$(date -Iseconds)\"",
+                "\"finished_at\": \"$(__PIKACI_FINISHED_AT_COMMAND__)\"",
                 "\"message\": \"$message\"",
             ],
         );
         assert!(!source.contains("status=\"passed\""));
         assert!(!source.contains("\"status\": \"passed\""));
+    }
+
+    #[test]
+    fn local_linux_guest_module_uses_shared_terminal_result_fragment() {
+        let source = local_linux_guest_module_source();
+
+        assert_contains_all(
+            source,
+            &[
+                "localTerminalResultFragment = builtins.readFile ./local-terminal-result-fragment.sh.in;",
+                "renderLocalTerminalResultFragment =",
+                "\"__PIKACI_RESULT_PATH__\"",
+                "\"__PIKACI_SCHEMA_VERSION__\"",
+                "\"__PIKACI_FINISHED_AT_COMMAND__\"",
+                "\"/artifacts/result.json\"",
+                "\"date -Iseconds\"",
+                "${renderLocalTerminalResultFragment \"/artifacts/result.json\" \"date -Iseconds\"}",
+            ],
+        );
     }
 
     #[test]

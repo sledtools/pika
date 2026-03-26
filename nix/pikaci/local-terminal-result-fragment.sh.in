@@ -1,0 +1,16 @@
+status="completed"
+message="test passed"
+if [ "$code" -ne 0 ]; then
+  status="failed"
+  message="test command exited with $code"
+fi
+
+cat > __PIKACI_RESULT_PATH__ <<EOF
+{
+  "schema_version": __PIKACI_SCHEMA_VERSION__,
+  "status": "$status",
+  "exit_code": $code,
+  "finished_at": "$(__PIKACI_FINISHED_AT_COMMAND__)",
+  "message": "$message"
+}
+EOF

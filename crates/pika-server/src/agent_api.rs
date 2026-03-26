@@ -23,7 +23,8 @@ use crate::agent_api_v1_contract::{
     V1_AGENTS_RECOVER_PATH,
 };
 use crate::managed_openclaw_guest::{
-    build_create_vm_request, ManagedVmCreateInput, DEFAULT_OPENCLAW_GATEWAY_PORT,
+    build_managed_vm_create_request, ManagedVmCreateInput as ManagedRuntimeCreateInput,
+    DEFAULT_OPENCLAW_GATEWAY_PORT,
 };
 use crate::models::agent_allowlist::AgentAllowlistEntry;
 use crate::models::agent_instance::{
@@ -34,10 +35,11 @@ use crate::nostr_auth::{
     event_from_authorization_header, expected_host_from_headers, verify_nip98_event,
 };
 use crate::{RequestContext, State};
-use pika_agent_control_plane::{
-    AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams, ManagedVmProvisionParams,
-    SpawnerOpenClawLaunchAuth, SpawnerVmBackupStatus, SpawnerVmResponse, VmBackupFreshness,
-    VmBackupUnitKind, VmRecoveryPointKind, GUEST_READY_MARKER_PATH,
+use pika_cloud::{
+    AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams, LifecycleState,
+    ManagedOpenClawLaunchAuth, ManagedRuntimeBackupStatus, ManagedRuntimeStatus,
+    ManagedVmProvisionParams as ManagedRuntimeProvisionParams, RuntimeStatusSnapshot,
+    VmBackupFreshness, VmBackupUnitKind, VmRecoveryPointKind, STATUS_PATH,
 };
 use pika_relay_profiles::default_message_relays;
 
@@ -206,7 +208,7 @@ pub(crate) struct ManagedEnvironmentHandle {
     pub owner_npub: String,
     pub agent_id: String,
     pub vm_id: String,
-    pub incus: ManagedVmProvisionParams,
+    pub incus: ManagedRuntimeProvisionParams,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -234,17 +236,17 @@ struct ResolvedIncusTlsConfig {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-enum ResolvedManagedVmProviderConfig {
+enum ResolvedManagedRuntimeProviderConfig {
     Incus(ResolvedIncusParams),
 }
 
 #[derive(Debug, Clone)]
-enum ManagedVmProvider {
-    Incus(IncusManagedVmProvider),
+enum ManagedRuntimeProvider {
+    Incus(IncusManagedRuntimeProvider),
 }
 
 #[derive(Debug, Clone)]
-struct IncusManagedVmProvider {
+struct IncusManagedRuntimeProvider {
     client: reqwest::Client,
     resolved: ResolvedIncusParams,
 }
@@ -325,14 +327,26 @@ struct IncusInstanceDetails {
 }
 
 #[derive(Debug, Deserialize)]
-struct IncusGuestReadyMarker {
-    ready: bool,
+struct ManagedGuestLifecycleDetails {
     #[serde(default)]
     agent_kind: Option<String>,
     #[serde(default)]
+    backend_mode: Option<String>,
+    #[serde(default)]
+    service_kind: Option<String>,
+    #[serde(default)]
     probe: Option<String>,
     #[serde(default)]
-    boot_id: Option<String>,
+    service_probe_satisfied: bool,
+    #[serde(default)]
+    failure_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+struct ManagedGuestLifecycleSignal {
+    startup_probe_satisfied: bool,
+    guest_ready: bool,
+    failed: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -353,11 +367,11 @@ struct IncusOpenClawAuthConfig {
     token: Option<String>,
 }
 
-fn materialized_managed_vm_params(
-    config: &ResolvedManagedVmProviderConfig,
-) -> ManagedVmProvisionParams {
+fn materialized_managed_runtime_params(
+    config: &ResolvedManagedRuntimeProviderConfig,
+) -> ManagedRuntimeProvisionParams {
     match config {
-        ResolvedManagedVmProviderConfig::Incus(resolved) => ManagedVmProvisionParams {
+        ResolvedManagedRuntimeProviderConfig::Incus(resolved) => ManagedRuntimeProvisionParams {
             incus: IncusProvisionParams {
                 endpoint: Some(resolved.endpoint.clone()),
                 project: Some(resolved.project.clone()),
@@ -372,22 +386,24 @@ fn materialized_managed_vm_params(
     }
 }
 
-fn serialize_managed_vm_incus_config(
-    config: &ResolvedManagedVmProviderConfig,
+fn serialize_managed_runtime_incus_config(
+    config: &ResolvedManagedRuntimeProviderConfig,
 ) -> anyhow::Result<String> {
-    serde_json::to_string(&materialized_managed_vm_params(config).incus)
-        .context("serialize managed VM incus config")
+    serde_json::to_string(&materialized_managed_runtime_params(config).incus)
+        .context("serialize managed runtime incus config")
 }
 
 fn row_requires_manual_cleanup(row: &AgentInstance) -> bool {
     row.incus_config.is_none()
 }
 
-fn managed_vm_params_from_row(row: &AgentInstance) -> anyhow::Result<ManagedVmProvisionParams> {
+fn managed_runtime_params_from_row(
+    row: &AgentInstance,
+) -> anyhow::Result<ManagedRuntimeProvisionParams> {
     match row.incus_config.as_deref() {
         Some(serialized) => serde_json::from_str::<IncusProvisionParams>(serialized)
-            .map(|incus| ManagedVmProvisionParams { incus })
-            .context("decode managed VM incus config from row"),
+            .map(|incus| ManagedRuntimeProvisionParams { incus })
+            .context("decode managed runtime incus config from row"),
         None => Err(anyhow!(
             "managed-agent row {} lacks incus_config; pre-cut legacy rows must be cleaned up manually before deploy",
             row.agent_id
@@ -478,11 +494,11 @@ fn merge_incus_provision_params(
     }
 }
 
-fn managed_vm_params_for_existing_row(
+fn managed_runtime_params_for_existing_row(
     row: &AgentInstance,
-    requested: Option<&ManagedVmProvisionParams>,
-) -> anyhow::Result<ManagedVmProvisionParams> {
-    let mut params = managed_vm_params_from_row(row)?;
+    requested: Option<&ManagedRuntimeProvisionParams>,
+) -> anyhow::Result<ManagedRuntimeProvisionParams> {
+    let mut params = managed_runtime_params_from_row(row)?;
     if row.incus_config.is_some() || requested.is_none() {
         return Ok(params);
     }
@@ -493,12 +509,12 @@ fn managed_vm_params_for_existing_row(
     Ok(params)
 }
 
-fn managed_vm_provider_for_row(
+fn managed_runtime_provider_for_row(
     row: &AgentInstance,
-    requested: Option<&ManagedVmProvisionParams>,
-) -> anyhow::Result<ManagedVmProvider> {
-    let params = managed_vm_params_for_existing_row(row, requested)?;
-    managed_vm_provider(Some(&params))
+    requested: Option<&ManagedRuntimeProvisionParams>,
+) -> anyhow::Result<ManagedRuntimeProvider> {
+    let params = managed_runtime_params_for_existing_row(row, requested)?;
+    managed_runtime_provider(Some(&params))
 }
 
 fn record_managed_environment_event(
@@ -677,7 +693,7 @@ fn required_non_empty_field(
         .with_context(|| format!("missing {field_name}; set request.{field_name} or {env_name}"))
 }
 
-impl ManagedVmProvider {
+impl ManagedRuntimeProvider {
     fn ensure_customer_openclaw_flow_supported(&self) -> anyhow::Result<()> {
         match self {
             Self::Incus(provider) => provider.ensure_customer_openclaw_flow_supported(),
@@ -696,9 +712,9 @@ impl ManagedVmProvider {
 
     async fn create_managed_vm(
         &self,
-        input: ManagedVmCreateInput<'_>,
+        input: ManagedRuntimeCreateInput<'_>,
         request_id: Option<&str>,
-    ) -> anyhow::Result<SpawnerVmResponse> {
+    ) -> anyhow::Result<ManagedRuntimeStatus> {
         match self {
             Self::Incus(provider) => provider.create_managed_vm(input, request_id).await,
         }
@@ -708,7 +724,7 @@ impl ManagedVmProvider {
         &self,
         vm_id: &str,
         request_id: Option<&str>,
-    ) -> anyhow::Result<SpawnerVmResponse> {
+    ) -> anyhow::Result<ManagedRuntimeStatus> {
         match self {
             Self::Incus(provider) => provider.get_vm_status(vm_id, request_id).await,
         }
@@ -718,7 +734,7 @@ impl ManagedVmProvider {
         &self,
         vm_id: &str,
         request_id: Option<&str>,
-    ) -> anyhow::Result<SpawnerVmBackupStatus> {
+    ) -> anyhow::Result<ManagedRuntimeBackupStatus> {
         match self {
             Self::Incus(provider) => provider.get_vm_backup_status(vm_id, request_id).await,
         }
@@ -728,7 +744,7 @@ impl ManagedVmProvider {
         &self,
         vm_id: &str,
         request_id: Option<&str>,
-    ) -> anyhow::Result<SpawnerVmResponse> {
+    ) -> anyhow::Result<ManagedRuntimeStatus> {
         match self {
             Self::Incus(provider) => provider.recover_vm(vm_id, request_id).await,
         }
@@ -738,7 +754,7 @@ impl ManagedVmProvider {
         &self,
         vm_id: &str,
         request_id: Option<&str>,
-    ) -> anyhow::Result<SpawnerVmResponse> {
+    ) -> anyhow::Result<ManagedRuntimeStatus> {
         match self {
             Self::Incus(provider) => provider.restore_vm(vm_id, request_id).await,
         }
@@ -754,14 +770,14 @@ impl ManagedVmProvider {
         &self,
         vm_id: &str,
         request_id: Option<&str>,
-    ) -> anyhow::Result<SpawnerOpenClawLaunchAuth> {
+    ) -> anyhow::Result<ManagedOpenClawLaunchAuth> {
         match self {
             Self::Incus(provider) => provider.get_openclaw_launch_auth(vm_id, request_id).await,
         }
     }
 }
 
-impl IncusManagedVmProvider {
+impl IncusManagedRuntimeProvider {
     fn new(resolved: ResolvedIncusParams) -> anyhow::Result<Self> {
         let client = build_incus_http_client(&resolved)?;
         Ok(Self { client, resolved })
@@ -823,7 +839,7 @@ impl IncusManagedVmProvider {
         &self,
         vm_id: &str,
         request_id: Option<&str>,
-    ) -> anyhow::Result<SpawnerOpenClawLaunchAuth> {
+    ) -> anyhow::Result<ManagedOpenClawLaunchAuth> {
         let config = self
             .load_openclaw_config(vm_id, request_id)
             .await
@@ -834,7 +850,7 @@ impl IncusManagedVmProvider {
             .and_then(|auth| auth.token)
             .map(|token| token.trim().to_string())
             .filter(|token| !token.is_empty());
-        Ok(SpawnerOpenClawLaunchAuth {
+        Ok(ManagedOpenClawLaunchAuth {
             vm_id: vm_id.to_string(),
             gateway_auth_token,
         })
@@ -859,7 +875,7 @@ impl IncusManagedVmProvider {
         vm_id: &str,
         request_id: Option<&str>,
     ) -> anyhow::Result<IncusOpenClawConfigFile> {
-        let path = format!("/{}", pika_agent_control_plane::GUEST_OPENCLAW_CONFIG_PATH);
+        let path = format!("/{}", pika_cloud::GUEST_OPENCLAW_CONFIG_PATH);
         let bytes = self
             .get_instance_file(vm_id, &path, request_id, "load incus OpenClaw config")
             .await?
@@ -1243,9 +1259,9 @@ impl IncusManagedVmProvider {
 
     async fn create_managed_vm(
         &self,
-        input: ManagedVmCreateInput<'_>,
+        input: ManagedRuntimeCreateInput<'_>,
         request_id: Option<&str>,
-    ) -> anyhow::Result<SpawnerVmResponse> {
+    ) -> anyhow::Result<ManagedRuntimeStatus> {
         let vm_id = self.instance_name_for_input(&input);
         let volume_name = self.persistent_volume_name(&vm_id);
 
@@ -1291,7 +1307,7 @@ impl IncusManagedVmProvider {
                     error = %err,
                     "created incus VM but failed to fetch immediate status; returning conservative starting state"
                 );
-                Ok(SpawnerVmResponse {
+                Ok(ManagedRuntimeStatus {
                     id: vm_id,
                     status: "starting".to_string(),
                     startup_probe_satisfied: false,
@@ -1305,7 +1321,7 @@ impl IncusManagedVmProvider {
         &self,
         vm_id: &str,
         request_id: Option<&str>,
-    ) -> anyhow::Result<SpawnerVmResponse> {
+    ) -> anyhow::Result<ManagedRuntimeStatus> {
         let state: IncusInstanceState = self
             .get_json(
                 &["1.0", "instances", vm_id, "state"],
@@ -1323,15 +1339,26 @@ impl IncusManagedVmProvider {
             "Stopping" | "Stopped" | "Frozen" | "Freezing" | "Thawed" => "starting",
             _ => "starting",
         };
-        let guest_ready = if status == "running" {
-            self.guest_ready_signal_satisfied(vm_id, request_id).await
+        let guest_signal = if status == "running" {
+            self.guest_lifecycle_signal(vm_id, request_id).await
         } else {
-            false
+            None
         };
-        Ok(SpawnerVmResponse {
+        let startup_probe_satisfied = guest_signal
+            .as_ref()
+            .is_some_and(|signal| signal.startup_probe_satisfied);
+        let guest_ready = guest_signal
+            .as_ref()
+            .is_some_and(|signal| signal.guest_ready);
+        let status = if guest_signal.as_ref().is_some_and(|signal| signal.failed) {
+            "failed"
+        } else {
+            status
+        };
+        Ok(ManagedRuntimeStatus {
             id: vm_id.to_string(),
             status: status.to_string(),
-            startup_probe_satisfied: guest_ready,
+            startup_probe_satisfied,
             guest_ready,
         })
     }
@@ -1340,7 +1367,7 @@ impl IncusManagedVmProvider {
         &self,
         vm_id: &str,
         request_id: Option<&str>,
-    ) -> anyhow::Result<SpawnerVmBackupStatus> {
+    ) -> anyhow::Result<ManagedRuntimeBackupStatus> {
         let volume_name = self.persistent_volume_name(vm_id);
         let backup_target = format!("{}/{}", self.resolved.storage_pool, volume_name);
         let snapshots = self
@@ -1348,7 +1375,7 @@ impl IncusManagedVmProvider {
             .await
             .with_context(|| format!("list incus state-volume snapshots for VM {vm_id}"))?;
         let Some(latest_snapshot) = latest_incus_snapshot(&snapshots) else {
-            return Ok(SpawnerVmBackupStatus {
+            return Ok(ManagedRuntimeBackupStatus {
                 vm_id: vm_id.to_string(),
                 backup_unit_kind: VmBackupUnitKind::PersistentStateVolume,
                 backup_target,
@@ -1374,7 +1401,7 @@ impl IncusManagedVmProvider {
             VmBackupFreshness::Stale
         };
 
-        Ok(SpawnerVmBackupStatus {
+        Ok(ManagedRuntimeBackupStatus {
             vm_id: vm_id.to_string(),
             backup_unit_kind: VmBackupUnitKind::PersistentStateVolume,
             backup_target,
@@ -1390,7 +1417,7 @@ impl IncusManagedVmProvider {
         &self,
         vm_id: &str,
         request_id: Option<&str>,
-    ) -> anyhow::Result<SpawnerVmResponse> {
+    ) -> anyhow::Result<ManagedRuntimeStatus> {
         let state: IncusInstanceState = self
             .get_json(
                 &["1.0", "instances", vm_id, "state"],
@@ -1416,7 +1443,7 @@ impl IncusManagedVmProvider {
         &self,
         vm_id: &str,
         request_id: Option<&str>,
-    ) -> anyhow::Result<SpawnerVmResponse> {
+    ) -> anyhow::Result<ManagedRuntimeStatus> {
         let state: IncusInstanceState = self
             .get_json(
                 &["1.0", "instances", vm_id, "state"],
@@ -1531,7 +1558,7 @@ impl IncusManagedVmProvider {
         &self,
         vm_id: &str,
         volume_name: &str,
-        input: &ManagedVmCreateInput<'_>,
+        input: &ManagedRuntimeCreateInput<'_>,
         request_id: Option<&str>,
     ) -> anyhow::Result<()> {
         let mut devices = BTreeMap::new();
@@ -1747,7 +1774,7 @@ impl IncusManagedVmProvider {
         self.change_instance_state(vm_id, "stop", request_id).await
     }
 
-    fn instance_name_for_input(&self, input: &ManagedVmCreateInput<'_>) -> String {
+    fn instance_name_for_input(&self, input: &ManagedRuntimeCreateInput<'_>) -> String {
         let mut hasher = Sha256::new();
         hasher.update(input.bot_pubkey_hex.as_bytes());
         let digest = hasher.finalize();
@@ -1758,8 +1785,11 @@ impl IncusManagedVmProvider {
         format!("{vm_id}-state")
     }
 
-    fn cloud_init_user_data(&self, input: &ManagedVmCreateInput<'_>) -> anyhow::Result<String> {
-        let bootstrap_request = build_create_vm_request(*input);
+    fn cloud_init_user_data(
+        &self,
+        input: &ManagedRuntimeCreateInput<'_>,
+    ) -> anyhow::Result<String> {
+        let bootstrap_request = build_managed_vm_create_request(*input);
         let guest_autostart = bootstrap_request.guest_autostart;
         let mut launcher_env = guest_autostart.env.clone();
         if let Ok(value) = std::env::var(ANTHROPIC_API_KEY_ENV) {
@@ -1804,79 +1834,47 @@ impl IncusManagedVmProvider {
         Ok(cloud_init)
     }
 
-    async fn guest_ready_signal_satisfied(&self, vm_id: &str, request_id: Option<&str>) -> bool {
-        let ready_path = format!("/{}", GUEST_READY_MARKER_PATH);
-        let marker_bytes = match self
+    async fn load_guest_lifecycle_status(
+        &self,
+        vm_id: &str,
+        request_id: Option<&str>,
+    ) -> Option<RuntimeStatusSnapshot> {
+        let status_path = STATUS_PATH.to_string();
+        let status_bytes = match self
             .get_instance_file(
                 vm_id,
-                &ready_path,
+                &status_path,
                 request_id,
-                "load incus guest ready marker",
+                "load incus guest lifecycle status",
             )
             .await
         {
             Ok(Some(bytes)) => bytes,
-            Ok(None) => return false,
+            Ok(None) => return None,
             Err(err) => {
                 tracing::warn!(
                     vm_id = %vm_id,
                     error = %err,
-                    "failed to load incus guest ready marker; reporting guest as not ready"
+                    "failed to load incus guest lifecycle status; reporting guest as not ready"
                 );
-                return false;
+                return None;
             }
         };
-        let marker = match serde_json::from_slice::<IncusGuestReadyMarker>(&marker_bytes) {
-            Ok(marker) => marker,
+        match serde_json::from_slice::<RuntimeStatusSnapshot>(&status_bytes) {
+            Ok(status) => Some(status),
             Err(err) => {
                 tracing::warn!(
                     vm_id = %vm_id,
                     error = %err,
-                    "incus guest ready marker was malformed; reporting guest as not ready"
+                    "incus guest lifecycle status was malformed; reporting guest as not ready"
                 );
-                return false;
+                None
             }
-        };
-        if !marker.ready {
-            return false;
         }
-        let expected_agent_kind = "openclaw";
-        if marker.agent_kind.as_deref() != Some(expected_agent_kind) {
-            tracing::warn!(
-                vm_id = %vm_id,
-                expected_agent_kind,
-                observed_agent_kind = marker.agent_kind.as_deref().unwrap_or("<missing>"),
-                "incus guest ready marker reported a mismatched agent kind; reporting guest as not ready"
-            );
-            return false;
-        }
-        if marker
-            .probe
-            .as_deref()
-            .is_none_or(|probe| probe.trim().is_empty())
-        {
-            tracing::warn!(
-                vm_id = %vm_id,
-                "incus guest ready marker omitted probe detail; reporting guest as not ready"
-            );
-            return false;
-        }
-        let marker_boot_id = match marker
-            .boot_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|boot_id| !boot_id.is_empty())
-        {
-            Some(boot_id) => boot_id,
-            None => {
-                tracing::warn!(
-                    vm_id = %vm_id,
-                    "incus guest ready marker omitted boot_id; reporting guest as not ready"
-                );
-                return false;
-            }
-        };
-        let current_boot_id = match self
+    }
+
+    async fn current_guest_boot_id(&self, vm_id: &str, request_id: Option<&str>) -> Option<String> {
+        match self
             .exec_instance_stdout(
                 vm_id,
                 &["cat", INCUS_GUEST_BOOT_ID_PATH],
@@ -1886,14 +1884,14 @@ impl IncusManagedVmProvider {
             .await
         {
             Ok(bytes) => match String::from_utf8(bytes) {
-                Ok(value) => value.trim().to_string(),
+                Ok(value) => Some(value.trim().to_string()),
                 Err(err) => {
                     tracing::warn!(
                         vm_id = %vm_id,
                         error = %err,
                         "incus guest boot id was not valid utf-8; reporting guest as not ready"
                     );
-                    return false;
+                    None
                 }
             },
             Err(err) => {
@@ -1902,19 +1900,30 @@ impl IncusManagedVmProvider {
                     error = %err,
                     "failed to load incus guest boot id; reporting guest as not ready"
                 );
-                return false;
+                None
             }
-        };
-        if current_boot_id.is_empty() || current_boot_id != marker_boot_id {
-            tracing::warn!(
-                vm_id = %vm_id,
-                marker_boot_id,
-                current_boot_id,
-                "incus guest ready marker boot_id did not match current boot; reporting guest as not ready"
-            );
-            return false;
         }
-        true
+    }
+
+    async fn guest_lifecycle_signal(
+        &self,
+        vm_id: &str,
+        request_id: Option<&str>,
+    ) -> Option<ManagedGuestLifecycleSignal> {
+        let status = self.load_guest_lifecycle_status(vm_id, request_id).await?;
+        let current_boot_id = self.current_guest_boot_id(vm_id, request_id).await?;
+        match managed_guest_lifecycle_signal(&status, &current_boot_id) {
+            Ok(signal) => Some(signal),
+            Err(reason) => {
+                tracing::warn!(
+                    vm_id = %vm_id,
+                    state = ?status.state,
+                    reason,
+                    "incus guest lifecycle status did not satisfy managed guest contract; reporting guest as not ready"
+                );
+                None
+            }
+        }
     }
 
     fn request(
@@ -2424,7 +2433,7 @@ fn incus_profile_has_nic_device(profile: &serde_json::Value) -> bool {
 }
 
 fn bootstrap_file_permissions(path: &str) -> &'static str {
-    if path == pika_agent_control_plane::GUEST_AUTOSTART_SCRIPT_PATH {
+    if path == pika_cloud::GUEST_AUTOSTART_SCRIPT_PATH {
         "0755"
     } else {
         "0644"
@@ -2668,7 +2677,7 @@ fn managed_environment_status_copy(
 }
 
 fn managed_environment_backup_status_from_provider(
-    backup: SpawnerVmBackupStatus,
+    backup: ManagedRuntimeBackupStatus,
 ) -> ManagedEnvironmentBackupStatus {
     let freshness = match backup.freshness {
         VmBackupFreshness::Healthy => ManagedEnvironmentBackupFreshness::Healthy,
@@ -2744,7 +2753,67 @@ fn unavailable_backup_status(status_copy: impl Into<String>) -> ManagedEnvironme
     }
 }
 
-fn phase_from_spawner_vm(vm: &SpawnerVmResponse) -> &'static str {
+fn managed_guest_lifecycle_signal(
+    status: &RuntimeStatusSnapshot,
+    current_boot_id: &str,
+) -> Result<ManagedGuestLifecycleSignal, &'static str> {
+    let expected_boot_id = status
+        .boot_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|boot_id| !boot_id.is_empty())
+        .ok_or("missing boot_id")?;
+    let current_boot_id = current_boot_id.trim();
+    if current_boot_id.is_empty() || current_boot_id != expected_boot_id {
+        return Err("boot_id mismatch");
+    }
+
+    let details: ManagedGuestLifecycleDetails = match status.details.clone() {
+        Some(details) => serde_json::from_value(details).map_err(|_| "malformed details")?,
+        None => return Err("missing details"),
+    };
+    if details.agent_kind.as_deref() != Some("openclaw") {
+        return Err("mismatched agent_kind");
+    }
+    if details.backend_mode.as_deref() != Some("native") {
+        return Err("mismatched backend_mode");
+    }
+    if details.service_kind.as_deref() != Some("openclaw_gateway") {
+        return Err("mismatched service_kind");
+    }
+    if matches!(status.state, LifecycleState::Failed)
+        && details
+            .failure_reason
+            .as_deref()
+            .map(str::trim)
+            .filter(|reason| !reason.is_empty())
+            .is_none()
+    {
+        return Err("missing failure_reason");
+    }
+
+    let guest_ready = match status.state {
+        LifecycleState::Ready => details
+            .probe
+            .as_deref()
+            .is_some_and(|probe| !probe.trim().is_empty()),
+        _ => false,
+    };
+    if matches!(status.state, LifecycleState::Ready) && !guest_ready {
+        return Err("missing readiness probe");
+    }
+
+    Ok(ManagedGuestLifecycleSignal {
+        startup_probe_satisfied: details.service_probe_satisfied,
+        guest_ready,
+        failed: matches!(
+            status.state,
+            LifecycleState::Failed | LifecycleState::Completed
+        ),
+    })
+}
+
+fn phase_from_runtime_status(vm: &ManagedRuntimeStatus) -> &'static str {
     match (vm.status.as_str(), vm.guest_ready) {
         ("failed", _) => AGENT_PHASE_ERROR,
         ("running", true) => AGENT_PHASE_READY,
@@ -2752,7 +2821,7 @@ fn phase_from_spawner_vm(vm: &SpawnerVmResponse) -> &'static str {
     }
 }
 
-fn startup_phase_from_spawner_vm(vm: &SpawnerVmResponse) -> AgentStartupPhase {
+fn startup_phase_from_runtime_status(vm: &ManagedRuntimeStatus) -> AgentStartupPhase {
     match (
         vm.status.as_str(),
         vm.guest_ready,
@@ -2767,7 +2836,7 @@ fn startup_phase_from_spawner_vm(vm: &SpawnerVmResponse) -> AgentStartupPhase {
     }
 }
 
-fn is_inflight_provision_row(row: &AgentInstance) -> bool {
+fn is_pending_initial_provision(row: &AgentInstance) -> bool {
     row.phase == AGENT_PHASE_CREATING && row.vm_id.is_none()
 }
 
@@ -2812,24 +2881,24 @@ fn normalize_loaded_agent_row(
     }
 }
 
-struct RefreshedAgentStatus {
+struct RefreshedManagedEnvironment {
     row: AgentInstance,
     startup_phase: AgentStartupPhase,
 }
 
-async fn refresh_agent_from_spawner(
+async fn refresh_agent_from_runtime(
     conn: &mut PgConnection,
     row: AgentInstance,
     request_id: &str,
-) -> Result<RefreshedAgentStatus, AgentApiError> {
+) -> Result<RefreshedManagedEnvironment, AgentApiError> {
     let Some(vm_id) = row.vm_id.as_deref() else {
-        return Ok(RefreshedAgentStatus {
+        return Ok(RefreshedManagedEnvironment {
             startup_phase: startup_phase_from_row_phase(&row.phase)
                 .unwrap_or(AgentStartupPhase::Requested),
             row,
         });
     };
-    let provider = match managed_vm_provider_for_row(&row, None) {
+    let provider = match managed_runtime_provider_for_row(&row, None) {
         Ok(provider) => provider,
         Err(err) => {
             tracing::warn!(
@@ -2837,9 +2906,9 @@ async fn refresh_agent_from_spawner(
                 agent_id = %row.agent_id,
                 vm_id,
                 error = %err,
-                "failed to resolve managed VM provider while refreshing agent readiness"
+                "failed to resolve managed runtime provider while refreshing managed environment readiness"
             );
-            return Ok(RefreshedAgentStatus {
+            return Ok(RefreshedManagedEnvironment {
                 startup_phase: startup_phase_from_row_phase(&row.phase)
                     .unwrap_or(AgentStartupPhase::ProvisioningVm),
                 row,
@@ -2857,7 +2926,7 @@ async fn refresh_agent_from_spawner(
                 "agent vm missing during readiness refresh; marking row errored"
             );
             if row.phase == AGENT_PHASE_ERROR {
-                return Ok(RefreshedAgentStatus {
+                return Ok(RefreshedManagedEnvironment {
                     row,
                     startup_phase: AgentStartupPhase::Failed,
                 });
@@ -2891,7 +2960,7 @@ async fn refresh_agent_from_spawner(
                     AgentApiError::from_code(AgentApiErrorCode::Internal)
                         .with_request_id(request_id.to_string())
                 })?;
-            return Ok(RefreshedAgentStatus {
+            return Ok(RefreshedManagedEnvironment {
                 row: errored,
                 startup_phase: AgentStartupPhase::Failed,
             });
@@ -2902,9 +2971,9 @@ async fn refresh_agent_from_spawner(
                 agent_id = %row.agent_id,
                 vm_id,
                 error = %err,
-                "failed to refresh agent readiness from spawner; keeping existing phase"
+                "failed to refresh managed environment readiness from provider; keeping existing phase"
             );
-            return Ok(RefreshedAgentStatus {
+            return Ok(RefreshedManagedEnvironment {
                 startup_phase: startup_phase_from_row_phase(&row.phase)
                     .unwrap_or(AgentStartupPhase::ProvisioningVm),
                 row,
@@ -2912,10 +2981,10 @@ async fn refresh_agent_from_spawner(
         }
     };
 
-    let next_phase = phase_from_spawner_vm(&vm);
-    let startup_phase = startup_phase_from_spawner_vm(&vm);
+    let next_phase = phase_from_runtime_status(&vm);
+    let startup_phase = startup_phase_from_runtime_status(&vm);
     if row.phase == next_phase && row.vm_id.as_deref() == Some(vm.id.as_str()) {
-        return Ok(RefreshedAgentStatus { row, startup_phase });
+        return Ok(RefreshedManagedEnvironment { row, startup_phase });
     }
 
     let updated = AgentInstance::update_phase(conn, &row.agent_id, next_phase, Some(&vm.id))
@@ -2923,7 +2992,7 @@ async fn refresh_agent_from_spawner(
             AgentApiError::from_code(AgentApiErrorCode::Internal)
                 .with_request_id(request_id.to_string())
         })?;
-    Ok(RefreshedAgentStatus {
+    Ok(RefreshedManagedEnvironment {
         row: updated,
         startup_phase,
     })
@@ -2949,7 +3018,7 @@ pub(crate) async fn load_managed_environment_status(
         });
     };
     let normalized = normalize_loaded_agent_row(&mut conn, row, request_id)?;
-    let refreshed = refresh_agent_from_spawner(&mut conn, normalized, request_id).await?;
+    let refreshed = refresh_agent_from_runtime(&mut conn, normalized, request_id).await?;
     let app_state = phase_to_state(&refreshed.row.phase);
     Ok(ManagedEnvironmentStatus {
         environment_exists: refreshed.row.vm_id.is_some(),
@@ -2987,7 +3056,7 @@ pub(crate) async fn load_managed_environment_backup_status(
         );
     };
 
-    let provider = match managed_vm_provider_for_row(row, None) {
+    let provider = match managed_runtime_provider_for_row(row, None) {
         Ok(provider) => provider,
         Err(err) => {
             tracing::warn!(
@@ -2995,7 +3064,7 @@ pub(crate) async fn load_managed_environment_backup_status(
                 agent_id = %row.agent_id,
                 vm_id = %vm_id,
                 error = %err,
-                "failed to resolve managed VM provider while loading backup status"
+                "failed to resolve managed runtime provider while loading backup status"
             );
             return unavailable_backup_status(
                 "Recovery-point protection could not be verified because the managed-environment control path is unavailable.",
@@ -3010,7 +3079,7 @@ pub(crate) async fn load_managed_environment_backup_status(
                 agent_id = %row.agent_id,
                 vm_id = %vm_id,
                 error = %err,
-                "failed to load backup status from managed VM provider"
+                "failed to load backup status from managed runtime provider"
             );
             unavailable_backup_status(
                 "Recovery-point protection could not be verified from the control plane right now.",
@@ -3042,12 +3111,12 @@ pub(crate) async fn load_launchable_managed_environment(
             AgentApiError::from_code(AgentApiErrorCode::InvalidRequest).with_request_id(request_id)
         );
     }
-    let managed_vm = managed_vm_params_from_row(&row).map_err(|err| {
+    let managed_runtime = managed_runtime_params_from_row(&row).map_err(|err| {
         tracing::error!(
             request_id = %request_id,
             agent_id = %row.agent_id,
             error = %err,
-            "failed to decode managed VM incus config from row"
+            "failed to decode managed runtime incus config from row"
         );
         AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
     })?;
@@ -3055,21 +3124,21 @@ pub(crate) async fn load_launchable_managed_environment(
         owner_npub: row.owner_npub,
         agent_id: row.agent_id,
         vm_id,
-        incus: managed_vm,
+        incus: managed_runtime,
     })
 }
 
 pub(crate) async fn load_openclaw_proxy_target(
-    managed_vm: &ManagedVmProvisionParams,
+    managed_runtime: &ManagedRuntimeProvisionParams,
     vm_id: &str,
     request_id: &str,
 ) -> Result<OpenClawProxyTarget, AgentApiError> {
-    let provider = managed_vm_provider(Some(managed_vm)).map_err(|err| {
+    let provider = managed_runtime_provider(Some(managed_runtime)).map_err(|err| {
         tracing::error!(
             request_id = %request_id,
             vm_id = %vm_id,
             error = %err,
-            "failed to resolve managed VM provider for OpenClaw proxy target"
+            "failed to resolve managed runtime provider for OpenClaw proxy target"
         );
         AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
     })?;
@@ -3090,16 +3159,16 @@ pub(crate) async fn load_openclaw_proxy_target(
 }
 
 pub(crate) async fn load_openclaw_launch_auth(
-    managed_vm: &ManagedVmProvisionParams,
+    managed_runtime: &ManagedRuntimeProvisionParams,
     vm_id: &str,
     request_id: &str,
-) -> Result<SpawnerOpenClawLaunchAuth, AgentApiError> {
-    let provider = managed_vm_provider(Some(managed_vm)).map_err(|err| {
+) -> Result<ManagedOpenClawLaunchAuth, AgentApiError> {
+    let provider = managed_runtime_provider(Some(managed_runtime)).map_err(|err| {
         tracing::error!(
             request_id = %request_id,
             vm_id = %vm_id,
             error = %err,
-            "failed to resolve managed VM provider for openclaw launch auth"
+            "failed to resolve managed runtime provider for openclaw launch auth"
         );
         AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
     })?;
@@ -3183,7 +3252,7 @@ fn prepare_agent_for_reprovision(
 }
 
 fn resolved_incus_params(
-    requested: Option<&ManagedVmProvisionParams>,
+    requested: Option<&ManagedRuntimeProvisionParams>,
 ) -> anyhow::Result<ResolvedIncusParams> {
     let mut params = default_incus_params_from_env();
     if let Some(requested) = requested {
@@ -3271,40 +3340,40 @@ fn resolved_incus_params(
     })
 }
 
-fn resolve_managed_vm_provider_config(
-    requested: Option<&ManagedVmProvisionParams>,
-) -> anyhow::Result<ResolvedManagedVmProviderConfig> {
-    Ok(ResolvedManagedVmProviderConfig::Incus(
+fn resolve_managed_runtime_provider_config(
+    requested: Option<&ManagedRuntimeProvisionParams>,
+) -> anyhow::Result<ResolvedManagedRuntimeProviderConfig> {
+    Ok(ResolvedManagedRuntimeProviderConfig::Incus(
         resolved_incus_params(requested)?,
     ))
 }
 
-fn managed_vm_provider_from_resolved(
-    config: ResolvedManagedVmProviderConfig,
-) -> anyhow::Result<ManagedVmProvider> {
+fn managed_runtime_provider_from_resolved(
+    config: ResolvedManagedRuntimeProviderConfig,
+) -> anyhow::Result<ManagedRuntimeProvider> {
     match config {
-        ResolvedManagedVmProviderConfig::Incus(resolved) => Ok(ManagedVmProvider::Incus(
-            IncusManagedVmProvider::new(resolved)?,
+        ResolvedManagedRuntimeProviderConfig::Incus(resolved) => Ok(ManagedRuntimeProvider::Incus(
+            IncusManagedRuntimeProvider::new(resolved)?,
         )),
     }
 }
 
-fn managed_vm_provider(
-    requested: Option<&ManagedVmProvisionParams>,
-) -> anyhow::Result<ManagedVmProvider> {
-    managed_vm_provider_from_resolved(resolve_managed_vm_provider_config(requested)?)
+fn managed_runtime_provider(
+    requested: Option<&ManagedRuntimeProvisionParams>,
+) -> anyhow::Result<ManagedRuntimeProvider> {
+    managed_runtime_provider_from_resolved(resolve_managed_runtime_provider_config(requested)?)
 }
 
-async fn provision_vm_for_owner(
+async fn provision_runtime_for_owner(
     owner_npub: &str,
     bot_identity: &ProvisioningBotIdentity,
     request_id: &str,
-    provider: &ManagedVmProvider,
-) -> anyhow::Result<pika_agent_control_plane::SpawnerVmResponse> {
+    provider: &ManagedRuntimeProvider,
+) -> anyhow::Result<ManagedRuntimeStatus> {
     let owner_pubkey = PublicKey::parse(owner_npub).context("parse owner npub")?;
     provider
         .create_managed_vm(
-            ManagedVmCreateInput {
+            ManagedRuntimeCreateInput {
                 owner_pubkey: &owner_pubkey,
                 relay_urls: &default_message_relays(),
                 bot_secret_hex: &bot_identity.secret_hex,
@@ -3319,38 +3388,40 @@ async fn provision_agent_for_owner(
     state: &State,
     owner_npub: &str,
     request_id: &str,
-    requested: Option<&ManagedVmProvisionParams>,
+    requested: Option<&ManagedRuntimeProvisionParams>,
 ) -> Result<AgentInstance, AgentApiError> {
     let bot_identity = generate_provisioning_bot_identity().map_err(|_| {
         AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
     })?;
-    let resolved_provider = resolve_managed_vm_provider_config(requested).map_err(|err| {
+    let resolved_provider = resolve_managed_runtime_provider_config(requested).map_err(|err| {
         tracing::error!(
             request_id = %request_id,
             owner_npub = %owner_npub,
             error = %err,
-            "failed to resolve managed VM provider for provision"
+            "failed to resolve managed runtime provider for provision"
         );
         AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
     })?;
-    let provider = managed_vm_provider_from_resolved(resolved_provider.clone()).map_err(|err| {
-        tracing::error!(
-            request_id = %request_id,
-            owner_npub = %owner_npub,
-            error = %err,
-            "failed to initialize managed VM provider for provision"
-        );
-        AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
-    })?;
-    let incus_config = serialize_managed_vm_incus_config(&resolved_provider).map_err(|err| {
-        tracing::error!(
-            request_id = %request_id,
-            owner_npub = %owner_npub,
-            error = %err,
-            "failed to serialize managed VM incus config for provision"
-        );
-        AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
-    })?;
+    let provider =
+        managed_runtime_provider_from_resolved(resolved_provider.clone()).map_err(|err| {
+            tracing::error!(
+                request_id = %request_id,
+                owner_npub = %owner_npub,
+                error = %err,
+                "failed to initialize managed runtime provider for provision"
+            );
+            AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+        })?;
+    let incus_config =
+        serialize_managed_runtime_incus_config(&resolved_provider).map_err(|err| {
+            tracing::error!(
+                request_id = %request_id,
+                owner_npub = %owner_npub,
+                error = %err,
+                "failed to serialize managed runtime incus config for provision"
+            );
+            AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
+        })?;
 
     let created = {
         let mut conn = state.db_pool.get().map_err(|_| {
@@ -3391,23 +3462,23 @@ async fn provision_agent_for_owner(
         })?
     };
 
-    let vm = match provision_vm_for_owner(owner_npub, &bot_identity, request_id, &provider).await {
-        Ok(vm) => vm,
-        Err(err) => {
-            tracing::error!(
-                request_id,
-                owner_npub = %owner_npub,
-                error = %err,
-                "failed to provision managed VM for agent"
-            );
-            if let Ok(mut conn) = state.db_pool.get() {
-                let _ = mark_agent_errored(&mut conn, &created.agent_id);
+    let vm =
+        match provision_runtime_for_owner(owner_npub, &bot_identity, request_id, &provider).await {
+            Ok(vm) => vm,
+            Err(err) => {
+                tracing::error!(
+                    request_id,
+                    owner_npub = %owner_npub,
+                    error = %err,
+                    "failed to provision managed runtime for agent"
+                );
+                if let Ok(mut conn) = state.db_pool.get() {
+                    let _ = mark_agent_errored(&mut conn, &created.agent_id);
+                }
+                return Err(AgentApiError::from_code(AgentApiErrorCode::Internal)
+                    .with_request_id(request_id));
             }
-            return Err(
-                AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
-            );
-        }
-    };
+        };
 
     let mut conn = state.db_pool.get().map_err(|_| {
         AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
@@ -3417,7 +3488,7 @@ async fn provision_agent_for_owner(
             let updated = AgentInstance::update_phase(
                 conn,
                 &created.agent_id,
-                phase_from_spawner_vm(&vm),
+                phase_from_runtime_status(&vm),
                 Some(&vm.id),
             )?;
             let message = format!(
@@ -3450,7 +3521,7 @@ async fn provision_agent_for_owner(
         vm_id = %vm.id,
         vm_status = %vm.status,
         owner_npub = %owner_npub,
-        "provisioned agent managed VM"
+        "provisioned agent managed runtime"
     );
     Ok(updated)
 }
@@ -3459,7 +3530,7 @@ async fn provision_or_existing_managed_environment(
     state: &State,
     owner_npub: &str,
     request_id: &str,
-    requested: Option<&ManagedVmProvisionParams>,
+    requested: Option<&ManagedRuntimeProvisionParams>,
 ) -> Result<ManagedEnvironmentAction, AgentApiError> {
     match provision_agent_for_owner(state, owner_npub, request_id, requested).await {
         Ok(row) => Ok(ManagedEnvironmentAction {
@@ -3483,7 +3554,7 @@ pub(crate) async fn provision_managed_environment_if_missing(
     state: &State,
     owner_npub: &str,
     request_id: &str,
-    requested: Option<&ManagedVmProvisionParams>,
+    requested: Option<&ManagedRuntimeProvisionParams>,
 ) -> Result<ManagedEnvironmentAction, AgentApiError> {
     let status = load_managed_environment_status(state, owner_npub, request_id).await?;
     if let (Some(row), Some(startup_phase)) = (status.row, status.startup_phase) {
@@ -3557,7 +3628,7 @@ pub async fn get_my_agent(
     };
     let normalized = normalize_loaded_agent_row(&mut conn, active, &request_context.request_id)?;
     let refreshed =
-        refresh_agent_from_spawner(&mut conn, normalized, &request_context.request_id).await?;
+        refresh_agent_from_runtime(&mut conn, normalized, &request_context.request_id).await?;
     json_response(
         refreshed.row,
         refreshed.startup_phase,
@@ -3569,7 +3640,7 @@ pub(crate) async fn recover_agent_for_owner(
     state: &State,
     owner_npub: &str,
     request_id: &str,
-    requested: Option<&ManagedVmProvisionParams>,
+    requested: Option<&ManagedRuntimeProvisionParams>,
 ) -> Result<ManagedEnvironmentAction, AgentApiError> {
     let mut conn = state.db_pool.get().map_err(|_| {
         AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
@@ -3585,7 +3656,7 @@ pub(crate) async fn recover_agent_for_owner(
         Some(vm_id) => format!("Recover requested for Managed OpenClaw on VM {vm_id}."),
         None => "Recover requested for Managed OpenClaw without a recoverable VM.".to_string(),
     };
-    if is_inflight_provision_row(&active) {
+    if is_pending_initial_provision(&active) {
         return Ok(ManagedEnvironmentAction {
             row: active,
             startup_phase: AgentStartupPhase::ProvisioningVm,
@@ -3620,7 +3691,7 @@ pub(crate) async fn recover_agent_for_owner(
         AgentApiError::from_code(AgentApiErrorCode::RecoverFailed).with_request_id(request_id)
     })?;
 
-    let provider = managed_vm_provider_for_row(&active, requested).map_err(|_| {
+    let provider = managed_runtime_provider_for_row(&active, requested).map_err(|_| {
         AgentApiError::from_code(AgentApiErrorCode::RecoverFailed).with_request_id(request_id)
     })?;
     let recovered = match provider.recover_vm(&vm_id, Some(request_id)).await {
@@ -3661,20 +3732,20 @@ pub(crate) async fn recover_agent_for_owner(
                 vm_id = %vm_id,
                 owner_npub = %owner_npub,
                 error = %err,
-                "failed to recover agent managed VM"
+                "failed to recover agent managed runtime"
             );
             return Err(AgentApiError::from_code(AgentApiErrorCode::RecoverFailed)
                 .with_request_id(request_id));
         }
     };
 
-    let startup_phase = startup_phase_from_spawner_vm(&recovered);
+    let startup_phase = startup_phase_from_runtime_status(&recovered);
     let updated = conn
         .transaction::<AgentInstance, anyhow::Error, _>(|conn| {
             let updated = AgentInstance::update_phase(
                 conn,
                 &active.agent_id,
-                phase_from_spawner_vm(&recovered),
+                phase_from_runtime_status(&recovered),
                 Some(&recovered.id),
             )?;
             let message = format!(
@@ -3705,7 +3776,7 @@ pub(crate) async fn reset_agent_for_owner(
     state: &State,
     owner_npub: &str,
     request_id: &str,
-    requested: Option<&ManagedVmProvisionParams>,
+    requested: Option<&ManagedRuntimeProvisionParams>,
 ) -> Result<ManagedEnvironmentAction, AgentApiError> {
     let existing = {
         let mut conn = state.db_pool.get().map_err(|_| {
@@ -3715,7 +3786,7 @@ pub(crate) async fn reset_agent_for_owner(
             .map_err(|err| err.with_request_id(request_id.to_string()))?;
         if let Some(existing) = existing
             .as_ref()
-            .filter(|row| is_inflight_provision_row(row))
+            .filter(|row| is_pending_initial_provision(row))
         {
             return Ok(ManagedEnvironmentAction {
                 row: existing.clone(),
@@ -3745,16 +3816,18 @@ pub(crate) async fn reset_agent_for_owner(
     if let Some(vm_id) = existing.as_ref().and_then(|row| row.vm_id.as_deref()) {
         // Reset intentionally tears down the existing environment using the row's stored provider
         // and only then provisions the replacement with the requested provider policy.
-        let provider = managed_vm_provider_for_row(existing.as_ref().expect("existing row"), None)
-            .map_err(|err| {
-                tracing::error!(
-                    request_id = %request_id,
-                    owner_npub = %owner_npub,
-                    error = %err,
-                    "failed to resolve stored reset managed VM provider"
-                );
-                AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
-            })?;
+        let provider =
+            managed_runtime_provider_for_row(existing.as_ref().expect("existing row"), None)
+                .map_err(|err| {
+                    tracing::error!(
+                        request_id = %request_id,
+                        owner_npub = %owner_npub,
+                        error = %err,
+                        "failed to resolve stored reset managed runtime provider"
+                    );
+                    AgentApiError::from_code(AgentApiErrorCode::Internal)
+                        .with_request_id(request_id)
+                })?;
         match provider.delete_vm(vm_id, Some(request_id)).await {
             Ok(()) => {
                 tracing::info!(
@@ -3847,7 +3920,7 @@ pub(crate) async fn restore_managed_environment_from_backup(
     state: &State,
     owner_npub: &str,
     request_id: &str,
-    requested: Option<&ManagedVmProvisionParams>,
+    requested: Option<&ManagedRuntimeProvisionParams>,
 ) -> Result<ManagedEnvironmentAction, AgentApiError> {
     let mut conn = state.db_pool.get().map_err(|_| {
         AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
@@ -3859,7 +3932,7 @@ pub(crate) async fn restore_managed_environment_from_backup(
             AgentApiError::from_code(AgentApiErrorCode::AgentNotFound).with_request_id(request_id)
         );
     };
-    if is_inflight_provision_row(&active) {
+    if is_pending_initial_provision(&active) {
         return Err(
             AgentApiError::from_code(AgentApiErrorCode::InvalidRequest).with_request_id(request_id)
         );
@@ -3884,13 +3957,13 @@ pub(crate) async fn restore_managed_environment_from_backup(
     )?;
     drop(conn);
 
-    let provider = managed_vm_provider_for_row(&active, requested).map_err(|err| {
+    let provider = managed_runtime_provider_for_row(&active, requested).map_err(|err| {
         tracing::error!(
             request_id = %request_id,
             owner_npub = %owner_npub,
             vm_id = %vm_id,
             error = %err,
-            "failed to resolve stored restore managed VM provider"
+            "failed to resolve stored restore managed runtime provider"
         );
         AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
     })?;
@@ -3927,7 +4000,7 @@ pub(crate) async fn restore_managed_environment_from_backup(
         }
     };
 
-    let startup_phase = startup_phase_from_spawner_vm(&restored);
+    let startup_phase = startup_phase_from_runtime_status(&restored);
     let mut conn = state.db_pool.get().map_err(|_| {
         AgentApiError::from_code(AgentApiErrorCode::Internal).with_request_id(request_id)
     })?;
@@ -3936,7 +4009,7 @@ pub(crate) async fn restore_managed_environment_from_backup(
             let updated = AgentInstance::update_phase(
                 conn,
                 &active.agent_id,
-                phase_from_spawner_vm(&restored),
+                phase_from_runtime_status(&restored),
                 Some(&restored.id),
             )?;
             let message = format!(
@@ -4011,11 +4084,11 @@ pub async fn agent_api_healthcheck() -> anyhow::Result<()> {
         tracing::info!("managed-agent incus config not present; skipping agent api healthcheck");
         return Ok(());
     }
-    let resolved = resolve_managed_vm_provider_config(None)
-        .context("resolve and validate managed VM provider")?;
-    let provider = managed_vm_provider_from_resolved(resolved)
-        .context("initialize configured managed VM provider")?;
-    let ManagedVmProvider::Incus(incus) = &provider;
+    let resolved = resolve_managed_runtime_provider_config(None)
+        .context("resolve and validate managed runtime provider")?;
+    let provider = managed_runtime_provider_from_resolved(resolved)
+        .context("initialize configured managed runtime provider")?;
+    let ManagedRuntimeProvider::Incus(incus) = &provider;
     incus.healthcheck().await?;
     provider
         .ensure_customer_openclaw_flow_supported()
@@ -4027,6 +4100,7 @@ pub async fn agent_api_healthcheck() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use chrono::NaiveDate;
+    use serde_json::json;
 
     fn test_agent_instance(
         agent_id: &str,
@@ -4051,6 +4125,23 @@ mod tests {
         }
     }
 
+    fn managed_guest_status_snapshot(state: LifecycleState) -> RuntimeStatusSnapshot {
+        RuntimeStatusSnapshot {
+            schema_version: 1,
+            state,
+            updated_at: "2026-03-25T20:00:00Z".to_string(),
+            message: "managed guest lifecycle".to_string(),
+            boot_id: Some("boot-123".to_string()),
+            details: Some(json!({
+                "agent_kind": "openclaw",
+                "backend_mode": "native",
+                "service_kind": "openclaw_gateway",
+                "service_probe_satisfied": true,
+                "probe": "openclaw_gateway_health"
+            })),
+        }
+    }
+
     #[test]
     fn select_visible_agent_row_ignores_legacy_error_row_without_incus_config() {
         let legacy_error = test_agent_instance("agent-legacy", AGENT_PHASE_ERROR, None, None);
@@ -4061,12 +4152,87 @@ mod tests {
     }
 
     #[test]
-    fn managed_vm_params_from_row_rejects_missing_incus_config() {
+    fn managed_runtime_params_from_row_rejects_missing_incus_config() {
         let legacy_row =
             test_agent_instance("agent-legacy", AGENT_PHASE_READY, Some("vm-legacy"), None);
 
-        let err = managed_vm_params_from_row(&legacy_row).expect_err("legacy row must fail closed");
+        let err =
+            managed_runtime_params_from_row(&legacy_row).expect_err("legacy row must fail closed");
 
         assert!(err.to_string().contains("lacks incus_config"));
+    }
+
+    #[test]
+    fn managed_guest_lifecycle_signal_marks_ready_status_as_ready() {
+        let signal = managed_guest_lifecycle_signal(
+            &managed_guest_status_snapshot(LifecycleState::Ready),
+            "boot-123",
+        )
+        .expect("ready snapshot should validate");
+
+        assert!(signal.startup_probe_satisfied);
+        assert!(signal.guest_ready);
+        assert!(!signal.failed);
+    }
+
+    #[test]
+    fn managed_guest_lifecycle_signal_preserves_service_probe_before_ready() {
+        let signal = managed_guest_lifecycle_signal(
+            &managed_guest_status_snapshot(LifecycleState::Starting),
+            "boot-123",
+        )
+        .expect("starting snapshot should validate");
+
+        assert!(signal.startup_probe_satisfied);
+        assert!(!signal.guest_ready);
+        assert!(!signal.failed);
+    }
+
+    #[test]
+    fn managed_guest_lifecycle_signal_surfaces_guest_failure_while_vm_is_running() {
+        let mut status = managed_guest_status_snapshot(LifecycleState::Failed);
+        status.details = Some(json!({
+            "agent_kind": "openclaw",
+            "backend_mode": "native",
+            "service_kind": "openclaw_gateway",
+            "service_probe_satisfied": true,
+            "probe": "openclaw_gateway_health",
+            "failure_reason": "openclaw_gateway_exited"
+        }));
+
+        let signal = managed_guest_lifecycle_signal(&status, "boot-123")
+            .expect("failed snapshot should validate");
+
+        assert!(signal.startup_probe_satisfied);
+        assert!(!signal.guest_ready);
+        assert!(signal.failed);
+    }
+
+    #[test]
+    fn managed_guest_lifecycle_signal_rejects_boot_id_mismatch() {
+        let err = managed_guest_lifecycle_signal(
+            &managed_guest_status_snapshot(LifecycleState::Ready),
+            "boot-other",
+        )
+        .expect_err("stale boot id should be rejected");
+
+        assert_eq!(err, "boot_id mismatch");
+    }
+
+    #[test]
+    fn managed_guest_lifecycle_signal_rejects_mismatched_guest_details() {
+        let mut status = managed_guest_status_snapshot(LifecycleState::Ready);
+        status.details = Some(json!({
+            "agent_kind": "pikachat",
+            "backend_mode": "native",
+            "service_kind": "openclaw_gateway",
+            "service_probe_satisfied": true,
+            "probe": "openclaw_gateway_health"
+        }));
+
+        let err =
+            managed_guest_lifecycle_signal(&status, "boot-123").expect_err("details must match");
+
+        assert_eq!(err, "mismatched agent_kind");
     }
 }

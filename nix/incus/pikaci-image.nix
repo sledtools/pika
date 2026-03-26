@@ -14,6 +14,9 @@ let
     PIKACI_UID = 1000
     USERS_GID = 100
     SYSTEM_BIN = "/run/current-system/sw/bin"
+    INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION = 1
+    LIFECYCLE_SCHEMA_VERSION = 1
+    EVENT_SEQ = 0
 
 
     def finished_at() -> str:
@@ -25,11 +28,42 @@ let
         path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-    def write_result(artifacts_dir: pathlib.Path, exit_code: int, message: str) -> None:
+    def write_status(state_dir: pathlib.Path, state: str, message: str, **fields) -> None:
+        payload = {
+            "schema_version": LIFECYCLE_SCHEMA_VERSION,
+            "state": state,
+            "updated_at": finished_at(),
+            "message": message,
+        }
+        if fields:
+            payload["details"] = fields
+        write_json(state_dir / "status.json", payload)
+
+
+    def append_event(events_path: pathlib.Path, kind: str, message: str, **fields) -> None:
+        global EVENT_SEQ
+        EVENT_SEQ += 1
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": LIFECYCLE_SCHEMA_VERSION,
+            "seq": EVENT_SEQ,
+            "kind": kind,
+            "timestamp": finished_at(),
+            "message": message,
+        }
+        if fields:
+            payload["details"] = fields
+        with events_path.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(payload) + "\n")
+
+
+    def write_result(state_dir: pathlib.Path, exit_code: int, message: str) -> None:
         status = "passed" if exit_code == 0 else "failed"
+        write_status(state_dir, status, message)
         write_json(
-            artifacts_dir / "result.json",
+            state_dir / "result.json",
             {
+                "schema_version": 1,
                 "status": status,
                 "exit_code": exit_code,
                 "finished_at": finished_at(),
@@ -86,9 +120,14 @@ let
         print("usage: pikaci-incus-run <request-path>", file=sys.stderr)
         raise SystemExit(2)
 
-    artifacts_dir = pathlib.Path("/artifacts")
+    state_dir = pathlib.Path("/run/pika-cloud")
+    logs_dir = state_dir / "logs"
+    artifacts_dir = state_dir / "artifacts"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir.mkdir(parents=True, exist_ok=True)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
-    guest_log_path = artifacts_dir / "guest.log"
+    guest_log_path = logs_dir / "guest.log"
+    events_path = state_dir / "events.jsonl"
     with guest_log_path.open("a", encoding="utf-8") as log_file:
         boot_line = (
             f"[pikaci] incus guest booted at "
@@ -96,9 +135,11 @@ let
         )
         print(boot_line, flush=True)
         print(boot_line, file=log_file, flush=True)
+        write_status(state_dir, "booted", "incus guest booted")
+        append_event(events_path, "booted", "incus guest booted")
         try:
             request = json.loads(request_path.read_text(encoding="utf-8"))
-            if request.get("schema_version") != 1:
+            if request.get("schema_version") != INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION:
                 raise ValueError(
                     f"unsupported Incus guest request schema_version={request.get('schema_version')!r}"
                 )
@@ -128,7 +169,6 @@ let
                 )
 
             ensure_owned_dir(pathlib.Path("/home/pikaci"), PIKACI_UID, USERS_GID, log_file)
-            ensure_owned_dir(artifacts_dir, PIKACI_UID, USERS_GID, log_file)
             ensure_owned_dir(cargo_home_dir, PIKACI_UID, USERS_GID, log_file)
             ensure_owned_dir(target_dir, PIKACI_UID, USERS_GID, log_file)
             ensure_owned_dir(xdg_state_home_dir, PIKACI_UID, USERS_GID, log_file)
@@ -165,6 +205,20 @@ let
                 child_env["HOME"] = str(home_dir)
                 child_command = ["runuser", "-u", "pikaci", "-m", "--", *command_prefix]
 
+            write_status(
+                state_dir,
+                "starting",
+                "launching guest command",
+                command=command,
+                run_as_root=run_as_root,
+            )
+            append_event(
+                events_path,
+                "starting",
+                "launching guest command",
+                command=command,
+                run_as_root=run_as_root,
+            )
             completed = subprocess.Popen(
                 child_command,
                 cwd=workspace_dir,
@@ -181,7 +235,20 @@ let
                 if exit_code == 0
                 else f"test command exited with {exit_code}"
             )
-            write_result(artifacts_dir, exit_code, message)
+            lifecycle_state = "completed" if exit_code == 0 else "failed"
+            write_status(
+                state_dir,
+                lifecycle_state,
+                message,
+                exit_code=exit_code,
+            )
+            append_event(
+                events_path,
+                lifecycle_state,
+                message,
+                exit_code=exit_code,
+            )
+            write_result(state_dir, exit_code, message)
             raise SystemExit(exit_code)
         except Exception as exc:
             print(
@@ -194,7 +261,9 @@ let
                 file=log_file,
                 flush=True,
             )
-            write_result(artifacts_dir, 2, f"Incus guest bootstrap failed: {exc}")
+            write_status(state_dir, "failed", f"Incus guest bootstrap failed: {exc}")
+            append_event(events_path, "failed", f"Incus guest bootstrap failed: {exc}")
+            write_result(state_dir, 2, f"Incus guest bootstrap failed: {exc}")
             raise SystemExit(2)
   '';
 in
@@ -299,7 +368,8 @@ in
   systemd.tmpfiles.rules = [
     "d /workspace 0755 root root -"
     "d /workspace/snapshot 0755 root root -"
-    "d /artifacts 0755 pikaci users -"
+    "d /run/pika-cloud 0755 pikaci users -"
+    "d /run/pika-cloud/logs 0755 pikaci users -"
     "d /cargo-home 0755 pikaci users -"
     "d /cargo-target 0755 pikaci users -"
     "d /staged 0755 root root -"
@@ -316,7 +386,7 @@ in
     - intended for ephemeral pikaci remote Linux VM runs
     - workspace snapshots are mounted at /workspace/snapshot
     - staged Linux workspace outputs are mounted under /staged/linux-rust
-    - run artifacts are written under /artifacts
+    - lifecycle files are written under /run/pika-cloud
     - runtime tools and shared libraries come from the image at /run/current-system/sw
     - /run/current-system/sw/bin/pikaci-incus-run owns guest job bootstrap
   '';

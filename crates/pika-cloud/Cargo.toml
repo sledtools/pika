@@ -1,5 +1,5 @@
 [package]
-name = "pika-agent-control-plane"
+name = "pika-cloud"
 version = "0.1.0"
 edition = "2024"
 

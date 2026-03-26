@@ -17,7 +17,7 @@ mdk-storage-traits = { workspace = true }
 nostr-blossom = { workspace = true }
 nostr-sdk = { workspace = true, features = ["nip59"] }
 pika-agent-protocol = { path = "../crates/pika-agent-protocol" }
-pika-agent-control-plane = { path = "../crates/pika-agent-control-plane" }
+pika-cloud = { path = "../crates/pika-cloud" }
 pika-relay-profiles = { path = "../crates/pika-relay-profiles" }
 pika-marmot-runtime = { path = "../crates/pika-marmot-runtime" }
 pikachat-sidecar = { path = "../crates/pikachat-sidecar" }

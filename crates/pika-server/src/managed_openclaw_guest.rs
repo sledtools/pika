@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 
 use nostr_sdk::prelude::PublicKey;
-use pika_agent_control_plane::{
+use pika_cloud::{
     GuestOpenclawDaemonBackend, GuestServiceBackendMode, GuestServiceKind, GuestServiceLaunch,
-    GuestServiceReadinessCheck, GuestStartupArtifacts, GuestStartupPlan, SpawnerCreateVmRequest,
-    SpawnerGuestAutostartRequest, GUEST_AUTOSTART_COMMAND, GUEST_AUTOSTART_IDENTITY_PATH,
+    GuestServiceReadinessCheck, GuestStartupArtifacts, GuestStartupPlan, ManagedVmCreateRequest,
+    ManagedVmGuestAutostartRequest, GUEST_AUTOSTART_COMMAND, GUEST_AUTOSTART_IDENTITY_PATH,
     GUEST_AUTOSTART_SCRIPT_PATH, GUEST_OPENCLAW_CONFIG_PATH, GUEST_OPENCLAW_EXTENSION_ROOT,
-    GUEST_STARTUP_PLAN_PATH,
+    GUEST_STARTUP_PLAN_PATH, LIFECYCLE_SCHEMA_VERSION,
 };
 use serde_json::json;
 
@@ -26,7 +26,7 @@ pub struct ManagedVmCreateInput<'a> {
     pub bot_pubkey_hex: &'a str,
 }
 
-pub fn build_create_vm_request(input: ManagedVmCreateInput<'_>) -> SpawnerCreateVmRequest {
+pub fn build_managed_vm_create_request(input: ManagedVmCreateInput<'_>) -> ManagedVmCreateRequest {
     let startup_plan = guest_startup_plan();
     let mut env = BTreeMap::new();
     env.insert("PIKA_OWNER_PUBKEY".to_string(), input.owner_pubkey.to_hex());
@@ -63,8 +63,8 @@ pub fn build_create_vm_request(input: ManagedVmCreateInput<'_>) -> SpawnerCreate
     );
     files.extend(openclaw_extension_files());
 
-    SpawnerCreateVmRequest {
-        guest_autostart: SpawnerGuestAutostartRequest {
+    ManagedVmCreateRequest {
+        guest_autostart: ManagedVmGuestAutostartRequest {
             command: GUEST_AUTOSTART_COMMAND.to_string(),
             env,
             files,
@@ -126,6 +126,9 @@ fn guest_autostart_script() -> String {
 set -euo pipefail
 
 STARTUP_PLAN_PATH="/{startup_plan_path}"
+LIFECYCLE_SCHEMA_VERSION={lifecycle_schema_version}
+event_seq=0
+service_exit_status=""
 agent_pid=""
 gateway_proxy_pid=""
 
@@ -144,8 +147,216 @@ plan_value() {{
   jq -er "$1" "$STARTUP_PLAN_PATH"
 }}
 
-workspace_path() {{
-  printf '/%s' "$1"
+plan_path() {{
+  local raw="$1"
+  if [[ "$raw" == /* ]]; then
+    printf '%s' "$raw"
+  else
+    printf '/%s' "$raw"
+  fi
+}}
+
+current_boot_id() {{
+  if [[ -r /proc/sys/kernel/random/boot_id ]]; then
+    tr -d '\n' < /proc/sys/kernel/random/boot_id
+  fi
+}}
+
+runtime_status_path() {{
+  plan_path "$(plan_value '.artifacts.status_path')"
+}}
+
+runtime_events_path() {{
+  plan_path "$(plan_value '.artifacts.events_path')"
+}}
+
+runtime_result_path() {{
+  plan_path "$(plan_value '.artifacts.result_path')"
+}}
+
+write_json_atomically() {{
+  local path="$1"
+  local payload="$2"
+  local dir
+  dir="$(dirname "$path")"
+  mkdir -p "$dir"
+  local tmp="$dir/.tmp.$(basename "$path").$$"
+  printf '%s\n' "$payload" > "$tmp"
+  mv "$tmp" "$path"
+}}
+
+lifecycle_details_json() {{
+  local probe="${{1:-}}"
+  local service_probe_satisfied="${{2:-false}}"
+  local failure_reason="${{3:-}}"
+  jq -nc \
+    --arg agent_kind "openclaw" \
+    --arg backend_mode "native" \
+    --arg service_kind "openclaw_gateway" \
+    --arg probe "$probe" \
+    --arg failure_reason "$failure_reason" \
+    --argjson service_probe_satisfied "$service_probe_satisfied" \
+    '
+      {{
+        agent_kind: $agent_kind,
+        backend_mode: $backend_mode,
+        service_kind: $service_kind,
+        service_probe_satisfied: $service_probe_satisfied
+      }}
+      + (if $probe == "" then {{}} else {{ probe: $probe }} end)
+      + (if $failure_reason == "" then {{}} else {{ failure_reason: $failure_reason }} end)
+    '
+}}
+
+write_status() {{
+  local state="$1"
+  local message="$2"
+  local details_json="${{3:-null}}"
+  local payload
+  payload="$(
+    jq -nc \
+      --argjson schema_version "$LIFECYCLE_SCHEMA_VERSION" \
+      --arg state "$state" \
+      --arg updated_at "$(date --iso-8601=seconds)" \
+      --arg message "$message" \
+      --arg boot_id "$(current_boot_id)" \
+      --argjson details "$details_json" \
+      '
+        {{
+          schema_version: $schema_version,
+          state: $state,
+          updated_at: $updated_at,
+          message: $message
+        }}
+        + (if $boot_id == "" then {{}} else {{ boot_id: $boot_id }} end)
+        + (if $details == null then {{}} else {{ details: $details }} end)
+      '
+  )"
+  write_json_atomically "$(runtime_status_path)" "$payload"
+}}
+
+append_event() {{
+  local kind="$1"
+  local message="$2"
+  local details_json="${{3:-null}}"
+  event_seq=$((event_seq + 1))
+  local payload
+  payload="$(
+    jq -nc \
+      --argjson schema_version "$LIFECYCLE_SCHEMA_VERSION" \
+      --argjson seq "$event_seq" \
+      --arg timestamp "$(date --iso-8601=seconds)" \
+      --arg kind "$kind" \
+      --arg message "$message" \
+      --arg boot_id "$(current_boot_id)" \
+      --argjson details "$details_json" \
+      '
+        {{
+          schema_version: $schema_version,
+          seq: $seq,
+          timestamp: $timestamp,
+          kind: $kind,
+          message: $message
+        }}
+        + (if $boot_id == "" then {{}} else {{ boot_id: $boot_id }} end)
+        + (if $details == null then {{}} else {{ details: $details }} end)
+      '
+  )"
+  local path
+  path="$(runtime_events_path)"
+  mkdir -p "$(dirname "$path")"
+  printf '%s\n' "$payload" >> "$path"
+}}
+
+write_result() {{
+  local status="$1"
+  local exit_code="$2"
+  local message="$3"
+  local details_json="${{4:-null}}"
+  local payload
+  payload="$(
+    jq -nc \
+      --argjson schema_version "$LIFECYCLE_SCHEMA_VERSION" \
+      --arg status "$status" \
+      --arg finished_at "$(date --iso-8601=seconds)" \
+      --arg message "$message" \
+      --argjson exit_code "$exit_code" \
+      --argjson details "$details_json" \
+      '
+        {{
+          schema_version: $schema_version,
+          status: $status,
+          finished_at: $finished_at,
+          message: $message,
+          exit_code: $exit_code
+        }}
+        + (if $details == null then {{}} else {{ details: $details }} end)
+      '
+  )"
+  write_json_atomically "$(runtime_result_path)" "$payload"
+}}
+
+mark_runtime_booted() {{
+  local details_json
+  details_json="$(lifecycle_details_json "" false "")"
+  write_status "booted" "managed OpenClaw guest booted" "$details_json"
+  append_event "booted" "managed OpenClaw guest booted" "$details_json"
+}}
+
+mark_waiting_for_service_ready() {{
+  local details_json
+  details_json="$(lifecycle_details_json "" false "")"
+  write_status "starting" "waiting for OpenClaw health" "$details_json"
+  append_event "starting" "waiting for OpenClaw health" "$details_json"
+}}
+
+mark_service_probe_ready() {{
+  local probe="$1"
+  local details_json
+  details_json="$(lifecycle_details_json "$probe" true "")"
+  write_status "starting" "OpenClaw health ready; publishing keypackage" "$details_json"
+  append_event "starting" "OpenClaw health ready; publishing keypackage" "$details_json"
+}}
+
+mark_guest_ready() {{
+  local probe="$1"
+  local details_json
+  details_json="$(lifecycle_details_json "$probe" true "")"
+  write_status "ready" "managed OpenClaw guest ready" "$details_json"
+  append_event "ready" "managed OpenClaw guest ready" "$details_json"
+}}
+
+mark_guest_completed() {{
+  local message="$1"
+  local exit_code="${{2:-0}}"
+  local service_probe_satisfied="${{3:-false}}"
+  local probe="${{4:-}}"
+  local details_json
+  details_json="$(lifecycle_details_json "$probe" "$service_probe_satisfied" "")"
+  write_status "completed" "$message" "$details_json"
+  append_event "completed" "$message" "$details_json"
+  write_result "completed" "$exit_code" "$message" "$details_json"
+}}
+
+mark_guest_failed() {{
+  local reason="$1"
+  local exit_code="${{2:-1}}"
+  local service_probe_satisfied="${{3:-false}}"
+  local probe="${{4:-}}"
+  local details_json
+  details_json="$(lifecycle_details_json "$probe" "$service_probe_satisfied" "$reason")"
+  write_status "failed" "$reason" "$details_json"
+  append_event "failed" "$reason" "$details_json"
+  write_result "failed" "$exit_code" "$reason" "$details_json"
+}}
+
+capture_service_exit_status() {{
+  local service_pid="$1"
+  if wait "$service_pid"; then
+    service_exit_status=0
+  else
+    service_exit_status=$?
+  fi
 }}
 
 start_openclaw_private_proxy() {{
@@ -207,43 +418,6 @@ PY
   fi
 }}
 
-write_ready_marker() {{
-  local probe="$1"
-  local ready_path="$(workspace_path "$(plan_value '.artifacts.ready_marker_path')")"
-  local failed_path="$(workspace_path "$(plan_value '.artifacts.failed_marker_path')")"
-  local boot_id=""
-  if [[ -r /proc/sys/kernel/random/boot_id ]]; then
-    boot_id="$(tr -d '\n' < /proc/sys/kernel/random/boot_id)"
-  fi
-  cat >"$ready_path" <<EOF
-{{
-  "ready": true,
-  "agent_kind": "openclaw",
-  "backend_mode": "native",
-  "service_kind": "openclaw_gateway",
-  "probe": "${{probe}}",
-  "boot_id": "${{boot_id}}"
-}}
-EOF
-  rm -f "$failed_path"
-}}
-
-write_failed_marker() {{
-  local reason="$1"
-  local ready_path="$(workspace_path "$(plan_value '.artifacts.ready_marker_path')")"
-  local failed_path="$(workspace_path "$(plan_value '.artifacts.failed_marker_path')")"
-  cat >"$failed_path" <<EOF
-{{
-  "ready": false,
-  "agent_kind": "openclaw",
-  "backend_mode": "native",
-  "service_kind": "openclaw_gateway",
-  "reason": "${{reason}}"
-}}
-EOF
-  rm -f "$ready_path"
-}}
-
 trap cleanup_agent EXIT TERM INT
 
 if ! command -v jq >/dev/null 2>&1; then
@@ -257,14 +431,14 @@ if [[ ! -f "$STARTUP_PLAN_PATH" ]]; then
 fi
 
 daemon_state_dir="$(plan_value '.daemon_state_dir')"
-ready_path="$(workspace_path "$(plan_value '.artifacts.ready_marker_path')")"
-failed_path="$(workspace_path "$(plan_value '.artifacts.failed_marker_path')")"
-identity_seed_path="$(workspace_path "$(plan_value '.artifacts.identity_seed_path')")"
+identity_seed_path="$(plan_path "$(plan_value '.artifacts.identity_seed_path')")"
 mkdir -p "$daemon_state_dir"
 if [[ -f "$identity_seed_path" && ! -f "$daemon_state_dir/identity.json" ]]; then
   cp "$identity_seed_path" "$daemon_state_dir/identity.json"
 fi
-rm -f "$ready_path" "$failed_path"
+rm -f "$(runtime_result_path)"
+mark_runtime_booted
+mark_waiting_for_service_ready
 
 if [[ -z "${{PIKA_OWNER_PUBKEY:-}}" ]]; then
   echo "[managed-openclaw] missing PIKA_OWNER_PUBKEY" >&2
@@ -319,8 +493,8 @@ wait_for_service_ready() {{
 
   while (( SECONDS < deadline )); do
     if ! kill -0 "$service_pid" 2>/dev/null; then
-      wait "$service_pid"
-      return $?
+      capture_service_exit_status "$service_pid"
+      return 2
     fi
     if curl -fsS --max-time 2 "$readiness_url" >/dev/null 2>&1; then
       printf '%s\n' "$ready_probe"
@@ -329,7 +503,6 @@ wait_for_service_ready() {{
     sleep 1
   done
 
-  write_failed_marker "$timeout_failure_reason"
   kill "$service_pid" 2>/dev/null || true
   wait "$service_pid" || true
   return 1
@@ -343,17 +516,15 @@ wait_for_keypackage_publish() {{
 
   while (( SECONDS < deadline )); do
     if ! kill -0 "$service_pid" 2>/dev/null; then
-      wait "$service_pid"
-      return $?
+      capture_service_exit_status "$service_pid"
+      return 2
     fi
     if publish_daemon_keypackage; then
-      write_ready_marker "$ready_probe"
       return 0
     fi
     sleep 1
   done
 
-  write_failed_marker "timeout_waiting_for_openclaw_keypackage_publish"
   kill "$service_pid" 2>/dev/null || true
   wait "$service_pid" || true
   return 1
@@ -361,7 +532,7 @@ wait_for_keypackage_publish() {{
 
 openclaw_exec="$(plan_value '.service.exec_command')"
 openclaw_state_dir="$(plan_value '.service.state_dir')"
-openclaw_config_path="$(workspace_path "$(plan_value '.service.config_path')")"
+openclaw_config_path="$(plan_path "$(plan_value '.service.config_path')")"
 openclaw_workspace_root="$(dirname "$openclaw_config_path")"
 openclaw_package_root="${{PIKA_OPENCLAW_PACKAGE_ROOT:-$(dirname "$(dirname "$openclaw_exec")")/lib/openclaw}}"
 gateway_port="$(plan_value '.service.gateway_port | tostring')"
@@ -392,23 +563,41 @@ if [[ "${{PIKA_ENABLE_OPENCLAW_PRIVATE_PROXY:-1}}" != "0" ]]; then
   start_openclaw_private_proxy "$PIKA_VM_IP" "$gateway_port"
 fi
 
-if ! ready_probe="$(wait_for_service_ready "$agent_pid")"; then
+if ready_probe="$(wait_for_service_ready "$agent_pid")"; then
+  :
+else
+  wait_status=$?
+  if [[ "$wait_status" -eq 2 ]]; then
+    mark_guest_failed "openclaw_gateway_exited_before_service_ready" "${{service_exit_status:-1}}" false
+  else
+    mark_guest_failed "$(plan_value '.readiness_check.timeout_failure_reason')" 1 false
+  fi
   exit 1
 fi
-if ! wait_for_keypackage_publish "$agent_pid" "$ready_probe"; then
+mark_service_probe_ready "$ready_probe"
+if wait_for_keypackage_publish "$agent_pid" "$ready_probe"; then
+  :
+else
+  wait_status=$?
+  if [[ "$wait_status" -eq 2 ]]; then
+    mark_guest_failed "openclaw_gateway_exited_before_keypackage_publish" "${{service_exit_status:-1}}" true "$ready_probe"
+  else
+    mark_guest_failed "timeout_waiting_for_openclaw_keypackage_publish" 1 true "$ready_probe"
+  fi
   exit 1
 fi
+mark_guest_ready "$ready_probe"
 wait "$agent_pid"
 status=$?
-rm -f "$ready_path"
-if [[ $status -ne 0 ]]; then
-  write_failed_marker "openclaw_gateway_exited"
+if [[ "$status" -eq 0 ]]; then
+  mark_guest_completed "openclaw_gateway_exited" "$status" true "$ready_probe"
 else
-  rm -f "$failed_path"
+  mark_guest_failed "openclaw_gateway_exited" "$status" true "$ready_probe"
 fi
 exit $status
 "#,
         startup_plan_path = GUEST_STARTUP_PLAN_PATH,
+        lifecycle_schema_version = LIFECYCLE_SCHEMA_VERSION,
     )
 }
 
@@ -552,4 +741,32 @@ fn openclaw_extension_files() -> BTreeMap<String, String> {
             include_str!("../../../pikachat-openclaw/openclaw/extensions/pikachat-openclaw/src/types.ts").to_string(),
         ),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pika_cloud::{EVENTS_PATH, RESULT_PATH, STATUS_PATH};
+
+    #[test]
+    fn guest_startup_plan_uses_shared_lifecycle_artifacts() {
+        let plan = guest_startup_plan();
+
+        assert_eq!(plan.artifacts.status_path, STATUS_PATH);
+        assert_eq!(plan.artifacts.events_path, EVENTS_PATH);
+        assert_eq!(plan.artifacts.result_path, RESULT_PATH);
+    }
+
+    #[test]
+    fn guest_autostart_script_uses_lifecycle_fields_not_marker_fields() {
+        let script = guest_autostart_script();
+
+        assert!(script.contains(".artifacts.status_path"));
+        assert!(script.contains(".artifacts.events_path"));
+        assert!(script.contains(".artifacts.result_path"));
+        assert!(!script.contains("ready_marker_path"));
+        assert!(!script.contains("failed_marker_path"));
+        assert!(!script.contains("service-ready.json"));
+        assert!(!script.contains("service-failed.json"));
+    }
 }

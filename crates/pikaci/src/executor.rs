@@ -1,17 +1,19 @@
-use std::collections::HashMap;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, anyhow, bail};
 use chrono::Utc;
 use fs2::FileExt;
+use pika_cloud::{
+    CLOUD_GUEST_LOG_PATH, EVENTS_PATH, GUEST_REQUEST_PATH, IncusGuestRunRequest, RESULT_PATH,
+    STATUS_PATH,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -22,7 +24,6 @@ use crate::model::{
 use crate::snapshot::{SnapshotMetadata, materialize_workspace, read_snapshot_metadata};
 
 mod incus;
-mod microvm;
 
 #[derive(Clone, Debug)]
 pub struct HostContext {
@@ -66,37 +67,9 @@ struct GuestResult {
     message: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
-struct IncusGuestRequest {
-    schema_version: u32,
-    command: String,
-    timeout_secs: u64,
-    run_as_root: bool,
-    workspace_dir: String,
-    cargo_home_dir: String,
-    target_dir: String,
-    xdg_state_home_dir: String,
-    home_dir: String,
-}
-
-struct GuestFlakePaths<'a> {
-    artifacts_dir: &'a Path,
-    cargo_home_dir: &'a Path,
-    target_dir: &'a Path,
-    staged_linux_rust_workspace_deps_dir: Option<&'a Path>,
-    staged_linux_rust_workspace_build_dir: Option<&'a Path>,
-}
-
-struct GuestRunnerConfig {
-    guest_system: &'static str,
-    host_pkgs_expr: &'static str,
-    hypervisor: &'static str,
-}
-
 #[derive(Clone, Debug)]
 struct RemoteLinuxVmSharedContext {
     remote_host: String,
-    remote_work_dir: PathBuf,
     remote_job_dir: PathBuf,
     remote_snapshot_dir: PathBuf,
     remote_artifacts_dir: PathBuf,
@@ -104,13 +77,6 @@ struct RemoteLinuxVmSharedContext {
     remote_target_dir: PathBuf,
     remote_workspace_deps_dir: PathBuf,
     remote_workspace_build_dir: PathBuf,
-}
-
-#[derive(Clone, Debug)]
-struct RemoteMicrovmContext {
-    shared: RemoteLinuxVmSharedContext,
-    remote_runtime_dir: PathBuf,
-    remote_runtime_link: PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -124,31 +90,15 @@ struct RemoteIncusContext {
 
 #[derive(Clone, Debug)]
 enum RemoteLinuxVmContext {
-    Microvm(RemoteMicrovmContext),
     Incus(RemoteIncusContext),
 }
 
 impl RemoteLinuxVmContext {
-    fn backend(&self) -> RemoteLinuxVmBackend {
-        match self {
-            Self::Microvm(_) => RemoteLinuxVmBackend::Microvm,
-            Self::Incus(_) => RemoteLinuxVmBackend::Incus,
-        }
-    }
-
     fn shared(&self) -> &RemoteLinuxVmSharedContext {
         match self {
-            Self::Microvm(remote) => &remote.shared,
             Self::Incus(remote) => &remote.shared,
         }
     }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct RunnerFlakeMetadata {
-    schema_version: u32,
-    content_hash: String,
-    remote_store_path: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -253,7 +203,6 @@ const TART_XCODE_TAG: &str = "pikaci-xcode";
 const TART_LIBRARY_DEVELOPER_TAG: &str = "pikaci-library-developer";
 const TART_RUST_TOOLCHAIN_NAME: &str = "rust-toolchain";
 const TART_NIX_STORE_TAG: &str = "pikaci-nix-store";
-const REMOTE_MICROVM_GUEST_SYSTEM: &str = "x86_64-linux";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV: &str =
     "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_ENV: &str =
@@ -278,29 +227,15 @@ const REMOTE_LINUX_VM_INCUS_PROFILE_DEFAULT: &str = "pika-agent-dev";
 const REMOTE_LINUX_VM_INCUS_IMAGE_ALIAS_DEFAULT: &str = "pikaci/dev";
 const REMOTE_LINUX_VM_INCUS_READ_ONLY_DISK_IO_BUS: &str = "virtiofs";
 const REMOTE_LINUX_VM_INCUS_RUN_BINARY: &str = "/run/current-system/sw/bin/pikaci-incus-run";
-const REMOTE_LINUX_VM_INCUS_ARTIFACTS_DIR: &str = "/artifacts";
-const REMOTE_LINUX_VM_INCUS_GUEST_REQUEST_PATH: &str = "/artifacts/guest-request.json";
 const REMOTE_LINUX_VM_INCUS_CARGO_HOME_DIR: &str = "/cargo-home";
 const REMOTE_LINUX_VM_INCUS_TARGET_DIR: &str = "/cargo-target";
-const REMOTE_LINUX_VM_INCUS_XDG_STATE_HOME_DIR: &str = "/artifacts/xdg-state";
+const REMOTE_LINUX_VM_INCUS_XDG_STATE_HOME_DIR: &str = "/run/pika-cloud/xdg-state";
 const REMOTE_LINUX_VM_INCUS_NON_ROOT_HOME_DIR: &str = "/home/pikaci";
 const REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH: &str = "/workspace/snapshot";
 #[cfg(test)]
 const REMOTE_LINUX_VM_INCUS_WORKSPACE_DEPS_MOUNT_PATH: &str = "/staged/linux-rust/workspace-deps";
 #[cfg(test)]
 const REMOTE_LINUX_VM_INCUS_WORKSPACE_BUILD_MOUNT_PATH: &str = "/staged/linux-rust/workspace-build";
-const REMOTE_MICROVM_HOST_UID_ENV: &str = "PIKACI_REMOTE_MICROVM_HOST_UID";
-const REMOTE_MICROVM_HOST_GID_ENV: &str = "PIKACI_REMOTE_MICROVM_HOST_GID";
-static REMOTE_OWNERSHIP_IDS_CACHE: OnceLock<Mutex<HashMap<String, (u32, u32)>>> = OnceLock::new();
-const REMOTE_MICROVM_VIRTIOFS_SOCKETS: &[&str] = &[
-    "nixos-virtiofs-ro-store.sock",
-    "nixos-virtiofs-snapshot.sock",
-    "nixos-virtiofs-artifacts.sock",
-    "nixos-virtiofs-cargo-home.sock",
-    "nixos-virtiofs-cargo-target.sock",
-    "nixos-virtiofs-staged-linux-rust-workspace-deps.sock",
-    "nixos-virtiofs-staged-linux-rust-workspace-build.sock",
-];
 
 struct TartRunProcess {
     child: std::process::Child,
@@ -1057,9 +992,8 @@ fn run_remote_linux_vm_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<J
         phases.record(RemoteLinuxVmPhase::PrepareRuntime, || {
             prepare_remote_linux_vm_runtime(job, ctx, &remote, &ctx.host_log_path)
         })?;
-        if let RemoteLinuxVmContext::Incus(remote) = &remote {
-            phases.set_incus_image(incus::load_image_record(remote, &ctx.host_log_path)?);
-        }
+        let RemoteLinuxVmContext::Incus(remote_incus) = &remote;
+        phases.set_incus_image(incus::load_image_record(remote_incus, &ctx.host_log_path)?);
 
         append_line(
             &ctx.host_log_path,
@@ -1142,73 +1076,6 @@ pub(crate) fn prepare_remote_linux_vm_backend(
         log_path,
     )?;
     prepare_remote_linux_vm_backend_state(job, ctx, &remote, log_path)
-}
-
-pub(crate) struct RemoteLinuxVmPrepareArtifact {
-    pub installable: String,
-    pub output_name: String,
-}
-
-pub(crate) fn remote_linux_vm_prepare_artifact(
-    job: &JobSpec,
-    ctx: &HostContext,
-) -> anyhow::Result<Option<RemoteLinuxVmPrepareArtifact>> {
-    let Some(backend) = job.remote_linux_vm_backend() else {
-        return Ok(None);
-    };
-    match backend {
-        RemoteLinuxVmBackend::Microvm => {
-            let remote = remote_linux_vm_context(job, ctx)?;
-            let RemoteLinuxVmContext::Microvm(remote) = remote else {
-                bail!("expected remote Linux VM microvm context");
-            };
-            Ok(Some(RemoteLinuxVmPrepareArtifact {
-                installable: materialize_remote_microvm_runner_flake(job, ctx, &remote)?,
-                output_name: "nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
-                    .to_string(),
-            }))
-        }
-        RemoteLinuxVmBackend::Incus => Ok(None),
-    }
-}
-
-fn materialize_remote_microvm_runner_flake(
-    job: &JobSpec,
-    ctx: &HostContext,
-    remote: &RemoteMicrovmContext,
-) -> anyhow::Result<String> {
-    let vm_dir = ctx.job_dir.join("vm");
-    fs::create_dir_all(&vm_dir).with_context(|| format!("create {}", vm_dir.display()))?;
-    ensure_file(&ctx.host_log_path)?;
-    ensure_file(&ctx.guest_log_path)?;
-
-    let flake_dir = vm_dir.join("flake");
-    fs::create_dir_all(&flake_dir).with_context(|| format!("create {}", flake_dir.display()))?;
-    let (host_uid, host_gid) = remote_ownership_ids(&remote.shared.remote_host)?;
-    let flake_nix = render_guest_flake(
-        remote_linux_vm_guest_runner_config(RemoteLinuxVmBackend::Microvm),
-        job,
-        &remote.shared.remote_snapshot_dir,
-        ctx.workspace_read_only,
-        &GuestFlakePaths {
-            artifacts_dir: &remote.shared.remote_artifacts_dir,
-            cargo_home_dir: &remote.shared.remote_cargo_home_dir,
-            target_dir: &remote.shared.remote_target_dir,
-            staged_linux_rust_workspace_deps_dir: Some(&remote.shared.remote_workspace_deps_dir),
-            staged_linux_rust_workspace_build_dir: Some(&remote.shared.remote_workspace_build_dir),
-        },
-        host_uid,
-        host_gid,
-    )?;
-    fs::write(flake_dir.join("flake.nix"), flake_nix)
-        .with_context(|| format!("write {}", flake_dir.join("flake.nix").display()))?;
-    Ok(declared_runner_installable(&flake_dir))
-}
-
-fn runner_flake_content_hash(flake_dir: &Path) -> anyhow::Result<String> {
-    let flake_path = flake_dir.join("flake.nix");
-    let bytes = fs::read(&flake_path).with_context(|| format!("read {}", flake_path.display()))?;
-    Ok(hex::encode(Sha256::digest(&bytes)))
 }
 
 fn run_tart_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> {
@@ -1896,27 +1763,15 @@ fn command_stdout(command: &mut Command) -> Option<String> {
         .map(|stdout| stdout.trim().to_string())
 }
 
-fn remote_linux_vm_backend_label(backend: RemoteLinuxVmBackend) -> &'static str {
-    match backend {
-        RemoteLinuxVmBackend::Microvm => "microvm",
-        RemoteLinuxVmBackend::Incus => "incus",
-    }
-}
-
-fn remote_linux_vm_guest_runner_config(backend: RemoteLinuxVmBackend) -> GuestRunnerConfig {
-    match backend {
-        RemoteLinuxVmBackend::Microvm => microvm::guest_runner_config(),
-        RemoteLinuxVmBackend::Incus => {
-            unreachable!("Incus does not use the microVM runner flake path")
-        }
-    }
+fn remote_linux_vm_backend_label(_backend: RemoteLinuxVmBackend) -> &'static str {
+    "incus"
 }
 
 fn remote_linux_vm_context(
     job: &JobSpec,
     ctx: &HostContext,
 ) -> anyhow::Result<RemoteLinuxVmContext> {
-    let backend = job
+    let _backend = job
         .remote_linux_vm_backend()
         .ok_or_else(|| anyhow!("job `{}` does not select a remote Linux VM backend", job.id))?;
     let remote_host = prepared_output_ssh_host();
@@ -1939,7 +1794,6 @@ fn remote_linux_vm_context(
     let remote_job_dir = remote_run_dir.join("jobs").join(job.id);
     let shared = RemoteLinuxVmSharedContext {
         remote_host,
-        remote_work_dir: remote_work_dir.clone(),
         remote_job_dir: remote_job_dir.clone(),
         remote_snapshot_dir,
         remote_artifacts_dir: remote_job_dir.join("artifacts"),
@@ -1952,20 +1806,13 @@ fn remote_linux_vm_context(
             .join("staged-linux-rust")
             .join("workspace-build"),
     };
-    Ok(match backend {
-        RemoteLinuxVmBackend::Microvm => RemoteLinuxVmContext::Microvm(RemoteMicrovmContext {
-            remote_runtime_dir: remote_job_dir.join("vm"),
-            remote_runtime_link: remote_job_dir.join("vm").join("runner"),
-            shared,
-        }),
-        RemoteLinuxVmBackend::Incus => RemoteLinuxVmContext::Incus(RemoteIncusContext {
-            shared,
-            incus_project: remote_linux_vm_incus_project(),
-            incus_profile: remote_linux_vm_incus_profile(),
-            incus_image_alias: remote_linux_vm_incus_image_alias(),
-            incus_instance_name: remote_linux_vm_incus_instance_name(run_id, job.id),
-        }),
-    })
+    Ok(RemoteLinuxVmContext::Incus(RemoteIncusContext {
+        shared,
+        incus_project: remote_linux_vm_incus_project(),
+        incus_profile: remote_linux_vm_incus_profile(),
+        incus_image_alias: remote_linux_vm_incus_image_alias(),
+        incus_instance_name: remote_linux_vm_incus_instance_name(run_id, job.id),
+    }))
 }
 
 pub(crate) fn staged_linux_remote_snapshot_dir(
@@ -2257,86 +2104,6 @@ fn load_remote_snapshot_metadata(
     Ok(Some(metadata))
 }
 
-fn load_remote_runner_flake_metadata(
-    remote_host: &str,
-    metadata_path: &Path,
-) -> anyhow::Result<Option<RunnerFlakeMetadata>> {
-    let command = format!(
-        "if test -f {}; then cat {}; fi",
-        shell_single_quote(&metadata_path.display().to_string()),
-        shell_single_quote(&metadata_path.display().to_string())
-    );
-    let output = run_ssh_command(remote_host, &command)
-        .output()
-        .with_context(|| format!("read remote runner metadata from {remote_host}"))?;
-    if !output.status.success() {
-        bail!(
-            "read remote runner metadata from {} failed with status {}",
-            remote_host,
-            output.status
-        );
-    }
-    if output.stdout.is_empty() {
-        return Ok(None);
-    }
-    let metadata: RunnerFlakeMetadata =
-        serde_json::from_slice(&output.stdout).with_context(|| {
-            format!(
-                "decode remote runner metadata from {}",
-                metadata_path.display()
-            )
-        })?;
-    Ok(Some(metadata))
-}
-
-fn write_remote_json<T: Serialize>(
-    remote_host: &str,
-    path: &Path,
-    value: &T,
-    log_path: &Path,
-    label: &str,
-) -> anyhow::Result<()> {
-    let payload = serde_json::to_vec_pretty(value).context("encode remote json payload")?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("remote path {} has no parent", path.display()))?;
-    let command = format!(
-        "set -euo pipefail; mkdir -p {}; cat > {}",
-        shell_single_quote(&parent.display().to_string()),
-        shell_single_quote(&path.display().to_string()),
-    );
-    let mut child = run_ssh_command(remote_host, &command)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("spawn remote json writer on {remote_host}"))?;
-    child
-        .stdin
-        .take()
-        .ok_or_else(|| anyhow!("remote json writer stdin unavailable"))?
-        .write_all(&payload)
-        .with_context(|| format!("stream remote json payload to {remote_host}"))?;
-    let output = child
-        .wait_with_output()
-        .with_context(|| format!("wait for remote json writer on {remote_host}"))?;
-    append_line(log_path, label)?;
-    if !output.stdout.is_empty() {
-        append_line(log_path, &String::from_utf8_lossy(&output.stdout))?;
-    }
-    if !output.stderr.is_empty() {
-        append_line(log_path, &String::from_utf8_lossy(&output.stderr))?;
-    }
-    if !output.status.success() {
-        bail!(
-            "write remote json to {} on {} failed with status {:?}",
-            path.display(),
-            remote_host,
-            output.status.code()
-        );
-    }
-    Ok(())
-}
 fn sync_directory_to_remote(
     local_dir: &Path,
     remote_dir: &Path,
@@ -2538,23 +2305,17 @@ fn prepare_remote_linux_vm_runtime(
         }
     }
     match remote {
-        RemoteLinuxVmContext::Microvm(remote) => {
-            microvm::prepare_runtime(job, ctx, remote, log_path)
-        }
         RemoteLinuxVmContext::Incus(remote) => incus::prepare_runtime(job, remote, log_path),
     }
 }
 
 fn prepare_remote_linux_vm_backend_state(
-    job: &JobSpec,
-    ctx: &HostContext,
+    _job: &JobSpec,
+    _ctx: &HostContext,
     remote: &RemoteLinuxVmContext,
     log_path: &Path,
 ) -> anyhow::Result<()> {
     match remote {
-        RemoteLinuxVmContext::Microvm(remote) => {
-            microvm::prepare_backend_state(job, ctx, remote, log_path)
-        }
         RemoteLinuxVmContext::Incus(remote) => incus::prepare_backend_state(remote, log_path),
     }
 }
@@ -2565,7 +2326,6 @@ fn spawn_remote_linux_vm_process(
     log_path: &Path,
 ) -> anyhow::Result<RemoteLinuxVmProcess> {
     let remote_command = match remote {
-        RemoteLinuxVmContext::Microvm(remote) => microvm::build_launch_command(remote),
         RemoteLinuxVmContext::Incus(remote) => incus::build_spawn_command(job, remote, log_path)?,
     };
     let mut child = run_ssh_command(&remote.shared().remote_host, &remote_command)
@@ -2601,7 +2361,7 @@ fn spawn_remote_linux_vm_process(
         log_path,
         &format!(
             "[pikaci] launched remote Linux VM backend `{}` for job `{}` on {}",
-            remote_linux_vm_backend_label(remote.backend()),
+            remote_linux_vm_backend_label(RemoteLinuxVmBackend::Incus),
             job.id,
             remote.shared().remote_host
         ),
@@ -2657,7 +2417,6 @@ fn collect_remote_linux_vm_artifacts(
     ctx: &HostContext,
 ) -> anyhow::Result<()> {
     match remote {
-        RemoteLinuxVmContext::Microvm(remote) => microvm::collect_artifacts(remote, ctx),
         RemoteLinuxVmContext::Incus(remote) => incus::collect_artifacts(remote, ctx),
     }
 }
@@ -2667,183 +2426,8 @@ fn cleanup_remote_linux_vm_runtime(
     log_path: &Path,
 ) -> anyhow::Result<()> {
     match remote {
-        RemoteLinuxVmContext::Microvm(remote) => microvm::cleanup_runtime(remote, log_path),
         RemoteLinuxVmContext::Incus(remote) => incus::cleanup_runtime(remote, log_path),
     }
-}
-
-fn copy_remote_file_to_local(
-    remote_host: &str,
-    remote_path: &Path,
-    local_path: &Path,
-) -> anyhow::Result<()> {
-    let output = run_ssh_command(
-        remote_host,
-        &format!(
-            "cat {}",
-            shell_single_quote(&remote_path.display().to_string())
-        ),
-    )
-    .output()
-    .with_context(|| {
-        format!(
-            "read {} via ssh from {}",
-            remote_path.display(),
-            remote_host
-        )
-    })?;
-    if !output.status.success() {
-        bail!(
-            "remote read of {} from {} failed with {:?}",
-            remote_path.display(),
-            remote_host,
-            output.status.code()
-        );
-    }
-    if let Some(parent) = local_path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    }
-    fs::write(local_path, &output.stdout).with_context(|| format!("write {}", local_path.display()))
-}
-
-fn render_guest_flake(
-    config: GuestRunnerConfig,
-    job: &JobSpec,
-    workspace_dir: &Path,
-    workspace_read_only: bool,
-    paths: &GuestFlakePaths<'_>,
-    host_uid: u32,
-    host_gid: u32,
-) -> anyhow::Result<String> {
-    let (guest_command, run_as_root) = compiled_guest_command(job);
-    let workspace_dir = nix_escape(&workspace_dir.display().to_string());
-    let artifacts_dir = nix_escape(&paths.artifacts_dir.display().to_string());
-    let cargo_home_dir = nix_escape(&paths.cargo_home_dir.display().to_string());
-    let target_dir = nix_escape(&paths.target_dir.display().to_string());
-    let staged_linux_rust_workspace_deps_dir = paths
-        .staged_linux_rust_workspace_deps_dir
-        .map(|path| format!("\"{}\"", nix_escape(&path.display().to_string())))
-        .unwrap_or_else(|| "null".to_string());
-    let staged_linux_rust_workspace_build_dir = paths
-        .staged_linux_rust_workspace_build_dir
-        .map(|path| format!("\"{}\"", nix_escape(&path.display().to_string())))
-        .unwrap_or_else(|| "null".to_string());
-    let guest_command = nix_escape(&guest_command);
-    let workspace_read_only = if workspace_read_only { "true" } else { "false" };
-    let cacert_bundle = nix_escape("/etc/ssl/certs/ca-bundle.crt");
-    let timeout_secs = job.timeout_secs;
-    let guest_system = config.guest_system;
-    let host_pkgs_expr = config.host_pkgs_expr;
-    let hypervisor = config.hypervisor;
-
-    Ok(format!(
-        r#"{{
-  description = "pikaci wave1 guest";
-
-  inputs.pika.url = "path:{workspace_dir}";
-  inputs.nixpkgs.follows = "pika/nixpkgs";
-  inputs.microvm.follows = "pika/microvm";
-
-  outputs = {{ self, nixpkgs, microvm, pika }}: {{
-    nixosConfigurations.pikaci-wave1 = nixpkgs.lib.nixosSystem {{
-      system = "{guest_system}";
-      modules = [
-        microvm.nixosModules.microvm
-        (pika.lib.pikaci.mkGuestModule {{
-          hostPkgs = {host_pkgs_expr};
-          hostUid = {host_uid};
-          hostGid = {host_gid};
-          workspaceDir = "{workspace_dir}";
-          workspaceReadOnly = {workspace_read_only};
-          artifactsDir = "{artifacts_dir}";
-          cargoHomeDir = "{cargo_home_dir}";
-          cargoTargetDir = "{target_dir}";
-          stagedLinuxRustWorkspaceDepsDir = {staged_linux_rust_workspace_deps_dir};
-          stagedLinuxRustWorkspaceBuildDir = {staged_linux_rust_workspace_build_dir};
-          hypervisor = "{hypervisor}";
-          rustToolchain = pika.packages.{guest_system}.rustToolchain;
-          moqRelay = if pika.packages.{guest_system} ? moqRelay then pika.packages.{guest_system}.moqRelay else null;
-          androidSdk = if pika.packages.{guest_system} ? androidSdk then pika.packages.{guest_system}.androidSdk else null;
-          androidJdk = if pika.packages.{guest_system} ? androidJdk then pika.packages.{guest_system}.androidJdk else null;
-          androidGradle = if pika.packages.{guest_system} ? androidGradle then pika.packages.{guest_system}.androidGradle else null;
-          androidCargoNdk = if pika.packages.{guest_system} ? androidCargoNdk then pika.packages.{guest_system}.androidCargoNdk else null;
-          guestCommand = "{guest_command}";
-          runAsRoot = {run_as_root};
-          timeoutSecs = {timeout_secs};
-          cacertBundle = "{cacert_bundle}";
-        }})
-      ];
-    }};
-  }};
-}}
-"#
-    ))
-}
-
-fn remote_ownership_ids(remote_host: &str) -> anyhow::Result<(u32, u32)> {
-    let cache = REMOTE_OWNERSHIP_IDS_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(&(host_uid, host_gid)) = cache
-        .lock()
-        .expect("remote ownership cache poisoned")
-        .get(remote_host)
-    {
-        return Ok((host_uid, host_gid));
-    }
-
-    if let (Ok(host_uid), Ok(host_gid)) = (
-        std::env::var(REMOTE_MICROVM_HOST_UID_ENV),
-        std::env::var(REMOTE_MICROVM_HOST_GID_ENV),
-    ) {
-        let parsed = (
-            host_uid
-                .trim()
-                .parse::<u32>()
-                .with_context(|| format!("parse {REMOTE_MICROVM_HOST_UID_ENV}"))?,
-            host_gid
-                .trim()
-                .parse::<u32>()
-                .with_context(|| format!("parse {REMOTE_MICROVM_HOST_GID_ENV}"))?,
-        );
-        cache
-            .lock()
-            .expect("remote ownership cache poisoned")
-            .insert(remote_host.to_string(), parsed);
-        return Ok(parsed);
-    }
-
-    let output = run_ssh_command(remote_host, "printf '%s\\n%s\\n' \"$(id -u)\" \"$(id -g)\"")
-        .output()
-        .with_context(|| format!("read remote ownership ids from {remote_host}"))?;
-    if !output.status.success() {
-        if cfg!(test) {
-            return ownership_ids(Path::new("."));
-        }
-        bail!(
-            "failed to read remote ownership ids from {} with {:?}",
-            remote_host,
-            output.status.code()
-        );
-    }
-
-    let stdout = String::from_utf8(output.stdout).context("decode remote ownership id stdout")?;
-    let mut lines = stdout.lines();
-    let host_uid = lines
-        .next()
-        .ok_or_else(|| anyhow!("missing remote uid from {remote_host}"))?
-        .trim()
-        .parse::<u32>()
-        .with_context(|| format!("parse remote uid from {remote_host}"))?;
-    let host_gid = lines
-        .next()
-        .ok_or_else(|| anyhow!("missing remote gid from {remote_host}"))?
-        .trim()
-        .parse::<u32>()
-        .with_context(|| format!("parse remote gid from {remote_host}"))?;
-    cache
-        .lock()
-        .expect("remote ownership cache poisoned")
-        .insert(remote_host.to_string(), (host_uid, host_gid));
-    Ok((host_uid, host_gid))
 }
 
 pub(crate) fn compiled_guest_command(job: &JobSpec) -> (String, bool) {
@@ -2894,28 +2478,6 @@ pub(crate) fn compiled_guest_command(job: &JobSpec) -> (String, bool) {
     }
 }
 
-pub(crate) fn declared_runner_installable(flake_dir: &Path) -> String {
-    format!(
-        "path:{}#nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner",
-        flake_dir.display()
-    )
-}
-
-fn ownership_ids(path: &Path) -> anyhow::Result<(u32, u32)> {
-    let metadata = match fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(_) => fs::metadata(".").context("read metadata for current directory")?,
-    };
-    Ok((metadata.uid(), metadata.gid()))
-}
-
-fn nix_escape(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace("${", "\\${")
-}
-
 fn shell_escape(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
@@ -2926,27 +2488,24 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Mutex, OnceLock};
     use std::thread;
     use std::time::{Duration, Instant};
 
+    use pika_cloud::{GUEST_REQUEST_PATH, INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION};
+
     use super::{
-        GuestFlakePaths, HostContext, HostLocalCommandMode, HostLocalDevEnvState,
-        HostLocalEnvironmentRefresh, REMOTE_LINUX_VM_INCUS_CARGO_HOME_DIR,
-        REMOTE_LINUX_VM_INCUS_GUEST_REQUEST_PATH, REMOTE_LINUX_VM_INCUS_NON_ROOT_HOME_DIR,
+        HostContext, HostLocalCommandMode, HostLocalDevEnvState, HostLocalEnvironmentRefresh,
+        REMOTE_LINUX_VM_INCUS_CARGO_HOME_DIR, REMOTE_LINUX_VM_INCUS_NON_ROOT_HOME_DIR,
         REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH, REMOTE_LINUX_VM_INCUS_TARGET_DIR,
         REMOTE_LINUX_VM_INCUS_WORKSPACE_BUILD_MOUNT_PATH,
         REMOTE_LINUX_VM_INCUS_WORKSPACE_DEPS_MOUNT_PATH, REMOTE_LINUX_VM_INCUS_XDG_STATE_HOME_DIR,
-        REMOTE_MICROVM_VIRTIOFS_SOCKETS, RemoteIncusContext, RemoteLinuxVmSharedContext,
-        RemoteMicrovmContext, attach_remote_linux_vm_execution,
+        RemoteIncusContext, RemoteLinuxVmSharedContext, attach_remote_linux_vm_execution,
         build_sync_directory_finalize_command, cached_host_local_dev_env_is_usable,
         host_local_command_mode, host_local_dev_env_script_path, host_local_dev_env_shell_program,
-        incus, microvm, prepare_host_local_cached_dev_env_with, read_host_local_dev_env_state,
-        remote_linux_vm_execution_from_error, remote_linux_vm_guest_runner_config,
-        remote_linux_vm_prepare_artifact, remote_snapshot_ready_for_use, render_guest_flake,
-        run_job_on_runner, shell_single_quote, staged_linux_remote_defaults,
-        staged_linux_remote_snapshot_dir, write_host_local_dev_env_script,
-        write_host_local_dev_env_state,
+        incus, prepare_host_local_cached_dev_env_with, read_host_local_dev_env_state,
+        remote_linux_vm_execution_from_error, remote_snapshot_ready_for_use, run_job_on_runner,
+        shell_single_quote, staged_linux_remote_defaults, staged_linux_remote_snapshot_dir,
+        write_host_local_dev_env_script, write_host_local_dev_env_state,
     };
     use crate::model::{
         GuestCommand, JobSpec, PreparedOutputPayloadManifestRecord,
@@ -2954,45 +2513,6 @@ mod tests {
         RemoteLinuxVmImageRecord, RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord, RunStatus,
     };
     use crate::snapshot::SnapshotMetadata;
-
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    fn with_forced_backend<T>(
-        value: Option<RemoteLinuxVmBackend>,
-        action: impl FnOnce() -> T,
-    ) -> T {
-        let _guard = ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("env lock");
-        let previous = std::env::var("PIKACI_REMOTE_LINUX_VM_BACKEND").ok();
-        match value {
-            Some(RemoteLinuxVmBackend::Incus) => {
-                // SAFETY: tests serialize process environment access with ENV_LOCK.
-                unsafe { std::env::set_var("PIKACI_REMOTE_LINUX_VM_BACKEND", "incus") };
-            }
-            Some(RemoteLinuxVmBackend::Microvm) => {
-                // SAFETY: tests serialize process environment access with ENV_LOCK.
-                unsafe { std::env::set_var("PIKACI_REMOTE_LINUX_VM_BACKEND", "microvm") };
-            }
-            None => {
-                // SAFETY: tests serialize process environment access with ENV_LOCK.
-                unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_BACKEND") };
-            }
-        }
-        let result = action();
-        match previous {
-            Some(previous) => {
-                // SAFETY: tests serialize process environment access with ENV_LOCK.
-                unsafe { std::env::set_var("PIKACI_REMOTE_LINUX_VM_BACKEND", previous) };
-            }
-            None => {
-                // SAFETY: tests serialize process environment access with ENV_LOCK.
-                unsafe { std::env::remove_var("PIKACI_REMOTE_LINUX_VM_BACKEND") };
-            }
-        }
-        result
-    }
 
     fn write_snapshot_metadata(snapshot_dir: &Path, content_hash: &str) {
         fs::create_dir_all(snapshot_dir).expect("create snapshot dir");
@@ -3021,7 +2541,6 @@ mod tests {
     fn sample_remote_shared_context() -> RemoteLinuxVmSharedContext {
         RemoteLinuxVmSharedContext {
             remote_host: "pika-build".to_string(),
-            remote_work_dir: Path::new("/var/tmp/pikaci").to_path_buf(),
             remote_job_dir: Path::new("/var/tmp/pikaci/runs/run/jobs/job").to_path_buf(),
             remote_snapshot_dir: Path::new("/var/tmp/pikaci/runs/run/snapshot").to_path_buf(),
             remote_artifacts_dir: Path::new("/var/tmp/pikaci/runs/run/jobs/job/artifacts")
@@ -3039,15 +2558,6 @@ mod tests {
         }
     }
 
-    fn sample_microvm_context() -> RemoteMicrovmContext {
-        RemoteMicrovmContext {
-            shared: sample_remote_shared_context(),
-            remote_runtime_dir: Path::new("/var/tmp/pikaci/runs/run/jobs/job/vm").to_path_buf(),
-            remote_runtime_link: Path::new("/var/tmp/pikaci/runs/run/jobs/job/vm/runner")
-                .to_path_buf(),
-        }
-    }
-
     fn sample_incus_context() -> RemoteIncusContext {
         RemoteIncusContext {
             shared: sample_remote_shared_context(),
@@ -3059,77 +2569,15 @@ mod tests {
     }
 
     #[test]
-    fn guest_flake_targets_remote_linux_microvm_backend_for_staged_linux_rust_lane() {
-        let spec = JobSpec {
-            id: "pika-core-lib-app-flows-tests",
-            description: "test",
-            timeout_secs: 120,
-            writable_workspace: false,
-            guest_command: GuestCommand::ShellCommand { command: "ignored" },
-            staged_linux_rust_lane: Some(crate::model::StagedLinuxRustLane::PikaCoreLibAppFlows),
-        };
-        let flake = render_guest_flake(
-            remote_linux_vm_guest_runner_config(RemoteLinuxVmBackend::Microvm),
-            &spec,
-            Path::new("/tmp/pikaci/snapshot"),
-            true,
-            &GuestFlakePaths {
-                artifacts_dir: Path::new("/var/tmp/pikaci/runs/run/jobs/pika-core-lib-app-flows-tests/artifacts"),
-                cargo_home_dir: Path::new("/var/tmp/pikaci/cache/cargo-home"),
-                target_dir: Path::new("/var/tmp/pikaci/cache/cargo-target"),
-                staged_linux_rust_workspace_deps_dir: Some(Path::new(
-                    "/var/tmp/pikaci/runs/run/jobs/pika-core-lib-app-flows-tests/staged-linux-rust/workspace-deps",
-                )),
-                staged_linux_rust_workspace_build_dir: Some(Path::new(
-                    "/var/tmp/pikaci/runs/run/jobs/pika-core-lib-app-flows-tests/staged-linux-rust/workspace-build",
-                )),
-            },
-            1000,
-            1234,
-        )
-        .expect("render flake");
-
-        assert!(flake.contains("system = \"x86_64-linux\";"));
-        assert!(flake.contains("hostPkgs = nixpkgs.legacyPackages.x86_64-linux;"));
-        assert!(flake.contains("hostUid = 1000;"));
-        assert!(flake.contains("hostGid = 1234;"));
-        assert!(flake.contains("hypervisor = \"cloud-hypervisor\";"));
-        assert!(flake.contains(
-            "guestCommand = \"/staged/linux-rust/workspace-build/bin/run-pika-core-lib-app-flows-tests\";"
-        ));
-    }
-
-    #[test]
-    fn remote_linux_microvm_launch_starts_virtiofsd_and_waits_for_sockets() {
-        let command = microvm::build_launch_command(&sample_microvm_context());
-
-        assert!(command.contains("failed to locate virtiofsd supervisord config"));
-        assert!(command.contains("no virtio-fs wrappers found in $conf"));
-        assert!(command.contains("virtiofsd-wrappers.list"));
-        assert!(command.contains("sed '/--socket-group=/d'"));
-        assert!(command.contains("virtiofsd-wrapper-$(basename \"$wrapper\")"));
-        assert!(command.contains("virtiofsd.pids"));
-        assert!(command.contains("trap cleanup EXIT"));
-        assert!(command.contains("/bin/microvm-run"));
-        for socket in REMOTE_MICROVM_VIRTIOFS_SOCKETS {
-            assert!(command.contains(socket));
-        }
-        assert!(command.contains("missing virtio-fs socket:"));
-    }
-
-    #[test]
     fn remote_linux_incus_launch_uses_incus_exec_runner() {
-        let command = incus::build_launch_command(
-            &sample_incus_context(),
-            REMOTE_LINUX_VM_INCUS_GUEST_REQUEST_PATH,
-        );
+        let command = incus::build_launch_command(&sample_incus_context(), GUEST_REQUEST_PATH);
 
         assert!(command.contains("sudo incus"));
         assert!(command.contains("'exec'"));
         assert!(command.contains("'--project' 'pika-managed-agents'"));
         assert!(command.contains("'pikaci-run-job'"));
         assert!(command.contains("'/run/current-system/sw/bin/pikaci-incus-run'"));
-        assert!(command.contains("'/artifacts/guest-request.json'"));
+        assert!(command.contains(&format!("'{}'", GUEST_REQUEST_PATH)));
         assert!(!command.contains("PIKACI_INCUS_GUEST_COMMAND"));
         assert!(!command.contains("PIKACI_INCUS_TIMEOUT_SECS"));
         assert!(!command.contains("PIKACI_INCUS_RUN_AS_ROOT"));
@@ -3138,7 +2586,10 @@ mod tests {
     #[test]
     fn remote_linux_incus_guest_request_captures_command_timeout_and_user() {
         let request = incus::build_guest_request(&sample_shell_job("actionlint"));
-        assert_eq!(request.schema_version, 1);
+        assert_eq!(
+            request.schema_version,
+            INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION
+        );
         assert_eq!(request.command, "bash --noprofile --norc -lc 'actionlint'");
         assert_eq!(request.timeout_secs, 120);
         assert!(!request.run_as_root);
@@ -3337,49 +2788,6 @@ mod tests {
             command,
             "set -euo pipefail; rm -rf '/var/tmp/pikaci/runner-flakes/hash/flake'; mv '/var/tmp/pikaci/runner-flakes/hash/.tmp' '/var/tmp/pikaci/runner-flakes/hash/flake'"
         );
-    }
-
-    #[test]
-    fn remote_linux_vm_prepare_artifact_is_none_for_incus_backend() {
-        with_forced_backend(Some(RemoteLinuxVmBackend::Incus), || {
-            let root =
-                std::env::temp_dir().join(format!("pikaci-incus-test-{}", uuid::Uuid::new_v4()));
-            let ctx = HostContext {
-                source_root: root.clone(),
-                workspace_snapshot_dir: root.join("snapshot"),
-                host_local_cache_dir: None,
-                workspace_source_dir: None,
-                workspace_source_content_hash: None,
-                workspace_read_only: true,
-                job_dir: root.join("job"),
-                host_log_path: root.join("host.log"),
-                guest_log_path: root.join("guest.log"),
-                shared_cargo_home_dir: root.join("cargo-home"),
-                shared_target_dir: root.join("target"),
-                staged_linux_rust_workspace_deps_dir: None,
-                staged_linux_rust_workspace_build_dir: None,
-            };
-            let job = JobSpec {
-                id: "pika-actionlint",
-                description: "Run actionlint in a remote Linux VM guest",
-                timeout_secs: 120,
-                writable_workspace: false,
-                guest_command: GuestCommand::ShellCommand {
-                    command: "actionlint",
-                },
-                staged_linux_rust_lane: Some(
-                    crate::model::StagedLinuxRustLane::PikaFollowupActionlint,
-                ),
-            };
-
-            assert!(
-                remote_linux_vm_prepare_artifact(&job, &ctx)
-                    .expect("prepare artifact query")
-                    .is_none()
-            );
-
-            let _ = fs::remove_dir_all(&root);
-        });
     }
 
     #[test]
@@ -4259,7 +3667,6 @@ mod tests {
     fn ensure_remote_linux_vm_directories_skips_existing_staged_output_symlinks() {
         let shared = RemoteLinuxVmSharedContext {
             remote_host: "localhost".to_string(),
-            remote_work_dir: PathBuf::from("/var/tmp/pikaci"),
             remote_job_dir: PathBuf::from("/var/tmp/pikaci/runs/run/jobs/job"),
             remote_snapshot_dir: PathBuf::from("/var/tmp/pikaci/snapshots/abc123/snapshot"),
             remote_artifacts_dir: PathBuf::from("/var/tmp/pikaci/runs/run/jobs/job/artifacts"),

@@ -27,8 +27,8 @@ This lane is meant to prove:
 - the Incus guest image boots as a VM
 - the guest accepts the attached persistent volume at `/mnt/pika-state`
 - cloud-init bootstrap starts the managed-agent service
-- the guest publishes readiness at `/workspace/pika-agent/service-ready.json`
-- `pika-server` reads that signal through Incus and reports `guest_ready=true`
+- the guest publishes lifecycle status at `/run/pika-cloud/status.json`
+- `pika-server` reads that lifecycle snapshot through Incus and reports `guest_ready=true`
 - Incus-backed rows keep routing to Incus later through the persisted Incus config snapshot
 
 This lane now also proves the internal coworker dashboard path:
@@ -209,8 +209,8 @@ Expected results:
 3. An Incus VM appears with a deterministic `pika-agent-*` instance name.
 4. A matching custom volume named `<vm_id>-state` appears.
 5. Inside the guest, bootstrap re-homes managed-agent state onto `/mnt/pika-state`.
-6. The guest writes `/workspace/pika-agent/service-ready.json`.
-7. The ready marker `boot_id` matches the guest's current `/proc/sys/kernel/random/boot_id`.
+6. The guest writes `/run/pika-cloud/status.json`.
+7. The lifecycle snapshot `boot_id` matches the guest's current `/proc/sys/kernel/random/boot_id`.
 8. `GET /v1/agents/me` transitions to `state=ready` and `startup_phase=ready`.
 
 The first authenticated canary for this flow now succeeds on the canonical `pika-build` host shape.
@@ -227,7 +227,7 @@ Operator checks:
 ```bash
 ssh pika-build incus list --project pika-managed-agents
 ssh pika-build incus storage volume list default --project pika-managed-agents
-ssh pika-build incus file pull --project pika-managed-agents <vm_id>/workspace/pika-agent/service-ready.json -
+ssh pika-build incus file pull --project pika-managed-agents <vm_id>/run/pika-cloud/status.json -
 ```
 
 ## Repeated Dogfood Checks

@@ -1,3 +1,25 @@
+pub mod lifecycle;
+pub mod mount;
+pub mod paths;
+pub mod policy;
+pub mod spec;
+
+pub use lifecycle::{
+    LIFECYCLE_SCHEMA_VERSION, LifecycleEvent, LifecycleState, RuntimeResultStatus,
+    RuntimeStatusSnapshot, RuntimeTerminalResult,
+};
+pub use mount::{MountKind, MountMode, RuntimeMount};
+pub use paths::{
+    ARTIFACTS_DIR, EVENTS_PATH, GUEST_LOG_PATH as CLOUD_GUEST_LOG_PATH, GUEST_REQUEST_PATH,
+    LOGS_DIR, RESULT_PATH, RUNTIME_STATE_DIR, RuntimePaths, STATUS_PATH,
+};
+pub use policy::{
+    OutputCollectionMode, OutputCollectionPolicy, RestartPolicy, RetentionPolicy, RuntimePolicies,
+};
+pub use spec::{
+    IncusRuntimeConfig, RuntimeBootstrap, RuntimeIdentity, RuntimeResources, RuntimeSpec,
+};
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -12,6 +34,7 @@ pub const CMD_SCHEMA_V1: &str = "agent.control.cmd.v1";
 pub const STATUS_SCHEMA_V1: &str = "agent.control.status.v1";
 pub const RESULT_SCHEMA_V1: &str = "agent.control.result.v1";
 pub const ERROR_SCHEMA_V1: &str = "agent.control.error.v1";
+pub const INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -33,6 +56,20 @@ pub enum RuntimeLifecyclePhase {
     Ready,
     Failed,
     Teardown,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct IncusGuestRunRequest {
+    pub schema_version: u32,
+    pub command: String,
+    pub timeout_secs: u64,
+    pub run_as_root: bool,
+    pub workspace_dir: String,
+    pub cargo_home_dir: String,
+    pub target_dir: String,
+    pub xdg_state_home_dir: String,
+    pub home_dir: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -84,8 +121,6 @@ pub const GUEST_AUTOSTART_COMMAND: &str = "bash /workspace/pika-agent/start-agen
 pub const GUEST_AUTOSTART_SCRIPT_PATH: &str = "workspace/pika-agent/start-agent.sh";
 pub const GUEST_STARTUP_PLAN_PATH: &str = "workspace/pika-agent/startup-plan.json";
 pub const GUEST_AUTOSTART_IDENTITY_PATH: &str = "workspace/pika-agent/state/identity.json";
-pub const GUEST_READY_MARKER_PATH: &str = "workspace/pika-agent/service-ready.json";
-pub const GUEST_FAILED_MARKER_PATH: &str = "workspace/pika-agent/service-failed.json";
 pub const GUEST_LOG_PATH: &str = "workspace/pika-agent/agent.log";
 pub const GUEST_PID_PATH: &str = "workspace/pika-agent/agent.pid";
 pub const GUEST_OPENCLAW_CONFIG_PATH: &str = "workspace/pika-agent/openclaw/openclaw.json";
@@ -120,8 +155,7 @@ pub struct GuestStartupPlan {
     pub readiness_check: GuestServiceReadinessCheck,
     /// Persisted for debugging/inspection and kept explicit in the startup contract.
     ///
-    /// These paths are fixed to the shared guest layout today. Host-side status handling
-    /// still reads the canonical marker paths directly, so callers must not treat these as
+    /// These paths are fixed to the shared guest layout today, so callers must not treat these as
     /// free-form overrides.
     #[serde(default)]
     pub artifacts: GuestStartupArtifacts,
@@ -275,8 +309,9 @@ pub enum GuestServiceReadinessCheck {
 pub struct GuestStartupArtifacts {
     pub startup_plan_path: String,
     pub identity_seed_path: String,
-    pub ready_marker_path: String,
-    pub failed_marker_path: String,
+    pub status_path: String,
+    pub events_path: String,
+    pub result_path: String,
     pub log_path: String,
     pub pid_path: String,
 }
@@ -286,8 +321,9 @@ impl Default for GuestStartupArtifacts {
         Self {
             startup_plan_path: GUEST_STARTUP_PLAN_PATH.to_string(),
             identity_seed_path: GUEST_AUTOSTART_IDENTITY_PATH.to_string(),
-            ready_marker_path: GUEST_READY_MARKER_PATH.to_string(),
-            failed_marker_path: GUEST_FAILED_MARKER_PATH.to_string(),
+            status_path: STATUS_PATH.to_string(),
+            events_path: EVENTS_PATH.to_string(),
+            result_path: RESULT_PATH.to_string(),
             log_path: GUEST_LOG_PATH.to_string(),
             pid_path: GUEST_PID_PATH.to_string(),
         }
@@ -309,14 +345,19 @@ impl GuestStartupArtifacts {
                 canonical.identity_seed_path.as_str(),
             ),
             (
-                "ready_marker_path",
-                self.ready_marker_path.as_str(),
-                canonical.ready_marker_path.as_str(),
+                "status_path",
+                self.status_path.as_str(),
+                canonical.status_path.as_str(),
             ),
             (
-                "failed_marker_path",
-                self.failed_marker_path.as_str(),
-                canonical.failed_marker_path.as_str(),
+                "events_path",
+                self.events_path.as_str(),
+                canonical.events_path.as_str(),
+            ),
+            (
+                "result_path",
+                self.result_path.as_str(),
+                canonical.result_path.as_str(),
             ),
             (
                 "log_path",
@@ -355,12 +396,12 @@ impl AgentProvisionRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SpawnerCreateVmRequest {
-    pub guest_autostart: SpawnerGuestAutostartRequest,
+pub struct ManagedVmCreateRequest {
+    pub guest_autostart: ManagedVmGuestAutostartRequest,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SpawnerGuestAutostartRequest {
+pub struct ManagedVmGuestAutostartRequest {
     pub command: String,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
@@ -370,9 +411,9 @@ pub struct SpawnerGuestAutostartRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SpawnerVmResponse {
+pub struct ManagedRuntimeStatus {
     pub id: String,
-    #[serde(default = "default_spawner_vm_status")]
+    #[serde(default = "default_managed_runtime_status")]
     pub status: String,
     #[serde(default)]
     #[serde(alias = "guest_service_ready")]
@@ -381,7 +422,7 @@ pub struct SpawnerVmResponse {
     pub guest_ready: bool,
 }
 
-fn default_spawner_vm_status() -> String {
+fn default_managed_runtime_status() -> String {
     "running".to_string()
 }
 
@@ -418,7 +459,7 @@ pub struct VmBackupStatusRecord {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SpawnerVmBackupStatus {
+pub struct ManagedRuntimeBackupStatus {
     pub vm_id: String,
     pub backup_unit_kind: VmBackupUnitKind,
     pub backup_target: String,
@@ -433,7 +474,7 @@ pub struct SpawnerVmBackupStatus {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SpawnerOpenClawLaunchAuth {
+pub struct ManagedOpenClawLaunchAuth {
     pub vm_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gateway_auth_token: Option<String>,
@@ -824,6 +865,24 @@ mod tests {
     }
 
     #[test]
+    fn incus_guest_run_request_round_trips() {
+        let request = IncusGuestRunRequest {
+            schema_version: INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION,
+            command: "bash --noprofile --norc -lc 'cargo test -p pika-cloud'".to_string(),
+            timeout_secs: 120,
+            run_as_root: false,
+            workspace_dir: "/workspace/snapshot".to_string(),
+            cargo_home_dir: "/cargo-home".to_string(),
+            target_dir: "/cargo-target".to_string(),
+            xdg_state_home_dir: "/run/pika-cloud/xdg-state".to_string(),
+            home_dir: "/home/pikaci".to_string(),
+        };
+        let encoded = serde_json::to_string(&request).expect("encode request");
+        let decoded: IncusGuestRunRequest = serde_json::from_str(&encoded).expect("decode request");
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
     fn provision_command_minimal_fields_decode() {
         let json = json!({
             "provider": "incus",
@@ -838,9 +897,9 @@ mod tests {
     }
 
     #[test]
-    fn spawner_create_vm_request_requires_guest_autostart() {
+    fn managed_vm_create_request_requires_guest_autostart() {
         let json = json!({});
-        assert!(serde_json::from_value::<SpawnerCreateVmRequest>(json).is_err());
+        assert!(serde_json::from_value::<ManagedVmCreateRequest>(json).is_err());
     }
 
     #[test]
@@ -859,8 +918,8 @@ mod tests {
     }
 
     #[test]
-    fn spawner_vm_backup_status_round_trips() {
-        let status = SpawnerVmBackupStatus {
+    fn managed_runtime_backup_status_round_trips() {
+        let status = ManagedRuntimeBackupStatus {
             vm_id: "vm-00000000".to_string(),
             backup_unit_kind: VmBackupUnitKind::PersistentStateVolume,
             backup_target: "default/vm-00000000-state".to_string(),
@@ -871,14 +930,14 @@ mod tests {
             observed_at: Some("2026-03-18T12:00:00Z".to_string()),
         };
         let encoded = serde_json::to_string(&status).expect("encode backup status");
-        let decoded: SpawnerVmBackupStatus =
+        let decoded: ManagedRuntimeBackupStatus =
             serde_json::from_str(&encoded).expect("decode backup status");
         assert_eq!(decoded, status);
     }
 
     #[test]
-    fn spawner_vm_response_accepts_legacy_guest_service_ready_field() {
-        let decoded: SpawnerVmResponse = serde_json::from_value(serde_json::json!({
+    fn managed_runtime_status_accepts_legacy_guest_service_ready_field() {
+        let decoded: ManagedRuntimeStatus = serde_json::from_value(serde_json::json!({
             "id": "vm-123",
             "status": "running",
             "guest_service_ready": true,
@@ -894,8 +953,9 @@ mod tests {
         let artifacts = GuestStartupArtifacts::default();
         assert_eq!(artifacts.startup_plan_path, GUEST_STARTUP_PLAN_PATH);
         assert_eq!(artifacts.identity_seed_path, GUEST_AUTOSTART_IDENTITY_PATH);
-        assert_eq!(artifacts.ready_marker_path, GUEST_READY_MARKER_PATH);
-        assert_eq!(artifacts.failed_marker_path, GUEST_FAILED_MARKER_PATH);
+        assert_eq!(artifacts.status_path, STATUS_PATH);
+        assert_eq!(artifacts.events_path, EVENTS_PATH);
+        assert_eq!(artifacts.result_path, RESULT_PATH);
         assert_eq!(artifacts.log_path, GUEST_LOG_PATH);
         assert_eq!(artifacts.pid_path, GUEST_PID_PATH);
     }
@@ -921,7 +981,7 @@ mod tests {
             artifacts: GuestStartupArtifacts::default(),
             exit_failure_reason: "openclaw_gateway_exited".to_string(),
         };
-        let request = SpawnerGuestAutostartRequest {
+        let request = ManagedVmGuestAutostartRequest {
             command: GUEST_AUTOSTART_COMMAND.to_string(),
             env: BTreeMap::from([("PIKA_OWNER_PUBKEY".to_string(), "owner".to_string())]),
             files: BTreeMap::from([(GUEST_STARTUP_PLAN_PATH.to_string(), "{}".to_string())]),
@@ -929,7 +989,7 @@ mod tests {
         };
 
         let encoded = serde_json::to_string(&request).expect("encode request");
-        let decoded: SpawnerGuestAutostartRequest =
+        let decoded: ManagedVmGuestAutostartRequest =
             serde_json::from_str(&encoded).expect("decode request");
 
         assert_eq!(decoded, request);
@@ -938,7 +998,7 @@ mod tests {
 
     #[test]
     fn guest_autostart_request_rejects_missing_startup_plan() {
-        let err = serde_json::from_value::<SpawnerGuestAutostartRequest>(serde_json::json!({
+        let err = serde_json::from_value::<ManagedVmGuestAutostartRequest>(serde_json::json!({
             "command": GUEST_AUTOSTART_COMMAND,
             "env": {},
             "files": {}
@@ -1024,15 +1084,15 @@ mod tests {
                 timeout_failure_reason: "timeout_waiting_for_openclaw_health".to_string(),
             },
             artifacts: GuestStartupArtifacts {
-                ready_marker_path: "workspace/custom/service-ready.json".to_string(),
+                status_path: "/run/custom/status.json".to_string(),
                 ..GuestStartupArtifacts::default()
             },
             exit_failure_reason: "openclaw_gateway_exited".to_string(),
         }
         .validate()
         .expect_err("plan should reject non-canonical artifact paths");
-        assert!(err.contains("artifacts.ready_marker_path"));
-        assert!(err.contains(GUEST_READY_MARKER_PATH));
+        assert!(err.contains("artifacts.status_path"));
+        assert!(err.contains(STATUS_PATH));
     }
 
     #[test]

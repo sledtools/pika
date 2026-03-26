@@ -1,6 +1,5 @@
 { hostname
 , domain
-, microvmSpawnerUrl ? null
 , anthropicApiKeyPath ? null
 , anthropicApiKeySecret ? null
 , incusEndpoint ? null
@@ -31,7 +30,7 @@ let
   incusStateDir = "${serviceStateDir}/incus";
   adminIdentities = import ../lib/admin-identities.nix;
   adminSessionSecretPath = "${serviceStateDir}/admin-session-secret";
-  incusCanaryEnabled =
+  incusManagedAgentsEnabled =
     incusEndpoint != null
     || incusProject != null
     || incusProfile != null
@@ -92,7 +91,7 @@ in
   assertions = [
     {
       assertion =
-        (!incusCanaryEnabled)
+        (!incusManagedAgentsEnabled)
         || lib.all (value: value != null) [
           incusEndpoint
           incusProject
@@ -264,15 +263,8 @@ in
       APNS_TOPIC=org.pikachat.pika
       FCM_CREDENTIALS_PATH=${config.sops.secrets."fcm_credentials".path}
       ${lib.optionalString (resolvedAnthropicApiKeyPath != null) "ANTHROPIC_API_KEY_FILE=${resolvedAnthropicApiKeyPath}"}
-      ${lib.optionalString (microvmSpawnerUrl != null) ''
-      # vm-spawner is reached over a private network; inject the host-specific URL
-      # from the machine import instead of hardcoding it in the shared module.
-      PIKA_AGENT_MICROVM_SPAWNER_URL=${microvmSpawnerUrl}
-      ''}
-      ${lib.optionalString incusCanaryEnabled ''
-      # Optional Incus canary backend for the normal pika-server deployment.
-      # Keep microvm as the default and use request-scoped provisioning to
-      # exercise Incus.
+      ${lib.optionalString incusManagedAgentsEnabled ''
+      # Managed agent runtimes use the shared Incus backend.
       PIKA_AGENT_INCUS_ENDPOINT=${incusEndpoint}
       PIKA_AGENT_INCUS_PROJECT=${incusProject}
       PIKA_AGENT_INCUS_PROFILE=${incusProfile}
@@ -285,8 +277,6 @@ in
       ${lib.optionalString (resolvedIncusClientKeyPath != null) "PIKA_AGENT_INCUS_CLIENT_KEY_PATH=${resolvedIncusClientKeyPath}"}
       ${lib.optionalString (resolvedIncusServerCertPath != null) "PIKA_AGENT_INCUS_SERVER_CERT_PATH=${resolvedIncusServerCertPath}"}
       ''}
-      # The customer managed-environment dashboard is OpenClaw-only for now.
-      PIKA_AGENT_MICROVM_KIND=openclaw
       # Allow the built-in OpenClaw UI origin to control the guest gateway.
       # This managed flow relies on the platform's launch/session boundary and
       # intentionally disables guest-local browser pairing inside OpenClaw.

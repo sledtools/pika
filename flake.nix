@@ -29,13 +29,9 @@
       url = "github:openclaw/nix-openclaw";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    microvm = {
-      url = "github:microvm-nix/microvm.nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
-  outputs = { self, nixpkgs, crane, flake-utils, moq, rust-overlay, android-nixpkgs, disko, sops-nix, nix-openclaw, microvm }:
+  outputs = { self, nixpkgs, crane, flake-utils, moq, rust-overlay, android-nixpkgs, disko, sops-nix, nix-openclaw }:
     let
       mkRelay = hostFile: nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
@@ -156,8 +152,7 @@
         rm -f "$out/rust/.pikaci-review-trigger"
         cp -R ${./crates/hypernote-protocol} "$out/crates/hypernote-protocol"
         cp -R ${./crates/pika-agent-protocol} "$out/crates/pika-agent-protocol"
-        cp -R ${./crates/pika-agent-control-plane} "$out/crates/pika-agent-control-plane"
-        cp -R ${./crates/pika-agent-microvm} "$out/crates/pika-agent-microvm"
+        cp -R ${./crates/pika-cloud} "$out/crates/pika-cloud"
         cp -R ${./crates/pika-desktop} "$out/crates/pika-desktop"
         cp -R ${./crates/pika-marmot-runtime} "$out/crates/pika-marmot-runtime"
         cp -R ${./crates/pika-media} "$out/crates/pika-media"
@@ -327,24 +322,6 @@
         doCheck = false;
         nativeBuildInputs = [ serverPkgs.pkg-config ];
         buildInputs = [ serverPkgs.openssl ];
-      };
-
-      vmSpawnerPkg = serverPkgs.rustPlatform.buildRustPackage {
-        pname = "vm-spawner";
-        version = "0.1.0";
-        src = rustWorkspaceSrc;
-        cargoLock = {
-          lockFile = ./Cargo.lock;
-          outputHashes = {
-            "mdk-core-0.7.1" = "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
-            "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
-            "hypernote-mdx-0.3.0" = "sha256-SBhXVXPyCvxs+VudVLYitaioS8jwYSsE0k2SwPU+9GY=";
-          };
-        };
-        cargoBuildFlags = [ "-p" "vm-spawner" ];
-        doCheck = false;
-        nativeBuildInputs = [ serverPkgs.pkg-config ];
-        buildInputs = [ serverPkgs.openssl serverPkgs.postgresql.lib ];
       };
 
       pikaciServerPkg = mkPikaciPkg serverPkgs (mkPikaciSrc serverPkgs.lib);
@@ -1103,7 +1080,6 @@ EOF
       };
 
       packages."x86_64-linux" = {
-        vm-spawner = vmSpawnerPkg;
         pi-agent-runtime = piAgentPkg;
         openclaw-gateway = openclawGatewayPkg;
         pikachat = pikachatPkg;
@@ -1130,11 +1106,10 @@ EOF
 
         pika-build = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
-          specialArgs = { inherit self sops-nix vmSpawnerPkg piAgentPkg openclawGatewayPkg pikaNewsPkg pikachatPkg pikaciServerPkg; };
+          specialArgs = { inherit self sops-nix pikaNewsPkg pikaciServerPkg; };
           modules = [
             disko.nixosModules.disko
             sops-nix.nixosModules.sops
-            microvm.nixosModules.host
             (import ./infra/nix/hosts/builder.nix)
           ];
         };

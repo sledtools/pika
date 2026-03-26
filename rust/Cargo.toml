@@ -26,7 +26,7 @@ keyring-core = { workspace = true }
 nostr-sdk = { workspace = true, features = ["nip59"] }
 nostr-connect = { workspace = true }
 nostr-blossom = { workspace = true }
-pika-agent-control-plane = { path = "../crates/pika-agent-control-plane" }
+pika-cloud = { path = "../crates/pika-cloud" }
 pika-marmot-runtime = { path = "../crates/pika-marmot-runtime" }
 pika-relay-profiles = { path = "../crates/pika-relay-profiles" }
 pika-media = { path = "../crates/pika-media", features = ["network"] }

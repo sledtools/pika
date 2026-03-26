@@ -184,8 +184,7 @@ pre-merge-agent-contracts:
     if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
         just pikaci-remote-fulfill-pre-merge-agent-contracts
     else
-        cargo test -p pika-agent-control-plane --lib
-        cargo test -p pika-agent-microvm
+        cargo test -p pika-cloud --lib
         cargo test -p pika-server -- agent_api::tests
         cargo test -p pika_core --lib core::agent::tests::run_agent_flow_signs_requests_with_nip98_authorization
     fi

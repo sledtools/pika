@@ -709,10 +709,7 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
     let cli_manifest = fs::read_to_string(root.join("cli/Cargo.toml"))?;
     for (dependency_name, filter_path) in [
         ("pika-agent-protocol", "crates/pika-agent-protocol/**"),
-        (
-            "pika-agent-control-plane",
-            "crates/pika-agent-control-plane/**",
-        ),
+        ("pika-cloud", "crates/pika-cloud/**"),
         ("pika-marmot-runtime", "crates/pika-marmot-runtime/**"),
         ("pika-relay-profiles", "crates/pika-relay-profiles/**"),
         ("pikachat-sidecar", "crates/pikachat-sidecar/**"),
@@ -986,10 +983,8 @@ fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<(
         missing_from_workflow
     );
 
-    let microvm_manifest = fs::read_to_string(root.join("crates/pika-agent-microvm/Cargo.toml"))?;
     let server_manifest = fs::read_to_string(root.join("crates/pika-server/Cargo.toml"))?;
-    let staged_agent_tests_use_shared_test_utils =
-        microvm_manifest.contains("pika-test-utils") || server_manifest.contains("pika-test-utils");
+    let staged_agent_tests_use_shared_test_utils = server_manifest.contains("pika-test-utils");
     if staged_agent_tests_use_shared_test_utils {
         assert!(
             rust_lane_filters
@@ -1108,11 +1103,7 @@ fn pre_merge_notifications_filter_tracks_checked_in_lane_surface() -> Result<()>
 
     let server_manifest = fs::read_to_string(root.join("crates/pika-server/Cargo.toml"))?;
     for (dependency_name, filter_path) in [
-        (
-            "pika-agent-control-plane",
-            "crates/pika-agent-control-plane/**",
-        ),
-        ("pika-agent-microvm", "crates/pika-agent-microvm/**"),
+        ("pika-cloud", "crates/pika-cloud/**"),
         ("pika-test-utils", "crates/pika-test-utils/**"),
     ] {
         if server_manifest.contains(dependency_name) {

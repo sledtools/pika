@@ -122,7 +122,7 @@ Working assumptions:
    - the next filter-alignment candidates are `notifications` and `fixture`, not `agent_contracts`
 
 8. Slice 9 aligned the `notifications` blocking filter with the checked-in lane contract:
-   - `.github/workflows/pre-merge.yml` now covers the checked-in `pre-merge-notifications` `pikaci` target surface, including the real staged `pika-server` dependency roots (`pika-agent-control-plane`, `pika-agent-microvm`, `pika-test-utils`) instead of a stale nonexistent `crates/pika-notifications/**` path
+   - `.github/workflows/pre-merge.yml` now covers the checked-in `pre-merge-notifications` `pikaci` target surface, including the real staged `pika-server` dependency roots (`pika-cloud`, `pika-test-utils`) instead of a stale nonexistent `crates/pika-notifications/**` path
    - the workflow filter now also covers the checked-in host-side wrapper surface: `just/checks.just`, the Apple-path `just/infra.just` wrapper and `scripts/pikaci-staged-linux-remote.sh` helper, and the local `pikahut` postgres fixture wrapper including its `pika-desktop` dependency edge
    - the new lane-specific guardrail protects the workflow filter, root alias, checked-in recipe module, Apple remote wrapper chain, staged `pika-server` dependency roots, and the local `pikahut` wrapper surface without changing coverage
    - the tiny remaining `agent_contracts` host-side `pikachat` dependency gap is also closed by covering `pika-agent-protocol`, `pikachat-sidecar`, and `hypernote-protocol`
@@ -196,7 +196,7 @@ Working assumptions:
    - `rust/tests/app_flows.rs` now keeps the narrower end-user paging smoke in `paging_reveals_older_messages_until_history_is_exhausted`: opening a long chat starts near the newest messages, `LoadOlderMessages` reveals older history without replacing already-visible messages, and paging eventually reaches the earliest message with `can_load_older == false`
    - `just pre-merge-pika` no longer carries the stale skip for the removed test name, so the stabilized replacement now actually runs in the checked-in pre-merge recipe instead of changing CI behavior implicitly
    - this reduces the flake rather than inventing a larger harness rewrite; exact shared-runtime page counts stay owned below the `FfiApp` layer, while the app-facing test now asserts the contract users actually feel
-21. Slice 22 tackled the recurring OpenClaw autostart timeout flake in `crates/pika-agent-microvm/src/lib.rs::openclaw_autostart_reports_keypackage_publish_timeout_separately_from_service_timeout`:
+21. Slice 22 tackled the recurring OpenClaw autostart timeout flake in the then-existing `pika-agent-microvm` owner before the later hard cut deleted that path:
    - the actual flake mechanism was that the timeout case stopped exercising the real OpenClaw readiness contract: it swapped the test onto a special `log_contains` ready-log path, then waited a full 30-second timeout for a dedicated keypackage failure reason
    - that made the owner both slower and more brittle than it needed to be, because it depended on a harness-only readiness shortcut instead of the same `/health` probe path the real OpenClaw startup plan uses
    - the timeout scenario now stays on the normal OpenClaw `http_get_ok` readiness path, forces deterministic curl success through the fake harness, and uses a short dedicated timeout window for the always-fail keypackage publish branch
@@ -225,18 +225,9 @@ Working assumptions:
    - the exact blocker is now recorded in code and plan: `AddGroupMembers` triggers `rebroadcast_group_profiles(...)` immediately on the existing-member side, before the new member has the group shell and relay subscription, so neither the selector nor the Rust test proves true already-established pre-join rebroadcast
    - that means the stronger contract is explicitly deferred rather than half-owned: the checked-in selector owns only explicit post-join refresh visibility, while the Rust test keeps reciprocal existing-member propagation plus the member-state mechanics around that weaker path
    - this closes the ownership ambiguity without a broad harness rewrite; if we want the stronger contract later, the next change has to alter the timing/data path itself rather than rename another selector
-26. Slice 27 closed the app-facing ownership gap in the local agent launch/provisioning family:
-   - the existing mocked agent HTTP/control-plane selectors in `crates/pikahut/tests/integration_deterministic.rs` still own the lower-level server/API/spawner mechanics: ensure, CLI `agent new`, idempotent ensure, and `/me` plus recover behavior against a mocked local vm-spawner
-   - `crates/pikahut/tests/integration_deterministic.rs::agent_launch_provisioning_boundary` now gives the app-facing provisioning UX a readable deterministic CI owner through `FfiApp`: the signed-in app becomes allowlisted, shows the launch button, enters visible provisioning phases, and lands in the post-provision direct chat state under local fixtures plus mocked vm-spawner responses
-   - `crates/pikahut/tests/integration_deterministic.rs::agent_launch_provisioning_failure_boundary` now keeps the matching failure contract at the same ownership layer: a backend provisioning failure leaves `agent_provisioning` visible in the error phase instead of vanishing into a toast or silent no-op
-   - `crates/pikahut/tests/support.rs` needed only a small enabling seam for this: a backend-fixture config writer that points `FfiApp` at the local agent API with the allowlist probe enabled, plus a narrow selector-only DB rewrite that maps the mocked provisioned agent identity onto a real relay-backed peer so the success path can open a real chat without hosted microVM infra
-   - the remaining lower/unowned edges in this family are the true guest-backed post-launch behavior after the chat opens: actual managed-agent key-package publication, first agent-authored reply semantics, and any hosted/runtime-specific launch failures beyond the mocked local spawner/control-plane contract
-27. Slice 28 added the first deterministic post-launch agent-chat owner in that same local family:
-   - the provisioning selectors in `crates/pikahut/tests/integration_deterministic.rs` still own the launch UX itself: visible provisioning phases, error retention, and successful transition into the direct chat screen under mocked local control-plane responses
-   - the lower-level `agent_http_*` selectors still separately own server/API/spawner protocol mechanics, CLI `agent new`, idempotent ensure, and `/me` recovery against the mocked vm-spawner surface
-   - `crates/pikahut/tests/integration_deterministic.rs::agent_launch_first_reply_boundary` now owns the first post-launch usable-peer contract: after the app launches the agent and lands in the DM, the provisioned identity behaves like a real relay-backed peer, receives the first user prompt, sends the first reply, and that reply surfaces in `FfiApp` chat state as peer-authored rather than just proving “chat opened”
-   - this reused the existing narrow selector-only identity rewrite seam instead of adding hosted guest/runtime infrastructure: the mocked provisioned agent is still mapped onto a local deterministic peer fixture, but the selector now drives the actual post-launch message/reply flow through the same app state/actions as the shells
-   - what still remains unowned in the local agent family is narrower now: true managed-agent guest behavior beyond the fixture-backed peer stand-in, guest-specific key-package/publication semantics, richer multi-turn reply/tool behavior, and hosted/runtime-specific failure modes after provisioning
+26. Slice 27 closed the app-facing ownership gap in the local agent launch/provisioning family at the time, but the hard cut to `pika-cloud` later deleted the mocked local vm-spawner selector layer entirely.
+   - those old `agent_launch_*` and `agent_http_*` selectors are no longer part of the checked-in deterministic surface
+   - the remaining coverage story for managed agents now needs to be rebuilt around the shared `pika-cloud` Incus contract instead of mocked microvm/vm-spawner APIs
 28. Slice 29 started the same ownership cleanup on startup/router/deep-link behavior:
   - `crates/pikahut/tests/integration_deterministic.rs::chat_deep_link_opens_note_to_self_boundary` now gives this family one readable deterministic selector-owned contract: from the signed-in shell, a raw `pika://chat/<npub>` payload normalizes through Rust and lands in the intended note-to-self chat state
   - `crates/pikahut/tests/support.rs` now drives that selector directly through `FfiApp`: create account, confirm the signed-in chat-list route, feed the raw deep-link payload through `normalize_peer_key`, open the chat, and verify the resulting composer/chat preview path works
@@ -271,7 +262,7 @@ Verified in the repo today:
    - `pikahut` selector-backed orchestration tests under `crates/pikahut/tests/`
    - native platform suites in `ios/Tests`, `ios/UITests`, and Android instrumentation tests
 
-2. The repo already has a large amount of Rust coverage. A rough source scan shows about `865` Rust tests, with the highest-density files in `pika_core`, `pikaci`, `pika-server`, `pikachat-sidecar`, `vm-spawner`, and related crates. The problem is not obvious under-coverage in aggregate.
+2. The repo already has a large amount of Rust coverage. A rough source scan shows about `865` Rust tests, with the highest-density files in `pika_core`, `pikaci`, `pika-server`, `pikachat-sidecar`, and related crates. The problem is not obvious under-coverage in aggregate.
 
 3. The strongest Rust behavioral signal currently lives in deterministic local tests, not in public-network probes:
    - `pika_core` behavioral tests in `rust/tests/app_flows.rs`, `rust/tests/e2e_messaging.rs`, and `rust/tests/e2e_group_profiles.rs`
@@ -418,7 +409,7 @@ Verified in the repo today:
 10. We should keep a short explicit list of recurring flakes even when another branch temporarily disables them.
    - `rust/tests/app_flows.rs::paging_loads_older_messages_in_pages` has been replaced by the narrower `paging_reveals_older_messages_until_history_is_exhausted` smoke because the old exact-count assertion was the flaky part.
    - We still need to watch for any renewed paging flakes below the `FfiApp` layer; if they recur, the next step should be the shared-runtime/core pagination owner, not another broad app-layer timeout tweak.
-   - `crates/pika-agent-microvm/src/lib.rs::openclaw_autostart_reports_keypackage_publish_timeout_separately_from_service_timeout` now stays on the real OpenClaw health-probe path with a short deterministic keypackage timeout window; if it recurs, the remaining issue is likely generic autostart-script test harness timing, not the OpenClaw-specific timeout-kind split.
+   - the old microvm-specific OpenClaw autostart flake owner was deleted in the hard cut, so any recurrence now needs a new owner on the surviving Incus-managed path rather than another microvm-specific tweak.
 
 11. We now have a canonical fast local smoke layer for catching common CI failures before full lanes run.
    - The supported habitual command is `just pre-commit`.

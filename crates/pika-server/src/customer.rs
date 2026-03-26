@@ -15,7 +15,7 @@ use crate::models::agent_allowlist::AgentAllowlistEntry;
 use crate::models::managed_environment_event::ManagedEnvironmentEvent;
 use crate::nostr_auth::{expected_host_from_headers, verify_nip98_event};
 use crate::{RequestContext, State};
-use pika_agent_control_plane::{IncusProvisionParams, ManagedVmProvisionParams};
+use pika_cloud::{IncusProvisionParams, ManagedVmProvisionParams};
 
 mod openclaw;
 
@@ -42,7 +42,7 @@ mod tests {
     use super::*;
     use crate::agent_api_v1_contract::AgentAppState;
     use askama::Template;
-    use pika_agent_control_plane::AgentStartupPhase;
+    use pika_cloud::AgentStartupPhase;
 
     fn test_backup_status(
         freshness: ManagedEnvironmentBackupFreshness,
@@ -200,7 +200,7 @@ impl OpenClawLaunchability {
             .unwrap_or(false);
         let recoverable_vm_exists = row.and_then(|row| row.vm_id.as_deref()).is_some();
         if status.app_state == Some(crate::agent_api_v1_contract::AgentAppState::Ready)
-            && status.startup_phase == Some(pika_agent_control_plane::AgentStartupPhase::Ready)
+            && status.startup_phase == Some(pika_cloud::AgentStartupPhase::Ready)
             && recoverable_vm_exists
         {
             Self::Launchable
@@ -334,20 +334,18 @@ fn app_state_label(state: Option<crate::agent_api_v1_contract::AgentAppState>) -
     }
 }
 
-fn startup_phase_label(phase: Option<pika_agent_control_plane::AgentStartupPhase>) -> &'static str {
+fn startup_phase_label(phase: Option<pika_cloud::AgentStartupPhase>) -> &'static str {
     match phase {
         None => "not_started",
-        Some(pika_agent_control_plane::AgentStartupPhase::Requested) => "requested",
-        Some(pika_agent_control_plane::AgentStartupPhase::ProvisioningVm) => "provisioning_vm",
-        Some(pika_agent_control_plane::AgentStartupPhase::BootingGuest) => "booting_guest",
-        Some(pika_agent_control_plane::AgentStartupPhase::WaitingForServiceReady) => {
-            "waiting_for_service_ready"
-        }
-        Some(pika_agent_control_plane::AgentStartupPhase::WaitingForKeypackagePublish) => {
+        Some(pika_cloud::AgentStartupPhase::Requested) => "requested",
+        Some(pika_cloud::AgentStartupPhase::ProvisioningVm) => "provisioning_vm",
+        Some(pika_cloud::AgentStartupPhase::BootingGuest) => "booting_guest",
+        Some(pika_cloud::AgentStartupPhase::WaitingForServiceReady) => "waiting_for_service_ready",
+        Some(pika_cloud::AgentStartupPhase::WaitingForKeypackagePublish) => {
             "waiting_for_keypackage_publish"
         }
-        Some(pika_agent_control_plane::AgentStartupPhase::Ready) => "ready",
-        Some(pika_agent_control_plane::AgentStartupPhase::Failed) => "failed",
+        Some(pika_cloud::AgentStartupPhase::Ready) => "ready",
+        Some(pika_cloud::AgentStartupPhase::Failed) => "failed",
     }
 }
 

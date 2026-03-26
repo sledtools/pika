@@ -952,7 +952,7 @@ Current `pika-build` proof status:
 - staged Linux payloads now also declare their guest mount contract in
   `share/pikaci/payload-manifest.json`, so the Incus executor no longer
   hardcodes the staged workspace payload mount layout beyond the snapshot root
-- `pika-news` no longer has to collapse staged `pikaci` runs back into an
+- `pika-git` no longer has to collapse staged `pikaci` runs back into an
   ephemeral temp-worktree `.pikaci` tree:
   structured staged runs can now be pointed at a service-owned persistent
   state root, and the forge API can reload the resulting `RunRecord`,
@@ -961,7 +961,7 @@ Current `pika-build` proof status:
 - staged Linux runs now expose their artifact contract machine-readably:
   `RunRecord` keeps the prepared-output record path, each remote Linux VM job
   keeps explicit Incus image identity (`project`, `alias`, `fingerprint`), and
-  both surfaces can be reloaded through `pikaci` and `pika-news` by run id
+  both surfaces can be reloaded through `pikaci` and `pika-git` by run id
 
 #### Phase C: Validate Performance And Developer Experience
 

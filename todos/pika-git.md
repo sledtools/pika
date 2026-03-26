@@ -15,7 +15,7 @@ We want:
 - more reliable CI behavior
 - strong operational recovery when CI misbehaves
 - cleaner architecture and maintainable code
-- removal of `news` terminology and eventual rename from `pika-news` to `pika-git`
+- removal of `news` terminology and eventual rename from `pika-git` to `pika-git`
 
 ## Product Direction
 
@@ -216,7 +216,7 @@ We should decide the fate of legacy PR mode explicitly.
 If it still matters, isolate it.
 If it does not, delete it aggressively.
 
-We should also stop paying the `pika-news` naming tax forever.
+We should also stop paying the `pika-git` naming tax forever.
 
 Recommended naming direction:
 
@@ -231,7 +231,7 @@ These are the most important known flaws right now.
 
 ### Product / UX flaws
 
-- the branch review page regressed relative to the old `pika-news` review UI
+- the branch review page regressed relative to the old `pika-git` review UI
 - CI information is too inline and too log-heavy on the main branch page
 - the best review surfaces from the old app are no longer present together
 - the product still leaks `news` and old PR terminology in places
@@ -303,7 +303,7 @@ At the end of phase 1, this document should be revised.
 
 - does legacy PR mode still matter at all
 - if it does, what is the smallest possible module boundary for it
-- when is the right time to rename `pika-news` to `pika-git`
+- when is the right time to rename `pika-git` to `pika-git`
 
 ## Phase 1 Workstreams
 
@@ -338,7 +338,7 @@ Phase 1 should probably cover these investigations:
 ### Workstream 5: Legacy / naming decision
 
 - decide whether legacy PR mode is being isolated or deleted
-- define the rename strategy from `pika-news` to `pika-git`
+- define the rename strategy from `pika-git` to `pika-git`
 
 ## Boundary Answer We Have Now
 

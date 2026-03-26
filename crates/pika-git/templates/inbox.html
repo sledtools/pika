@@ -1,0 +1,281 @@
+{% extends "base.html" %}
+
+{% block title %}Inbox - pika-git{% endblock %}
+
+{% block styles %}
+      .shell { max-width: 900px; margin: 0 auto; padding: 2rem 1rem; }
+      h1 { margin-top: 0; }
+      .inbox-toolbar { display: flex; gap: 0.5rem; margin-bottom: 1rem; align-items: center; }
+      .inbox-toolbar button { font-size: 0.85rem; }
+      .inbox-toolbar .spacer { flex: 1; }
+      .inbox-toolbar .page-info { font-size: 0.85rem; color: var(--text-muted); }
+      .inbox-item { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 0.5rem; }
+      .inbox-item:hover { border-color: var(--border-light); }
+      .inbox-item input[type=checkbox] { flex-shrink: 0; width: 1rem; height: 1rem; cursor: pointer; }
+      .inbox-item-body { flex: 1; min-width: 0; }
+      .inbox-item-title { font-weight: 600; }
+      .inbox-item-title a { color: var(--text); }
+      .inbox-item-title a:hover { color: var(--link); }
+      .inbox-item-meta { font-size: 0.82rem; color: var(--text-muted); margin-top: 0.15rem; }
+      .inbox-item-actions { flex-shrink: 0; display: flex; gap: 0.4rem; }
+      .inbox-item-actions button { font-size: 0.8rem; padding: 0.3rem 0.6rem; }
+      .inbox-empty { text-align: center; color: var(--text-muted); padding: 3rem 1rem; }
+      .inbox-auth { text-align: center; color: var(--text-muted); padding: 3rem 1rem; }
+      .inbox-loading { text-align: center; color: var(--text-muted); padding: 2rem; }
+      .inbox-note { margin: 0 0 1rem; color: var(--text-muted); }
+{% endblock %}
+
+{% block body %}
+    <main class="shell">
+      <h1>Inbox</h1>
+      <p class="inbox-note">Inbox items stay here until you dismiss them. Opening a branch marks the current head as reviewed; new commits make it reviewable again.</p>
+
+      <div id="inbox-auth" class="inbox-auth" style="display:none;">
+        <p>Sign in with Nostr to view your inbox.</p>
+      </div>
+
+      <div id="inbox-loading" class="inbox-loading">Loading...</div>
+
+      <div id="inbox-content" style="display:none;">
+        <div class="inbox-toolbar">
+          <button id="dismiss-selected" type="button" disabled>Dismiss Selected</button>
+          <button id="dismiss-all" type="button">Dismiss All</button>
+          <span class="spacer"></span>
+          <span id="page-info" class="page-info"></span>
+          <button id="page-prev" type="button" disabled>Prev</button>
+          <button id="page-next" type="button" disabled>Next</button>
+        </div>
+        <div id="inbox-list"></div>
+      </div>
+
+      <div id="inbox-empty" class="inbox-empty" style="display:none;">
+        <p>Your inbox is empty.</p>
+        <p><a href="/git">Back to feed</a></p>
+      </div>
+    </main>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+      (function () {
+        var authEl = document.getElementById('inbox-auth');
+        var loadingEl = document.getElementById('inbox-loading');
+        var contentEl = document.getElementById('inbox-content');
+        var emptyEl = document.getElementById('inbox-empty');
+        var listEl = document.getElementById('inbox-list');
+        var pageInfoEl = document.getElementById('page-info');
+        var dismissSelectedBtn = document.getElementById('dismiss-selected');
+        var dismissAllBtn = document.getElementById('dismiss-all');
+        var pagePrevBtn = document.getElementById('page-prev');
+        var pageNextBtn = document.getElementById('page-next');
+
+        var currentPage = 1;
+        var totalItems = 0;
+        var reviewNeededItems = 0;
+
+        function getToken() {
+          return window.pikaAuth && window.pikaAuth.getToken();
+        }
+
+        function clearAuth() {
+          if (window.pikaAuth && window.pikaAuth.clear) {
+            window.pikaAuth.clear();
+          }
+        }
+
+        function show(el) { el.style.display = ''; }
+        function hide(el) { el.style.display = 'none'; }
+
+        async function loadInbox(page) {
+          var token = getToken();
+          if (!token) {
+            hide(loadingEl);
+            show(authEl);
+            return;
+          }
+          hide(authEl);
+          show(loadingEl);
+          hide(contentEl);
+          hide(emptyEl);
+
+          try {
+            var res = await fetch('/git/api/inbox?page=' + page, {
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            if (res.status === 401 || res.status === 403) {
+              clearAuth();
+              hide(loadingEl);
+              show(authEl);
+              return;
+            }
+            if (!res.ok) throw new Error('Failed to load inbox');
+            var data = await res.json();
+            hide(loadingEl);
+            currentPage = data.page;
+            totalItems = data.total;
+            reviewNeededItems = data.review_needed || data.total;
+
+            if (data.items.length === 0 && currentPage === 1) {
+              show(emptyEl);
+              return;
+            }
+
+            renderItems(data.items);
+            updatePagination();
+            show(contentEl);
+          } catch (e) {
+            hide(loadingEl);
+            listEl.innerHTML = '<p style="color:red;">Error: ' + e.message + '</p>';
+            show(contentEl);
+          }
+        }
+
+        function renderItems(items) {
+          listEl.innerHTML = '';
+          items.forEach(function (item) {
+            var reviewId = item.review_id;
+            var isBranch = !!item.branch_id;
+            var titleText = isBranch
+              ? (escapeHtml(item.repo) + ' · branch ' + escapeHtml(item.branch_name || ('#' + reviewId)) + ': ' + escapeHtml(item.title))
+              : (escapeHtml(item.repo) + ' · legacy review #' + reviewId + ': ' + escapeHtml(item.title));
+            var div = document.createElement('div');
+            div.className = 'inbox-item';
+            div.dataset.reviewId = reviewId;
+            div.innerHTML =
+              '<input type="checkbox" class="inbox-check" data-review-id="' + reviewId + '" />' +
+              '<div class="inbox-item-body">' +
+                '<div class="inbox-item-title"><a href="/git/inbox/review/' + reviewId + '">' +
+                  titleText +
+                '</a></div>' +
+                '<div class="inbox-item-meta">Updated ' + escapeHtml(item.updated_at) + ' · ' + escapeHtml(item.state) + ' · ' + (item.needs_review ? 'needs review' : 'reviewed') + '</div>' +
+              '</div>' +
+              '<div class="inbox-item-actions">' +
+                '<button class="review-btn" data-review-id="' + reviewId + '">Review</button>' +
+                '<button class="dismiss-btn" data-review-id="' + reviewId + '">Dismiss</button>' +
+              '</div>';
+            listEl.appendChild(div);
+          });
+
+          // Bind per-item buttons
+          listEl.querySelectorAll('.review-btn').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              window.location.href = '/git/inbox/review/' + btn.dataset.reviewId;
+            });
+          });
+          listEl.querySelectorAll('.dismiss-btn').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              dismissItems([parseInt(btn.dataset.reviewId)]);
+            });
+          });
+          listEl.querySelectorAll('.inbox-check').forEach(function (cb) {
+            cb.addEventListener('change', updateDismissSelectedBtn);
+          });
+        }
+
+        function escapeHtml(str) {
+          var div = document.createElement('div');
+          div.textContent = str;
+          return div.innerHTML;
+        }
+
+        function updatePagination() {
+          var totalPages = Math.ceil(totalItems / 50) || 1;
+          pageInfoEl.textContent = 'Page ' + currentPage + ' of ' + totalPages + ' (' + totalItems + ' active, ' + reviewNeededItems + ' need review)';
+          pagePrevBtn.disabled = currentPage <= 1;
+          pageNextBtn.disabled = currentPage >= totalPages;
+        }
+
+        function updateDismissSelectedBtn() {
+          var checked = listEl.querySelectorAll('.inbox-check:checked');
+          dismissSelectedBtn.disabled = checked.length === 0;
+          dismissSelectedBtn.textContent = checked.length > 0
+            ? 'Dismiss Selected (' + checked.length + ')'
+            : 'Dismiss Selected';
+        }
+
+        var dismissing = false;
+        async function dismissItems(reviewIds) {
+          if (dismissing) return;
+          dismissing = true;
+          dismissSelectedBtn.disabled = true;
+          dismissAllBtn.disabled = true;
+          var token = getToken();
+          if (!token) { dismissing = false; return; }
+          try {
+            var res = await fetch('/git/api/inbox/dismiss', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+              body: JSON.stringify({ branch_ids: reviewIds }),
+            });
+            if (res.status === 401 || res.status === 403) {
+              clearAuth();
+              loadInbox(1);
+              return;
+            }
+            if (!res.ok) throw new Error('Dismiss failed');
+            loadInbox(currentPage);
+          } catch (e) {
+            alert('Error: ' + e.message);
+          } finally {
+            dismissing = false;
+            dismissAllBtn.disabled = false;
+            updateDismissSelectedBtn();
+          }
+        }
+
+        async function dismissAll() {
+          if (dismissing) return;
+          if (!confirm('Dismiss all inbox items?')) return;
+          dismissing = true;
+          dismissAllBtn.disabled = true;
+          dismissSelectedBtn.disabled = true;
+          var token = getToken();
+          if (!token) { dismissing = false; return; }
+          try {
+            var res = await fetch('/git/api/inbox/dismiss', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+              body: JSON.stringify({ all: true }),
+            });
+            if (res.status === 401 || res.status === 403) {
+              clearAuth();
+              loadInbox(1);
+              return;
+            }
+            if (!res.ok) throw new Error('Dismiss all failed');
+            loadInbox(1);
+          } catch (e) {
+            alert('Error: ' + e.message);
+          } finally {
+            dismissing = false;
+            dismissAllBtn.disabled = false;
+            updateDismissSelectedBtn();
+          }
+        }
+
+        dismissSelectedBtn.addEventListener('click', function () {
+          var checked = listEl.querySelectorAll('.inbox-check:checked');
+          var ids = Array.from(checked).map(function (cb) { return parseInt(cb.dataset.reviewId); });
+          if (ids.length > 0) dismissItems(ids);
+        });
+
+        dismissAllBtn.addEventListener('click', dismissAll);
+
+        pagePrevBtn.addEventListener('click', function () {
+          if (currentPage > 1) loadInbox(currentPage - 1);
+        });
+        pageNextBtn.addEventListener('click', function () {
+          loadInbox(currentPage + 1);
+        });
+
+        // Init
+        if (window.pikaAuth && window.pikaAuth.isAuthed()) {
+          loadInbox(1);
+        } else {
+          hide(loadingEl);
+          show(authEl);
+          window.addEventListener('pika-auth', function () { loadInbox(1); });
+        }
+      })();
+    </script>
+{% endblock %}

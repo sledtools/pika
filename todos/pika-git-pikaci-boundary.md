@@ -4,9 +4,9 @@ This is the short design note for the current `pika-git` ↔ `pikaci` seam.
 
 It is grounded in the code that exists today:
 
-- `crates/pika-news/src/web.rs` owns the live app state, route handlers, and current background wake loop
-- `crates/pika-news/src/ci.rs` claims lanes, launches workers, and fences stale work with leases
-- `crates/pika-news/src/branch_store.rs` persists lane status, execution reason, failure kind, claim tokens, and target health
+- `crates/pika-git/src/web.rs` owns the live app state, route handlers, and current background wake loop
+- `crates/pika-git/src/ci.rs` claims lanes, launches workers, and fences stale work with leases
+- `crates/pika-git/src/branch_store.rs` persists lane status, execution reason, failure kind, claim tokens, and target health
 - `crates/pikaci/src/run.rs` writes durable run records and emits `RunLifecycleEvent`
 - `crates/pikaci/src/executor.rs` owns per-job execution and timeout enforcement
 - `crates/pikaci/src/model.rs` already contains the structured run/job/event surface
@@ -204,4 +204,4 @@ The next cleanup work should be:
 1. keep shipping the current UX/reliability fixes
 2. when ready for refactor work, extract `forge_runtime` without changing product behavior
 3. move recovery and CI actions behind `forge_service`
-4. only then do the larger `pika-news` → `pika-git` rename
+4. only then do the larger `pika-git` → `pika-git` rename

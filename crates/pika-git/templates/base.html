@@ -1,0 +1,295 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}pika git{% endblock %}</title>
+    {% block head_extra %}{% endblock %}
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg-start: #f8fbff; --bg-end: #f2f5f9;
+        --text: #1e293b; --text-secondary: #334155; --text-muted: #475569;
+        --link: #0f4c81;
+        --nav-bg: #fff; --nav-border: #d4deea;
+        --surface: #ffffffee; --surface-solid: #ffffffeb;
+        --border: #d6dde8; --border-light: #b8c5d8;
+        --input-border: #9eb3cb;
+        --badge-bg: #f0f4f9; --badge-bg-alt: #f7fafc; --badge-bg-row: #f8fafc;
+        --btn-bg: #f3f8ff; --btn-bg-hover: #e2e8f0; --btn-bg-active: #cbd5e1;
+        --accent: #7b3fe4; --accent-hover: #6930c3;
+        --chat-user-bg: #0f4c81; --chat-user-text: #fff;
+        --chat-assistant-bg: #f0f4f9; --chat-assistant-text: #1e293b;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg-start: #0f1117; --bg-end: #181b23;
+          --text: #e2e8f0; --text-secondary: #cbd5e1; --text-muted: #94a3b8;
+          --link: #60a5fa;
+          --nav-bg: #1a1d27; --nav-border: #2d3348;
+          --surface: #1e2130ee; --surface-solid: #1e2130eb;
+          --border: #2d3348; --border-light: #3b4263;
+          --input-border: #3b4263;
+          --badge-bg: #262a3a; --badge-bg-alt: #222639; --badge-bg-row: #1e2130;
+          --btn-bg: #262a3a; --btn-bg-hover: #2d3348; --btn-bg-active: #3b4263;
+          --accent: #9061f0; --accent-hover: #7b3fe4;
+          --chat-user-bg: #2563eb; --chat-user-text: #fff;
+          --chat-assistant-bg: #262a3a; --chat-assistant-text: #e2e8f0;
+        }
+      }
+      * { box-sizing: border-box; }
+      body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; margin: 0; padding: 0; background: linear-gradient(180deg, var(--bg-start) 0%, var(--bg-end) 100%); color: var(--text); min-height: 100vh; }
+      a { color: var(--link); text-decoration: none; }
+      a:hover { text-decoration: underline; }
+
+      /* Nav */
+      .site-nav { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: 0.6rem 1.5rem; background: var(--nav-bg); border-bottom: 1px solid var(--nav-border); }
+      .site-nav .nav-brand { font-weight: 700; font-size: 1rem; color: var(--link); text-decoration: none; }
+      .site-nav .nav-brand:hover { text-decoration: none; }
+      .site-nav .nav-right { display: flex; align-items: center; justify-content: flex-end; gap: 0.75rem; flex-wrap: wrap; }
+      .nostr-btn { background: var(--accent); color: #fff; border: none; padding: 0.38rem 1rem; font-size: 0.85rem; cursor: pointer; border-radius: 8px; font-family: inherit; }
+      .nostr-btn:hover { background: var(--accent-hover); }
+      .nostr-btn:disabled { opacity: 0.6; cursor: default; }
+      .nav-user { display: flex; align-items: center; gap: 0.6rem; font-size: 0.84rem; color: var(--text-secondary); }
+      .nav-user .npub-display { font-family: monospace; font-size: 0.8rem; background: var(--badge-bg); padding: 0.2rem 0.5rem; border-radius: 6px; }
+      .regen-btn { background: var(--btn-bg-hover); border: 1px solid var(--input-border); color: var(--text-secondary); font-size: 0.82rem; padding: 0.35rem 0.8rem; cursor: pointer; border-radius: 8px; font-family: inherit; }
+      .regen-btn:hover { background: var(--btn-bg-active); }
+      .inbox-link { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--text-secondary); text-decoration: none; padding: 0.35rem 0.7rem; border-radius: 8px; background: var(--btn-bg); border: 1px solid var(--border); }
+      .inbox-link:hover { background: var(--btn-bg-hover); text-decoration: none; }
+      .inbox-badge { background: var(--accent); color: #fff; font-size: 0.72rem; padding: 0.05rem 0.45rem; border-radius: 999px; font-weight: 600; min-width: 1.2rem; text-align: center; }
+
+      {% block styles %}{% endblock %}
+    </style>
+  </head>
+  <body>
+    <nav class="site-nav">
+      <a href="/git" class="nav-brand">pika git</a>
+      <div class="nav-right">
+        {% block nav_right_extra %}{% endblock %}
+        <span id="auth-actions">
+          <button id="nostr-login" type="button" class="nostr-btn">Sign in with Nostr</button>
+        </span>
+        <span id="user-actions" style="display:none;">
+          <span class="nav-user">
+            <a href="/git/inbox" class="inbox-link" id="inbox-link">Inbox <span id="inbox-badge" class="inbox-badge" style="display:none;">0</span></a>
+            <a href="/git/admin" class="inbox-link" id="admin-link" style="display:none;">Admin</a>
+            <span class="npub-display" id="user-npub"></span>
+            <button id="regen-btn" class="regen-btn" type="button" style="display:none;">Regenerate</button>
+          </span>
+        </span>
+      </div>
+    </nav>
+
+    {% block body %}{% endblock %}
+
+    {% block scripts %}{% endblock %}
+
+    <script>
+      // --- Global Nostr auth (shared across pages) ---
+      (function () {
+        const loginBtn = document.getElementById('nostr-login');
+        const authActions = document.getElementById('auth-actions');
+        const userActions = document.getElementById('user-actions');
+        const npubDisplay = document.getElementById('user-npub');
+        const adminLink = document.getElementById('admin-link');
+
+        if (!loginBtn) return;
+
+        const authStorage = window.localStorage;
+
+        function oldAuthKey(key) {
+          if (!key.startsWith('pika_git_')) return key;
+          return 'pika_news_' + key.slice('pika_git_'.length);
+        }
+
+        function getAuthValue(key) {
+          const current = authStorage.getItem(key);
+          if (current !== null) return current;
+          return authStorage.getItem(oldAuthKey(key));
+        }
+
+        function setAuthValue(key, value) {
+          authStorage.setItem(key, value);
+          authStorage.removeItem(oldAuthKey(key));
+        }
+
+        function removeAuthValue(key) {
+          authStorage.removeItem(key);
+          authStorage.removeItem(oldAuthKey(key));
+        }
+
+        function readAuthSnapshot() {
+          return {
+            token: getAuthValue('pika_git_token'),
+            npub: getAuthValue('pika_git_npub'),
+            isAdmin: getAuthValue('pika_git_is_admin') === '1',
+            canForgeWrite: getAuthValue('pika_git_can_forge_write') === '1',
+          };
+        }
+
+        // Use a global token stored per-origin so auth survives new tabs and normal navigation.
+        let authToken = getAuthValue('pika_git_token');
+        let savedNpub = getAuthValue('pika_git_npub');
+        let savedIsAdmin = getAuthValue('pika_git_is_admin') === '1';
+        let savedCanForgeWrite = getAuthValue('pika_git_can_forge_write') === '1';
+
+        window.pikaAuth = {
+          getToken: function () { return getAuthValue('pika_git_token'); },
+          getNpub: function () { return getAuthValue('pika_git_npub'); },
+          isAdmin: function () { return getAuthValue('pika_git_is_admin') === '1'; },
+          canForgeWrite: function () { return getAuthValue('pika_git_can_forge_write') === '1'; },
+          isAuthed: function () { return !!getAuthValue('pika_git_token'); },
+          clear: clearAuth,
+        };
+
+        function setAdminVisible(isAdmin) {
+          if (!adminLink) return;
+          adminLink.style.display = isAdmin ? '' : 'none';
+        }
+
+        function clearAuth() {
+          var badge = document.getElementById('inbox-badge');
+          removeAuthValue('pika_git_token');
+          removeAuthValue('pika_git_npub');
+          removeAuthValue('pika_git_is_admin');
+          removeAuthValue('pika_git_can_forge_write');
+          authActions.style.display = '';
+          userActions.style.display = 'none';
+          setAdminVisible(false);
+          if (badge) badge.style.display = 'none';
+          loginBtn.textContent = 'Sign in with Nostr';
+          loginBtn.disabled = false;
+        }
+
+        function showAuthed(npub, isAdmin, canForgeWrite) {
+          authActions.style.display = 'none';
+          userActions.style.display = 'inline';
+          const short = npub && npub.length > 20 ? npub.slice(0, 10) + '...' + npub.slice(-6) : (npub || '');
+          npubDisplay.textContent = short;
+          npubDisplay.title = npub || '';
+          setAdminVisible(!!isAdmin);
+          // Dispatch event so page-specific JS can react
+          window.dispatchEvent(new CustomEvent('pika-auth', { detail: { npub: npub, isAdmin: !!isAdmin, canForgeWrite: !!canForgeWrite } }));
+          // Fetch inbox count for badge
+          fetchInboxCount();
+        }
+
+        function fetchInboxCount() {
+          var token = getAuthValue('pika_git_token');
+          if (!token) return;
+          var badge = document.getElementById('inbox-badge');
+          if (!badge) return;
+          fetch('/git/api/inbox/count', { headers: { 'Authorization': 'Bearer ' + token } })
+            .then(function (r) {
+              if (r.status === 401 || r.status === 403) {
+                clearAuth();
+                return null;
+              }
+              return r.ok ? r.json() : null;
+            })
+            .then(function (data) {
+              if (!data) return;
+              if (data.count > 0) {
+                badge.textContent = data.count > 99 ? '99+' : data.count;
+                badge.style.display = '';
+              } else {
+                badge.style.display = 'none';
+              }
+            })
+            .catch(function () {});
+        }
+
+        function refreshSessionInfo() {
+          var token = getAuthValue('pika_git_token');
+          if (!token) return;
+          fetch('/git/api/me', { headers: { 'Authorization': 'Bearer ' + token } })
+            .then(function (r) {
+              if (r.status === 401 || r.status === 403) {
+                clearAuth();
+                return null;
+              }
+              return r.ok ? r.json() : null;
+            })
+            .then(function (data) {
+              if (!data) return;
+              if (!(data.can_chat || data.can_forge_write)) {
+                clearAuth();
+                return;
+              }
+              setAuthValue('pika_git_npub', data.npub || '');
+              setAuthValue('pika_git_is_admin', data.is_admin ? '1' : '0');
+              setAuthValue('pika_git_can_forge_write', data.can_forge_write ? '1' : '0');
+              showAuthed(data.npub, data.is_admin, data.can_forge_write);
+            })
+            .catch(function () {});
+        }
+
+        async function doLogin() {
+          if (!window.nostr) {
+            alert('No Nostr extension found. Install nos2x, Alby, or another NIP-07 signer.');
+            return;
+          }
+          try {
+            loginBtn.textContent = 'Signing...';
+            loginBtn.disabled = true;
+            const challengeRes = await fetch('/git/auth/challenge', { method: 'POST' });
+            if (!challengeRes.ok) throw new Error('Challenge request failed');
+            const { challenge } = await challengeRes.json();
+
+            const pubkey = await window.nostr.getPublicKey();
+            const verifyUrl = new URL('/git/auth/verify', window.location.origin).toString();
+            const event = {
+              kind: 27235,
+              created_at: Math.floor(Date.now() / 1000),
+              tags: [['u', verifyUrl], ['method', 'POST']],
+              content: challenge,
+              pubkey: pubkey,
+            };
+            const signed = await window.nostr.signEvent(event);
+
+            const verifyRes = await fetch('/git/auth/verify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ event: JSON.stringify(signed) }),
+            });
+            if (!verifyRes.ok) {
+              const err = await verifyRes.json();
+              throw new Error(err.error || 'Verification failed');
+            }
+            const { token, npub, is_admin, can_forge_write } = await verifyRes.json();
+            setAuthValue('pika_git_token', token);
+            setAuthValue('pika_git_npub', npub || pubkey);
+            setAuthValue('pika_git_is_admin', is_admin ? '1' : '0');
+            setAuthValue('pika_git_can_forge_write', can_forge_write ? '1' : '0');
+            showAuthed(npub || pubkey, !!is_admin, !!can_forge_write);
+          } catch (e) {
+            loginBtn.textContent = 'Sign in with Nostr';
+            loginBtn.disabled = false;
+            alert('Auth error: ' + e.message);
+          }
+        }
+
+        loginBtn.addEventListener('click', doLogin);
+
+        window.addEventListener('storage', function (event) {
+          if (
+            !event.key
+            || (!event.key.startsWith('pika_git_') && !event.key.startsWith('pika_news_'))
+          ) return;
+          const snapshot = readAuthSnapshot();
+          if (snapshot.token && snapshot.npub) {
+            showAuthed(snapshot.npub, snapshot.isAdmin, snapshot.canForgeWrite);
+            refreshSessionInfo();
+          } else {
+            clearAuth();
+          }
+        });
+
+        if (authToken && savedNpub) {
+          showAuthed(savedNpub, savedIsAdmin, savedCanForgeWrite);
+          refreshSessionInfo();
+        }
+      })();
+    </script>
+  </body>
+</html>

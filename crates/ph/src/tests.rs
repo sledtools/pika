@@ -59,10 +59,10 @@ fn login_persists_session_against_auth_flow() {
     let base_url = spawn_test_server(
         Router::new()
             .route(
-                "/news/auth/challenge",
+                "/git/auth/challenge",
                 post(|| async { Json(serde_json::json!({"challenge": "nonce-123"})) }),
             )
-            .route("/news/auth/verify", {
+            .route("/git/auth/verify", {
                 let expected_npub = expected_npub.clone();
                 post(move |Json(body): Json<serde_json::Value>| {
                     let expected_npub = expected_npub.clone();
@@ -126,7 +126,7 @@ fn wait_returns_error_when_ci_fails() {
     let base_url = spawn_test_server({
         let calls = Arc::clone(&calls);
         Router::new()
-            .route("/news/api/forge/branch/resolve", get(|| async {
+            .route("/git/api/forge/branch/resolve", get(|| async {
                 Json(serde_json::json!({
                     "branch_id": 7,
                     "repo": "sledtools/pika",
@@ -135,7 +135,7 @@ fn wait_returns_error_when_ci_fails() {
                 }))
             }))
             .route(
-                "/news/api/forge/branch/7",
+                "/git/api/forge/branch/7",
                 get(move || {
                     let calls = Arc::clone(&calls);
                     async move {
@@ -388,7 +388,7 @@ fn resolve_branch_ref_accepts_closed_branch_name() {
     .expect("save session");
 
     let base_url = spawn_test_server(Router::new().route(
-        "/news/api/forge/branch/resolve",
+        "/git/api/forge/branch/resolve",
         get(|| async {
             Json(serde_json::json!({
                 "branch_id": 19,
@@ -435,7 +435,7 @@ fn merge_and_close_use_authenticated_json_endpoints() {
         let close_auth = Arc::clone(&close_auth);
         Router::new()
             .route(
-                "/news/api/forge/branch/resolve",
+                "/git/api/forge/branch/resolve",
                 get(|| async {
                     Json(serde_json::json!({
                         "branch_id": 11,
@@ -446,7 +446,7 @@ fn merge_and_close_use_authenticated_json_endpoints() {
                 }),
             )
             .route(
-                "/news/api/forge/branch/11/merge",
+                "/git/api/forge/branch/11/merge",
                 post(move |headers: axum::http::HeaderMap| {
                     let merge_auth = Arc::clone(&merge_auth);
                     async move {
@@ -464,7 +464,7 @@ fn merge_and_close_use_authenticated_json_endpoints() {
                 }),
             )
             .route(
-                "/news/api/forge/branch/11/close",
+                "/git/api/forge/branch/11/close",
                 post(move |headers: axum::http::HeaderMap| {
                     let close_auth = Arc::clone(&close_auth);
                     async move {
@@ -524,7 +524,7 @@ fn fail_lane_resolves_branch_lane_name_against_latest_run() {
         let fail_auth = Arc::clone(&fail_auth);
         Router::new()
             .route(
-                "/news/api/forge/branch/resolve",
+                "/git/api/forge/branch/resolve",
                 get(|| async {
                     Json(serde_json::json!({
                         "branch_id": 7,
@@ -535,7 +535,7 @@ fn fail_lane_resolves_branch_lane_name_against_latest_run() {
                 }),
             )
             .route(
-                "/news/api/forge/branch/7",
+                "/git/api/forge/branch/7",
                 get(|| async {
                     Json(serde_json::json!({
                         "branch": {
@@ -609,7 +609,7 @@ fn fail_lane_resolves_branch_lane_name_against_latest_run() {
                 }),
             )
             .route(
-                "/news/branch/7/ci/fail/91",
+                "/git/branch/7/ci/fail/91",
                 post(move |headers: axum::http::HeaderMap| {
                     let fail_auth = Arc::clone(&fail_auth);
                     async move {
@@ -672,7 +672,7 @@ fn requeue_lane_resolves_nightly_lane_name() {
         let requeue_auth = Arc::clone(&requeue_auth);
         Router::new()
             .route(
-                "/news/api/forge/nightly/12",
+                "/git/api/forge/nightly/12",
                 get(|| async {
                     Json(serde_json::json!({
                         "nightly_run_id": 12,
@@ -705,7 +705,7 @@ fn requeue_lane_resolves_nightly_lane_name() {
                 }),
             )
             .route(
-                "/news/nightly/12/requeue/44",
+                "/git/nightly/12/requeue/44",
                 post(move |headers: axum::http::HeaderMap| {
                     let requeue_auth = Arc::clone(&requeue_auth);
                     async move {
@@ -768,7 +768,7 @@ fn wake_ci_hits_scheduler_wake_endpoint() {
     let base_url = spawn_test_server({
         let wake_auth = Arc::clone(&wake_auth);
         Router::new().route(
-            "/news/api/forge/ci/wake",
+            "/git/api/forge/ci/wake",
             post(move |headers: axum::http::HeaderMap| {
                 let wake_auth = Arc::clone(&wake_auth);
                 async move {

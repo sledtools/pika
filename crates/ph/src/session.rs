@@ -24,7 +24,7 @@ pub(crate) fn build_nip98_verify_event_json(
     challenge: &str,
 ) -> anyhow::Result<String> {
     let keys = Keys::parse(nsec).context("parse Nostr signing key")?;
-    let verify_url = format!("{}/news/auth/verify", base_url.trim_end_matches('/'));
+    let verify_url = format!("{}/git/auth/verify", base_url.trim_end_matches('/'));
     let event = EventBuilder::new(Kind::Custom(27235), challenge)
         .tags([
             Tag::custom(TagKind::custom("u"), [verify_url.as_str()]),

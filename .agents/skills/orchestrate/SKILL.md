@@ -83,7 +83,7 @@ For each chunk:
   If the worktree is ephemeral, persist the tool state outside it first; otherwise every “structured” run contract will collapse back into flattened subprocess output.
 - When a producer already emits structured events and has loadable run metadata, inspect the consumer
   seam before inventing a new protocol. In this repo, `pikaci` already had JSONL lifecycle events and
-  log metadata; the real gap was that `pika-news` flattened and discarded the durable state.
+  log metadata; the real gap was that `pika-git` flattened and discarded the durable state.
 - For temp-worktree CI in particular, prefer a single service-owned persistent state root over per-worktree `.state` trees.
   If a tool already emits stable run IDs, make `run_id` plus that shared state root enough to reload run records, logs, and artifacts after worktree cleanup.
 - When parity is green, remove stale exclusions immediately and prove the normal default path.
@@ -97,7 +97,7 @@ For each chunk:
   - do not assume a script generated inside a Nix build stayed runnable just because the source text looked right
 - After deleting a host-store seam, validate a low-risk control lane first (`pre-merge-rmp` is a good
   default) before burning time on heavier desktop/OpenClaw lanes.
-- For hosted `pika-news` CI, prefer one deterministic shared `pikaci` state root near the forge state
+- For hosted `pika-git` CI, prefer one deterministic shared `pikaci` state root near the forge state
   directory over per-run scratch dirs. If `run_id` is the durable key, make the state root stable
   enough that web/API code can load run records and logs later without requiring a DB migration.
 

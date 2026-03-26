@@ -19,7 +19,7 @@ members = [
   "crates/pika-tls",
   "crates/rmp-cli",
   "crates/pika-server",
-  "crates/pika-news",
+  "crates/pika-git",
   "crates/ph",
   "crates/pika-test-utils",
   "crates/pikahut",

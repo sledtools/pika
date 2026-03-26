@@ -1,0 +1,489 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page_title }}{% endblock %}
+
+{% block nav_right_extra %}
+    {% if review_mode %}
+    <div class="review-nav-center">
+      <button id="review-prev" type="button" disabled>Prev</button>
+      <button id="review-dismiss" type="button" class="review-dismiss-btn">Dismiss</button>
+      <button id="review-next" type="button" disabled>Next</button>
+      <span id="review-pos" class="review-nav-pos"></span>
+    </div>
+    {% endif %}
+{% endblock %}
+
+{% block styles %}
+      .ci-page { max-width: 1280px; margin: 0 auto; padding: 2rem 1rem 3rem; }
+      .meta { color: var(--text-secondary); font-size: 0.92rem; }
+      .muted { color: var(--text-muted); }
+      .panel {
+        background: var(--surface-solid);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 1.1rem 1.15rem;
+      }
+      .branch-hero {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        margin-top: 1rem;
+        background:
+          linear-gradient(135deg, rgba(201, 138, 20, 0.08), rgba(37, 99, 235, 0.05)),
+          var(--surface-solid);
+      }
+      .branch-hero-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+      .branch-kicker,
+      .ci-kicker {
+        margin: 0 0 0.35rem;
+        color: var(--text-muted);
+        font-size: 0.8rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .branch-hero h1 { margin: 0; font-size: clamp(2rem, 4vw, 2.6rem); line-height: 1.08; }
+      .branch-title { margin: 0.45rem 0 0; color: var(--text-secondary); }
+      .branch-meta-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 0.85rem;
+      }
+      .meta-block {
+        padding: 0.85rem 0.95rem;
+        border-radius: 14px;
+        background: var(--badge-bg-row);
+        border: 1px solid var(--border);
+      }
+      .meta-label {
+        display: block;
+        margin-bottom: 0.25rem;
+        color: var(--text-muted);
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .meta-value {
+        display: block;
+        color: var(--text);
+        font-size: 0.92rem;
+        word-break: break-word;
+      }
+      .status-row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        border-radius: 999px;
+        border: 1px solid var(--border-light);
+        padding: 0.22rem 0.7rem;
+        font-size: 0.82rem;
+        font-weight: 600;
+        background: var(--badge-bg-row);
+      }
+      .tone-success { border-color: rgba(36, 120, 77, 0.35); background: rgba(36, 120, 77, 0.14); color: #1c6b47; }
+      .tone-warning { border-color: rgba(201, 138, 20, 0.4); background: rgba(201, 138, 20, 0.14); color: #8f5d00; }
+      .tone-danger { border-color: rgba(184, 71, 91, 0.35); background: rgba(184, 71, 91, 0.14); color: #8b1e3f; }
+      .tone-neutral { border-color: var(--border-light); background: var(--badge-bg-row); color: var(--text-secondary); }
+      .notice {
+        border-radius: 12px;
+        padding: 0.85rem 1rem;
+        margin-top: 0.9rem;
+        border: 1px solid var(--border);
+        background: var(--badge-bg-row);
+      }
+      .notice.warning { border-color: #d9a441; background: rgba(217, 164, 65, 0.12); }
+      .notice.error { border-color: #b8475b; background: rgba(184, 71, 91, 0.12); }
+      .ci-overview-card { margin-top: 1rem; }
+      .ci-overview-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+      .ci-overview-head h2,
+      .ci-history-head h2 { margin: 0; }
+      .ci-overview-alert {
+        max-width: 28rem;
+        padding: 0.85rem 0.95rem;
+        border-radius: 12px;
+        background: rgba(184, 71, 91, 0.12);
+        color: #8b1e3f;
+        border: 1px solid rgba(184, 71, 91, 0.35);
+        font-weight: 600;
+      }
+      .ci-history-panel { margin-top: 1rem; }
+      .ci-run-list { display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem; }
+      .ci-run {
+        border-radius: 14px;
+        border: 1px solid var(--border);
+        padding: 1rem;
+        background: var(--badge-bg-row);
+      }
+      .ci-run.tone-success { background: rgba(36, 120, 77, 0.08); }
+      .ci-run.tone-warning { background: rgba(201, 138, 20, 0.08); }
+      .ci-run.tone-danger { background: rgba(184, 71, 91, 0.08); }
+      .ci-run-head p { margin: 0.25rem 0; }
+      .lane-list { display: flex; flex-direction: column; gap: 0.85rem; margin-top: 1rem; }
+      .lane-details {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 0.7rem 0.8rem;
+        background: var(--surface-solid);
+      }
+      .lane-details summary {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.75rem;
+        align-items: center;
+        cursor: pointer;
+        list-style: none;
+      }
+      .lane-details summary::-webkit-details-marker { display: none; }
+      .lane-details pre {
+        margin: 0.8rem 0 0;
+        overflow-x: auto;
+        background: var(--badge-bg);
+        border-radius: 10px;
+        padding: 0.8rem;
+      }
+      .secondary-btn {
+        border-radius: 10px;
+        border: 1px solid var(--input-border);
+        background: var(--btn-bg);
+        color: var(--text);
+        padding: 0.55rem 0.9rem;
+        cursor: pointer;
+      }
+      .lane-action-row {
+        display: flex;
+        gap: 0.6rem;
+        flex-wrap: wrap;
+        align-items: center;
+        margin-top: 0.75rem;
+      }
+      .lane-btn { margin-top: 0.75rem; }
+      .review-nav-center { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+      .review-nav-pos { font-size: 0.82rem; color: var(--text-muted); }
+      .review-dismiss-btn {
+        background: var(--accent);
+        color: #fff;
+        border: none;
+        padding: 0.35rem 0.8rem;
+        font-size: 0.82rem;
+        cursor: pointer;
+        border-radius: 8px;
+        font-family: inherit;
+      }
+      @media (prefers-color-scheme: dark) {
+        .tone-success { color: #8bddb3; }
+        .tone-warning { color: #f2cc72; }
+        .tone-danger { color: #f1a2b0; }
+      }
+{% endblock %}
+
+{% block body %}
+    <main class="ci-page">
+      <p><a href="{{ back_href }}">{% if review_mode %}Back to inbox review{% else %}Back to branch review{% endif %}</a></p>
+
+      <section class="panel branch-hero">
+        <div class="branch-hero-head">
+          <div>
+            <p class="branch-kicker">{{ repo }} branch #{{ branch_id }}</p>
+            <h1>{{ branch_name }}</h1>
+            <p class="branch-title">{{ title }}</p>
+          </div>
+          <div class="status-row">
+            <span class="status tone-neutral">branch: {{ branch_state }}</span>
+            <span class="status tone-neutral">target: {{ target_branch }}</span>
+          </div>
+        </div>
+
+        <div class="branch-meta-grid">
+          <div class="meta-block">
+            <span class="meta-label">Updated</span>
+            <span class="meta-value">{{ updated_at }}</span>
+          </div>
+          <div class="meta-block">
+            <span class="meta-label">Head</span>
+            <span class="meta-value"><code>{{ head_sha }}</code></span>
+          </div>
+          <div class="meta-block">
+            <span class="meta-label">Merge Base</span>
+            <span class="meta-value"><code>{{ merge_base_sha }}</code></span>
+          </div>
+        </div>
+      </section>
+
+      <div id="branch-ci-live">{{ branch_ci_live_html|safe }}</div>
+    </main>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+      (function () {
+        const branchCiLive = document.getElementById('branch-ci-live');
+        const branchId = {{ branch_id }};
+        const reviewMode = {% if review_mode %}true{% else %}false{% endif %};
+        const branchCiLiveEnabled = {% if branch_ci_live_enabled %}true{% else %}false{% endif %};
+        const reviewPrevBtn = document.getElementById('review-prev');
+        const reviewNextBtn = document.getElementById('review-next');
+        const reviewDismissBtn = document.getElementById('review-dismiss');
+        const reviewPosEl = document.getElementById('review-pos');
+        const branchCiSignalKey = 'pika_git_branch_ci_signal';
+        let branchCiSource = null;
+
+        function rerunButtons() {
+          return Array.from(document.querySelectorAll('.lane-rerun-btn'));
+        }
+
+        function recoveryButtons() {
+          return Array.from(document.querySelectorAll('.ci-wake-btn, .lane-fail-btn, .lane-requeue-btn, .lane-recover-run-btn'));
+        }
+
+        function authToken() {
+          return window.pikaAuth && window.pikaAuth.getToken ? window.pikaAuth.getToken() : null;
+        }
+
+        function announceBranchCiSignal() {
+          try {
+            localStorage.setItem(branchCiSignalKey, JSON.stringify({
+              branchId,
+              at: Date.now(),
+            }));
+          } catch (_err) {}
+        }
+
+        function showRerunButtons() {
+          const canForgeWrite = window.pikaAuth && window.pikaAuth.canForgeWrite ? window.pikaAuth.canForgeWrite() : false;
+          rerunButtons().forEach((button) => {
+            button.style.display = canForgeWrite ? '' : 'none';
+          });
+        }
+
+        function showRecoveryButtons() {
+          const canForgeWrite = window.pikaAuth && window.pikaAuth.canForgeWrite ? window.pikaAuth.canForgeWrite() : false;
+          const showRecovery = canForgeWrite && !reviewMode;
+          recoveryButtons().forEach((button) => {
+            button.style.display = showRecovery ? '' : 'none';
+          });
+        }
+
+        async function rerunLane(button) {
+          const token = authToken();
+          if (!token) return;
+          const originalLabel = button.textContent;
+          button.disabled = true;
+          button.textContent = 'Queueing lane rerun...';
+          try {
+            const res = await fetch(`/git/branch/${branchId}/ci/rerun/${button.dataset.laneRunId}`, {
+              method: 'POST',
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'request failed');
+            button.textContent = 'Lane rerun queued.';
+            announceBranchCiSignal();
+            startBranchCiStream(true);
+          } catch (err) {
+            button.textContent = err.message || String(err);
+            button.disabled = false;
+            return;
+          }
+          window.setTimeout(() => {
+            button.disabled = false;
+            button.textContent = originalLabel;
+          }, 1200);
+        }
+
+        function wireRerunButtons() {
+          rerunButtons().forEach((button) => {
+            if (button.dataset.bound === 'true') return;
+            button.dataset.bound = 'true';
+            button.addEventListener('click', () => rerunLane(button));
+          });
+        }
+
+        function wireRecoveryButtons() {
+          recoveryButtons().forEach((button) => {
+            if (button.dataset.bound === 'true') return;
+            button.dataset.bound = 'true';
+            button.addEventListener('click', async () => {
+              const token = authToken();
+              if (!token) return;
+              const originalLabel = button.textContent;
+              button.disabled = true;
+              button.textContent = button.dataset.busyLabel || 'Working...';
+              try {
+                const res = await fetch(button.dataset.actionPath, {
+                  method: 'POST',
+                  headers: { 'Authorization': 'Bearer ' + token }
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.error || 'request failed');
+                button.textContent = button.dataset.doneLabel || 'Done.';
+                announceBranchCiSignal();
+                startBranchCiStream(true);
+              } catch (err) {
+                button.disabled = false;
+                button.textContent = originalLabel;
+                return;
+              }
+              window.setTimeout(() => {
+                button.disabled = false;
+                button.textContent = originalLabel;
+              }, 1200);
+            });
+          });
+        }
+
+        function applyBranchCiLive(payload) {
+          if (!branchCiLive || !payload || typeof payload.html !== 'string') return;
+          branchCiLive.innerHTML = payload.html;
+          wireRerunButtons();
+          wireRecoveryButtons();
+          showRerunButtons();
+          showRecoveryButtons();
+        }
+
+        function startBranchCiStream(force) {
+          if (!branchCiLive || !window.EventSource) return;
+          if (!force && !branchCiLiveEnabled) return;
+          if (branchCiSource && branchCiSource.readyState !== EventSource.CLOSED) return;
+          branchCiSource = new EventSource(`/git/branch/${branchId}/ci/stream/full${reviewMode ? '?review=true' : ''}`);
+          branchCiSource.addEventListener('ci-update', (event) => {
+            const payload = JSON.parse(event.data || '{}');
+            applyBranchCiLive(payload);
+            const activeRoot = branchCiLive.querySelector('[data-branch-ci-active]');
+            if (activeRoot && activeRoot.getAttribute('data-branch-ci-active') !== 'true') {
+              branchCiSource.close();
+              branchCiSource = null;
+            }
+          });
+          branchCiSource.addEventListener('error', () => {
+            if (branchCiSource && branchCiSource.readyState === EventSource.CLOSED) {
+              branchCiSource.close();
+              branchCiSource = null;
+            }
+          });
+        }
+
+        async function refreshReviewControls() {
+          if (!reviewMode || !reviewPrevBtn || !reviewNextBtn || !reviewDismissBtn || !reviewPosEl) return;
+          const token = authToken();
+          if (!token) {
+            reviewPrevBtn.disabled = true;
+            reviewNextBtn.disabled = true;
+            reviewDismissBtn.disabled = true;
+            reviewPosEl.textContent = 'Sign in to review';
+            return;
+          }
+          try {
+            const res = await fetch(`/git/api/inbox/neighbors/${branchId}`, {
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            if (res.status === 401 || res.status === 403) {
+              reviewPrevBtn.disabled = true;
+              reviewNextBtn.disabled = true;
+              reviewDismissBtn.disabled = true;
+              reviewPosEl.textContent = 'Review access unavailable';
+              return;
+            }
+            if (!res.ok) throw new Error('failed to load review neighbors');
+            const data = await res.json();
+            reviewPrevBtn.disabled = !data.prev;
+            reviewNextBtn.disabled = !data.next;
+            reviewDismissBtn.disabled = false;
+            reviewPrevBtn.dataset.targetId = data.prev || '';
+            reviewNextBtn.dataset.targetId = data.next || '';
+            reviewPosEl.textContent = data.total ? `${data.position} / ${data.total}` : '';
+          } catch (err) {
+            reviewPrevBtn.disabled = true;
+            reviewNextBtn.disabled = true;
+            reviewDismissBtn.disabled = true;
+            reviewPosEl.textContent = err.message || String(err);
+          }
+        }
+
+        async function dismissCurrentReviewItem() {
+          const token = authToken();
+          if (!token) return;
+          reviewDismissBtn.disabled = true;
+          try {
+            const neighborsRes = await fetch(`/git/api/inbox/neighbors/${branchId}`, {
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            if (!neighborsRes.ok) throw new Error('failed to load review neighbors');
+            const neighbors = await neighborsRes.json();
+            const nextTarget = neighbors.next || neighbors.prev;
+
+            const dismissRes = await fetch('/git/api/inbox/dismiss', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + token
+              },
+              body: JSON.stringify({ branch_ids: [branchId] })
+            });
+            if (!dismissRes.ok) {
+              const data = await dismissRes.json().catch(() => ({}));
+              throw new Error(data.error || 'dismiss failed');
+            }
+
+            if (nextTarget) {
+              window.location.href = `/git/inbox/review/${nextTarget}`;
+            } else {
+              window.location.href = '/git/inbox';
+            }
+          } catch (err) {
+            reviewDismissBtn.disabled = false;
+            reviewPosEl.textContent = err.message || String(err);
+          }
+        }
+
+        function navigateReview(targetId) {
+          if (!targetId) return;
+          window.location.href = `/git/inbox/review/${targetId}`;
+        }
+
+        if (reviewMode) {
+          if (reviewPrevBtn) {
+            reviewPrevBtn.addEventListener('click', () => navigateReview(reviewPrevBtn.dataset.targetId));
+          }
+          if (reviewNextBtn) {
+            reviewNextBtn.addEventListener('click', () => navigateReview(reviewNextBtn.dataset.targetId));
+          }
+          if (reviewDismissBtn) {
+            reviewDismissBtn.addEventListener('click', dismissCurrentReviewItem);
+          }
+          window.addEventListener('keydown', (event) => {
+            if (event.key === '[' && reviewPrevBtn && reviewPrevBtn.dataset.targetId) {
+              navigateReview(reviewPrevBtn.dataset.targetId);
+            }
+            if (event.key === ']' && reviewNextBtn && reviewNextBtn.dataset.targetId) {
+              navigateReview(reviewNextBtn.dataset.targetId);
+            }
+            if ((event.key === 'd' || event.key === 'D') && reviewDismissBtn && !reviewDismissBtn.disabled) {
+              dismissCurrentReviewItem();
+            }
+          });
+          refreshReviewControls();
+        }
+
+        window.addEventListener('pika-auth', refreshReviewControls);
+        window.addEventListener('pika-auth', showRerunButtons);
+        window.addEventListener('pika-auth', showRecoveryButtons);
+        wireRerunButtons();
+        wireRecoveryButtons();
+        showRerunButtons();
+        showRecoveryButtons();
+        startBranchCiStream(false);
+      })();
+    </script>
+{% endblock %}

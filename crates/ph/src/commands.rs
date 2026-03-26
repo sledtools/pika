@@ -83,7 +83,7 @@ pub(crate) fn cmd_wait(
             last_snapshot = Some(snapshot);
         }
         if !branch_ci_active(&branch) {
-            return if branch.branch.ci_status == "success" {
+            return if branch.branch.ci_status.is_success() {
                 Ok(())
             } else {
                 Err(anyhow!(
@@ -276,13 +276,9 @@ pub(crate) fn branch_wait_snapshot(branch: &BranchDetailResponse) -> String {
 }
 
 pub(crate) fn branch_ci_active(branch: &BranchDetailResponse) -> bool {
-    matches!(branch.branch.ci_status.as_str(), "queued" | "running")
+    branch.branch.ci_status.is_active()
         || branch.ci_runs.iter().any(|run| {
-            matches!(run.status.as_str(), "queued" | "running")
-                || run
-                    .lanes
-                    .iter()
-                    .any(|lane| matches!(lane.status.as_str(), "queued" | "running"))
+            run.status.is_active() || run.lanes.iter().any(|lane| lane.status.is_active())
         })
 }
 
@@ -290,7 +286,7 @@ fn active_lane_titles(branch: &BranchDetailResponse) -> Vec<String> {
     let mut active = Vec::new();
     for run in &branch.ci_runs {
         for lane in &run.lanes {
-            if matches!(lane.status.as_str(), "queued" | "running") {
+            if lane.status.is_active() {
                 active.push(lane.lane_id.clone());
             }
         }
@@ -375,21 +371,24 @@ fn print_branch_action(verb: &str, response: &BranchActionResponse) {
 
 fn render_lane_status_line(lane: &CiLane) -> String {
     let mut line = format!("{} {}", lane.lane_id, lane.status);
-    if matches!(lane.status.as_str(), "queued" | "running")
-        && lane.execution_reason != CiLaneExecutionReason::Queued
-        && lane.execution_reason.as_str() != lane.status
+    if lane.status.is_active()
+        && lane.execution_reason.as_str() != CiLaneExecutionReason::Queued.as_str()
+        && lane.execution_reason.as_str() != lane.status.as_str()
     {
         line.push_str(" · ");
         line.push_str(lane.execution_reason.label());
     }
-    if let Some(failure_kind) = lane.failure_kind {
+    if let Some(failure_kind) = lane.failure_kind.as_ref() {
         line.push_str(" · failure=");
         line.push_str(failure_kind.label());
     }
     if let Some(summary) = lane.target_health_summary.as_deref() {
         line.push_str(" · ");
         line.push_str(summary);
-    } else if lane.target_health_state == Some(CiTargetHealthState::Unhealthy) {
+    } else if matches!(
+        lane.target_health_state.as_ref(),
+        Some(CiTargetHealthState::Unhealthy)
+    ) {
         line.push_str(" · target unhealthy");
     }
     let target = lane
@@ -418,13 +417,12 @@ fn render_lane_snapshot_fragment(lane: &CiLane) -> String {
         lane.status,
         lane.execution_reason.as_str(),
         lane.failure_kind
+            .as_ref()
             .map(|kind| kind.label().to_string())
             .unwrap_or_default(),
         lane.target_health_state
-            .map(|state| match state {
-                CiTargetHealthState::Healthy => "healthy".to_string(),
-                CiTargetHealthState::Unhealthy => "unhealthy".to_string(),
-            })
+            .as_ref()
+            .map(|state| state.as_str().to_string())
             .unwrap_or_default(),
     )
 }

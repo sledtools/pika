@@ -12,6 +12,7 @@ anyhow = { workspace = true }
 base64 = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 nostr = { workspace = true }
+pika-forge-model = { path = "../pika-forge-model" }
 reqwest = { workspace = true, features = ["blocking", "json", "native-tls"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

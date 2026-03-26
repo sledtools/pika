@@ -22,6 +22,7 @@ hex = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 nostr = { workspace = true }
+pika-forge-model = { path = "../pika-forge-model" }
 rand = { workspace = true }
 pulldown-cmark = "0.10"
 pikaci = { path = "../pikaci" }

@@ -2,16 +2,35 @@
 
 let
   servicePort = 8788;
-  serviceUser = "pika-news";
-  serviceGroup = "pika-news";
+  serviceUser = "pika-git";
+  serviceGroup = "pika-git";
   gitUser = "git";
-  serviceStateDir = "/var/lib/pika-news";
+  serviceStateDir = "/var/lib/pika-git";
+  legacyServiceStateDir = "/var/lib/pika-news";
   canonicalGitDir = "${serviceStateDir}/pika.git";
   adminIdentities = import ../lib/admin-identities.nix;
   tomlFormat = pkgs.formats.toml { };
   prepareCanonicalRepo = pkgs.writeShellScript "pika-git-prepare-canonical-repo" ''
     set -euo pipefail
+    state_dir=${lib.escapeShellArg serviceStateDir}
+    legacy_state_dir=${lib.escapeShellArg legacyServiceStateDir}
     repo=${lib.escapeShellArg canonicalGitDir}
+
+    if [ "$legacy_state_dir" != "$state_dir" ] && [ -d "$legacy_state_dir" ] && [ ! -L "$legacy_state_dir" ]; then
+      if [ ! -e "$state_dir" ]; then
+        ${pkgs.coreutils}/bin/mv "$legacy_state_dir" "$state_dir"
+      elif [ -d "$state_dir" ] && [ -z "$(${pkgs.findutils}/bin/find "$state_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+        ${pkgs.coreutils}/bin/rmdir "$state_dir"
+        ${pkgs.coreutils}/bin/mv "$legacy_state_dir" "$state_dir"
+      fi
+    fi
+
+    ${pkgs.coreutils}/bin/mkdir -p "$state_dir"
+    ${pkgs.coreutils}/bin/chown -R ${serviceUser}:${serviceGroup} "$state_dir"
+
+    if [ "$legacy_state_dir" != "$state_dir" ] && [ ! -e "$legacy_state_dir" ]; then
+      ${pkgs.coreutils}/bin/ln -s "$state_dir" "$legacy_state_dir"
+    fi
 
     if [ ! -d "$repo" ]; then
       exit 0
@@ -51,7 +70,7 @@ let
   };
 in
 {
-  sops.secrets."pika_news_github_token" = {
+  sops.secrets."pika_git_github_token" = {
     format = "yaml";
     sopsFile = ../../secrets/pika-git.yaml;
     owner = serviceUser;
@@ -59,7 +78,7 @@ in
     mode = "0400";
   };
 
-  sops.secrets."pika_news_claude_oauth_token" = {
+  sops.secrets."pika_git_claude_oauth_token" = {
     format = "yaml";
     sopsFile = ../../secrets/pika-git.yaml;
     owner = serviceUser;
@@ -67,7 +86,7 @@ in
     mode = "0400";
   };
 
-  sops.secrets."pika_news_webhook_secret" = {
+  sops.secrets."pika_git_webhook_secret" = {
     format = "yaml";
     sopsFile = ../../secrets/pika-git.yaml;
     owner = serviceUser;
@@ -88,10 +107,9 @@ in
     group = serviceGroup;
     mode = "0400";
     content = ''
-      GITHUB_TOKEN=${config.sops.placeholder."pika_news_github_token"}
-      CLAUDE_CODE_OAUTH_TOKEN=${config.sops.placeholder."pika_news_claude_oauth_token"}
-      PIKA_GIT_WEBHOOK_SECRET=${config.sops.placeholder."pika_news_webhook_secret"}
-      PIKA_NEWS_WEBHOOK_SECRET=${config.sops.placeholder."pika_news_webhook_secret"}
+      GITHUB_TOKEN=${config.sops.placeholder."pika_git_github_token"}
+      CLAUDE_CODE_OAUTH_TOKEN=${config.sops.placeholder."pika_git_claude_oauth_token"}
+      PIKA_GIT_WEBHOOK_SECRET=${config.sops.placeholder."pika_git_webhook_secret"}
       RUST_LOG=info
       PIKACI_APPLE_SSH_KEY_FILE=${config.sops.secrets."pikaci_apple_ssh_key".path}
       PIKACI_APPLE_SSH_HOST=pika-mini.tail029da2.ts.net
@@ -118,7 +136,7 @@ in
   };
   users.groups."${serviceGroup}" = {};
 
-  systemd.services.pika-news = {
+  systemd.services.pika-git = {
     description = "pika git forge service";
     wantedBy = [ "multi-user.target" ];
     after = [ "network-online.target" "sops-install-secrets.service" ];

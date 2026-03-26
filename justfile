@@ -272,7 +272,6 @@ alias pikaci-remote-fulfill-pre-merge-notifications := infra::pikaci-remote-fulf
 alias pikaci-remote-fulfill-pre-merge-rmp := infra::pikaci-remote-fulfill-pre-merge-rmp
 alias pikaci-remote-fulfill-pre-merge-pikachat-rust := infra::pikaci-remote-fulfill-pre-merge-pikachat-rust
 alias pikaci-pre-merge-pika-rust-prepares-remote-build := infra::pikaci-pre-merge-pika-rust-prepares-remote-build
-alias news := infra::news
 alias release-bump := ship::release-bump
 alias release-commit := ship::release-commit
 alias zapstore-encrypt-signing := ship::zapstore-encrypt-signing

@@ -935,7 +935,6 @@ EOF
         packages =
           {
             pika-git = pikaGitPkg;
-            pika-news = pikaGitPkg;
             pikaci = pikaciPkg;
             ph = phPkg;
             default = pikaciPkg;

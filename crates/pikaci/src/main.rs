@@ -1904,9 +1904,9 @@ mod tests {
         assert_eq!(
             resolve_state_root(
                 cwd,
-                Some(std::path::PathBuf::from("/var/lib/pika-news/pikaci"))
+                Some(std::path::PathBuf::from("/var/lib/pika-git/pikaci"))
             ),
-            std::path::PathBuf::from("/var/lib/pika-news/pikaci")
+            std::path::PathBuf::from("/var/lib/pika-git/pikaci")
         );
     }
 

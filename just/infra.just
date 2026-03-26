@@ -67,7 +67,3 @@ pikaci-remote-fulfill-pre-merge-pikachat-rust:
 [private]
 pika-git MAX_PRS="2":
     ./scripts/pika-git {{ MAX_PRS }}
-
-[private]
-news MAX_PRS="2":
-    ./scripts/pika-git {{ MAX_PRS }}

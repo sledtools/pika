@@ -58,7 +58,7 @@ EOF
 
 main() {
   local max_prs="${1:-$DEFAULT_MAX_PRS}"
-  local bind_port="${PIKA_GIT_PORT:-${PIKA_NEWS_PORT:-$DEFAULT_PORT}}"
+  local bind_port="${PIKA_GIT_PORT:-$DEFAULT_PORT}"
 
   if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     usage

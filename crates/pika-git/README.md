@@ -24,7 +24,7 @@ bootstrap_admin_npubs = ["npub1..."]
 
 [forge_repo]
 repo = "sledtools/pika"
-canonical_git_dir = "/var/lib/pika-news/pika.git"
+canonical_git_dir = "/var/lib/pika-git/pika.git"
 default_branch = "master"
 mirror_remote = "github"
 mirror_poll_interval_secs = 300

@@ -36,8 +36,8 @@ use crate::nostr_auth::{
 };
 use crate::{RequestContext, State};
 use pika_cloud::{
-    incus_mount_device_config, incus_runtime_config, AgentProvisionRequest, AgentStartupPhase,
-    IncusProvisionParams, IncusRuntimeConfig, IncusRuntimePlan, LifecycleState,
+    decode_runtime_status, incus_mount_device_config, incus_runtime_config, AgentProvisionRequest,
+    AgentStartupPhase, IncusProvisionParams, IncusRuntimeConfig, IncusRuntimePlan, LifecycleState,
     ManagedOpenClawLaunchAuth, ManagedRuntimeBackupStatus, ManagedRuntimeStatus,
     ManagedVmProvisionParams as ManagedRuntimeProvisionParams, MountKind, MountMode,
     RuntimeIdentity, RuntimeMount, RuntimeResources, RuntimeSpec, RuntimeStatusSnapshot,
@@ -1896,7 +1896,7 @@ impl IncusManagedRuntimeProvider {
                 return None;
             }
         };
-        match serde_json::from_slice::<RuntimeStatusSnapshot>(&status_bytes) {
+        match decode_guest_lifecycle_status(&status_bytes) {
             Ok(status) => Some(status),
             Err(err) => {
                 tracing::warn!(
@@ -2450,6 +2450,10 @@ impl IncusManagedRuntimeProvider {
             err
         }
     }
+}
+
+fn decode_guest_lifecycle_status(status_bytes: &[u8]) -> serde_json::Result<RuntimeStatusSnapshot> {
+    decode_runtime_status(status_bytes)
 }
 
 fn is_incus_not_found_error(err: &anyhow::Error) -> bool {
@@ -4289,6 +4293,21 @@ mod tests {
         .expect_err("stale boot id should be rejected");
 
         assert_eq!(err, "boot_id mismatch");
+    }
+
+    #[test]
+    fn decode_guest_lifecycle_status_rejects_malformed_snapshot() {
+        let err = decode_guest_lifecycle_status(
+            br#"{
+                "schema_version": 1,
+                "state": "passed",
+                "updated_at": "2026-03-25T20:00:00Z",
+                "message": "guest declared readiness"
+            }"#,
+        )
+        .expect_err("malformed status should fail");
+
+        assert!(err.to_string().contains("unknown variant"));
     }
 
     #[test]

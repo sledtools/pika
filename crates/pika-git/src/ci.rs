@@ -870,22 +870,7 @@ nightly_schedule_utc = "08:00"
             ci_command: vec!["just".to_string(), "pre-merge".to_string()],
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(forge_repo.clone()),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let config = Config::test_with_forge_repo(forge_repo.clone());
         let store = Store::open(&db_path).expect("open store");
         let repo_id = store
             .ensure_forge_repo_metadata(
@@ -1025,22 +1010,7 @@ nightly_schedule_utc = "08:00"
             ci_command: vec!["just".to_string(), "pre-merge".to_string()],
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(forge_repo.clone()),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let config = Config::test_with_forge_repo(forge_repo.clone());
         let store = Store::open(&db_path).expect("open store");
         let branch = store
             .upsert_branch_record(&crate::branch_store::BranchUpsertInput {
@@ -1176,22 +1146,7 @@ nightly_schedule_utc = "08:00"
             ci_command: vec!["just".to_string(), "pre-merge".to_string()],
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(forge_repo.clone()),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let config = Config::test_with_forge_repo(forge_repo.clone());
         let store = Store::open(&db_path).expect("open store");
         let branch = store
             .upsert_branch_record(&crate::branch_store::BranchUpsertInput {
@@ -1332,22 +1287,7 @@ nightly_schedule_utc = "08:00"
             ci_command: vec!["just".to_string(), "pre-merge".to_string()],
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(forge_repo.clone()),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let config = Config::test_with_forge_repo(forge_repo.clone());
         let store = Store::open(&db_path).expect("open store");
 
         let slow_branch = store
@@ -1531,22 +1471,7 @@ nightly_schedule_utc = "08:00"
             ci_command: vec!["just".to_string(), "pre-merge".to_string()],
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(forge_repo.clone()),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let config = Config::test_with_forge_repo(forge_repo.clone());
         let store = Store::open(&db_path).expect("open store");
         let branch = store
             .upsert_branch_record(&crate::branch_store::BranchUpsertInput {
@@ -1681,22 +1606,7 @@ nightly_schedule_utc = "08:00"
             ci_command: vec!["just".to_string(), "pre-merge".to_string()],
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(forge_repo.clone()),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let config = Config::test_with_forge_repo(forge_repo.clone());
         let store = Store::open(&db_path).expect("open store");
         let branch = store
             .upsert_branch_record(&crate::branch_store::BranchUpsertInput {
@@ -1835,22 +1745,7 @@ command = ["./nightly.sh"]
             ci_command: vec!["just".to_string(), "pre-merge".to_string()],
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(forge_repo.clone()),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let config = Config::test_with_forge_repo(forge_repo.clone());
         let store = Store::open(&db_path).expect("open store");
         let branch = store
             .upsert_branch_record(&crate::branch_store::BranchUpsertInput {

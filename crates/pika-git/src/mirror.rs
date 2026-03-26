@@ -229,32 +229,17 @@ mod tests {
     }
 
     fn base_config(canonical_git_dir: &str, mirror_remote: Option<&str>) -> Config {
-        Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(ForgeRepoConfig {
-                repo: "sledtools/pika".to_string(),
-                canonical_git_dir: canonical_git_dir.to_string(),
-                default_branch: "master".to_string(),
-                ci_concurrency: Some(2),
-                mirror_remote: mirror_remote.map(str::to_string),
-                mirror_poll_interval_secs: Some(300),
-                mirror_timeout_secs: Some(120),
-                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
-                hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
-            }),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        }
+        Config::test_with_forge_repo(ForgeRepoConfig {
+            repo: "sledtools/pika".to_string(),
+            canonical_git_dir: canonical_git_dir.to_string(),
+            default_branch: "master".to_string(),
+            ci_concurrency: Some(2),
+            mirror_remote: mirror_remote.map(str::to_string),
+            mirror_poll_interval_secs: Some(300),
+            mirror_timeout_secs: Some(120),
+            ci_command: vec!["just".to_string(), "pre-merge".to_string()],
+            hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
+        })
     }
 
     #[test]

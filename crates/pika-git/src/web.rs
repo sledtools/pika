@@ -3808,33 +3808,30 @@ mod tests {
         }
     }
 
-    fn forge_test_config() -> Config {
-        Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(ForgeRepoConfig {
-                repo: "sledtools/pika".to_string(),
-                canonical_git_dir: "/tmp/pika.git".to_string(),
-                default_branch: "master".to_string(),
-                ci_concurrency: Some(2),
-                mirror_remote: None,
-                mirror_poll_interval_secs: None,
-                mirror_timeout_secs: None,
-                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
-                hook_url: None,
-            }),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![TRUSTED_NPUB.to_string()],
+    fn forge_test_repo_config(canonical_git_dir: impl Into<String>) -> ForgeRepoConfig {
+        ForgeRepoConfig {
+            repo: "sledtools/pika".to_string(),
+            canonical_git_dir: canonical_git_dir.into(),
+            default_branch: "master".to_string(),
+            ci_concurrency: Some(2),
+            mirror_remote: None,
+            mirror_poll_interval_secs: None,
+            mirror_timeout_secs: None,
+            ci_command: vec!["just".to_string(), "pre-merge".to_string()],
+            hook_url: None,
         }
+    }
+
+    fn forge_test_config() -> Config {
+        let mut config = Config::test_with_forge_repo(forge_test_repo_config("/tmp/pika.git"));
+        config.bootstrap_admin_npubs = vec![TRUSTED_NPUB.to_string()];
+        config
+    }
+
+    fn forge_test_config_without_admins() -> Config {
+        let mut config = forge_test_config();
+        config.bootstrap_admin_npubs.clear();
+        config
     }
 
     fn forge_test_config_with_git_dir(canonical_git_dir: &std::path::Path) -> Config {
@@ -3972,32 +3969,10 @@ mod tests {
     #[test]
     fn forge_startup_issues_surface_missing_secret_and_mirror_remote() {
         let root = tempfile::tempdir().expect("create temp root");
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(ForgeRepoConfig {
-                repo: "sledtools/pika".to_string(),
-                canonical_git_dir: root.path().join("pika.git").display().to_string(),
-                default_branch: "master".to_string(),
-                ci_concurrency: Some(2),
-                mirror_remote: None,
-                mirror_poll_interval_secs: None,
-                mirror_timeout_secs: None,
-                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
-                hook_url: Some("http://127.0.0.1:8788/git/webhook".to_string()),
-            }),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let mut config = forge_test_config_with_git_dir(&root.path().join("pika.git"));
+        config.forge_repo.as_mut().expect("forge repo").hook_url =
+            Some("http://127.0.0.1:8788/git/webhook".to_string());
+        config.bootstrap_admin_npubs.clear();
         let forge_repo = config.effective_forge_repo().expect("forge repo");
         let issues = collect_forge_startup_issues(&config, &forge_repo, None);
         let codes: Vec<&str> = issues.iter().map(|issue| issue.code.as_str()).collect();
@@ -4010,32 +3985,10 @@ mod tests {
     fn forge_runtime_issues_clear_after_hook_install_recovery() {
         let root = tempfile::tempdir().expect("create temp root");
         let canonical = root.path().join("recovered.git");
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(ForgeRepoConfig {
-                repo: "sledtools/pika".to_string(),
-                canonical_git_dir: canonical.display().to_string(),
-                default_branch: "master".to_string(),
-                ci_concurrency: Some(2),
-                mirror_remote: None,
-                mirror_poll_interval_secs: None,
-                mirror_timeout_secs: None,
-                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
-                hook_url: Some("http://127.0.0.1:8788/git/webhook".to_string()),
-            }),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let mut config = forge_test_config_with_git_dir(&canonical);
+        config.forge_repo.as_mut().expect("forge repo").hook_url =
+            Some("http://127.0.0.1:8788/git/webhook".to_string());
+        config.bootstrap_admin_npubs.clear();
 
         let output = Command::new("git")
             .args([
@@ -4634,32 +4587,7 @@ oldsha newsha refs/tags/v1
             .populate_branch_inbox(artifact_id, &["npub1reviewer".to_string()])
             .expect("populate branch inbox");
 
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(ForgeRepoConfig {
-                repo: "sledtools/pika".to_string(),
-                canonical_git_dir: "/tmp/pika.git".to_string(),
-                default_branch: "master".to_string(),
-                ci_concurrency: Some(2),
-                mirror_remote: None,
-                mirror_poll_interval_secs: None,
-                mirror_timeout_secs: None,
-                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
-                hook_url: None,
-            }),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let config = forge_test_config_without_admins();
         let state = test_state(store, config);
 
         let response = inbox_review_handler(State(state), Path(branch.branch_id))
@@ -4676,32 +4604,12 @@ oldsha newsha refs/tags/v1
         let branch = store
             .upsert_branch_record(&branch_upsert_input("feature/api-resolve", "head-resolve"))
             .expect("insert branch");
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(ForgeRepoConfig {
-                repo: "sledtools/pika".to_string(),
-                canonical_git_dir: "/tmp/pika.git".to_string(),
-                default_branch: "master".to_string(),
-                ci_concurrency: None,
-                mirror_remote: None,
-                mirror_poll_interval_secs: None,
-                mirror_timeout_secs: None,
-                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
-                hook_url: None,
-            }),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let mut config = forge_test_config_without_admins();
+        config
+            .forge_repo
+            .as_mut()
+            .expect("forge repo")
+            .ci_concurrency = None;
         let headers = trusted_headers(&store, TRUSTED_NPUB);
         let state = test_state(store, config);
 
@@ -4735,32 +4643,12 @@ oldsha newsha refs/tags/v1
         store
             .mark_branch_closed(branch.branch_id, TRUSTED_NPUB)
             .expect("close branch");
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(ForgeRepoConfig {
-                repo: "sledtools/pika".to_string(),
-                canonical_git_dir: "/tmp/pika.git".to_string(),
-                default_branch: "master".to_string(),
-                ci_concurrency: None,
-                mirror_remote: None,
-                mirror_poll_interval_secs: None,
-                mirror_timeout_secs: None,
-                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
-                hook_url: None,
-            }),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let mut config = forge_test_config_without_admins();
+        config
+            .forge_repo
+            .as_mut()
+            .expect("forge repo")
+            .ci_concurrency = None;
         let headers = trusted_headers(&store, TRUSTED_NPUB);
         let state = test_state(store, config);
 
@@ -4797,32 +4685,12 @@ oldsha newsha refs/tags/v1
                 "npub1admin",
             )
             .expect("upsert forge-only allowlist entry");
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(ForgeRepoConfig {
-                repo: "sledtools/pika".to_string(),
-                canonical_git_dir: "/tmp/pika.git".to_string(),
-                default_branch: "master".to_string(),
-                ci_concurrency: None,
-                mirror_remote: None,
-                mirror_poll_interval_secs: None,
-                mirror_timeout_secs: None,
-                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
-                hook_url: None,
-            }),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let mut config = forge_test_config_without_admins();
+        config
+            .forge_repo
+            .as_mut()
+            .expect("forge repo")
+            .ci_concurrency = None;
         let state = test_state(store, config);
 
         let response = auth_challenge_handler(State(state)).await.into_response();
@@ -4866,32 +4734,12 @@ oldsha newsha refs/tags/v1
                 Some("pre-merge-pika-rust"),
             )
             .expect("record pikaci metadata");
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(ForgeRepoConfig {
-                repo: "sledtools/pika".to_string(),
-                canonical_git_dir: "/tmp/pika.git".to_string(),
-                default_branch: "master".to_string(),
-                ci_concurrency: None,
-                mirror_remote: None,
-                mirror_poll_interval_secs: None,
-                mirror_timeout_secs: None,
-                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
-                hook_url: None,
-            }),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let mut config = forge_test_config_without_admins();
+        config
+            .forge_repo
+            .as_mut()
+            .expect("forge repo")
+            .ci_concurrency = None;
         let headers = trusted_headers(&store, TRUSTED_NPUB);
         let state = test_state(store, config);
 
@@ -4986,32 +4834,12 @@ oldsha newsha refs/tags/v1
                 Ok::<(), anyhow::Error>(())
             })
             .expect("set waiting/unhealthy state");
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(ForgeRepoConfig {
-                repo: "sledtools/pika".to_string(),
-                canonical_git_dir: "/tmp/pika.git".to_string(),
-                default_branch: "master".to_string(),
-                ci_concurrency: Some(1),
-                mirror_remote: None,
-                mirror_poll_interval_secs: None,
-                mirror_timeout_secs: None,
-                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
-                hook_url: None,
-            }),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let mut config = forge_test_config_without_admins();
+        config
+            .forge_repo
+            .as_mut()
+            .expect("forge repo")
+            .ci_concurrency = Some(1);
         let headers = trusted_headers(&store, TRUSTED_NPUB);
         let state = test_state(store, config);
 
@@ -5103,32 +4931,12 @@ oldsha newsha refs/tags/v1
                 "fixture boom",
             )
             .expect("finish failed lane");
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(ForgeRepoConfig {
-                repo: "sledtools/pika".to_string(),
-                canonical_git_dir: "/tmp/pika.git".to_string(),
-                default_branch: "master".to_string(),
-                ci_concurrency: None,
-                mirror_remote: None,
-                mirror_poll_interval_secs: None,
-                mirror_timeout_secs: None,
-                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
-                hook_url: None,
-            }),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let mut config = forge_test_config_without_admins();
+        config
+            .forge_repo
+            .as_mut()
+            .expect("forge repo")
+            .ci_concurrency = None;
         let headers = trusted_headers(&store, TRUSTED_NPUB);
         let state = test_state(store, config);
 
@@ -5442,32 +5250,7 @@ oldsha newsha refs/tags/v1
             )
             .expect("finish lane");
 
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(ForgeRepoConfig {
-                repo: "sledtools/pika".to_string(),
-                canonical_git_dir: "/tmp/pika.git".to_string(),
-                default_branch: "master".to_string(),
-                ci_concurrency: Some(2),
-                mirror_remote: None,
-                mirror_poll_interval_secs: None,
-                mirror_timeout_secs: None,
-                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
-                hook_url: None,
-            }),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![TRUSTED_NPUB.to_string()],
-        };
+        let config = forge_test_config();
         let headers = trusted_headers(&store, TRUSTED_NPUB);
         let state = test_state(store, config);
         let response = rerun_branch_ci_lane_handler(
@@ -5541,32 +5324,7 @@ oldsha newsha refs/tags/v1
             .find(|run| run.nightly_run_id != job.nightly_run_id)
             .expect("other nightly");
 
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(ForgeRepoConfig {
-                repo: "sledtools/pika".to_string(),
-                canonical_git_dir: "/tmp/pika.git".to_string(),
-                default_branch: "master".to_string(),
-                ci_concurrency: Some(2),
-                mirror_remote: None,
-                mirror_poll_interval_secs: None,
-                mirror_timeout_secs: None,
-                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
-                hook_url: None,
-            }),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![TRUSTED_NPUB.to_string()],
-        };
+        let config = forge_test_config();
         let headers = trusted_headers(&store, TRUSTED_NPUB);
         let state = test_state(store, config);
         let response = rerun_nightly_lane_handler(
@@ -5797,32 +5555,12 @@ oldsha newsha refs/tags/v1
             )
             .expect("finish branch lane");
 
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(ForgeRepoConfig {
-                repo: "sledtools/pika".to_string(),
-                canonical_git_dir: "/tmp/pika.git".to_string(),
-                default_branch: "master".to_string(),
-                ci_concurrency: None,
-                mirror_remote: None,
-                mirror_poll_interval_secs: None,
-                mirror_timeout_secs: None,
-                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
-                hook_url: None,
-            }),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let mut config = forge_test_config_without_admins();
+        config
+            .forge_repo
+            .as_mut()
+            .expect("forge repo")
+            .ci_concurrency = None;
         let state = test_state(store, config);
         let response = branch_ci_stream_handler(
             State(state),
@@ -5895,32 +5633,12 @@ oldsha newsha refs/tags/v1
             )
             .expect("finish nightly lane");
 
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(ForgeRepoConfig {
-                repo: "sledtools/pika".to_string(),
-                canonical_git_dir: "/tmp/pika.git".to_string(),
-                default_branch: "master".to_string(),
-                ci_concurrency: None,
-                mirror_remote: None,
-                mirror_poll_interval_secs: None,
-                mirror_timeout_secs: None,
-                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
-                hook_url: None,
-            }),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let mut config = forge_test_config_without_admins();
+        config
+            .forge_repo
+            .as_mut()
+            .expect("forge repo")
+            .ci_concurrency = None;
         let nightly_run_id = claimed.nightly_run_id;
         let state = test_state(store, config);
         let response = nightly_stream_handler(State(state), Path(nightly_run_id))
@@ -5962,32 +5680,12 @@ oldsha newsha refs/tags/v1
                 }],
             )
             .expect("queue ci");
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(ForgeRepoConfig {
-                repo: "sledtools/pika".to_string(),
-                canonical_git_dir: "/tmp/pika.git".to_string(),
-                default_branch: "master".to_string(),
-                ci_concurrency: None,
-                mirror_remote: None,
-                mirror_poll_interval_secs: None,
-                mirror_timeout_secs: None,
-                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
-                hook_url: None,
-            }),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let mut config = forge_test_config_without_admins();
+        config
+            .forge_repo
+            .as_mut()
+            .expect("forge repo")
+            .ci_concurrency = None;
         let state = test_state(store.clone(), config);
 
         let queued = load_branch_ci_live_snapshot(Arc::clone(&state), branch.branch_id)
@@ -6064,32 +5762,12 @@ oldsha newsha refs/tags/v1
             .next()
             .expect("nightly run")
             .nightly_run_id;
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(ForgeRepoConfig {
-                repo: "sledtools/pika".to_string(),
-                canonical_git_dir: "/tmp/pika.git".to_string(),
-                default_branch: "master".to_string(),
-                ci_concurrency: None,
-                mirror_remote: None,
-                mirror_poll_interval_secs: None,
-                mirror_timeout_secs: None,
-                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
-                hook_url: None,
-            }),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let mut config = forge_test_config_without_admins();
+        config
+            .forge_repo
+            .as_mut()
+            .expect("forge repo")
+            .ci_concurrency = None;
         let state = test_state(store.clone(), config);
 
         let queued = load_nightly_live_snapshot(Arc::clone(&state), nightly_run_id)
@@ -6151,32 +5829,12 @@ oldsha newsha refs/tags/v1
                 }],
             )
             .expect("queue ci");
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(ForgeRepoConfig {
-                repo: "sledtools/pika".to_string(),
-                canonical_git_dir: "/tmp/pika.git".to_string(),
-                default_branch: "master".to_string(),
-                ci_concurrency: None,
-                mirror_remote: None,
-                mirror_poll_interval_secs: None,
-                mirror_timeout_secs: None,
-                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
-                hook_url: None,
-            }),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let mut config = forge_test_config_without_admins();
+        config
+            .forge_repo
+            .as_mut()
+            .expect("forge repo")
+            .ci_concurrency = None;
         let state = test_state_with_live_buffer(store.clone(), config, 1);
         let mut receiver = state.live_updates.subscribe();
         let claimed = store
@@ -6246,32 +5904,12 @@ oldsha newsha refs/tags/v1
             .next()
             .expect("nightly run")
             .nightly_run_id;
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(ForgeRepoConfig {
-                repo: "sledtools/pika".to_string(),
-                canonical_git_dir: "/tmp/pika.git".to_string(),
-                default_branch: "master".to_string(),
-                ci_concurrency: None,
-                mirror_remote: None,
-                mirror_poll_interval_secs: None,
-                mirror_timeout_secs: None,
-                ci_command: vec!["just".to_string(), "pre-merge".to_string()],
-                hook_url: None,
-            }),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let mut config = forge_test_config_without_admins();
+        config
+            .forge_repo
+            .as_mut()
+            .expect("forge repo")
+            .ci_concurrency = None;
         let state = test_state_with_live_buffer(store.clone(), config, 1);
         let mut receiver = state.live_updates.subscribe();
         let claimed = store
@@ -6359,32 +5997,17 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
         git(&seed, &["push", "origin", "feature/render-history"]);
 
         let store = Store::open(&db_path).expect("open store");
-        let config = Config {
-            repos: vec!["sledtools/pika".to_string()],
-            forge_repo: Some(ForgeRepoConfig {
-                repo: "sledtools/pika".to_string(),
-                canonical_git_dir: bare.to_str().expect("bare path").to_string(),
-                default_branch: "master".to_string(),
-                ci_concurrency: Some(2),
-                mirror_remote: None,
-                mirror_poll_interval_secs: None,
-                mirror_timeout_secs: None,
-                ci_command: vec!["./ci.sh".to_string()],
-                hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
-            }),
-            poll_interval_secs: 60,
-            model: "test-model".to_string(),
-            api_key_env: "ANTHROPIC_API_KEY".to_string(),
-            github_token_env: "GITHUB_TOKEN".to_string(),
-            merged_lookback_hours: 72,
-            worker_concurrency: 1,
-            retry_backoff_secs: 120,
-            webhook_secret_env: "PIKA_GIT_WEBHOOK_SECRET".to_string(),
-            bind_address: "127.0.0.1".to_string(),
-            bind_port: 8787,
-            allowed_npubs: vec![],
-            bootstrap_admin_npubs: vec![],
-        };
+        let config = Config::test_with_forge_repo(ForgeRepoConfig {
+            repo: "sledtools/pika".to_string(),
+            canonical_git_dir: bare.to_str().expect("bare path").to_string(),
+            default_branch: "master".to_string(),
+            ci_concurrency: Some(2),
+            mirror_remote: None,
+            mirror_poll_interval_secs: None,
+            mirror_timeout_secs: None,
+            ci_command: vec!["./ci.sh".to_string()],
+            hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
+        });
 
         poller::poll_once_limited(&store, &config, 0).expect("sync branch from bare repo");
         let branch = store

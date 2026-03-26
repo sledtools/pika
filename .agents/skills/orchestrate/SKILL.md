@@ -21,8 +21,10 @@ Use this skill when running a multi-chunk implementation program in `pika` where
 - If two chunks may conflict, put them in separate worktrees immediately instead of hoping the merge will be easy.
 - Keep a local untracked `JOURNAL.md` in the worktree for simplification opportunities, abstraction ideas, and cleanup candidates noticed in the weeds.
   - Capture the note quickly and keep moving.
+  - Capture abstraction opportunities too, especially when you deliberately choose a smaller tactical seam over a larger redesign.
   - Do not widen the active chunk just because the journal grew.
   - Triage the journal at the end of the broader project or migration once the primary seams are landed.
+  - Before declaring the broader project done, review the journal and explicitly decide what to land now vs leave for later.
 
 ## Chunking Rules
 

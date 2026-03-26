@@ -2477,6 +2477,10 @@ mod tests {
         include_str!("../../../nix/incus/pikaci-image.nix")
     }
 
+    fn incus_lifecycle_helper_source() -> &'static str {
+        include_str!("../../../nix/incus/pika-cloud-lifecycle.py.in")
+    }
+
     fn local_linux_guest_module_source() -> &'static str {
         include_str!("../../../nix/pikaci/guest-module.nix")
     }
@@ -2579,51 +2583,99 @@ mod tests {
     }
 
     #[test]
-    fn remote_linux_incus_image_pins_shared_status_and_event_contract() {
-        let source = incus_guest_image_source();
+    fn remote_linux_incus_lifecycle_helper_pins_shared_status_and_event_contract() {
+        let source = incus_lifecycle_helper_source();
 
         assert_contains_all(
             source,
             &[
-                "def write_status(state_dir: pathlib.Path, state: str, message: str, **fields) -> None:",
+                "LIFECYCLE_SCHEMA_VERSION = 1",
+                "def write_status(",
                 "\"schema_version\": LIFECYCLE_SCHEMA_VERSION",
                 "\"state\": state",
                 "\"updated_at\": finished_at()",
                 "\"message\": message",
-                "def append_event(events_path: pathlib.Path, kind: str, message: str, **fields) -> None:",
-                "\"seq\": EVENT_SEQ",
+                "payload[\"boot_id\"] = boot_id",
+                "def default_seq_path(events_path: pathlib.Path) -> pathlib.Path:",
+                "events_path.with_suffix(f\"{events_path.suffix}.seq\")",
+                "def append_event(",
+                "fcntl.flock(seq_file.fileno(), fcntl.LOCK_EX)",
+                "payload[\"seq\"] = seq",
                 "\"kind\": kind",
                 "\"timestamp\": finished_at()",
                 "\"message\": message",
-                "write_status(state_dir, \"booted\", \"incus guest booted\")",
-                "append_event(events_path, \"booted\", \"incus guest booted\")",
-                "\"launching guest command\"",
-                "lifecycle_state = \"completed\" if exit_code == 0 else \"failed\"",
-                "write_status(state_dir, \"failed\", f\"Incus guest bootstrap failed: {exc}\")",
-                "append_event(events_path, \"failed\", f\"Incus guest bootstrap failed: {exc}\")",
             ],
         );
-        assert!(!source.contains("lifecycle_state = \"passed\""));
         assert!(!source.contains("\"status\": \"passed\""));
     }
 
     #[test]
-    fn remote_linux_incus_image_pins_shared_terminal_result_contract() {
+    fn remote_linux_incus_lifecycle_helper_pins_shared_terminal_result_contract() {
+        let source = incus_lifecycle_helper_source();
+
+        assert_contains_all(
+            source,
+            &[
+                "TERMINAL_STATUSES = (\"completed\", \"failed\")",
+                "def write_result(",
+                "\"schema_version\": LIFECYCLE_SCHEMA_VERSION",
+                "\"status\": status",
+                "\"exit_code\": exit_code",
+                "\"finished_at\": finished_at()",
+                "\"message\": message",
+                "result_parser.add_argument(\"--status\", required=True, choices=TERMINAL_STATUSES)",
+            ],
+        );
+        assert!(!source.contains("status = \"passed\""));
+    }
+
+    #[test]
+    fn remote_linux_incus_image_calls_shared_lifecycle_helper_for_status_and_events() {
         let source = incus_guest_image_source();
 
         assert_contains_all(
             source,
             &[
-                "def write_result(state_dir: pathlib.Path, exit_code: int, message: str) -> None:",
-                "status = \"completed\" if exit_code == 0 else \"failed\"",
-                "state_dir / \"result.json\"",
-                "\"schema_version\": 1",
-                "\"status\": status",
-                "\"exit_code\": exit_code",
-                "\"finished_at\": finished_at()",
-                "\"message\": message",
-                "write_result(state_dir, exit_code, message)",
-                "write_result(state_dir, 2, f\"Incus guest bootstrap failed: {exc}\")",
+                "pikaCloudLifecycle = import ./pika-cloud-lifecycle-helper.nix { inherit pkgs; };",
+                "LIFECYCLE_HELPER = \"/run/current-system/sw/bin/pika-cloud-lifecycle\"",
+                "def run_lifecycle_helper(*args) -> None:",
+                "subprocess.run([LIFECYCLE_HELPER, *args], check=True)",
+                "\"status\"",
+                "\"--status-path\"",
+                "str(status_path)",
+                "\"--state\"",
+                "\"--message\"",
+                "\"event\"",
+                "\"--events-path\"",
+                "str(events_path)",
+                "\"--kind\"",
+                "write_status(status_path, \"booted\", \"incus guest booted\")",
+                "append_event(events_path, \"booted\", \"incus guest booted\")",
+                "json.dumps({\"command\": command, \"run_as_root\": run_as_root})",
+                "json.dumps({\"exit_code\": exit_code})",
+                "write_status(status_path, \"failed\", f\"Incus guest bootstrap failed: {exc}\")",
+                "append_event(events_path, \"failed\", f\"Incus guest bootstrap failed: {exc}\")",
+            ],
+        );
+        assert!(!source.contains("EVENT_SEQ = 0"));
+        assert!(!source.contains("def finished_at() -> str:"));
+    }
+
+    #[test]
+    fn remote_linux_incus_image_calls_shared_lifecycle_helper_for_terminal_results() {
+        let source = incus_guest_image_source();
+
+        assert_contains_all(
+            source,
+            &[
+                "\"result\"",
+                "\"--result-path\"",
+                "str(result_path)",
+                "\"--status\"",
+                "\"--exit-code\"",
+                "str(exit_code)",
+                "write_result(result_path, exit_code, message)",
+                "write_result(result_path, 2, f\"Incus guest bootstrap failed: {exc}\")",
             ],
         );
         assert!(!source.contains("status = \"passed\""));

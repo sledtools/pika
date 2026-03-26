@@ -12,8 +12,8 @@ use chrono::Utc;
 use fs2::FileExt;
 use pika_cloud::{
     CLOUD_GUEST_LOG_PATH, EVENTS_PATH, GUEST_REQUEST_PATH, IncusGuestRunRequest, RESULT_PATH,
-    RuntimeResultStatus, RuntimeTerminalResult, STATUS_PATH, decode_runtime_terminal_result,
-    encode_runtime_terminal_result_pretty, runtime_terminal_result_for_exit_code,
+    RuntimeResultStatus, RuntimeTerminalResult, STATUS_PATH, encode_runtime_terminal_result_pretty,
+    load_runtime_terminal_result, runtime_terminal_result_for_exit_code,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1014,7 +1014,8 @@ fn run_remote_linux_vm_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<J
             collect_remote_linux_vm_artifacts(&remote, ctx)
         })?;
 
-        let guest_result = load_guest_terminal_result(&ctx.job_dir.join("artifacts/result.json"))?;
+        let guest_result = load_runtime_terminal_result(ctx.job_dir.join("artifacts/result.json"))
+            .with_context(|| "load guest terminal result".to_string())?;
         Ok(JobOutcome {
             status: run_status_from_terminal_result(&guest_result),
             exit_code: guest_result.exit_code,
@@ -1250,7 +1251,8 @@ fn run_tart_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> 
     let _ = tart_process.stderr_handle.join();
 
     let result_path = artifacts_dir.join("result.json");
-    let guest_result = load_guest_terminal_result(&result_path)?;
+    let guest_result = load_runtime_terminal_result(result_path)
+        .with_context(|| "load guest terminal result".to_string())?;
     Ok(JobOutcome {
         status: run_status_from_terminal_result(&guest_result),
         exit_code: guest_result.exit_code,
@@ -1723,11 +1725,6 @@ fn run_command_to_log(command: &mut Command, log_path: &Path, label: &str) -> an
         bail!("{label} failed with {:?}", output.status.code());
     }
     Ok(())
-}
-
-fn load_guest_terminal_result(path: &Path) -> anyhow::Result<RuntimeTerminalResult> {
-    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    decode_runtime_terminal_result(&bytes).with_context(|| format!("decode {}", path.display()))
 }
 
 fn run_status_from_terminal_result(result: &RuntimeTerminalResult) -> RunStatus {

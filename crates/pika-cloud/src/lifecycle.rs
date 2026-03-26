@@ -1,3 +1,8 @@
+use std::fmt;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -16,38 +21,6 @@ pub enum RuntimeState {
     Ready,
     Failed,
     Completed,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LifecycleEventKind {
-    Requested,
-    Provisioning,
-    Booted,
-    Unreachable,
-    Stopped,
-    Destroyed,
-    Starting,
-    Ready,
-    Failed,
-    Completed,
-}
-
-impl From<LifecycleEventKind> for RuntimeState {
-    fn from(value: LifecycleEventKind) -> Self {
-        match value {
-            LifecycleEventKind::Requested => Self::Requested,
-            LifecycleEventKind::Provisioning => Self::Provisioning,
-            LifecycleEventKind::Booted => Self::Booted,
-            LifecycleEventKind::Unreachable => Self::Unreachable,
-            LifecycleEventKind::Stopped => Self::Stopped,
-            LifecycleEventKind::Destroyed => Self::Destroyed,
-            LifecycleEventKind::Starting => Self::Starting,
-            LifecycleEventKind::Ready => Self::Ready,
-            LifecycleEventKind::Failed => Self::Failed,
-            LifecycleEventKind::Completed => Self::Completed,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -104,6 +77,78 @@ impl LifecycleTerminalStatus {
     }
 }
 
+#[derive(Debug)]
+pub enum RuntimeLifecycleLoadError {
+    Read {
+        path: PathBuf,
+        source: io::Error,
+    },
+    DecodeStatus {
+        source_name: String,
+        source: serde_json::Error,
+    },
+    DecodeTerminalResult {
+        source_name: String,
+        source: serde_json::Error,
+    },
+    DecodeEventLine {
+        path: PathBuf,
+        line: usize,
+        source: serde_json::Error,
+    },
+}
+
+impl fmt::Display for RuntimeLifecycleLoadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read { path, source } => {
+                write!(
+                    f,
+                    "failed to read runtime lifecycle artifact `{}`: {source}",
+                    path.display()
+                )
+            }
+            Self::DecodeStatus {
+                source_name,
+                source,
+            } => {
+                write!(
+                    f,
+                    "failed to decode runtime status from `{source_name}`: {source}"
+                )
+            }
+            Self::DecodeTerminalResult {
+                source_name,
+                source,
+            } => {
+                write!(
+                    f,
+                    "failed to decode runtime terminal result from `{source_name}`: {source}"
+                )
+            }
+            Self::DecodeEventLine { path, line, source } => {
+                write!(
+                    f,
+                    "failed to decode runtime lifecycle event at `{}` line {}: {source}",
+                    path.display(),
+                    line
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for RuntimeLifecycleLoadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Read { source, .. } => Some(source),
+            Self::DecodeStatus { source, .. } => Some(source),
+            Self::DecodeTerminalResult { source, .. } => Some(source),
+            Self::DecodeEventLine { source, .. } => Some(source),
+        }
+    }
+}
+
 pub fn runtime_terminal_result_for_exit_code(
     exit_code: i32,
     finished_at: impl Into<String>,
@@ -129,6 +174,19 @@ pub fn decode_runtime_terminal_result(bytes: &[u8]) -> serde_json::Result<Runtim
     serde_json::from_slice(bytes)
 }
 
+pub fn decode_runtime_terminal_result_artifact(
+    source_name: impl Into<String>,
+    bytes: &[u8],
+) -> Result<RuntimeTerminalResult, RuntimeLifecycleLoadError> {
+    let source_name = source_name.into();
+    decode_runtime_terminal_result(bytes).map_err(|source| {
+        RuntimeLifecycleLoadError::DecodeTerminalResult {
+            source_name,
+            source,
+        }
+    })
+}
+
 pub fn encode_runtime_event_line(event: &LifecycleEvent) -> serde_json::Result<String> {
     serde_json::to_string(event)
 }
@@ -145,6 +203,65 @@ pub fn decode_runtime_status(bytes: &[u8]) -> serde_json::Result<RuntimeStatusSn
     serde_json::from_slice(bytes)
 }
 
+pub fn decode_runtime_status_artifact(
+    source_name: impl Into<String>,
+    bytes: &[u8],
+) -> Result<RuntimeStatusSnapshot, RuntimeLifecycleLoadError> {
+    let source_name = source_name.into();
+    decode_runtime_status(bytes).map_err(|source| RuntimeLifecycleLoadError::DecodeStatus {
+        source_name,
+        source,
+    })
+}
+
+pub fn load_runtime_status(
+    path: impl AsRef<Path>,
+) -> Result<RuntimeStatusSnapshot, RuntimeLifecycleLoadError> {
+    let path = path.as_ref();
+    let bytes = fs::read(path).map_err(|source| RuntimeLifecycleLoadError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    decode_runtime_status_artifact(path.display().to_string(), &bytes)
+}
+
+pub fn load_runtime_terminal_result(
+    path: impl AsRef<Path>,
+) -> Result<RuntimeTerminalResult, RuntimeLifecycleLoadError> {
+    let path = path.as_ref();
+    let bytes = fs::read(path).map_err(|source| RuntimeLifecycleLoadError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    decode_runtime_terminal_result_artifact(path.display().to_string(), &bytes)
+}
+
+pub fn load_runtime_events(
+    path: impl AsRef<Path>,
+) -> Result<Vec<LifecycleEvent>, RuntimeLifecycleLoadError> {
+    let path = path.as_ref();
+    let contents = fs::read_to_string(path).map_err(|source| RuntimeLifecycleLoadError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut events = Vec::new();
+    for (index, line) in contents.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let event = decode_runtime_event_line(line).map_err(|source| {
+            RuntimeLifecycleLoadError::DecodeEventLine {
+                path: path.to_path_buf(),
+                line: index + 1,
+                source,
+            }
+        })?;
+        events.push(event);
+    }
+    Ok(events)
+}
+
+pub type LifecycleEventKind = RuntimeState;
 pub type LifecycleState = RuntimeState;
 pub type RuntimeStatusSnapshot = LifecycleStatus;
 pub type RuntimeResultStatus = LifecycleTerminalStatus;
@@ -153,6 +270,15 @@ pub type RuntimeTerminalResult = LifecycleTerminalResult;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_test_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("pika-cloud-{name}-{nanos}.json"))
+    }
 
     #[test]
     fn lifecycle_event_round_trips_with_details() {
@@ -187,6 +313,13 @@ mod tests {
 
         assert_eq!(decoded, event);
         assert!(!encoded.ends_with('\n'));
+    }
+
+    #[test]
+    fn lifecycle_event_kind_alias_matches_runtime_state() {
+        let kind: LifecycleEventKind = RuntimeState::Ready;
+
+        assert_eq!(kind, RuntimeState::Ready);
     }
 
     #[test]
@@ -252,6 +385,37 @@ mod tests {
     }
 
     #[test]
+    fn decode_runtime_status_artifact_reports_source_name() {
+        let err = decode_runtime_status_artifact(
+            "/run/pika-cloud/status.json",
+            br#"{
+                "schema_version": 1,
+                "state": "passed",
+                "updated_at": "2026-03-25T20:00:00Z",
+                "message": "guest declared readiness"
+            }"#,
+        )
+        .expect_err("unknown state should fail");
+
+        assert_eq!(
+            err.to_string(),
+            "failed to decode runtime status from `/run/pika-cloud/status.json`: unknown variant `passed`, expected one of `requested`, `provisioning`, `booted`, `unreachable`, `stopped`, `destroyed`, `starting`, `ready`, `failed`, `completed` at line 3 column 33"
+        );
+    }
+
+    #[test]
+    fn load_runtime_status_reports_missing_path() {
+        let path = temp_test_path("missing-status");
+        let err = load_runtime_status(&path).expect_err("missing file should fail");
+
+        assert!(
+            err.to_string()
+                .contains(path.display().to_string().as_str()),
+            "expected missing-path error to contain path"
+        );
+    }
+
+    #[test]
     fn runtime_terminal_result_for_exit_code_uses_completed_on_success() {
         let result =
             runtime_terminal_result_for_exit_code(0, "2026-03-25T20:00:00Z", "test passed");
@@ -291,5 +455,40 @@ mod tests {
         .expect_err("legacy passed status should fail");
 
         assert!(err.to_string().contains("unknown variant"));
+    }
+
+    #[test]
+    fn load_runtime_terminal_result_reports_path_on_decode_failure() {
+        let path = temp_test_path("bad-result");
+        fs::write(&path, br#"{ "status": "passed" }"#).expect("write malformed result");
+
+        let err = load_runtime_terminal_result(&path).expect_err("malformed result should fail");
+
+        assert!(
+            err.to_string()
+                .contains(path.display().to_string().as_str()),
+            "expected decode error to contain path"
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn load_runtime_events_reports_line_number() {
+        let path = temp_test_path("bad-events");
+        fs::write(
+            &path,
+            concat!(
+                "{\"schema_version\":1,\"seq\":1,\"timestamp\":\"2026-03-25T20:00:00Z\",\"kind\":\"ready\",\"message\":\"ok\"}\n",
+                "{\"schema_version\":1,\"seq\":2,\"timestamp\":\"2026-03-25T20:00:01Z\",\"kind\":\"passed\",\"message\":\"bad\"}\n"
+            ),
+        )
+        .expect("write malformed events");
+
+        let err = load_runtime_events(&path).expect_err("malformed event should fail");
+
+        assert!(err.to_string().contains("line 2"));
+
+        let _ = fs::remove_file(path);
     }
 }

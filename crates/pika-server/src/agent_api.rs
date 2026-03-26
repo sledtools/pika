@@ -36,10 +36,12 @@ use crate::nostr_auth::{
 };
 use crate::{RequestContext, State};
 use pika_cloud::{
-    AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams, LifecycleState,
-    ManagedOpenClawLaunchAuth, ManagedRuntimeBackupStatus, ManagedRuntimeStatus,
-    ManagedVmProvisionParams as ManagedRuntimeProvisionParams, RuntimeStatusSnapshot,
-    VmBackupFreshness, VmBackupUnitKind, VmRecoveryPointKind, STATUS_PATH,
+    AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams, IncusRuntimeConfig,
+    IncusRuntimePlan, LifecycleState, ManagedOpenClawLaunchAuth, ManagedRuntimeBackupStatus,
+    ManagedRuntimeStatus, ManagedVmProvisionParams as ManagedRuntimeProvisionParams, MountKind,
+    MountMode, ProviderKind, RuntimeBootstrap, RuntimeIdentity, RuntimeMount, RuntimePaths,
+    RuntimePolicies, RuntimeResources, RuntimeSpec, RuntimeStatusSnapshot, VmBackupFreshness,
+    VmBackupUnitKind, VmRecoveryPointKind, STATUS_PATH,
 };
 use pika_relay_profiles::default_message_relays;
 
@@ -59,9 +61,8 @@ const INCUS_OPENCLAW_PROXY_HOST_ENV: &str = "PIKA_AGENT_INCUS_OPENCLAW_PROXY_HOS
 const INCUS_VM_KIND: &str = "virtual-machine";
 const INCUS_PERSISTENT_VOLUME_TYPE: &str = "custom";
 const INCUS_PERSISTENT_VOLUME_CONTENT_TYPE: &str = "filesystem";
-const INCUS_PERSISTENT_VOLUME_DEVICE_NAME: &str = "pikastate";
 const INCUS_PERSISTENT_VOLUME_PATH: &str = "/mnt/pika-state";
-const INCUS_DEV_VM_MEMORY_LIMIT: &str = "2048MiB";
+const INCUS_DEV_VM_MEMORY_MIB: u32 = 2048;
 const INCUS_CLOUD_INIT_USER_DATA_KEY: &str = "cloud-init.user-data";
 const INCUS_OPENCLAW_PROXY_DEVICE_NAME: &str = "pikaopenclaw";
 const INCUS_OPENCLAW_PROXY_PORT_START: u16 = 24000;
@@ -1561,6 +1562,7 @@ impl IncusManagedRuntimeProvider {
         input: &ManagedRuntimeCreateInput<'_>,
         request_id: Option<&str>,
     ) -> anyhow::Result<()> {
+        let runtime_plan = self.build_runtime_plan(vm_id, volume_name)?;
         let mut devices = BTreeMap::new();
         devices.insert(
             "root".to_string(),
@@ -1570,15 +1572,39 @@ impl IncusManagedRuntimeProvider {
                 "pool": self.resolved.storage_pool.as_str(),
             }),
         );
-        devices.insert(
-            INCUS_PERSISTENT_VOLUME_DEVICE_NAME.to_string(),
-            serde_json::json!({
-                "type": "disk",
-                "pool": self.resolved.storage_pool.as_str(),
-                "source": volume_name,
-                "path": INCUS_PERSISTENT_VOLUME_PATH,
-            }),
-        );
+        for mount in &runtime_plan.mounts {
+            let mut device = serde_json::Map::from_iter([
+                (
+                    "type".to_string(),
+                    serde_json::Value::String("disk".to_string()),
+                ),
+                (
+                    "pool".to_string(),
+                    serde_json::Value::String(self.resolved.storage_pool.clone()),
+                ),
+                (
+                    "source".to_string(),
+                    serde_json::Value::String(mount.source.clone()),
+                ),
+                (
+                    "path".to_string(),
+                    serde_json::Value::String(mount.guest_path.clone()),
+                ),
+            ]);
+            if mount.read_only {
+                device.insert(
+                    "readonly".to_string(),
+                    serde_json::Value::String("true".to_string()),
+                );
+            }
+            if let Some(io_bus) = mount.io_bus.as_deref() {
+                device.insert(
+                    "io.bus".to_string(),
+                    serde_json::Value::String(io_bus.to_string()),
+                );
+            }
+            devices.insert(mount.device_name.clone(), serde_json::Value::Object(device));
+        }
         let openclaw_nic_network = self.load_primary_nic_network_name(request_id).await?;
 
         let cloud_init_user_data = self
@@ -1588,10 +1614,6 @@ impl IncusManagedRuntimeProvider {
             (
                 INCUS_CLOUD_INIT_USER_DATA_KEY.to_string(),
                 serde_json::Value::String(cloud_init_user_data),
-            ),
-            (
-                "limits.memory".to_string(),
-                serde_json::Value::String(INCUS_DEV_VM_MEMORY_LIMIT.to_string()),
             ),
             (
                 "user.pika.provider".to_string(),
@@ -1606,6 +1628,18 @@ impl IncusManagedRuntimeProvider {
                 serde_json::Value::String("openclaw".to_string()),
             ),
         ]);
+        if let Some(memory_mib) = runtime_plan.resources.memory_mib {
+            instance_config.insert(
+                "limits.memory".to_string(),
+                serde_json::Value::String(format!("{memory_mib}MiB")),
+            );
+        }
+        if let Some(vcpu_count) = runtime_plan.resources.vcpu_count {
+            instance_config.insert(
+                "limits.cpu".to_string(),
+                serde_json::Value::String(vcpu_count.to_string()),
+            );
+        }
         let proxy_host = self.openclaw_proxy_host_ipv4()?;
         let (proxy_port, guest_ipv4) = self
             .allocate_openclaw_proxy_binding(vm_id, None, None, request_id)
@@ -1635,10 +1669,10 @@ impl IncusManagedRuntimeProvider {
             "name": vm_id,
             "type": INCUS_VM_KIND,
             "start": true,
-            "profiles": [self.resolved.profile.as_str()],
+            "profiles": [runtime_plan.incus.profile.as_str()],
             "source": {
                 "type": "image",
-                "alias": self.resolved.image_alias.as_str(),
+                "alias": runtime_plan.incus.image_alias.as_str(),
             },
             "devices": devices,
             "config": instance_config,
@@ -1783,6 +1817,45 @@ impl IncusManagedRuntimeProvider {
 
     fn persistent_volume_name(&self, vm_id: &str) -> String {
         format!("{vm_id}-state")
+    }
+
+    fn build_runtime_plan(
+        &self,
+        vm_id: &str,
+        volume_name: &str,
+    ) -> anyhow::Result<IncusRuntimePlan> {
+        RuntimeSpec {
+            identity: RuntimeIdentity {
+                runtime_id: vm_id.to_string(),
+                instance_name: vm_id.to_string(),
+            },
+            provider: ProviderKind::Incus,
+            incus: IncusRuntimeConfig {
+                project: self.resolved.project.clone(),
+                profile: self.resolved.profile.clone(),
+                image_alias: self.resolved.image_alias.clone(),
+            },
+            resources: RuntimeResources {
+                vcpu_count: None,
+                memory_mib: Some(INCUS_DEV_VM_MEMORY_MIB),
+                root_disk_gib: None,
+            },
+            mounts: vec![RuntimeMount {
+                kind: MountKind::PersistentVolume,
+                guest_path: INCUS_PERSISTENT_VOLUME_PATH.to_string(),
+                source: volume_name.to_string(),
+                mode: MountMode::ReadWrite,
+                required: true,
+            }],
+            lifecycle_root: pika_cloud::RUNTIME_STATE_DIR.to_string(),
+            paths: RuntimePaths::default(),
+            policies: RuntimePolicies::default(),
+            bootstrap: RuntimeBootstrap::default(),
+            labels: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+        }
+        .build_incus_plan()
+        .context("build managed Incus runtime plan")
     }
 
     fn cloud_init_user_data(
@@ -4142,6 +4215,22 @@ mod tests {
         }
     }
 
+    fn test_incus_provider() -> IncusManagedRuntimeProvider {
+        IncusManagedRuntimeProvider {
+            client: reqwest::Client::new(),
+            resolved: ResolvedIncusParams {
+                endpoint: "https://incus.example.test".to_string(),
+                project: "pika-managed-agents".to_string(),
+                profile: "pika-agent-dev".to_string(),
+                storage_pool: "default".to_string(),
+                image_alias: "managed-agent/dev".to_string(),
+                insecure_tls: false,
+                openclaw_guest_ipv4_cidr: Some("10.77.0.0/24".to_string()),
+                openclaw_proxy_host: Some("203.0.113.10".to_string()),
+            },
+        }
+    }
+
     #[test]
     fn select_visible_agent_row_ignores_legacy_error_row_without_incus_config() {
         let legacy_error = test_agent_instance("agent-legacy", AGENT_PHASE_ERROR, None, None);
@@ -4160,6 +4249,26 @@ mod tests {
             managed_runtime_params_from_row(&legacy_row).expect_err("legacy row must fail closed");
 
         assert!(err.to_string().contains("lacks incus_config"));
+    }
+
+    #[test]
+    fn build_runtime_plan_uses_shared_incus_spec_for_persistent_state() {
+        let provider = test_incus_provider();
+        let plan = provider
+            .build_runtime_plan("pika-agent-123", "pika-agent-123-state")
+            .expect("runtime plan");
+
+        assert_eq!(plan.identity.instance_name, "pika-agent-123");
+        assert_eq!(plan.incus.project, "pika-managed-agents");
+        assert_eq!(plan.incus.profile, "pika-agent-dev");
+        assert_eq!(plan.incus.image_alias, "managed-agent/dev");
+        assert_eq!(plan.resources.memory_mib, Some(INCUS_DEV_VM_MEMORY_MIB));
+        assert_eq!(plan.mounts.len(), 1);
+        assert_eq!(plan.mounts[0].kind, MountKind::PersistentVolume);
+        assert_eq!(plan.mounts[0].source, "pika-agent-123-state");
+        assert_eq!(plan.mounts[0].guest_path, INCUS_PERSISTENT_VOLUME_PATH);
+        assert_eq!(plan.mounts[0].device_name, "pk-persis-1c7cfe10");
+        assert!(!plan.mounts[0].read_only);
     }
 
     #[test]

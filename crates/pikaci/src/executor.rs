@@ -2695,15 +2695,20 @@ mod tests {
 
     #[test]
     fn remote_linux_incus_snapshot_mount_uses_declared_mount_contract() {
-        let snapshot_root = Path::new("/var/tmp/pikaci/runs/run/snapshot");
-        let (device_prefix, source, mount) =
-            incus::build_snapshot_mount_plan_for_test(snapshot_root);
-        assert_eq!(device_prefix, "workspace-snapshot");
-        assert_eq!(source, snapshot_root);
-        assert_eq!(mount.name, "workspace_snapshot_root");
-        assert_eq!(mount.relative_path, ".");
+        let mount =
+            incus::build_snapshot_mount_plan_for_test(&sample_incus_context()).expect("mount plan");
+        assert_eq!(mount.kind, pika_cloud::MountKind::ReadOnlySnapshot);
+        assert_eq!(
+            mount.source,
+            "/var/tmp/pikaci/runs/run/snapshot".to_string()
+        );
         assert_eq!(mount.guest_path, REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH);
         assert!(mount.read_only);
+        assert_eq!(
+            mount.io_bus.as_deref(),
+            Some(pika_cloud::INCUS_READ_ONLY_DISK_IO_BUS)
+        );
+        assert_eq!(mount.device_name, "pk-snapsh-b34434da");
     }
 
     #[test]

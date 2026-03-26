@@ -1,5 +1,10 @@
 use super::*;
 use crate::model::{PreparedOutputPayloadManifestRecord, PreparedOutputPayloadMountRecord};
+use pika_cloud::{
+    IncusMountPlan, IncusRuntimeConfig, IncusRuntimePlan, MountKind, MountMode, ProviderKind,
+    RuntimeBootstrap, RuntimeIdentity, RuntimeMount, RuntimePaths, RuntimePolicies,
+    RuntimeResources, RuntimeSpec,
+};
 use std::path::Component;
 
 #[derive(Deserialize)]
@@ -54,6 +59,68 @@ pub(super) fn build_guest_request(job: &JobSpec) -> IncusGuestRunRequest {
     build_remote_incus_guest_request(job)
 }
 
+fn build_remote_incus_runtime_plan(
+    job: &JobSpec,
+    remote: &RemoteIncusContext,
+) -> anyhow::Result<IncusRuntimePlan> {
+    let mounts = vec![RuntimeMount {
+        kind: MountKind::ReadOnlySnapshot,
+        guest_path: REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH.to_string(),
+        source: remote.shared.remote_snapshot_dir.display().to_string(),
+        mode: MountMode::ReadOnly,
+        required: true,
+    }];
+    let _ = job;
+
+    RuntimeSpec {
+        identity: RuntimeIdentity {
+            runtime_id: remote.incus_instance_name.clone(),
+            instance_name: remote.incus_instance_name.clone(),
+        },
+        provider: ProviderKind::Incus,
+        incus: IncusRuntimeConfig {
+            project: remote.incus_project.clone(),
+            profile: remote.incus_profile.clone(),
+            image_alias: remote.incus_image_alias.clone(),
+        },
+        resources: RuntimeResources {
+            vcpu_count: Some(2),
+            memory_mib: Some(4096),
+            root_disk_gib: None,
+        },
+        mounts,
+        lifecycle_root: pika_cloud::RUNTIME_STATE_DIR.to_string(),
+        paths: RuntimePaths::default(),
+        policies: RuntimePolicies::default(),
+        bootstrap: RuntimeBootstrap {
+            guest_request_path: Some(GUEST_REQUEST_PATH.to_string()),
+            entry_command: Some(REMOTE_LINUX_VM_INCUS_RUN_BINARY.to_string()),
+        },
+        labels: std::collections::BTreeMap::new(),
+        metadata: std::collections::BTreeMap::new(),
+    }
+    .build_incus_plan()
+    .map_err(|err| anyhow!("build remote Incus runtime plan: {err}"))
+}
+
+fn snapshot_mount_plan(plan: &IncusRuntimePlan) -> anyhow::Result<&IncusMountPlan> {
+    plan.mounts
+        .iter()
+        .find(|mount| {
+            mount.kind == MountKind::ReadOnlySnapshot
+                && mount.guest_path == REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH
+        })
+        .ok_or_else(|| anyhow!("runtime plan is missing the snapshot mount"))
+}
+
+fn incus_cpu_limit(plan: &IncusRuntimePlan) -> String {
+    plan.resources.vcpu_count.unwrap_or(2).to_string()
+}
+
+fn incus_memory_limit(plan: &IncusRuntimePlan) -> String {
+    format!("{}MiB", plan.resources.memory_mib.unwrap_or(4096))
+}
+
 pub(super) fn build_remote_incus_launch_command(
     remote: &RemoteIncusContext,
     request_path: &str,
@@ -86,16 +153,17 @@ pub(super) fn build_remote_incus_process_command(
     remote: &RemoteIncusContext,
     log_path: &Path,
 ) -> anyhow::Result<String> {
+    let runtime_plan = build_remote_incus_runtime_plan(job, remote)?;
     write_remote_incus_json(
         remote,
-        GUEST_REQUEST_PATH,
+        runtime_plan.paths.guest_request_path.as_str(),
         &build_remote_incus_guest_request(job),
         log_path,
         "[pikaci] write Incus guest request",
     )?;
     Ok(build_remote_incus_launch_command(
         remote,
-        GUEST_REQUEST_PATH,
+        runtime_plan.paths.guest_request_path.as_str(),
     ))
 }
 
@@ -222,6 +290,7 @@ pub(super) fn ensure_remote_incus_runtime(
     remote: &RemoteIncusContext,
     log_path: &Path,
 ) -> anyhow::Result<()> {
+    let runtime_plan = build_remote_incus_runtime_plan(job, remote)?;
     ensure_remote_incus_image_available(remote, log_path)?;
     delete_remote_incus_instance(remote, log_path)?;
     append_line(
@@ -238,25 +307,25 @@ pub(super) fn ensure_remote_incus_runtime(
         &[
             "init",
             "--project",
-            remote.incus_project.as_str(),
+            runtime_plan.incus.project.as_str(),
             "--storage",
             "default",
             "--profile",
             "default",
             "--profile",
-            remote.incus_profile.as_str(),
+            runtime_plan.incus.profile.as_str(),
             "--config",
-            "limits.cpu=2",
+            &format!("limits.cpu={}", incus_cpu_limit(&runtime_plan)),
             "--config",
-            "limits.memory=4GiB",
+            &format!("limits.memory={}", incus_memory_limit(&runtime_plan)),
             "--vm",
-            remote.incus_image_alias.as_str(),
-            remote.incus_instance_name.as_str(),
+            runtime_plan.incus.image_alias.as_str(),
+            runtime_plan.identity.instance_name.as_str(),
         ],
         log_path,
         "[pikaci] create remote Linux VM backend `incus` instance",
     )?;
-    configure_remote_incus_devices(job, remote, log_path)?;
+    configure_remote_incus_devices(job, remote, &runtime_plan, log_path)?;
     run_remote_incus_to_log(
         &remote.shared.remote_host,
         &[
@@ -541,36 +610,44 @@ fn sanitize_incus_device_component(value: &str) -> String {
     sanitized.trim_matches('-').to_string()
 }
 
-fn snapshot_mount_record() -> PreparedOutputPayloadMountRecord {
-    PreparedOutputPayloadMountRecord {
-        name: "workspace_snapshot_root".to_string(),
-        relative_path: ".".to_string(),
-        guest_path: REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH.to_string(),
-        read_only: true,
-    }
-}
-
-fn snapshot_mount_device_prefix() -> &'static str {
-    "workspace-snapshot"
-}
-
-fn add_snapshot_mount(remote: &RemoteIncusContext, log_path: &Path) -> anyhow::Result<()> {
-    add_declared_payload_mount(
+fn add_snapshot_mount(
+    remote: &RemoteIncusContext,
+    runtime_plan: &IncusRuntimePlan,
+    log_path: &Path,
+) -> anyhow::Result<()> {
+    let mount = snapshot_mount_plan(runtime_plan)?;
+    add_remote_incus_disk_device(
         remote,
-        &remote.shared.remote_snapshot_dir,
-        snapshot_mount_device_prefix(),
-        snapshot_mount_record(),
+        &mount.device_name,
+        Path::new(&mount.source),
+        &mount.guest_path,
+        mount.read_only,
+        mount
+            .io_bus
+            .as_deref()
+            .unwrap_or(REMOTE_LINUX_VM_INCUS_READ_ONLY_DISK_IO_BUS),
         log_path,
     )
 }
 
 #[cfg(test)]
 pub(super) fn build_snapshot_mount_plan_for_test(
-    output_root: &Path,
-) -> (String, PathBuf, PreparedOutputPayloadMountRecord) {
-    let mount = snapshot_mount_record();
-    let source = resolve_payload_mount_source(output_root, &mount.relative_path);
-    (snapshot_mount_device_prefix().to_string(), source, mount)
+    remote: &RemoteIncusContext,
+) -> anyhow::Result<IncusMountPlan> {
+    Ok(snapshot_mount_plan(&build_remote_incus_runtime_plan(
+        &JobSpec {
+            id: "pika-actionlint",
+            description: "test",
+            timeout_secs: 120,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "actionlint",
+            },
+            staged_linux_rust_lane: None,
+        },
+        remote,
+    )?)?
+    .clone())
 }
 
 fn declared_payload_mount_device_name(device_prefix: &str, mount_name: &str) -> String {
@@ -723,12 +800,13 @@ fn add_declared_payload_mount(
 fn configure_remote_incus_devices(
     job: &JobSpec,
     remote: &RemoteIncusContext,
+    runtime_plan: &IncusRuntimePlan,
     log_path: &Path,
 ) -> anyhow::Result<()> {
     if job.writable_workspace {
         bail!("remote Linux VM backend `incus` does not support writable workspace jobs");
     }
-    add_snapshot_mount(remote, log_path)?;
+    add_snapshot_mount(remote, runtime_plan, log_path)?;
     if job.staged_linux_rust_lane().is_some() {
         add_declared_payload_mounts(
             remote,

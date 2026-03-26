@@ -1,9 +1,11 @@
+pub mod incus;
 pub mod lifecycle;
 pub mod mount;
 pub mod paths;
 pub mod policy;
 pub mod spec;
 
+pub use incus::{INCUS_READ_ONLY_DISK_IO_BUS, IncusMountPlan, IncusRuntimePlan};
 pub use lifecycle::{
     LIFECYCLE_SCHEMA_VERSION, LifecycleEvent, LifecycleState, RuntimeResultStatus,
     RuntimeStatusSnapshot, RuntimeTerminalResult,
@@ -18,6 +20,7 @@ pub use policy::{
 };
 pub use spec::{
     IncusRuntimeConfig, RuntimeBootstrap, RuntimeIdentity, RuntimeResources, RuntimeSpec,
+    RuntimeSpecError,
 };
 
 use std::collections::BTreeMap;

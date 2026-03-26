@@ -12,6 +12,7 @@ mod forge_runtime;
 mod forge_service;
 mod github;
 mod inbox_store;
+mod legacy_pr_store;
 mod live;
 mod local;
 mod mirror;

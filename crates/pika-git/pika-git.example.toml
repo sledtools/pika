@@ -1,10 +1,7 @@
-repos = ["sledtools/pika"]
-
 poll_interval_secs = 60
 model = "claude-opus-4-6"
 api_key_env = "ANTHROPIC_API_KEY"
 github_token_env = "GITHUB_TOKEN"
-merged_lookback_hours = 72
 worker_concurrency = 2
 retry_backoff_secs = 120
 bind_address = "127.0.0.1"

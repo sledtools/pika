@@ -19,16 +19,23 @@ ssh_opts+=(-o StrictHostKeyChecking=accept-new)
 ssh_cmd=(ssh "${ssh_opts[@]}" "root@${target_host}")
 
 remote_tmp="$("${ssh_cmd[@]}" 'mktemp -d /tmp/pika-deploy.XXXXXX')"
+local_bundle="$(mktemp "${TMPDIR:-/tmp}/pika-deploy-bundle.XXXXXX")"
 cleanup() {
+  rm -f "${local_bundle}" >/dev/null 2>&1 || true
   "${ssh_cmd[@]}" "rm -rf '${remote_tmp}'" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
-echo "==> Uploading repo snapshot to ${target_host}:${remote_tmp}..."
+echo "==> Bundling repo snapshot for ${target_host}..."
 (
   cd "${flake_root}"
-  git archive --format=tar HEAD
-) | "${ssh_cmd[@]}" "mkdir -p '${remote_tmp}' && tar -xf - -C '${remote_tmp}'"
+  git bundle create "${local_bundle}" HEAD
+)
+
+echo "==> Uploading repo snapshot to ${target_host}:${remote_tmp}..."
+scp "${ssh_opts[@]}" "${local_bundle}" "root@${target_host}:${remote_tmp}/repo.bundle"
+
+"${ssh_cmd[@]}" "git clone '${remote_tmp}/repo.bundle' '${remote_tmp}/repo' >/dev/null && cd '${remote_tmp}/repo' && git checkout --detach HEAD >/dev/null"
 
 echo "==> Building and switching ${flake_attr} on ${target_host}..."
-"${ssh_cmd[@]}" "cd '${remote_tmp}' && nix run nixpkgs#nixos-rebuild -- switch --fast --flake '.#${flake_attr}'"
+"${ssh_cmd[@]}" "cd '${remote_tmp}/repo' && nix run nixpkgs#nixos-rebuild -- switch --fast --flake '.#${flake_attr}'"

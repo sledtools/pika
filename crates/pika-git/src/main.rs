@@ -47,6 +47,10 @@ fn main() -> anyhow::Result<()> {
             let store = storage::Store::open(&db_path).context("initialize sqlite storage")?;
             let max_prs = args.max_prs;
             let bind_addr = args.bind_with_config(&config.bind_address, config.bind_port);
+            let repo_label = config
+                .effective_forge_repo()
+                .map(|forge| forge.repo)
+                .unwrap_or_else(|| "disabled".to_string());
 
             match store.recover_stale_ci_lanes() {
                 Ok(0) => {}
@@ -55,10 +59,10 @@ fn main() -> anyhow::Result<()> {
             }
 
             println!(
-                "serve: bind={} db={} repos={} poll_interval={}s model={}",
+                "serve: bind={} db={} repo={} poll_interval={}s model={}",
                 bind_addr,
                 store.db_path().display(),
-                config.repos.len(),
+                repo_label,
                 config.poll_interval_secs,
                 config.model,
             );

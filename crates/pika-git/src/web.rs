@@ -593,19 +593,7 @@ pub async fn serve(
     bind_addr: String,
     max_prs: usize,
 ) -> anyhow::Result<()> {
-    let bootstrap_admin_npubs = config.effective_bootstrap_admin_npubs();
-    let legacy_allowed_npubs = config.allowed_npubs.clone();
-    let auth = Arc::new(AuthState::new(
-        &bootstrap_admin_npubs,
-        &legacy_allowed_npubs,
-        store.clone(),
-    ));
-
-    if bootstrap_admin_npubs.is_empty() && !legacy_allowed_npubs.is_empty() {
-        eprintln!(
-            "warning: allowed_npubs grants chat access only; set bootstrap_admin_npubs to enable /git/admin"
-        );
-    }
+    let auth = Arc::new(AuthState::new(&config.bootstrap_admin_npubs, store.clone()));
 
     if let Err(err) = store.canonicalize_inbox_npubs() {
         eprintln!("warning: failed to canonicalize inbox owners: {}", err);
@@ -3336,16 +3324,14 @@ async fn api_admin_allowlist_handler(
 
     let store = state.store.clone();
     let bootstrap_admin_npubs = state.auth.bootstrap_admin_npubs();
-    let legacy_allowed_npubs = state.auth.legacy_allowed_npubs();
     match tokio::task::spawn_blocking(move || {
         let entries = store.list_chat_allowlist_entries()?;
-        Ok::<_, anyhow::Error>((entries, bootstrap_admin_npubs, legacy_allowed_npubs))
+        Ok::<_, anyhow::Error>((entries, bootstrap_admin_npubs))
     })
     .await
     {
-        Ok(Ok((entries, bootstrap_admin_npubs, legacy_allowed_npubs))) => Json(serde_json::json!({
+        Ok(Ok((entries, bootstrap_admin_npubs))) => Json(serde_json::json!({
             "bootstrap_admin_npubs": bootstrap_admin_npubs,
-            "legacy_allowed_npubs": legacy_allowed_npubs,
             "entries": entries,
         }))
         .into_response(),
@@ -3895,8 +3881,6 @@ mod tests {
         config: Config,
         live_buffer: usize,
     ) -> Arc<AppState> {
-        let bootstrap_admin_npubs = config.effective_bootstrap_admin_npubs();
-        let legacy_allowed_npubs = config.allowed_npubs.clone();
         let forge_mode = config.effective_forge_repo().is_some();
         let live_updates = CiLiveUpdates::new(live_buffer);
         let forge_runtime = Arc::new(ForgeRuntime::blank(forge_mode));
@@ -3908,11 +3892,7 @@ mod tests {
         ));
         let pikaci_run_store = PikaciRunStore::from_config(&config);
         Arc::new(AppState {
-            auth: Arc::new(AuthState::new(
-                &bootstrap_admin_npubs,
-                &legacy_allowed_npubs,
-                store.clone(),
-            )),
+            auth: Arc::new(AuthState::new(&config.bootstrap_admin_npubs, store.clone())),
             store,
             config,
             live_updates,

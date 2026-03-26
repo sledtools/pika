@@ -18,6 +18,56 @@ pub const RUNTIME_LOGS_DIR: &str = LOGS_DIR;
 pub const RUNTIME_ARTIFACTS_DIR: &str = ARTIFACTS_DIR;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RuntimeArtifactPaths {
+    #[serde(default = "events_path")]
+    pub events_path: String,
+    #[serde(default = "status_path")]
+    pub status_path: String,
+    #[serde(default = "result_path")]
+    pub result_path: String,
+}
+
+impl Default for RuntimeArtifactPaths {
+    fn default() -> Self {
+        Self {
+            events_path: events_path(),
+            status_path: status_path(),
+            result_path: result_path(),
+        }
+    }
+}
+
+impl RuntimeArtifactPaths {
+    pub fn validate_canonical_paths(&self, field_prefix: &str) -> Result<(), String> {
+        let canonical = Self::default();
+        for (field, actual, expected) in [
+            (
+                "status_path",
+                self.status_path.as_str(),
+                canonical.status_path.as_str(),
+            ),
+            (
+                "events_path",
+                self.events_path.as_str(),
+                canonical.events_path.as_str(),
+            ),
+            (
+                "result_path",
+                self.result_path.as_str(),
+                canonical.result_path.as_str(),
+            ),
+        ] {
+            if actual != expected {
+                return Err(format!(
+                    "{field_prefix}.{field} must use canonical path {expected:?}, got {actual:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RuntimePaths {
     #[serde(default = "runtime_state_dir")]
     pub state_dir: String,
@@ -106,5 +156,26 @@ mod tests {
     #[test]
     fn runtime_paths_default_to_canonical_contract() {
         assert_eq!(RuntimePaths::default().guest_log_path, GUEST_LOG_PATH);
+    }
+
+    #[test]
+    fn runtime_artifact_paths_default_to_canonical_contract() {
+        let paths = RuntimeArtifactPaths::default();
+        assert_eq!(paths.status_path, STATUS_PATH);
+        assert_eq!(paths.events_path, EVENTS_PATH);
+        assert_eq!(paths.result_path, RESULT_PATH);
+    }
+
+    #[test]
+    fn runtime_artifact_paths_validate_rejects_non_canonical_paths() {
+        let err = RuntimeArtifactPaths {
+            status_path: "/run/custom/status.json".to_string(),
+            ..RuntimeArtifactPaths::default()
+        }
+        .validate_canonical_paths("artifacts")
+        .expect_err("non-canonical status path should fail");
+
+        assert!(err.contains("artifacts.status_path"));
+        assert!(err.contains(STATUS_PATH));
     }
 }

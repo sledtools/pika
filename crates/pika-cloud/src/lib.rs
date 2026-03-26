@@ -20,7 +20,7 @@ pub use lifecycle::{
 pub use mount::{MountKind, MountMode, RuntimeMount};
 pub use paths::{
     ARTIFACTS_DIR, EVENTS_PATH, GUEST_LOG_PATH as CLOUD_GUEST_LOG_PATH, GUEST_REQUEST_PATH,
-    LOGS_DIR, RESULT_PATH, RUNTIME_STATE_DIR, RuntimePaths, STATUS_PATH,
+    LOGS_DIR, RESULT_PATH, RUNTIME_STATE_DIR, RuntimeArtifactPaths, RuntimePaths, STATUS_PATH,
 };
 pub use policy::{
     OutputCollectionMode, OutputCollectionPolicy, RestartPolicy, RetentionPolicy, RuntimePolicies,
@@ -314,9 +314,8 @@ pub enum GuestServiceReadinessCheck {
 pub struct GuestStartupArtifacts {
     pub startup_plan_path: String,
     pub identity_seed_path: String,
-    pub status_path: String,
-    pub events_path: String,
-    pub result_path: String,
+    #[serde(flatten)]
+    pub runtime_artifacts: RuntimeArtifactPaths,
     pub log_path: String,
     pub pid_path: String,
 }
@@ -326,9 +325,7 @@ impl Default for GuestStartupArtifacts {
         Self {
             startup_plan_path: GUEST_STARTUP_PLAN_PATH.to_string(),
             identity_seed_path: GUEST_AUTOSTART_IDENTITY_PATH.to_string(),
-            status_path: STATUS_PATH.to_string(),
-            events_path: EVENTS_PATH.to_string(),
-            result_path: RESULT_PATH.to_string(),
+            runtime_artifacts: RuntimeArtifactPaths::default(),
             log_path: GUEST_LOG_PATH.to_string(),
             pid_path: GUEST_PID_PATH.to_string(),
         }
@@ -350,21 +347,6 @@ impl GuestStartupArtifacts {
                 canonical.identity_seed_path.as_str(),
             ),
             (
-                "status_path",
-                self.status_path.as_str(),
-                canonical.status_path.as_str(),
-            ),
-            (
-                "events_path",
-                self.events_path.as_str(),
-                canonical.events_path.as_str(),
-            ),
-            (
-                "result_path",
-                self.result_path.as_str(),
-                canonical.result_path.as_str(),
-            ),
-            (
                 "log_path",
                 self.log_path.as_str(),
                 canonical.log_path.as_str(),
@@ -381,6 +363,8 @@ impl GuestStartupArtifacts {
                 ));
             }
         }
+        self.runtime_artifacts
+            .validate_canonical_paths("artifacts")?;
         Ok(())
     }
 }
@@ -953,9 +937,9 @@ mod tests {
         let artifacts = GuestStartupArtifacts::default();
         assert_eq!(artifacts.startup_plan_path, GUEST_STARTUP_PLAN_PATH);
         assert_eq!(artifacts.identity_seed_path, GUEST_AUTOSTART_IDENTITY_PATH);
-        assert_eq!(artifacts.status_path, STATUS_PATH);
-        assert_eq!(artifacts.events_path, EVENTS_PATH);
-        assert_eq!(artifacts.result_path, RESULT_PATH);
+        assert_eq!(artifacts.runtime_artifacts.status_path, STATUS_PATH);
+        assert_eq!(artifacts.runtime_artifacts.events_path, EVENTS_PATH);
+        assert_eq!(artifacts.runtime_artifacts.result_path, RESULT_PATH);
         assert_eq!(artifacts.log_path, GUEST_LOG_PATH);
         assert_eq!(artifacts.pid_path, GUEST_PID_PATH);
     }
@@ -1084,7 +1068,10 @@ mod tests {
                 timeout_failure_reason: "timeout_waiting_for_openclaw_health".to_string(),
             },
             artifacts: GuestStartupArtifacts {
-                status_path: "/run/custom/status.json".to_string(),
+                runtime_artifacts: RuntimeArtifactPaths {
+                    status_path: "/run/custom/status.json".to_string(),
+                    ..RuntimeArtifactPaths::default()
+                },
                 ..GuestStartupArtifacts::default()
             },
             exit_failure_reason: "openclaw_gateway_exited".to_string(),

@@ -61,12 +61,14 @@ record_phase() {
 record_phase cargo-metadata cargo metadata --format-version=1 --no-deps >/dev/null
 
 build_apple_desktop_compile_nix() {
-  nix build .#appleDesktopCompile --no-link
+  nix --extra-experimental-features "nix-command flakes" build .#appleDesktopCompile --no-link
 }
 
 ios_xcframework_result=""
 build_apple_ios_xcframework_nix() {
-  ios_xcframework_result="$(nix build .#appleIosXcframework --print-out-paths --no-link)"
+  ios_xcframework_result="$(
+    nix --extra-experimental-features "nix-command flakes" build .#appleIosXcframework --print-out-paths --no-link
+  )"
 }
 
 case "$profile" in

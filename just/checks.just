@@ -129,7 +129,8 @@ apple-host-desktop-compile:
         export PIKA_XCODE_INSTALL_PROMPT="${PIKA_XCODE_INSTALL_PROMPT:-0}"
         exec nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c just checks::apple-host-desktop-compile
     fi
-    ./scripts/apple-host-record-phase apple-host-desktop-compile.nix rust-nix -- nix build .#appleDesktopCompile --no-link
+    ./scripts/apple-host-record-phase apple-host-desktop-compile.nix rust-nix -- \
+      nix --extra-experimental-features "nix-command flakes" build .#appleDesktopCompile --no-link
     echo "apple-host-desktop-compile complete"
 
 # Compile-only Apple iOS smoke for pre-merge CI.
@@ -147,8 +148,9 @@ apple-host-ios-compile:
     cache_key="$(./scripts/apple-host-cache-key ios-generic-sim)"
     derived_data_path="${PIKA_IOS_DERIVED_DATA_PATH:-$PWD/.pikaci/ios-derived-data/$cache_key}"
     mkdir -p "$(dirname "$derived_data_path")"
-    ./scripts/apple-host-record-phase apple-host-ios-compile.nix rust-nix -- nix build .#appleIosXcframework --no-link
-    result_path="$(nix build .#appleIosXcframework --print-out-paths --no-link)"
+    ./scripts/apple-host-record-phase apple-host-ios-compile.nix rust-nix -- \
+      nix --extra-experimental-features "nix-command flakes" build .#appleIosXcframework --no-link
+    result_path="$(nix --extra-experimental-features "nix-command flakes" build .#appleIosXcframework --print-out-paths --no-link)"
     ./scripts/apple-host-record-phase apple-host-ios-compile.xcodebuild apple-native -- \
       env PIKACI_APPLE_IOS_XCFRAMEWORK_RESULT="$result_path" PIKA_IOS_DERIVED_DATA_PATH="$derived_data_path" \
       ./scripts/ios-build ios-build-generic-sim
@@ -182,7 +184,7 @@ apple-host-bundle:
     ./scripts/apple-host-record-phase apple-host-bundle.cli-smoke rust-prepared -- just cli-smoke
     ./scripts/apple-host-record-phase apple-host-bundle.openclaw-pikachat-deterministic rust-prepared -- just openclaw-pikachat-deterministic
     ./scripts/apple-host-record-phase apple-host-bundle.shared-runtime-regression rust-prepared -- just shared-runtime-regression
-    result_path="$(nix build .#appleIosXcframework --print-out-paths --no-link)"
+    result_path="$(nix --extra-experimental-features "nix-command flakes" build .#appleIosXcframework --print-out-paths --no-link)"
     ./scripts/apple-host-record-phase apple-host-bundle.ios-ui-test apple-native -- env PIKACI_APPLE_IOS_XCFRAMEWORK_RESULT="$result_path" just ios-ui-test
     echo "apple-host-bundle complete"
 

@@ -41,7 +41,6 @@ pub struct JobSpec {
 #[serde(rename_all = "snake_case")]
 pub enum RunnerKind {
     HostLocal,
-    #[serde(alias = "microvm_remote")]
     RemoteLinuxVm,
     TartLocal,
 }
@@ -60,7 +59,6 @@ impl RunnerKind {
 #[serde(rename_all = "snake_case")]
 pub enum PlanExecutorKind {
     HostLocal,
-    #[serde(alias = "microvm_remote")]
     RemoteLinuxVm,
     TartLocal,
 }
@@ -88,7 +86,6 @@ impl From<RunnerKind> for PlanExecutorKind {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteLinuxVmBackend {
-    Microvm,
     Incus,
 }
 
@@ -181,7 +178,6 @@ pub enum StagedLinuxRustLane {
     PikaCoreLibAppFlows,
     PikaCoreMessagingE2e,
     AgentContractsControlPlaneUnit,
-    AgentContractsMicrovmTests,
     AgentContractsServerAgentApi,
     AgentContractsCoreNip98,
     NotificationsServerPackageTests,
@@ -215,7 +211,6 @@ impl StagedLinuxRustLane {
                 StagedLinuxRustTarget::PreMergePikaRust
             }
             Self::AgentContractsControlPlaneUnit
-            | Self::AgentContractsMicrovmTests
             | Self::AgentContractsServerAgentApi
             | Self::AgentContractsCoreNip98 => StagedLinuxRustTarget::PreMergeAgentContracts,
             Self::NotificationsServerPackageTests => StagedLinuxRustTarget::PreMergeNotifications,
@@ -285,10 +280,7 @@ impl StagedLinuxRustLane {
                 "/staged/linux-rust/workspace-build/bin/run-pika-core-messaging-e2e-tests"
             }
             Self::AgentContractsControlPlaneUnit => {
-                "/staged/linux-rust/workspace-build/bin/run-agent-control-plane-unit-tests"
-            }
-            Self::AgentContractsMicrovmTests => {
-                "/staged/linux-rust/workspace-build/bin/run-agent-microvm-tests"
+                "/staged/linux-rust/workspace-build/bin/run-pika-cloud-unit-tests"
             }
             Self::AgentContractsServerAgentApi => {
                 "/staged/linux-rust/workspace-build/bin/run-server-agent-api-tests"
@@ -390,7 +382,7 @@ impl StagedLinuxRustTarget {
             },
             Self::PreMergeAgentContracts => StagedLinuxRustTargetConfig {
                 target_id: "pre-merge-agent-contracts",
-                target_description: "Run the VM-backed pre-merge agent contracts lane",
+                target_description: "Run the Incus-backed pre-merge agent contracts lane",
                 shared_prepare_node_prefix: "agent-contracts-linux-rust",
                 shared_prepare_description: "agent contracts staged Linux Rust lane",
                 workspace_deps_output_name: "ci.x86_64-linux.agentContractsWorkspaceDeps",
@@ -522,11 +514,8 @@ fn select_remote_linux_vm_backend(_job: &JobSpec) -> RemoteLinuxVmBackend {
         return forced;
     }
 
-    if should_default_remote_linux_vm_to_incus() {
-        return RemoteLinuxVmBackend::Incus;
-    }
-
-    RemoteLinuxVmBackend::Microvm
+    let _ = should_default_remote_linux_vm_to_incus();
+    RemoteLinuxVmBackend::Incus
 }
 
 fn forced_remote_linux_vm_backend() -> Option<RemoteLinuxVmBackend> {
@@ -536,7 +525,6 @@ fn forced_remote_linux_vm_backend() -> Option<RemoteLinuxVmBackend> {
     match raw.trim() {
         "" | "auto" => None,
         "incus" => Some(RemoteLinuxVmBackend::Incus),
-        "microvm" => Some(RemoteLinuxVmBackend::Microvm),
         _ => None,
     }
 }
@@ -572,11 +560,11 @@ mod tests {
     fn agent_contract_jobs_map_to_staged_linux_rust_lanes() {
         let spec = JobSpec {
             id: "agent-control-plane-unit",
-            description: "Run all pika-agent-control-plane unit tests in a remote Linux VM",
+            description: "Run all pika-cloud unit tests in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::PackageUnitTests {
-                package: "pika-agent-control-plane",
+                package: "pika-cloud",
             },
             staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit),
         };
@@ -589,7 +577,7 @@ mod tests {
             assert_eq!(spec.runner_kind(), super::RunnerKind::RemoteLinuxVm);
             assert_eq!(
                 spec.remote_linux_vm_backend(),
-                Some(RemoteLinuxVmBackend::Microvm)
+                Some(RemoteLinuxVmBackend::Incus)
             );
         });
     }
@@ -683,28 +671,6 @@ mod tests {
     }
 
     #[test]
-    fn agent_contracts_target_defaults_to_incus_on_pika_build() {
-        let spec = JobSpec {
-            id: "agent-microvm-tests",
-            description: "Run pika-agent-microvm tests in a remote Linux VM guest",
-            timeout_secs: 1800,
-            writable_workspace: false,
-            guest_command: GuestCommand::ExactCargoTest {
-                package: "pikahut",
-                test_name: "integration_deterministic",
-            },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsMicrovmTests),
-        };
-
-        with_prepared_output_ssh_host_env(Some("pika-build"), || {
-            assert_eq!(
-                spec.remote_linux_vm_backend(),
-                Some(RemoteLinuxVmBackend::Incus)
-            );
-        });
-    }
-
-    #[test]
     fn pikachat_openclaw_target_defaults_to_incus_on_pika_build() {
         let spec = JobSpec {
             id: "openclaw-gateway-e2e",
@@ -726,7 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_linux_vm_backend_stays_microvm_away_from_pika_build() {
+    fn remote_linux_vm_backend_defaults_to_incus_away_from_pika_build() {
         let spec = JobSpec {
             id: "pika-actionlint",
             description: "Run actionlint in a remote Linux VM guest",
@@ -741,7 +707,7 @@ mod tests {
         with_remote_linux_vm_envs(None, Some("example-linux-builder"), || {
             assert_eq!(
                 spec.remote_linux_vm_backend(),
-                Some(RemoteLinuxVmBackend::Microvm)
+                Some(RemoteLinuxVmBackend::Incus)
             );
         });
     }
@@ -768,35 +734,14 @@ mod tests {
     }
 
     #[test]
-    fn remote_linux_vm_backend_env_can_force_microvm_rollback() {
-        let spec = JobSpec {
-            id: "pika-actionlint",
-            description: "Run actionlint in a remote Linux VM guest",
-            timeout_secs: 1800,
-            writable_workspace: false,
-            guest_command: GuestCommand::ShellCommand {
-                command: "actionlint",
-            },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::PikaFollowupActionlint),
-        };
-
-        with_remote_linux_vm_backend_env(Some("microvm"), || {
-            assert_eq!(
-                spec.remote_linux_vm_backend(),
-                Some(RemoteLinuxVmBackend::Microvm)
-            );
-        });
-    }
-
-    #[test]
     fn unstaged_non_host_jobs_panic_after_vfkit_removal() {
         let spec = JobSpec {
             id: "agent-control-plane-unit",
-            description: "Run all pika-agent-control-plane unit tests without a supported runner kind",
+            description: "Run all pika-cloud unit tests without a supported runner kind",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::PackageUnitTests {
-                package: "pika-agent-control-plane",
+                package: "pika-cloud",
             },
             staged_linux_rust_lane: None,
         };
@@ -836,7 +781,7 @@ mod tests {
     #[test]
     fn remote_linux_vm_execution_metadata_round_trips_with_stable_phase_names() {
         let record = RemoteLinuxVmExecutionRecord {
-            backend: RemoteLinuxVmBackend::Microvm,
+            backend: RemoteLinuxVmBackend::Incus,
             incus_image: None,
             phases: vec![
                 RemoteLinuxVmPhaseRecord {
@@ -855,7 +800,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&record).expect("encode metadata");
-        assert!(json.contains("\"backend\":\"microvm\""));
+        assert!(json.contains("\"backend\":\"incus\""));
         assert!(json.contains("\"phase\":\"prepare_runtime\""));
         assert!(json.contains("\"phase\":\"wait_for_completion\""));
 
@@ -888,7 +833,7 @@ mod tests {
 
     #[test]
     fn agent_contract_lane_uses_agent_contracts_workspace_outputs() {
-        let lane = StagedLinuxRustLane::AgentContractsMicrovmTests;
+        let lane = StagedLinuxRustLane::AgentContractsControlPlaneUnit;
 
         assert_eq!(
             lane.workspace_deps_output_name(),
@@ -900,7 +845,7 @@ mod tests {
         );
         assert_eq!(
             lane.execute_wrapper_command(),
-            "/staged/linux-rust/workspace-build/bin/run-agent-microvm-tests"
+            "/staged/linux-rust/workspace-build/bin/run-pika-cloud-unit-tests"
         );
     }
 

@@ -254,7 +254,7 @@ fn fail_if_removed_backend_selector_is_set() -> anyhow::Result<()> {
         return Ok(());
     }
     bail!(
-        "PIKACI_REMOTE_LINUX_VM_INCUS_LANES has been removed; use PIKACI_REMOTE_LINUX_VM_BACKEND=incus|microvm|auto"
+        "PIKACI_REMOTE_LINUX_VM_INCUS_LANES has been removed; use PIKACI_REMOTE_LINUX_VM_BACKEND=incus|auto"
     );
 }
 
@@ -451,13 +451,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
         }),
         "agent-control-plane-unit" => single_job_target_spec(
             "agent-control-plane-unit",
-            "Run all pika-agent-control-plane unit tests in a remote Linux VM",
-            &[],
-            agent_contract_jobs(),
-        ),
-        "agent-microvm-tests" => single_job_target_spec(
-            "agent-microvm-tests",
-            "Run pika-agent-microvm tests in a remote Linux VM",
+            "Run all pika-cloud unit tests in a remote Linux VM",
             &[],
             agent_contract_jobs(),
         ),
@@ -491,8 +485,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 ".github/workflows/pre-merge.yml",
                 "docs/agent-ci.md",
                 "crates/pikaci/**",
-                "crates/pika-agent-control-plane/**",
-                "crates/pika-agent-microvm/**",
+                "crates/pika-cloud/**",
                 "crates/pika-server/**",
                 "crates/pika-media/**",
                 "crates/pika-marmot-runtime/**",
@@ -533,8 +526,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "justfile",
                 ".github/workflows/pre-merge.yml",
                 "crates/pikaci/**",
-                "crates/pika-agent-control-plane/**",
-                "crates/pika-agent-microvm/**",
+                "crates/pika-cloud/**",
                 "crates/pika-desktop/**",
                 "crates/pika-server/**",
                 "crates/pikahut/**",
@@ -560,7 +552,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 ".github/workflows/pre-merge.yml",
                 "pikachat-openclaw/**",
                 "crates/pikaci/**",
-                "crates/pika-agent-control-plane/**",
+                "crates/pika-cloud/**",
                 "crates/pika-desktop/**",
                 "crates/hypernote-protocol/**",
                 "crates/pikachat-sidecar/**",
@@ -709,7 +701,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "just/checks.just",
                 "crates/pikaci/**",
                 "cli/**",
-                "crates/pika-agent-control-plane/**",
+                "crates/pika-cloud/**",
                 "crates/pika-agent-protocol/**",
                 "crates/pika-desktop/**",
                 "crates/hypernote-protocol/**",
@@ -748,8 +740,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "cli/Cargo.toml",
                 "crates/pikaci/**",
                 "crates/hypernote-protocol/**",
-                "crates/pika-agent-control-plane/**",
-                "crates/pika-agent-microvm/Cargo.toml",
+                "crates/pika-cloud/**",
                 "crates/pika-desktop/**",
                 "crates/pikahut/**",
                 "crates/pika-marmot-runtime/**",
@@ -765,7 +756,6 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "rust/tests/e2e_calls.rs",
                 "scripts/agent-chat-demo.sh",
                 "scripts/agent-demo.sh",
-                "scripts/demo-agent-microvm.sh",
                 "tools/cli-smoke",
                 "tools/interop-rust-baseline",
                 "tools/primal-ios-interop-nightly",
@@ -1103,23 +1093,13 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
     vec![
         JobSpec {
             id: "agent-control-plane-unit",
-            description: "Run all pika-agent-control-plane unit tests in a remote Linux VM",
+            description: "Run all pika-cloud unit tests in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::PackageUnitTests {
-                package: "pika-agent-control-plane",
+                package: "pika-cloud",
             },
             staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit),
-        },
-        JobSpec {
-            id: "agent-microvm-tests",
-            description: "Run pika-agent-microvm tests in a remote Linux VM",
-            timeout_secs: 1800,
-            writable_workspace: false,
-            guest_command: GuestCommand::PackageTests {
-                package: "pika-agent-microvm",
-            },
-            staged_linux_rust_lane: Some(StagedLinuxRustLane::AgentContractsMicrovmTests),
         },
         JobSpec {
             id: "server-agent-api-tests",
@@ -1943,7 +1923,7 @@ mod tests {
             Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit)
         );
 
-        assert_eq!(pre_merge.jobs.len(), 4);
+        assert_eq!(pre_merge.jobs.len(), 3);
         assert!(
             pre_merge
                 .jobs
@@ -1970,7 +1950,7 @@ mod tests {
         assert_eq!(target.jobs[0].runner_kind(), RunnerKind::RemoteLinuxVm);
         assert_eq!(
             target.jobs[0].remote_linux_vm_backend(),
-            Some(RemoteLinuxVmBackend::Microvm)
+            Some(RemoteLinuxVmBackend::Incus)
         );
     }
 

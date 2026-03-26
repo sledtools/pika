@@ -18,9 +18,8 @@ use crate::executor::{
     HostContext, compiled_guest_command, prepare_remote_linux_vm_backend,
     prepared_output_remote_helper_binary, prepared_output_remote_launcher_binary,
     prepared_output_remote_work_dir, prepared_output_ssh_host,
-    remote_linux_vm_execution_from_error, remote_linux_vm_prepare_artifact, run_job_on_runner,
-    ssh_nix_binary, staged_linux_remote_defaults, staged_linux_remote_snapshot_dir,
-    sync_snapshot_to_remote,
+    remote_linux_vm_execution_from_error, run_job_on_runner, ssh_nix_binary,
+    staged_linux_remote_defaults, staged_linux_remote_snapshot_dir, sync_snapshot_to_remote,
 };
 use crate::model::{
     ExecuteNode, JobLogMetadata, JobRecord, JobSpec, PlanExecutorKind, PlanNodeRecord, PlanScope,
@@ -1588,21 +1587,13 @@ fn build_run_plan(
         if job.runner_kind() == RunnerKind::RemoteLinuxVm {
             let prepare_node_id = format!("prepare-{}-runner", job.id);
             let runner_description = format!("Prepare remote Linux VM backend for `{}`", job.id);
-            let prepare = match remote_linux_vm_prepare_artifact(job, &ctx)? {
-                Some(artifact) => PrepareNode::NixBuild {
-                    installable: artifact.installable,
-                    output_name: artifact.output_name,
-                    residency: PreparedOutputResidency::LocalAuthoritative,
-                    handoff: None,
-                },
-                None => PrepareNode::RemoteLinuxVmBackend {
-                    backend: job.remote_linux_vm_backend().ok_or_else(|| {
-                        anyhow!(
-                            "remote Linux VM backend is missing for prepare node `{}`",
-                            job.id
-                        )
-                    })?,
-                },
+            let prepare = PrepareNode::RemoteLinuxVmBackend {
+                backend: job.remote_linux_vm_backend().ok_or_else(|| {
+                    anyhow!(
+                        "remote Linux VM backend is missing for prepare node `{}`",
+                        job.id
+                    )
+                })?,
             };
             let action = PrepareAction::RemoteLinuxVmBackend {
                 job: job.clone(),
@@ -5108,7 +5099,7 @@ mod tests {
         ];
 
         let snapshot = sample_snapshot_source(&prepared);
-        let plan = with_remote_linux_vm_backend_env(Some("microvm"), || {
+        let plan = with_remote_linux_vm_backend_env(Some("incus"), || {
             build_run_plan(&jobs, &prepared, &snapshot, &metadata).expect("build plan")
         });
 
@@ -5232,23 +5223,10 @@ mod tests {
                 );
                 assert_eq!(*executor, PlanExecutorKind::HostLocal);
                 match prepare {
-                    PrepareNode::NixBuild {
-                        installable,
-                        output_name,
-                        residency,
-                        handoff,
-                    } => {
-                        assert!(installable.contains(
-                            "jobs/pika-core-lib-app-flows-tests/vm/flake#nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
-                        ));
-                        assert_eq!(
-                            output_name,
-                            "nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
-                        );
-                        assert_eq!(*residency, PreparedOutputResidency::LocalAuthoritative);
-                        assert!(handoff.is_none());
+                    PrepareNode::RemoteLinuxVmBackend { backend } => {
+                        assert_eq!(*backend, RemoteLinuxVmBackend::Incus);
                     }
-                    other => panic!("expected nix build prepare node, got {other:?}"),
+                    other => panic!("expected Incus backend prepare node, got {other:?}"),
                 }
             }
             other => panic!("expected runner prepare node, got {other:?}"),
@@ -5269,23 +5247,10 @@ mod tests {
                 );
                 assert_eq!(*executor, PlanExecutorKind::HostLocal);
                 match prepare {
-                    PrepareNode::NixBuild {
-                        installable,
-                        output_name,
-                        residency,
-                        handoff,
-                    } => {
-                        assert!(installable.contains(
-                            "jobs/pika-core-messaging-e2e-tests/vm/flake#nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
-                        ));
-                        assert_eq!(
-                            output_name,
-                            "nixosConfigurations.pikaci-wave1.config.microvm.declaredRunner"
-                        );
-                        assert_eq!(*residency, PreparedOutputResidency::LocalAuthoritative);
-                        assert!(handoff.is_none());
+                    PrepareNode::RemoteLinuxVmBackend { backend } => {
+                        assert_eq!(*backend, RemoteLinuxVmBackend::Incus);
                     }
-                    other => panic!("expected nix build prepare node, got {other:?}"),
+                    other => panic!("expected Incus backend prepare node, got {other:?}"),
                 }
             }
             other => panic!("expected runner prepare node, got {other:?}"),
@@ -5362,18 +5327,6 @@ mod tests {
         }
 
         assert_eq!(plan.jobs.len(), 2);
-        assert!(
-            prepared
-                .run_dir
-                .join("jobs/pika-core-lib-app-flows-tests/vm/flake/flake.nix")
-                .exists()
-        );
-        assert!(
-            prepared
-                .run_dir
-                .join("jobs/pika-core-messaging-e2e-tests/vm/flake/flake.nix")
-                .exists()
-        );
 
         let _ = fs::remove_dir_all(&root);
     }

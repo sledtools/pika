@@ -63,20 +63,20 @@ impl ApiClient {
     }
 
     pub(crate) fn challenge(&self) -> anyhow::Result<ChallengeResponse> {
-        self.send(Method::POST, "/news/auth/challenge", None::<&()>, false)
+        self.send(Method::POST, "/git/auth/challenge", None::<&()>, false)
     }
 
     pub(crate) fn verify(&self, event_json: &str) -> anyhow::Result<LoginResponse> {
         self.send(
             Method::POST,
-            "/news/auth/verify",
+            "/git/auth/verify",
             Some(&VerifyRequest { event: event_json }),
             false,
         )
     }
 
     pub(crate) fn me(&self) -> anyhow::Result<MeResponse> {
-        self.send(Method::GET, "/news/api/me", None::<&()>, true)
+        self.send(Method::GET, "/git/api/me", None::<&()>, true)
     }
 
     pub(crate) fn resolve_branch(
@@ -84,7 +84,7 @@ impl ApiClient {
         branch_name: &str,
     ) -> anyhow::Result<BranchResolveResponse> {
         let path = format!(
-            "/news/api/forge/branch/resolve?branch_name={}",
+            "/git/api/forge/branch/resolve?branch_name={}",
             encode_query_component(branch_name)
         );
         self.send(Method::GET, &path, None::<&()>, true)
@@ -93,7 +93,7 @@ impl ApiClient {
     pub(crate) fn branch_detail(&self, branch_id: i64) -> anyhow::Result<BranchDetailResponse> {
         self.send(
             Method::GET,
-            &format!("/news/api/forge/branch/{branch_id}"),
+            &format!("/git/api/forge/branch/{branch_id}"),
             None::<&()>,
             true,
         )
@@ -119,7 +119,7 @@ impl ApiClient {
         };
         self.send(
             Method::GET,
-            &format!("/news/api/forge/branch/{branch_id}/logs{suffix}"),
+            &format!("/git/api/forge/branch/{branch_id}/logs{suffix}"),
             None::<&()>,
             true,
         )
@@ -131,7 +131,7 @@ impl ApiClient {
     ) -> anyhow::Result<NightlyDetailResponse> {
         self.send(
             Method::GET,
-            &format!("/news/api/forge/nightly/{nightly_run_id}"),
+            &format!("/git/api/forge/nightly/{nightly_run_id}"),
             None::<&()>,
             true,
         )
@@ -140,7 +140,7 @@ impl ApiClient {
     pub(crate) fn merge_branch(&self, branch_id: i64) -> anyhow::Result<BranchActionResponse> {
         self.send(
             Method::POST,
-            &format!("/news/api/forge/branch/{branch_id}/merge"),
+            &format!("/git/api/forge/branch/{branch_id}/merge"),
             Some(&serde_json::json!({})),
             true,
         )
@@ -149,7 +149,7 @@ impl ApiClient {
     pub(crate) fn close_branch(&self, branch_id: i64) -> anyhow::Result<BranchActionResponse> {
         self.send(
             Method::POST,
-            &format!("/news/api/forge/branch/{branch_id}/close"),
+            &format!("/git/api/forge/branch/{branch_id}/close"),
             Some(&serde_json::json!({})),
             true,
         )
@@ -162,7 +162,7 @@ impl ApiClient {
     ) -> anyhow::Result<LaneMutationResponse> {
         self.send(
             Method::POST,
-            &format!("/news/branch/{branch_id}/ci/fail/{lane_run_id}"),
+            &format!("/git/branch/{branch_id}/ci/fail/{lane_run_id}"),
             Some(&serde_json::json!({})),
             true,
         )
@@ -175,7 +175,7 @@ impl ApiClient {
     ) -> anyhow::Result<LaneMutationResponse> {
         self.send(
             Method::POST,
-            &format!("/news/branch/{branch_id}/ci/requeue/{lane_run_id}"),
+            &format!("/git/branch/{branch_id}/ci/requeue/{lane_run_id}"),
             Some(&serde_json::json!({})),
             true,
         )
@@ -188,7 +188,7 @@ impl ApiClient {
     ) -> anyhow::Result<RecoverRunResponse> {
         self.send(
             Method::POST,
-            &format!("/news/branch/{branch_id}/ci/recover/{run_id}"),
+            &format!("/git/branch/{branch_id}/ci/recover/{run_id}"),
             Some(&serde_json::json!({})),
             true,
         )
@@ -201,7 +201,7 @@ impl ApiClient {
     ) -> anyhow::Result<LaneMutationResponse> {
         self.send(
             Method::POST,
-            &format!("/news/nightly/{nightly_run_id}/fail/{lane_run_id}"),
+            &format!("/git/nightly/{nightly_run_id}/fail/{lane_run_id}"),
             Some(&serde_json::json!({})),
             true,
         )
@@ -214,7 +214,7 @@ impl ApiClient {
     ) -> anyhow::Result<LaneMutationResponse> {
         self.send(
             Method::POST,
-            &format!("/news/nightly/{nightly_run_id}/requeue/{lane_run_id}"),
+            &format!("/git/nightly/{nightly_run_id}/requeue/{lane_run_id}"),
             Some(&serde_json::json!({})),
             true,
         )
@@ -226,7 +226,7 @@ impl ApiClient {
     ) -> anyhow::Result<RecoverRunResponse> {
         self.send(
             Method::POST,
-            &format!("/news/nightly/{nightly_run_id}/recover"),
+            &format!("/git/nightly/{nightly_run_id}/recover"),
             Some(&serde_json::json!({})),
             true,
         )
@@ -235,7 +235,7 @@ impl ApiClient {
     pub(crate) fn wake_ci(&self) -> anyhow::Result<WakeCiResponse> {
         self.send(
             Method::POST,
-            "/news/api/forge/ci/wake",
+            "/git/api/forge/ci/wake",
             Some(&serde_json::json!({})),
             true,
         )

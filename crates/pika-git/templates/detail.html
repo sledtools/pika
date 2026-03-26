@@ -1,0 +1,1215 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page_title }}{% endblock %}
+
+{% block head_extra %}
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github.min.css" media="(prefers-color-scheme: light)" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css" media="(prefers-color-scheme: dark)" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/diff2html@3.4.51/bundles/css/diff2html.min.css" />
+{% endblock %}
+
+{% block nav_right_extra %}
+    {% if review_mode %}
+    <div class="review-nav-center">
+      <button id="review-prev" type="button" disabled>Prev</button>
+      <button id="review-dismiss" type="button" class="review-dismiss-btn">Dismiss</button>
+      <button id="review-next" type="button" disabled>Next</button>
+      <span id="review-pos" class="review-nav-pos"></span>
+    </div>
+    {% endif %}
+{% endblock %}
+
+{% block styles %}
+      .branch-page {
+        width: min(2200px, calc(100vw - 1rem));
+        max-width: none;
+        margin: 0 auto;
+        padding: 2rem 0.5rem 3rem;
+      }
+      .meta { color: var(--text-secondary); font-size: 0.92rem; }
+      .muted { color: var(--text-muted); }
+      .panel {
+        background: var(--surface-solid);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 1.1rem 1.15rem;
+      }
+      .branch-hero {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        margin-top: 1rem;
+        background:
+          linear-gradient(135deg, rgba(39, 119, 92, 0.08), rgba(37, 99, 235, 0.05)),
+          var(--surface-solid);
+      }
+      .branch-hero-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+      .branch-kicker {
+        margin: 0 0 0.35rem;
+        color: var(--text-muted);
+        font-size: 0.8rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .branch-hero h1 { margin: 0; font-size: clamp(2rem, 4vw, 2.8rem); line-height: 1.05; }
+      .branch-title {
+        margin: 0.45rem 0 0;
+        max-width: 78ch;
+        color: var(--text-secondary);
+        font-size: 1rem;
+      }
+      .status-row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        border-radius: 999px;
+        border: 1px solid var(--border-light);
+        padding: 0.22rem 0.7rem;
+        font-size: 0.82rem;
+        font-weight: 600;
+        background: var(--badge-bg-row);
+      }
+      .tone-success { border-color: rgba(36, 120, 77, 0.35); background: rgba(36, 120, 77, 0.14); color: #1c6b47; }
+      .tone-warning { border-color: rgba(201, 138, 20, 0.4); background: rgba(201, 138, 20, 0.14); color: #8f5d00; }
+      .tone-danger { border-color: rgba(184, 71, 91, 0.35); background: rgba(184, 71, 91, 0.14); color: #8b1e3f; }
+      .tone-neutral { border-color: var(--border-light); background: var(--badge-bg-row); color: var(--text-secondary); }
+      .action-row { display: flex; gap: 0.7rem; flex-wrap: wrap; align-items: center; }
+      .action-btn,
+      .secondary-btn,
+      .ci-link-btn {
+        border-radius: 10px;
+        border: 1px solid var(--input-border);
+        background: var(--btn-bg);
+        color: var(--text);
+        padding: 0.55rem 0.9rem;
+        cursor: pointer;
+        text-decoration: none;
+      }
+      .secondary-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+      .shortcut-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 2.8rem;
+        padding: 0.1rem 0.4rem;
+        border-radius: 999px;
+        border: 1px solid var(--border-light);
+        background: var(--badge-bg-row);
+        color: var(--text-muted);
+        font-size: 0.74rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+      }
+      .merge-btn { background: var(--accent); border-color: transparent; color: #fff; }
+      .danger-btn { background: #8b1e3f; border-color: transparent; color: #fff; }
+      button:disabled { opacity: 0.55; cursor: default; }
+      .notice {
+        border-radius: 12px;
+        padding: 0.85rem 1rem;
+        margin-top: 0.85rem;
+        border: 1px solid var(--border);
+        background: var(--badge-bg-row);
+      }
+      .notice.warning { border-color: #d9a441; background: rgba(217, 164, 65, 0.12); }
+      .notice.error { border-color: #b8475b; background: rgba(184, 71, 91, 0.12); }
+      .summary-stack { display: flex; flex-direction: column; gap: 1rem; }
+      .ci-summary-card {
+        display: flex;
+        flex-direction: column;
+        gap: 0.9rem;
+      }
+      .ci-summary-head,
+      .ci-summary-run-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+      .ci-summary-head h2 { margin: 0; }
+      .ci-summary-run {
+        border-radius: 14px;
+        border: 1px solid var(--border);
+        padding: 0.95rem;
+        background: rgba(255, 255, 255, 0.35);
+      }
+      .panel h2 { margin-top: 0; margin-bottom: 0.9rem; }
+      .panel pre {
+        margin: 0.75rem 0 0;
+        overflow-x: auto;
+        background: var(--badge-bg);
+        border-radius: 10px;
+        padding: 0.8rem;
+      }
+      .panel code {
+        font-size: 0.85rem;
+        background: var(--badge-bg);
+        padding: 0.08rem 0.28rem;
+        border-radius: 4px;
+      }
+      .panel pre code { background: none; padding: 0; }
+      .steps-nav { display: flex; gap: 0.5rem; margin-bottom: 0.9rem; align-items: center; flex-wrap: wrap; }
+      .step { display: none; }
+      .step.active { display: block; }
+      .evidence {
+        background: var(--badge-bg-alt);
+        border-radius: 12px;
+        padding: 0.8rem;
+      }
+      .evidence pre { margin-top: 0.55rem; white-space: pre-wrap; word-break: break-word; }
+      .branch-page {
+        --discussion-sidebar-width: clamp(480px, 30vw, 620px);
+        --discussion-sidebar-gap: 1.5rem;
+        transition: max-width 180ms ease, padding-right 180ms ease;
+      }
+      .branch-page.discussion-open {
+        max-width: calc(2200px - var(--discussion-sidebar-width) - var(--discussion-sidebar-gap));
+        padding-right: 0.5rem;
+      }
+      .review-layout {
+        display: grid;
+        grid-template-columns: minmax(230px, 290px) minmax(0, 1fr);
+        gap: 1.25rem;
+        align-items: start;
+      }
+      .file-list-sidebar {
+        position: sticky;
+        top: 4.4rem;
+      }
+      .file-list-sidebar h2,
+      .file-list-sidebar p { margin-top: 0; }
+      .file-list-sidebar .d2h-file-list-wrapper {
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      .file-list-placeholder {
+        margin: 0;
+        color: var(--text-muted);
+        font-size: 0.9rem;
+      }
+      .review-main {
+        min-width: 0;
+        display: grid;
+        grid-template-columns: minmax(420px, 560px) minmax(0, 1fr);
+        gap: 1.25rem;
+      }
+      .review-rail,
+      .tutorial-column {
+        min-width: 0;
+      }
+      .tutorial-column {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+      }
+      .review-rail {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+      }
+      .discussion-panel {
+        display: flex;
+        flex-direction: column;
+        gap: 0.9rem;
+        min-height: 100%;
+        height: 100%;
+      }
+      .discussion-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.75rem;
+        align-items: flex-start;
+      }
+      .discussion-head h2 { margin-bottom: 0.35rem; }
+      .discussion-sidebar-shell {
+        position: fixed;
+        top: 1.25rem;
+        right: 1.25rem;
+        bottom: 1.25rem;
+        width: var(--discussion-sidebar-width);
+        max-width: calc(100vw - 2rem);
+        min-width: 0;
+        opacity: 0;
+        pointer-events: none;
+        transform: translateX(calc(100% + var(--discussion-sidebar-gap)));
+        z-index: 40;
+        transition: opacity 160ms ease, transform 180ms ease;
+      }
+      .branch-page.discussion-open + .discussion-backdrop + .discussion-sidebar-shell {
+        opacity: 1;
+        pointer-events: auto;
+        transform: translateX(0);
+      }
+      .discussion-sidebar-shell .discussion-panel {
+        position: relative;
+        top: 0;
+        min-height: 0;
+        height: 100%;
+        box-shadow: 0 22px 46px rgba(4, 9, 18, 0.22);
+      }
+      .discussion-sidebar-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+      }
+      .discussion-close-btn {
+        border-radius: 999px;
+        border: 1px solid var(--input-border);
+        background: var(--badge-bg-row);
+        color: var(--text-secondary);
+        padding: 0.4rem 0.75rem;
+        cursor: pointer;
+      }
+      .discussion-scope {
+        margin: 0;
+        line-height: 1.45;
+      }
+      #discussion-main {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        flex: 1;
+      }
+      .discussion-messages {
+        min-height: 20rem;
+        max-height: none;
+        flex: 1;
+        overflow-y: auto;
+        padding: 0.75rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.6rem;
+        border-radius: 12px;
+        background: var(--badge-bg-alt);
+        border: 1px solid var(--border);
+      }
+      .discussion-msg {
+        padding: 0.6rem 0.75rem;
+        border-radius: 12px;
+        font-size: 0.88rem;
+        line-height: 1.45;
+        max-width: 92%;
+        word-wrap: break-word;
+        white-space: pre-wrap;
+      }
+      .discussion-msg.user {
+        background: var(--chat-user-bg);
+        color: var(--chat-user-text);
+        align-self: flex-end;
+      }
+      .discussion-msg.assistant {
+        background: var(--chat-assistant-bg);
+        color: var(--chat-assistant-text);
+        align-self: flex-start;
+      }
+      .discussion-msg pre {
+        overflow-x: auto;
+        background: var(--badge-bg);
+        border-radius: 6px;
+        padding: 0.5rem;
+        margin: 0.4rem 0;
+      }
+      .discussion-msg code { font-size: 0.82rem; }
+      .discussion-msg p { margin: 0.3rem 0; }
+      .discussion-msg p:first-child { margin-top: 0; }
+      .discussion-msg p:last-child { margin-bottom: 0; }
+      .discussion-msg ul, .discussion-msg ol { margin: 0.3rem 0; padding-left: 1.2rem; }
+      .discussion-empty,
+      .discussion-disabled {
+        padding: 1rem;
+        border-radius: 12px;
+        border: 1px dashed var(--border);
+        color: var(--text-muted);
+        background: var(--badge-bg-row);
+        font-size: 0.88rem;
+        line-height: 1.45;
+      }
+      .discussion-disabled strong {
+        display: block;
+        color: var(--text);
+        font-size: 0.92rem;
+        margin-bottom: 0.35rem;
+      }
+      .discussion-compose {
+        display: flex;
+        gap: 0.6rem;
+      }
+      .discussion-compose input {
+        flex: 1;
+        border: 1px solid var(--input-border);
+        border-radius: 10px;
+        padding: 0.55rem 0.7rem;
+        font-size: 0.9rem;
+        background: var(--badge-bg);
+        color: var(--text);
+      }
+      .discussion-status {
+        color: var(--text-muted);
+        font-size: 0.84rem;
+        min-height: 1.2rem;
+      }
+      .diff-row {
+        margin-top: 1.25rem;
+      }
+      .discussion-backdrop {
+        display: none;
+      }
+      .diff-panel { overflow-x: auto; }
+      .diff-view-toggle { display: flex; gap: 0.5rem; margin-bottom: 0.85rem; flex-wrap: wrap; }
+      .diff-view-toggle button.active { background: var(--link); color: #fff; border-color: var(--link); }
+      .d2h-wrapper {
+        border-radius: 12px;
+        overflow-x: auto;
+      }
+      .d2h-file-wrapper,
+      .d2h-diff-table {
+        min-width: min(1800px, calc(100vw - 4rem));
+      }
+      .review-nav-center { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+      .review-nav-pos { font-size: 0.82rem; color: var(--text-muted); }
+      .review-dismiss-btn {
+        background: var(--accent);
+        color: #fff;
+        border: none;
+        padding: 0.35rem 0.8rem;
+        font-size: 0.82rem;
+        cursor: pointer;
+        border-radius: 8px;
+        font-family: inherit;
+      }
+      @media (prefers-color-scheme: dark) {
+        .tone-success { color: #8bddb3; }
+        .tone-warning { color: #f2cc72; }
+        .tone-danger { color: #f1a2b0; }
+        .d2h-wrapper, .d2h-file-wrapper { background: var(--surface-solid); color: var(--text); }
+        .d2h-file-header { background: var(--badge-bg); color: var(--text); border-bottom-color: var(--border); }
+        .d2h-file-diff .d2h-code-linenumber, .d2h-file-diff .d2h-code-line { color: var(--text); }
+        .d2h-code-side-linenumber, .d2h-code-linenumber {
+          background: var(--badge-bg);
+          border-color: var(--border);
+          color: var(--text-muted);
+        }
+        .d2h-emptyplaceholder, .d2h-code-side-emptyplaceholder {
+          background: var(--badge-bg-alt);
+          border-color: var(--border);
+        }
+        .d2h-del { background: #3c1f1f; }
+        .d2h-ins { background: #1f3c1f; }
+        .d2h-del .d2h-code-side-line del, .d2h-del .d2h-code-line del { background: #5c2f2f; }
+        .d2h-ins .d2h-code-side-line ins, .d2h-ins .d2h-code-line ins { background: #2f5c2f; }
+        .d2h-info { background: var(--badge-bg); color: var(--text-muted); border-color: var(--border); }
+        .d2h-file-list-wrapper { background: var(--surface-solid); border-color: var(--border); }
+        .d2h-file-list-line a { color: var(--link); }
+      }
+      @media (max-width: 1024px) {
+        .review-layout { grid-template-columns: 1fr; }
+        .file-list-sidebar { position: static; }
+        .review-main { grid-template-columns: 1fr; }
+        .branch-page.discussion-open {
+          max-width: none;
+          padding-right: 2rem;
+        }
+        .discussion-sidebar-shell {
+          position: fixed;
+          top: 0;
+          right: 0;
+          bottom: 0;
+          width: min(94vw, 32rem);
+          padding: 1rem 0.75rem 1rem 0;
+          z-index: 40;
+          transform: translateX(100%);
+        }
+        .branch-page.discussion-open + .discussion-backdrop + .discussion-sidebar-shell {
+          transform: translateX(0);
+        }
+        .discussion-sidebar-shell .discussion-panel {
+          position: relative;
+          top: 0;
+          height: calc(100vh - 2rem);
+          min-height: calc(100vh - 2rem);
+        }
+        .discussion-backdrop {
+          position: fixed;
+          inset: 0;
+          background: rgba(7, 10, 18, 0.55);
+          backdrop-filter: blur(2px);
+          z-index: 30;
+        }
+        .branch-page.discussion-open + .discussion-backdrop {
+          display: block;
+        }
+      }
+{% endblock %}
+
+{% block body %}
+    <main id="branch-page" class="branch-page">
+      <p><a href="/git">Back to feed</a></p>
+
+      <section class="panel branch-hero">
+        <div class="branch-hero-head">
+          <div>
+            <p class="branch-kicker">{{ repo }} branch #{{ branch_id }}</p>
+            <h1>{{ branch_name }}</h1>
+            <p class="branch-title">{{ title }}</p>
+            <p class="muted">Target branch: {{ target_branch }}</p>
+            {% match merge_commit_sha %}
+            {% when Some with (sha) %}
+            <p class="muted">Merge Commit: <code>{{ sha }}</code></p>
+            {% when None %}{% endmatch %}
+          </div>
+          <div class="status-row">
+            <span class="status tone-neutral">branch: {{ branch_state }}</span>
+            <span class="status {% if tutorial_status == "ready" %}tone-success{% else %}{% if tutorial_status == "failed" %}tone-danger{% else %}tone-warning{% endif %}{% endif %}">tutorial: {{ tutorial_status }}</span>
+            <span class="status {% if ci_status == "success" %}tone-success{% else %}{% if ci_status == "failed" %}tone-danger{% else %}tone-warning{% endif %}{% endif %}">ci: {{ ci_status }}</span>
+          </div>
+        </div>
+        <div class="action-row">
+          <a class="ci-link-btn" href="/git/branch/{{ branch_id }}/ci{% if review_mode %}?review=true{% endif %}">Open CI Details</a>
+          <button
+            id="discussion-toggle"
+            type="button"
+            class="secondary-btn"
+            aria-expanded="false"
+            aria-controls="discussion-sidebar"
+            title="Toggle branch discussion"
+          >
+            <span id="discussion-toggle-label">Open Discussion</span>
+            <span id="discussion-toggle-shortcut" class="shortcut-badge">⌘.</span>
+          </button>
+          {% if branch_state == "open" %}
+          <div id="branch-actions" class="action-row" style="display:none;">
+            <button id="merge-branch" type="button" class="action-btn merge-btn">Merge Into {{ target_branch }}</button>
+            <button id="close-branch" type="button" class="action-btn danger-btn">Close Branch</button>
+            <span id="branch-action-status" class="muted"></span>
+          </div>
+          {% endif %}
+        </div>
+      </section>
+
+      <div class="review-layout">
+        <aside class="file-list-sidebar">
+          <section class="panel">
+            <h2>Changed Files</h2>
+            <p class="file-list-placeholder" id="file-list-placeholder">Loading changed files from the diff…</p>
+            <div id="file-list-sidebar-content"></div>
+          </section>
+        </aside>
+
+        <div class="review-main">
+          <div class="review-rail">
+            <div id="branch-ci-summary" class="summary-stack">{{ branch_ci_summary_html|safe }}</div>
+            {% match executive_html %}
+            {% when Some with (summary_html) %}
+            <section class="panel">
+              <h2>Summary</h2>
+              <div>{{ summary_html|safe }}</div>
+            </section>
+            {% when None %}
+            <section class="panel">
+              <h2>Summary</h2>
+              {% if tutorial_status == "failed" %}
+              <p>This branch tutorial is unavailable because generation for this branch head failed. That is separate from any forge-wide generator worker warning.</p>
+              {% else %}
+              <p>Summary is not ready yet. Refresh shortly.</p>
+              {% endif %}
+            </section>
+            {% endmatch %}
+
+            {% if media_links.len() > 0 %}
+            <section class="panel">
+              <h2>Media Links</h2>
+              <ul>
+                {% for link in media_links %}
+                <li><a href="{{ link.href }}">{{ link.label }}</a></li>
+                {% endfor %}
+              </ul>
+            </section>
+            {% endif %}
+          </div>
+
+          <div class="tutorial-column">
+            {% match error_message %}
+            {% when Some with (msg) %}
+            <section class="panel">
+              <h2>Branch-Specific Tutorial Generation Failed</h2>
+              <p>This failure is specific to the current branch head.</p>
+              <p>{{ msg }}</p>
+            </section>
+            {% when None %}{% endmatch %}
+
+            <section class="panel">
+              <h2>Tutorial Steps</h2>
+              {% if steps.is_empty() %}
+              <p>No steps available yet.</p>
+              {% else %}
+              <div class="steps-nav">
+                <button id="prev-step" type="button">Prev</button>
+                <button id="next-step" type="button">Next</button>
+                <span id="step-index" class="muted"></span>
+              </div>
+              {% for step in steps %}
+              <article class="step" data-step-index="{{ loop.index0 }}">
+                <h3>{{ step.title }}</h3>
+                <p><strong>Intent:</strong> {{ step.intent }}</p>
+                <p><strong>Affected files:</strong> {{ step.affected_files }}</p>
+                <div class="evidence">
+                  <strong>Evidence</strong>
+                  {% for evidence in step.evidence_snippets %}
+                  <pre><code>{{ evidence }}</code></pre>
+                  {% endfor %}
+                </div>
+                <div>{{ step.body_html|safe }}</div>
+              </article>
+              {% endfor %}
+              {% endif %}
+            </section>
+          </div>
+        </div>
+      </div>
+
+      {% match diff_json %}
+      {% when Some with (json_str) %}
+      <section class="panel diff-panel diff-row">
+        <h2>Diff</h2>
+        <div class="diff-view-toggle">
+          <button type="button" class="diff-toggle active" data-style="side">Side by side</button>
+          <button type="button" class="diff-toggle" data-style="line">Unified</button>
+        </div>
+        <div id="diff-container"></div>
+        <script id="diff-data" type="application/json">{{ json_str|safe }}</script>
+      </section>
+      {% when None %}
+      <section class="panel diff-row">
+        <h2>Diff</h2>
+        <p class="muted">No diff is available for this branch yet.</p>
+      </section>
+      {% endmatch %}
+    </main>
+
+    <div id="discussion-backdrop" class="discussion-backdrop" hidden></div>
+    <aside id="discussion-sidebar" class="discussion-sidebar-shell" aria-hidden="true">
+      <section class="panel discussion-panel">
+        <div class="discussion-sidebar-head">
+          <div class="discussion-head">
+            <div>
+              <p class="branch-kicker">Branch Review</p>
+              <h2>Discussion</h2>
+            </div>
+            <span class="status {% if branch_chat_ready %}tone-success{% else %}tone-warning{% endif %}">
+              {% if branch_chat_ready %}artifact ready{% else %}artifact pending{% endif %}
+            </span>
+          </div>
+          <button id="discussion-close" type="button" class="discussion-close-btn">Hide</button>
+        </div>
+        <p class="discussion-scope muted">Discussion is scoped to the current branch tutorial artifact. New tutorial artifacts start a fresh thread for later review turns.</p>
+        <div id="discussion-disabled" class="discussion-disabled">
+          <strong id="discussion-disabled-title">{% if branch_chat_ready %}Sign in to load branch discussion.{% else %}Discussion opens after tutorial generation.{% endif %}</strong>
+          <span id="discussion-disabled-copy">
+            {% if branch_chat_ready %}
+            Branch discussion is available to approved chat accounts once you sign in.
+            {% else %}
+            This branch does not have a ready tutorial artifact yet, so there is no discussion thread to load.
+            {% endif %}
+          </span>
+        </div>
+        <div id="discussion-main" style="display:none;">
+          <div class="discussion-messages" id="discussion-messages"></div>
+          <div class="discussion-compose" style="margin-top:0.9rem;">
+            <input type="text" id="discussion-input" placeholder="Ask about this branch review..." autocomplete="off" />
+            <button id="discussion-send" type="button">Send</button>
+          </div>
+        </div>
+        <div id="discussion-status" class="discussion-status"></div>
+      </section>
+    </aside>
+{% endblock %}
+
+{% block scripts %}
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/diff2html@3.4.51/bundles/js/diff2html.min.js"></script>
+    <script>
+      (function () {
+        const steps = Array.from(document.querySelectorAll('.step'));
+        if (steps.length > 0) {
+          const prev = document.getElementById('prev-step');
+          const next = document.getElementById('next-step');
+          const label = document.getElementById('step-index');
+          let index = 0;
+
+          function renderStep() {
+            steps.forEach((step, i) => step.classList.toggle('active', i === index));
+            label.textContent = `Step ${index + 1} / ${steps.length}`;
+            prev.disabled = index === 0;
+            next.disabled = index === steps.length - 1;
+          }
+
+          prev.addEventListener('click', () => { if (index > 0) { index -= 1; renderStep(); } });
+          next.addEventListener('click', () => { if (index < steps.length - 1) { index += 1; renderStep(); } });
+          renderStep();
+        }
+
+        hljs.highlightAll();
+
+        const diffDataEl = document.getElementById('diff-data');
+        const diffContainer = document.getElementById('diff-container');
+        const toggles = Array.from(document.querySelectorAll('.diff-toggle'));
+        const fileListSidebar = document.getElementById('file-list-sidebar-content');
+        const fileListPlaceholder = document.getElementById('file-list-placeholder');
+        if (diffDataEl && diffContainer && window.Diff2Html) {
+          const diffText = JSON.parse(diffDataEl.textContent || '""');
+          let diffMode = 'side-by-side';
+
+          function renderDiff() {
+            diffContainer.innerHTML = Diff2Html.html(diffText, {
+              drawFileList: true,
+              matching: 'lines',
+              outputFormat: diffMode,
+              highlight: true,
+            });
+
+            const fileList = diffContainer.querySelector('.d2h-file-list-wrapper');
+            if (fileList && fileListSidebar) {
+              fileListSidebar.innerHTML = '';
+              fileListSidebar.appendChild(fileList);
+              if (fileListPlaceholder) {
+                fileListPlaceholder.style.display = 'none';
+              }
+            }
+
+            toggles.forEach((button) => {
+              const style = button.getAttribute('data-style');
+              button.classList.toggle('active', style === (diffMode === 'side-by-side' ? 'side' : 'line'));
+            });
+          }
+
+          toggles.forEach((button) => {
+            button.addEventListener('click', () => {
+              diffMode = button.getAttribute('data-style') === 'line' ? 'line-by-line' : 'side-by-side';
+              renderDiff();
+            });
+          });
+          renderDiff();
+        } else if (fileListPlaceholder) {
+          fileListPlaceholder.textContent = 'No diff file list is available.';
+        }
+
+        const actionWrap = document.getElementById('branch-actions');
+        const mergeBtn = document.getElementById('merge-branch');
+        const closeBtn = document.getElementById('close-branch');
+        const statusEl = document.getElementById('branch-action-status');
+        const reviewPrevBtn = document.getElementById('review-prev');
+        const reviewNextBtn = document.getElementById('review-next');
+        const reviewDismissBtn = document.getElementById('review-dismiss');
+        const reviewPosEl = document.getElementById('review-pos');
+        const branchCiSummary = document.getElementById('branch-ci-summary');
+        const branchId = {{ branch_id }};
+        const branchChatArtifactId = {% match branch_chat_artifact_id %}{% when Some with (artifact_id) %}{{ artifact_id }}{% when None %}null{% endmatch %};
+        const reviewMode = {% if review_mode %}true{% else %}false{% endif %};
+        const branchCiSummaryEnabled = {% if branch_ci_summary_enabled %}true{% else %}false{% endif %};
+        const branchChatReady = {% if branch_chat_ready %}true{% else %}false{% endif %};
+        const branchCiSignalKey = 'pika_git_branch_ci_signal';
+        const branchPage = document.getElementById('branch-page');
+        const discussionToggle = document.getElementById('discussion-toggle');
+        const discussionToggleLabel = document.getElementById('discussion-toggle-label');
+        const discussionToggleShortcut = document.getElementById('discussion-toggle-shortcut');
+        const discussionSidebar = document.getElementById('discussion-sidebar');
+        const discussionBackdrop = document.getElementById('discussion-backdrop');
+        const discussionClose = document.getElementById('discussion-close');
+        const discussionDisabled = document.getElementById('discussion-disabled');
+        const discussionDisabledTitle = document.getElementById('discussion-disabled-title');
+        const discussionDisabledCopy = document.getElementById('discussion-disabled-copy');
+        const discussionMain = document.getElementById('discussion-main');
+        const discussionMessages = document.getElementById('discussion-messages');
+        const discussionInput = document.getElementById('discussion-input');
+        const discussionSend = document.getElementById('discussion-send');
+        const discussionStatus = document.getElementById('discussion-status');
+        let branchCiSource = null;
+        const isMacLike = (() => {
+          const platform = navigator.platform || navigator.userAgent || '';
+          return /Mac|iPhone|iPad|iPod/i.test(platform);
+        })();
+        let discussionOpen = false;
+
+        function updateDiscussionToggleLabel() {
+          if (discussionToggleLabel) {
+            discussionToggleLabel.textContent = discussionOpen ? 'Hide Discussion' : 'Open Discussion';
+          }
+          if (discussionToggleShortcut) {
+            discussionToggleShortcut.textContent = isMacLike ? '⌘.' : 'Ctrl+.';
+          }
+          if (discussionToggle) {
+            discussionToggle.setAttribute('aria-expanded', discussionOpen ? 'true' : 'false');
+          }
+          if (discussionSidebar) {
+            discussionSidebar.setAttribute('aria-hidden', discussionOpen ? 'false' : 'true');
+          }
+          if (discussionBackdrop) {
+            discussionBackdrop.hidden = !discussionOpen;
+          }
+        }
+
+        function setDiscussionOpen(nextOpen, options = {}) {
+          discussionOpen = !!nextOpen;
+          if (branchPage) {
+            branchPage.classList.toggle('discussion-open', discussionOpen);
+          }
+          updateDiscussionToggleLabel();
+          if (discussionOpen && options.focusInput && discussionInput) {
+            window.requestAnimationFrame(() => discussionInput.focus());
+          }
+        }
+
+        function toggleDiscussion(options = {}) {
+          setDiscussionOpen(!discussionOpen, options);
+        }
+
+        function recoveryButtons() {
+          return Array.from(document.querySelectorAll('.ci-wake-btn, .lane-fail-btn, .lane-requeue-btn, .lane-recover-run-btn'));
+        }
+
+        function authToken() {
+          return window.pikaAuth && window.pikaAuth.getToken ? window.pikaAuth.getToken() : null;
+        }
+
+        function setDiscussionStatus(message) {
+          if (!discussionStatus) return;
+          discussionStatus.textContent = message || '';
+        }
+
+        function setDiscussionLocked(title, copy) {
+          if (discussionMain) discussionMain.style.display = 'none';
+          if (discussionDisabled) discussionDisabled.style.display = 'block';
+          if (discussionDisabledTitle) discussionDisabledTitle.textContent = title;
+          if (discussionDisabledCopy) discussionDisabledCopy.textContent = copy;
+        }
+
+        function showDiscussionMain() {
+          if (discussionDisabled) discussionDisabled.style.display = 'none';
+          if (discussionMain) discussionMain.style.display = 'flex';
+        }
+
+        function addDiscussionMessage(role, content) {
+          if (!discussionMessages) return;
+          const div = document.createElement('div');
+          div.className = 'discussion-msg ' + role;
+          div.textContent = content;
+          discussionMessages.appendChild(div);
+          discussionMessages.scrollTop = discussionMessages.scrollHeight;
+        }
+
+        function renderDiscussionEmptyState() {
+          if (!discussionMessages) return;
+          const empty = document.createElement('div');
+          empty.className = 'discussion-empty';
+          empty.textContent = 'No branch discussion yet. Start the thread with a review question when this artifact is ready.';
+          discussionMessages.appendChild(empty);
+        }
+
+        async function loadBranchDiscussion() {
+          if (!branchChatReady || branchChatArtifactId === null || !discussionMessages) {
+            setDiscussionLocked(
+              'Discussion opens after tutorial generation.',
+              'This branch does not have a ready tutorial artifact yet, so there is no discussion thread to load.'
+            );
+            return;
+          }
+          const token = authToken();
+          if (!token) {
+            setDiscussionLocked(
+              'Sign in to load branch discussion.',
+              'Branch discussion is available to approved chat accounts once you sign in.'
+            );
+            return;
+          }
+          try {
+            const res = await fetch(`/git/branch/${branchId}/chat?artifact_id=${branchChatArtifactId}`, {
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            if (res.status === 401) {
+              if (window.pikaAuth && window.pikaAuth.clear) {
+                window.pikaAuth.clear();
+              }
+              setDiscussionLocked(
+                'Sign in to load branch discussion.',
+                'Your session expired. Sign in again to reopen branch discussion.'
+              );
+              return;
+            }
+            if (res.status === 403) {
+              setDiscussionLocked(
+                'Discussion access unavailable.',
+                'This account can view the branch but does not have branch discussion access.'
+              );
+              return;
+            }
+            if (res.status === 404) {
+              setDiscussionLocked(
+                'Discussion opens after tutorial generation.',
+                'The current branch tutorial artifact does not have a discussion session yet.'
+              );
+              return;
+            }
+            if (!res.ok) throw new Error('failed to load branch discussion');
+            const data = await res.json();
+            showDiscussionMain();
+            discussionMessages.innerHTML = '';
+            if (!data.messages || data.messages.length === 0) {
+              renderDiscussionEmptyState();
+              return;
+            }
+            data.messages.forEach((message) => addDiscussionMessage(message.role, message.content));
+          } catch (err) {
+            setDiscussionLocked(
+              'Unable to load discussion.',
+              err.message || String(err)
+            );
+          }
+        }
+
+        async function sendBranchDiscussion() {
+          if (!discussionInput || !discussionSend) return;
+          const message = discussionInput.value.trim();
+          if (!message) return;
+          const token = authToken();
+          if (!token) {
+            setDiscussionLocked(
+              'Sign in to load branch discussion.',
+              'Branch discussion is available to approved chat accounts once you sign in.'
+            );
+            return;
+          }
+
+          if (branchChatArtifactId === null) {
+            setDiscussionLocked(
+              'Discussion opens after tutorial generation.',
+              'This branch does not have a stable tutorial artifact id yet, so there is no discussion thread to send to.'
+            );
+            return;
+          }
+
+          discussionInput.value = '';
+          discussionSend.disabled = true;
+          if (discussionMessages && discussionMessages.querySelector('.discussion-empty')) {
+            discussionMessages.innerHTML = '';
+          }
+          addDiscussionMessage('user', message);
+          setDiscussionStatus('Thinking...');
+
+          try {
+            const res = await fetch(`/git/branch/${branchId}/chat`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + token
+              },
+              body: JSON.stringify({ artifact_id: branchChatArtifactId, message })
+            });
+            if (res.status === 401) {
+              if (window.pikaAuth && window.pikaAuth.clear) {
+                window.pikaAuth.clear();
+              }
+              setDiscussionLocked(
+                'Sign in to load branch discussion.',
+                'Your session expired. Sign in again to reopen branch discussion.'
+              );
+              setDiscussionStatus('');
+              return;
+            }
+            if (res.status === 403) {
+              throw new Error('branch discussion access is unavailable for this account');
+            }
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+              throw new Error(data.error || 'failed to send branch discussion message');
+            }
+            setDiscussionStatus('');
+            addDiscussionMessage('assistant', data.content || '');
+          } catch (err) {
+            setDiscussionStatus(err.message || String(err));
+          } finally {
+            discussionSend.disabled = false;
+            if (discussionInput) discussionInput.focus();
+          }
+        }
+
+        function showActions() {
+          const canForgeWrite = window.pikaAuth && window.pikaAuth.canForgeWrite ? window.pikaAuth.canForgeWrite() : false;
+          if (actionWrap) {
+            actionWrap.style.display = canForgeWrite ? 'flex' : 'none';
+          }
+        }
+
+        async function branchAction(path, button, busyLabel, doneLabel) {
+          const token = authToken();
+          if (!token) return;
+          const originalLabel = button.textContent;
+          button.disabled = true;
+          if (statusEl) statusEl.textContent = busyLabel;
+          try {
+            const res = await fetch(path, {
+              method: 'POST',
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'request failed');
+            if (statusEl) statusEl.textContent = doneLabel;
+            window.location.reload();
+          } catch (err) {
+            if (statusEl) statusEl.textContent = err.message || String(err);
+            button.disabled = false;
+            button.textContent = originalLabel;
+          }
+        }
+
+        if (mergeBtn) {
+          mergeBtn.addEventListener('click', () => {
+            branchAction(`/git/branch/${branchId}/merge`, mergeBtn, 'Merging branch...', 'Branch merged.');
+          });
+        }
+        if (closeBtn) {
+          closeBtn.addEventListener('click', () => {
+            branchAction(`/git/branch/${branchId}/close`, closeBtn, 'Closing branch...', 'Branch closed.');
+          });
+        }
+        if (discussionSend) {
+          discussionSend.addEventListener('click', sendBranchDiscussion);
+        }
+        if (discussionToggle) {
+          discussionToggle.addEventListener('click', () => toggleDiscussion({ focusInput: true }));
+        }
+        if (discussionClose) {
+          discussionClose.addEventListener('click', () => setDiscussionOpen(false));
+        }
+        if (discussionBackdrop) {
+          discussionBackdrop.addEventListener('click', () => setDiscussionOpen(false));
+        }
+        if (discussionInput) {
+          discussionInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault();
+              sendBranchDiscussion();
+            }
+          });
+        }
+
+        function applyBranchCiSummary(payload) {
+          if (!branchCiSummary || !payload || typeof payload.html !== 'string') return;
+          branchCiSummary.innerHTML = payload.html;
+        }
+
+        function startBranchCiStream(force) {
+          if (!branchCiSummary || !window.EventSource) return;
+          if (!force && !branchCiSummaryEnabled) return;
+          if (branchCiSource && branchCiSource.readyState !== EventSource.CLOSED) return;
+          branchCiSource = new EventSource(`/git/branch/${branchId}/ci/stream${reviewMode ? '?review=true' : ''}`);
+          branchCiSource.addEventListener('ci-update', (event) => {
+            const payload = JSON.parse(event.data || '{}');
+            applyBranchCiSummary(payload);
+            const activeRoot = branchCiSummary.querySelector('[data-branch-ci-active]');
+            if (activeRoot && activeRoot.getAttribute('data-branch-ci-active') !== 'true') {
+              branchCiSource.close();
+              branchCiSource = null;
+            }
+          });
+          branchCiSource.addEventListener('error', () => {
+            if (branchCiSource && branchCiSource.readyState === EventSource.CLOSED) {
+              branchCiSource.close();
+              branchCiSource = null;
+            }
+          });
+        }
+
+        function handleBranchCiSignal(event) {
+          if (!event || event.key !== branchCiSignalKey || !event.newValue) return;
+          try {
+            const payload = JSON.parse(event.newValue);
+            if (payload.branchId !== branchId) return;
+            startBranchCiStream(true);
+          } catch (_err) {}
+        }
+
+        async function refreshReviewControls() {
+          if (!reviewMode || !reviewPrevBtn || !reviewNextBtn || !reviewDismissBtn || !reviewPosEl) return;
+          const token = authToken();
+          if (!token) {
+            reviewPrevBtn.disabled = true;
+            reviewNextBtn.disabled = true;
+            reviewDismissBtn.disabled = true;
+            reviewPosEl.textContent = 'Sign in to review';
+            return;
+          }
+          try {
+            const res = await fetch(`/git/api/inbox/neighbors/${branchId}`, {
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            if (res.status === 404) {
+              reviewPrevBtn.disabled = true;
+              reviewNextBtn.disabled = true;
+              reviewDismissBtn.disabled = false;
+              reviewPrevBtn.dataset.targetId = '';
+              reviewNextBtn.dataset.targetId = '';
+              reviewPosEl.textContent = 'Reviewed';
+              return;
+            }
+            if (res.status === 401 || res.status === 403) {
+              reviewPrevBtn.disabled = true;
+              reviewNextBtn.disabled = true;
+              reviewDismissBtn.disabled = true;
+              reviewPosEl.textContent = 'Review access unavailable';
+              return;
+            }
+            if (!res.ok) throw new Error('failed to load review neighbors');
+            const data = await res.json();
+            reviewPrevBtn.disabled = !data.prev;
+            reviewNextBtn.disabled = !data.next;
+            reviewDismissBtn.disabled = false;
+            reviewPrevBtn.dataset.targetId = data.prev || '';
+            reviewNextBtn.dataset.targetId = data.next || '';
+            reviewPosEl.textContent = data.total ? `${data.position} / ${data.total}` : '';
+          } catch (err) {
+            reviewPrevBtn.disabled = true;
+            reviewNextBtn.disabled = true;
+            reviewDismissBtn.disabled = true;
+            reviewPosEl.textContent = err.message || String(err);
+          }
+        }
+
+        async function markCurrentReviewSeen() {
+          if (!reviewMode) return;
+          const token = authToken();
+          if (!token) return;
+          try {
+            await fetch(`/git/api/inbox/reviewed/${branchId}`, {
+              method: 'POST',
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+          } catch (_err) {}
+        }
+
+        async function dismissCurrentReviewItem() {
+          const token = authToken();
+          if (!token) return;
+          reviewDismissBtn.disabled = true;
+          try {
+            const neighborsRes = await fetch(`/git/api/inbox/neighbors/${branchId}`, {
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            let nextTarget = null;
+            if (neighborsRes.status === 404) {
+              nextTarget = null;
+            } else {
+              if (!neighborsRes.ok) throw new Error('failed to load review neighbors');
+              const neighbors = await neighborsRes.json();
+              nextTarget = neighbors.next || neighbors.prev;
+            }
+
+            const dismissRes = await fetch('/git/api/inbox/dismiss', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + token
+              },
+              body: JSON.stringify({ branch_ids: [branchId] })
+            });
+            if (!dismissRes.ok) {
+              const data = await dismissRes.json().catch(() => ({}));
+              throw new Error(data.error || 'dismiss failed');
+            }
+
+            if (nextTarget) {
+              window.location.href = `/git/inbox/review/${nextTarget}`;
+            } else {
+              window.location.href = '/git/inbox';
+            }
+          } catch (err) {
+            reviewDismissBtn.disabled = false;
+            reviewPosEl.textContent = err.message || String(err);
+          }
+        }
+
+        function navigateReview(targetId) {
+          if (!targetId) return;
+          window.location.href = `/git/inbox/review/${targetId}`;
+        }
+
+        if (reviewMode) {
+          if (reviewPrevBtn) {
+            reviewPrevBtn.addEventListener('click', () => navigateReview(reviewPrevBtn.dataset.targetId));
+          }
+          if (reviewNextBtn) {
+            reviewNextBtn.addEventListener('click', () => navigateReview(reviewNextBtn.dataset.targetId));
+          }
+          if (reviewDismissBtn) {
+            reviewDismissBtn.addEventListener('click', dismissCurrentReviewItem);
+          }
+          window.addEventListener('keydown', (event) => {
+            const target = event.target;
+            const typingTarget = target instanceof HTMLElement && (
+              target.tagName === 'INPUT' ||
+              target.tagName === 'TEXTAREA' ||
+              target.isContentEditable
+            );
+            if (typingTarget) {
+              return;
+            }
+            if (event.key === '[' && reviewPrevBtn && reviewPrevBtn.dataset.targetId) {
+              navigateReview(reviewPrevBtn.dataset.targetId);
+            }
+            if (event.key === ']' && reviewNextBtn && reviewNextBtn.dataset.targetId) {
+              navigateReview(reviewNextBtn.dataset.targetId);
+            }
+            if ((event.key === 'd' || event.key === 'D') && reviewDismissBtn && !reviewDismissBtn.disabled) {
+              dismissCurrentReviewItem();
+            }
+          });
+          markCurrentReviewSeen().finally(refreshReviewControls);
+        }
+
+        window.addEventListener('keydown', (event) => {
+          const target = event.target;
+          const typingTarget = target instanceof HTMLElement && (
+            target.tagName === 'INPUT' ||
+            target.tagName === 'TEXTAREA' ||
+            target.isContentEditable
+          );
+          if (typingTarget) {
+            return;
+          }
+          const shortcutPressed =
+            event.key === '.' &&
+            ((isMacLike && event.metaKey && !event.ctrlKey) || (!isMacLike && event.ctrlKey && !event.metaKey));
+          if (shortcutPressed) {
+            event.preventDefault();
+            toggleDiscussion({ focusInput: true });
+            return;
+          }
+          if (event.key === 'Escape' && discussionOpen) {
+            setDiscussionOpen(false);
+          }
+        });
+
+        window.addEventListener('pika-auth', showActions);
+        window.addEventListener('pika-auth', () => {
+          markCurrentReviewSeen().finally(refreshReviewControls);
+        });
+        window.addEventListener('pika-auth', loadBranchDiscussion);
+        window.addEventListener('storage', handleBranchCiSignal);
+        updateDiscussionToggleLabel();
+        showActions();
+        loadBranchDiscussion();
+        startBranchCiStream(false);
+      })();
+    </script>
+{% endblock %}

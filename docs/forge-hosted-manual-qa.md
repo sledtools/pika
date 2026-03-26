@@ -1,7 +1,7 @@
 ---
 summary: Short deploy and manual QA checklist for hosted forge testing on git.pikachat.org
 read_when:
-  - deploying pika-news in forge mode
+  - deploying pika-git in forge mode
   - doing manual QA of branch, inbox, CI, merge, mirror, or nightly behavior
 ---
 
@@ -13,8 +13,8 @@ guessing which surfaces matter.
 ## Before Starting
 
 - Canonical push remote: `git@git.pikachat.org:pika.git`.
-- Forge auth and web review live on `https://git.pikachat.org/news`.
-- Confirm `/news/admin` loads and `Forge Health` shows `Poller`, `Generation Worker`, and `CI Runner` as `idle` or `active`, not `error`.
+- Forge auth and web review live on `https://git.pikachat.org/git`.
+- Confirm `/git/admin` loads and `Forge Health` shows `Poller`, `Generation Worker`, and `CI Runner` as `idle` or `active`, not `error`.
 - Confirm `Mirror Background` matches the intended mode for the host:
   - `disabled` if `forge_repo.mirror_poll_interval_secs = 0`
   - `idle` or `active` if background mirroring is enabled
@@ -27,7 +27,7 @@ guessing which surfaces matter.
 ## Branch Push
 
 1. Push a non-`master` branch to the canonical forge remote at `git@git.pikachat.org:pika.git`.
-2. Open `/news`.
+2. Open `/git`.
 3. Confirm the branch appears near the top of the open branch feed.
 4. Open the branch page and confirm:
    - the summary/detail page renders
@@ -48,9 +48,9 @@ guessing which surfaces matter.
 ## Inbox And Review
 
 1. Sign in as a trusted tester with inbox access.
-2. Open `/news/inbox`.
+2. Open `/git/inbox`.
 3. Confirm the new branch appears as a branch review item.
-4. Open `/news/inbox/review/:id` from the inbox.
+4. Open `/git/inbox/review/:id` from the inbox.
 5. Confirm:
    - the review page resolves
    - prev/next navigation works
@@ -60,7 +60,7 @@ guessing which surfaces matter.
 
 1. Merge the open branch from the branch page as a trusted contributor.
 2. Confirm the source branch ref is deleted from the canonical repo.
-3. Refresh `/news`.
+3. Refresh `/git`.
 4. Confirm the branch moves into history.
 5. Reopen the merged branch page and confirm it still shows:
    - summary/tutorial content
@@ -69,7 +69,7 @@ guessing which surfaces matter.
 
 ## Mirror Sync
 
-1. Open `/news/admin`.
+1. Open `/git/admin`.
 2. Confirm the mirror section clearly shows whether background sync is enabled or disabled.
 3. Trigger `Sync Mirror Now`.
 4. Confirm the admin page updates:
@@ -82,7 +82,7 @@ guessing which surfaces matter.
 ## Nightly Visibility
 
 1. Wait for or manually seed a nightly run on the forge side.
-2. Confirm the nightly appears on `/news`.
+2. Confirm the nightly appears on `/git`.
 3. Open the nightly page and confirm lane-level status and logs render.
 4. If a nightly lane fails, confirm the nightly page highlights the failed lane and points at logs/rerun.
 5. If you rerun a nightly lane, confirm provenance is visible on the nightly page.

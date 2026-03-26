@@ -1,0 +1,192 @@
+<div class="branch-ci-live-body" data-branch-ci-active="{% if live_active %}true{% else %}false{% endif %}">
+  {% for notice in page_notices %}
+  <section class="notice {{ notice.tone }}">
+    <p>{{ notice.message }}</p>
+  </section>
+  {% endfor %}
+
+  <section class="panel ci-overview-card tone-{{ ci_status_tone }}">
+    <div class="ci-overview-head">
+      <div>
+        <p class="ci-kicker">Continuous Integration</p>
+        <h2>CI: {{ ci_status }}</h2>
+        <p class="meta">branch {{ branch_state }} · tutorial {{ tutorial_status }}</p>
+      </div>
+      <div>
+        <div class="lane-action-row">
+          <button
+            type="button"
+            class="secondary-btn lane-btn ci-wake-btn"
+            data-action-path="/git/api/forge/ci/wake"
+            data-busy-label="Waking CI..."
+            data-done-label="Scheduler wake requested."
+            style="display:none;"
+          >Wake CI Scheduler</button>
+        </div>
+        {% if latest_failed_lane_count > 0 %}
+        <div class="ci-overview-alert">
+          Latest run has {{ latest_failed_lane_count }} failed lane(s). Review logs below before rerunning.
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    <p class="meta">Use recovery controls only for wedged queues, stale leases, or broken runners.</p>
+  </section>
+
+  <section class="panel ci-history-panel">
+    <div class="ci-history-head">
+      <div>
+        <h2>Run History</h2>
+        <p class="meta">Full lane, log, rerun, and recovery detail lives here.</p>
+      </div>
+    </div>
+
+    {% if ci_runs.is_empty() %}
+    <p class="muted">No CI runs yet.</p>
+    {% else %}
+    <div class="ci-run-list">
+      {% for run in ci_runs %}
+      <article class="ci-run tone-{{ run.status_tone }}">
+        <div class="ci-run-head">
+          <div>
+            <p><strong>Run #{{ run.id }}</strong> <span class="status tone-{{ run.status_tone }}">{{ run.status }}</span></p>
+            <p class="meta">head <code>{{ run.source_head_sha }}</code> · queued {{ run.created_at }} · {{ run.lane_count }} lane(s)</p>
+            {% match run.timing_summary %}
+            {% when Some with (timing_summary) %}
+            <p class="meta">{{ timing_summary }}</p>
+            {% when None %}{% endmatch %}
+            {% match run.rerun_of_run_id %}
+            {% when Some with (original_run_id) %}
+            <p class="meta">manual rerun of run #{{ original_run_id }}</p>
+            {% when None %}{% endmatch %}
+            {% match run.started_at %}
+            {% when Some with (started_at) %}
+            <p class="meta">started {{ started_at }}</p>
+            {% when None %}{% endmatch %}
+            {% match run.finished_at %}
+            {% when Some with (finished_at) %}
+            <p class="meta">finished {{ finished_at }}</p>
+            {% when None %}{% endmatch %}
+          </div>
+          {% if run.status != "success" %}
+          <div class="lane-action-row">
+            <button
+              type="button"
+              class="secondary-btn lane-btn lane-recover-run-btn"
+              data-action-path="/git/branch/{{ branch_id }}/ci/recover/{{ run.id }}"
+              data-busy-label="Recovering run..."
+              data-done-label="Run recovery queued."
+              style="display:none;"
+            >Recover Stuck Run</button>
+          </div>
+          {% endif %}
+        </div>
+
+        {% if run.lanes.is_empty() %}
+        <p class="muted">No lanes were selected for this branch head.</p>
+        {% else %}
+        <div class="lane-list">
+          {% for lane in run.lanes %}
+          <details class="lane-details tone-{{ lane.status_tone }}" {% if lane.status == "failed" || lane.status == "running" %}open{% endif %}>
+            <summary>
+              <span><strong>Lane #{{ lane.id }}</strong> · {{ lane.title }}</span>
+              <span class="status tone-{{ lane.status_tone }}">{{ lane.status }}</span>
+            </summary>
+            <p class="meta"><code>{{ lane.entrypoint }}</code> · lane id <code>{{ lane.lane_id }}</code> · retries {{ lane.retry_count }} · queued {{ lane.created_at }}</p>
+            {% match lane.timing_summary %}
+            {% when Some with (timing_summary) %}
+            <p class="meta">{{ timing_summary }}</p>
+            {% when None %}{% endmatch %}
+            {% if lane.status == "queued" || lane.status == "running" %}
+            <p class="meta">state {{ lane.execution_reason_label }}</p>
+            {% endif %}
+            {% match lane.failure_kind_label %}
+            {% when Some with (failure_kind_label) %}
+            <p class="meta">failure classification {{ failure_kind_label }}</p>
+            {% when None %}{% endmatch %}
+            {% match lane.ci_target_key %}
+            {% when Some with (ci_target_key) %}
+            <p class="meta">target <code>{{ ci_target_key }}</code></p>
+            {% when None %}{% endmatch %}
+            {% match lane.target_health_summary %}
+            {% when Some with (target_health_summary) %}
+            <p class="meta">{{ target_health_summary }}</p>
+            {% when None %}{% endmatch %}
+            {% match lane.operator_hint %}
+            {% when Some with (operator_hint) %}
+            <p class="meta">{{ operator_hint }}</p>
+            {% when None %}{% endmatch %}
+            {% match lane.last_heartbeat_at %}
+            {% when Some with (last_heartbeat_at) %}
+            <p class="meta">last heartbeat {{ last_heartbeat_at }}</p>
+            {% when None %}{% endmatch %}
+            {% match lane.lease_expires_at %}
+            {% when Some with (lease_expires_at) %}
+            <p class="meta">lease expires {{ lease_expires_at }}</p>
+            {% when None %}{% endmatch %}
+            {% match lane.rerun_of_lane_run_id %}
+            {% when Some with (original_lane_run_id) %}
+            <p class="meta">manual rerun of lane #{{ original_lane_run_id }}</p>
+            {% when None %}{% endmatch %}
+            {% match lane.pikaci_run_id %}
+            {% when Some with (pikaci_run_id) %}
+            <p class="meta">
+              pikaci run <code>{{ pikaci_run_id }}</code>
+              {% match lane.pikaci_target_id %}
+              {% when Some with (pikaci_target_id) %} · target <code>{{ pikaci_target_id }}</code>{% when None %}{% endmatch %}
+            </p>
+            {% when None %}{% endmatch %}
+            {% match lane.started_at %}
+            {% when Some with (started_at) %}
+            <p class="meta">started {{ started_at }}</p>
+            {% when None %}{% endmatch %}
+            {% match lane.finished_at %}
+            {% when Some with (finished_at) %}
+            <p class="meta">finished {{ finished_at }}</p>
+            {% when None %}{% endmatch %}
+            {% match lane.log_text %}
+            {% when Some with (log_text) %}
+            <pre><code>{{ log_text }}</code></pre>
+            {% when None %}
+            <p class="muted">No logs yet.</p>
+            {% endmatch %}
+            {% if lane.status == "queued" || lane.status == "running" || lane.status == "failed" %}
+            <div class="lane-action-row">
+              {% if lane.status == "queued" || lane.status == "running" %}
+              <button
+                type="button"
+                class="secondary-btn lane-btn lane-fail-btn"
+                data-action-path="/git/branch/{{ branch_id }}/ci/fail/{{ lane.id }}"
+                data-busy-label="Failing lane..."
+                data-done-label="Lane marked failed."
+                style="display:none;"
+              >Mark Lane Failed</button>
+              {% endif %}
+              <button
+                type="button"
+                class="secondary-btn lane-btn lane-requeue-btn"
+                data-action-path="/git/branch/{{ branch_id }}/ci/requeue/{{ lane.id }}"
+                data-busy-label="Requeueing lane..."
+                data-done-label="Lane requeued."
+                style="display:none;"
+              >Requeue Lane</button>
+            </div>
+            {% endif %}
+            {% if lane.status != "queued" && lane.status != "running" %}
+            <button
+              type="button"
+              class="secondary-btn lane-btn lane-rerun-btn"
+              data-lane-run-id="{{ lane.id }}"
+              style="display:none;"
+            >{% if lane.status == "failed" %}Rerun Failed Lane{% else %}Rerun Lane{% endif %}</button>
+            {% endif %}
+          </details>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </section>
+</div>

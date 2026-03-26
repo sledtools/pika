@@ -5980,6 +5980,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "pika-git"
+version = "0.1.0"
+dependencies = [
+ "ammonia",
+ "anyhow",
+ "askama",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "fs2",
+ "futures",
+ "globset",
+ "hex",
+ "hmac",
+ "nostr",
+ "pika-forge-model",
+ "pikaci",
+ "pulldown-cmark",
+ "rand 0.8.5",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "pika-marmot-runtime"
 version = "0.1.0"
 dependencies = [
@@ -6017,37 +6048,6 @@ dependencies = [
  "tracing",
  "url",
  "web-transport-quinn",
-]
-
-[[package]]
-name = "pika-news"
-version = "0.1.0"
-dependencies = [
- "ammonia",
- "anyhow",
- "askama",
- "axum",
- "base64 0.22.1",
- "chrono",
- "clap",
- "fs2",
- "futures",
- "globset",
- "hex",
- "hmac",
- "nostr",
- "pika-forge-model",
- "pikaci",
- "pulldown-cmark",
- "rand 0.8.5",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
- "toml 0.8.23",
 ]
 
 [[package]]

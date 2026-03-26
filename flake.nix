@@ -290,8 +290,8 @@
         buildInputs = [ serverPkgs.openssl serverPkgs.postgresql.lib ];
       };
 
-      pikaNewsPkg = serverPkgs.rustPlatform.buildRustPackage {
-        pname = "pika-news";
+      pikaGitPkg = serverPkgs.rustPlatform.buildRustPackage {
+        pname = "pika-git";
         version = "0.1.0";
         src = rustWorkspaceSrc;
         cargoLock = {
@@ -302,7 +302,7 @@
             "hypernote-mdx-0.3.0" = "sha256-SBhXVXPyCvxs+VudVLYitaioS8jwYSsE0k2SwPU+9GY=";
           };
         };
-        cargoBuildFlags = [ "-p" "pika-news" ];
+        cargoBuildFlags = [ "-p" "pika-git" ];
         doCheck = false;
         nativeBuildInputs = [ serverPkgs.pkg-config ];
         buildInputs = [ serverPkgs.openssl ];
@@ -934,6 +934,8 @@ EOF
 
         packages =
           {
+            pika-git = pikaGitPkg;
+            pika-news = pikaGitPkg;
             pikaci = pikaciPkg;
             ph = phPkg;
             default = pikaciPkg;
@@ -953,6 +955,9 @@ EOF
           };
 
         apps = {
+          pika-git = flake-utils.lib.mkApp {
+            drv = pikaGitPkg;
+          };
           pikaci = flake-utils.lib.mkApp {
             drv = pikaciPkg;
           };
@@ -1108,7 +1113,7 @@ EOF
 
         pika-build = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
-          specialArgs = { inherit self sops-nix pikaNewsPkg pikaciServerPkg; };
+          specialArgs = { inherit self sops-nix pikaGitPkg pikaciServerPkg; };
           modules = [
             disko.nixosModules.disko
             sops-nix.nixosModules.sops

@@ -141,7 +141,7 @@ pub(crate) fn cmd_url(cli: &Cli, branch_or_id: Option<&str>) -> anyhow::Result<(
     let api = ApiClient::new(base_url.clone(), Some(session.token))?;
     let resolved = resolve_branch_ref(&api, branch_or_id)?;
     println!(
-        "{}/news/branch/{}",
+        "{}/git/branch/{}",
         base_url.trim_end_matches('/'),
         resolved.branch_id
     );

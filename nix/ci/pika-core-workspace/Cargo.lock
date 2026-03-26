@@ -6011,7 +6011,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pika-news"
+name = "pika-git"
 version = "0.1.0"
 dependencies = [
  "ammonia",

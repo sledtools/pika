@@ -1,6 +1,6 @@
 { }:
 
-{ config, lib, pkgs, modulesPath, sops-nix, pikaNewsPkg, pikaciServerPkg, ... }:
+{ config, lib, pkgs, modulesPath, sops-nix, pikaGitPkg, pikaciServerPkg, ... }:
 
 let
   cachePort = 5000;
@@ -22,7 +22,7 @@ in
   imports = [
     (modulesPath + "/installer/scan/not-detected.nix")
     ../modules/base.nix
-    ../modules/pika-news.nix
+    ../modules/pika-git.nix
   ];
 
   networking.hostName = "pika-build";
@@ -120,7 +120,7 @@ in
     secretKeyFile = config.sops.secrets."cache_signing_key".path;
   };
 
-  # ── Caddy: reverse proxy for pika-news ─────────────────────────────────
+  # ── Caddy: reverse proxy for pika-git ─────────────────────────────────
   services.caddy = {
     enable = true;
     virtualHosts."git.pikachat.org" = {
@@ -130,7 +130,7 @@ in
     };
     virtualHosts."news.pikachat.org" = {
       extraConfig = ''
-        respond "pika forge moved to https://git.pikachat.org" 410
+        respond "pika git moved to https://git.pikachat.org/git" 410
       '';
     };
   };
@@ -183,7 +183,7 @@ in
     (writeShellScriptBin "pika-build-status" ''
       host-version
       echo ""
-      echo "=== pika-news ==="
+      echo "=== pika-git ==="
       systemctl status pika-news --no-pager -n 20
       echo ""
       echo "=== nix-serve ==="

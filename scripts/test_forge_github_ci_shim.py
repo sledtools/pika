@@ -68,7 +68,7 @@ class ForgeGithubCiShimTests(unittest.TestCase):
             ]
 
         self.assertEqual(
-            selected_ids("crates/pika-news/src/web.rs"),
+            selected_ids("crates/pika-git/src/web.rs"),
             ["notifications", "agent_contracts"],
         )
         self.assertEqual(

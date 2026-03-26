@@ -81,8 +81,8 @@ tools/agent-pty/__pycache__/
 third_party/pikachat-openclaw/target/
 AGENTS.private.md
 
-# pika-news local config
-crates/pika-news/pika-news.toml
+# pika-git local config
+crates/pika-git/pika-git.toml
 
 # pika-relay local dev data
 .pika-relay/

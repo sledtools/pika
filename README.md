@@ -61,7 +61,7 @@ pika/
 │   ├── pika-desktop/  Desktop app (Iced)
 │   ├── pikachat-sidecar/ Pikachat daemon engine (shared library)
 │   ├── pika-media/    Media handling (audio, etc.)
-│   ├── pika-news/     Browser-first PR/news feed generator
+│   ├── pika-git/     Browser-first PR/git feed generator
 │   ├── pika-share/    Shared Rust core for the mobile share extension flow
 │   ├── pika-tls/      TLS / certificate utilities
 │   ├── pikaci/        CI orchestration and staged lane runner
@@ -191,7 +191,7 @@ Useful starting points for new contributors:
 - [`docs/android-parity-report-feb-26.md`](docs/android-parity-report-feb-26.md) — current Android gap audit
 - [`todos/android-parity-plan-feb-26.md`](todos/android-parity-plan-feb-26.md) — Android implementation plan
 - [`crates/rmp-cli/README.md`](crates/rmp-cli/README.md) — RMP CLI purpose and commands
-- [`crates/pika-news/README.md`](crates/pika-news/README.md) — `pika-news` local and hosted modes
+- [`crates/pika-git/README.md`](crates/pika-git/README.md) — `pika-git` local and hosted modes
 
 ## License
 

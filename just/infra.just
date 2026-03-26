@@ -63,7 +63,11 @@ pikaci-remote-fulfill-pre-merge-rmp:
 pikaci-remote-fulfill-pre-merge-pikachat-rust:
     ./scripts/pikaci-staged-linux-remote.sh run pre-merge-pikachat-rust
 
-# Run pika-news with auto-rebuild on source changes.
+# Run pika-git with auto-rebuild on source changes.
+[private]
+pika-git MAX_PRS="2":
+    ./scripts/pika-git {{ MAX_PRS }}
+
 [private]
 news MAX_PRS="2":
-    ./scripts/news {{ MAX_PRS }}
+    ./scripts/pika-git {{ MAX_PRS }}

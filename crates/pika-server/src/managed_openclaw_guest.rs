@@ -761,9 +761,9 @@ mod tests {
     fn guest_startup_plan_uses_shared_lifecycle_artifacts() {
         let plan = guest_startup_plan();
 
-        assert_eq!(plan.artifacts.status_path, STATUS_PATH);
-        assert_eq!(plan.artifacts.events_path, EVENTS_PATH);
-        assert_eq!(plan.artifacts.result_path, RESULT_PATH);
+        assert_eq!(plan.artifacts.runtime_artifacts.status_path, STATUS_PATH);
+        assert_eq!(plan.artifacts.runtime_artifacts.events_path, EVENTS_PATH);
+        assert_eq!(plan.artifacts.runtime_artifacts.result_path, RESULT_PATH);
     }
 
     #[test]

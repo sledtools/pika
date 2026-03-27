@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use pikaci::{
+use jerichoci::{
     StagedLinuxCommandConfig, StagedLinuxRustPayloadRole, StagedLinuxRustTargetPayloadSpec,
     StagedLinuxSnapshotProfile,
 };

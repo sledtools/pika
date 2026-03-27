@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
-use pikaci::{load_logs, load_run_bundle, load_run_record, LogKind, Logs, RunBundle, RunRecord};
+use jerichoci::{load_logs, load_run_bundle, load_run_record, LogKind, Logs, RunBundle, RunRecord};
 
 #[cfg(test)]
-use pikaci::{
+use jerichoci::{
     JobPlacementKind, JobRecord, JobRuntimeKind, PreparedOutputsRecord,
     RemoteLinuxVmExecutionRecord, RunLifecycleEvent, RunStatus,
 };
@@ -14,13 +14,13 @@ use std::fs;
 use crate::config::{Config, ForgeRepoConfig};
 
 #[derive(Clone, Debug)]
-pub struct PikaciRunStore {
+pub struct JerichociRunStore {
     state_root: PathBuf,
 }
 
 #[cfg(test)]
 #[derive(Clone, Debug)]
-pub struct TestPikaciJobFixture {
+pub struct TestJerichociJobFixture {
     pub id: String,
     pub description: String,
     pub status: RunStatus,
@@ -37,7 +37,7 @@ pub struct TestPikaciJobFixture {
 }
 
 #[cfg(test)]
-impl TestPikaciJobFixture {
+impl TestJerichociJobFixture {
     pub fn passed_remote_linux(job_id: &str, description: &str) -> Self {
         Self {
             id: job_id.to_string(),
@@ -102,7 +102,7 @@ impl TestPikaciJobFixture {
 
 #[cfg(test)]
 #[derive(Clone, Debug)]
-pub struct TestPikaciRunFixture {
+pub struct TestJerichociRunFixture {
     pub run_id: String,
     pub status: RunStatus,
     pub target_id: Option<String>,
@@ -112,12 +112,12 @@ pub struct TestPikaciRunFixture {
     pub created_at: String,
     pub finished_at: Option<String>,
     pub message: Option<String>,
-    pub jobs: Vec<TestPikaciJobFixture>,
+    pub jobs: Vec<TestJerichociJobFixture>,
     pub prepared_outputs: Option<PreparedOutputsRecord>,
 }
 
 #[cfg(test)]
-impl TestPikaciRunFixture {
+impl TestJerichociRunFixture {
     pub fn passed(run_id: &str, target_id: Option<&str>, target_description: Option<&str>) -> Self {
         Self {
             run_id: run_id.to_string(),
@@ -184,7 +184,7 @@ impl TestPikaciRunFixture {
     }
 }
 
-impl PikaciRunStore {
+impl JerichociRunStore {
     pub fn from_config(config: &Config) -> Option<Self> {
         config
             .effective_forge_repo()
@@ -234,7 +234,7 @@ impl PikaciRunStore {
     }
 
     #[cfg(test)]
-    pub fn write_fixture(&self, fixture: &TestPikaciRunFixture) -> Result<()> {
+    pub fn write_fixture(&self, fixture: &TestJerichociRunFixture) -> Result<()> {
         let run_dir = self.run_dir(&fixture.run_id);
         fs::create_dir_all(&run_dir)?;
 
@@ -291,7 +291,9 @@ impl PikaciRunStore {
     }
 }
 
-pub fn require_pikaci_run_store(store: Option<&PikaciRunStore>) -> Result<&PikaciRunStore> {
+pub fn require_jerichoci_run_store(
+    store: Option<&JerichociRunStore>,
+) -> Result<&JerichociRunStore> {
     store.ok_or_else(|| anyhow!("forge repo is not configured"))
 }
 

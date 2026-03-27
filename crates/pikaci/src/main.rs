@@ -5,7 +5,7 @@ use anyhow::{Context, anyhow, bail};
 use catalog::{PikaStagedLinuxLane, PikaStagedLinuxTarget, PikaStagedLinuxTargetInfoJson};
 use clap::{Parser, Subcommand, ValueEnum};
 use forge_manifest::branch_lane_paths_for_staged_target;
-use pikaci::{
+use jerichoci::{
     GuestCommand, HostProcessRuntimeConfig, IncusRuntimeConfig, JobExecutionConfig,
     JobRuntimeConfig, JobSpec, LogKind, RunLifecycleEvent, RunMetadata, RunOptions, RunRecord,
     RunStatus, StagedLinuxCommandConfig, StagedLinuxRemoteDefaults, TartRuntimeConfig,
@@ -441,7 +441,7 @@ fn run_target_with_output(
 
 fn rerun_target_with_output(
     options: &RunOptions,
-    previous: &pikaci::RunRecord,
+    previous: &jerichoci::RunRecord,
     output: RunOutputArg,
 ) -> anyhow::Result<RunRecord> {
     match output {
@@ -921,36 +921,40 @@ fn format_status_lines(run: &RunRecord) -> Vec<String> {
     lines
 }
 
-fn prepared_output_consumer_label(kind: pikaci::PreparedOutputConsumerKind) -> &'static str {
+fn prepared_output_consumer_label(kind: jerichoci::PreparedOutputConsumerKind) -> &'static str {
     match kind {
-        pikaci::PreparedOutputConsumerKind::HostLocalSymlinkMountsV1 => {
+        jerichoci::PreparedOutputConsumerKind::HostLocalSymlinkMountsV1 => {
             "host_local_symlink_mounts_v1"
         }
-        pikaci::PreparedOutputConsumerKind::RemoteExposureRequestV1 => "remote_exposure_request_v1",
-        pikaci::PreparedOutputConsumerKind::FulfillRequestCliV1 => "fulfill_request_cli_v1",
+        jerichoci::PreparedOutputConsumerKind::RemoteExposureRequestV1 => {
+            "remote_exposure_request_v1"
+        }
+        jerichoci::PreparedOutputConsumerKind::FulfillRequestCliV1 => "fulfill_request_cli_v1",
     }
 }
 
 fn prepared_output_invocation_mode_label(
-    mode: pikaci::PreparedOutputInvocationMode,
+    mode: jerichoci::PreparedOutputInvocationMode,
 ) -> &'static str {
     match mode {
-        pikaci::PreparedOutputInvocationMode::DirectHelperExecV1 => "direct_helper_exec_v1",
-        pikaci::PreparedOutputInvocationMode::ExternalWrapperCommandV1 => {
+        jerichoci::PreparedOutputInvocationMode::DirectHelperExecV1 => "direct_helper_exec_v1",
+        jerichoci::PreparedOutputInvocationMode::ExternalWrapperCommandV1 => {
             "external_wrapper_command_v1"
         }
     }
 }
 
 fn prepared_output_launcher_transport_mode_label(
-    mode: pikaci::PreparedOutputLauncherTransportMode,
+    mode: jerichoci::PreparedOutputLauncherTransportMode,
 ) -> &'static str {
     match mode {
-        pikaci::PreparedOutputLauncherTransportMode::DirectLauncherExecV1 => {
+        jerichoci::PreparedOutputLauncherTransportMode::DirectLauncherExecV1 => {
             "direct_launcher_exec_v1"
         }
-        pikaci::PreparedOutputLauncherTransportMode::CommandTransportV1 => "command_transport_v1",
-        pikaci::PreparedOutputLauncherTransportMode::SshLauncherTransportV1 => {
+        jerichoci::PreparedOutputLauncherTransportMode::CommandTransportV1 => {
+            "command_transport_v1"
+        }
+        jerichoci::PreparedOutputLauncherTransportMode::SshLauncherTransportV1 => {
             "ssh_launcher_transport_v1"
         }
     }
@@ -1658,7 +1662,7 @@ fn tart_desktop_package_tests_job(id: &'static str, description: &'static str) -
     }
 }
 
-fn run_target(options: &RunOptions, target: TargetSpec) -> anyhow::Result<pikaci::RunRecord> {
+fn run_target(options: &RunOptions, target: TargetSpec) -> anyhow::Result<jerichoci::RunRecord> {
     run_target_with_reporter(options, target, &mut |_| Ok(()))
 }
 
@@ -1666,7 +1670,7 @@ fn run_target_with_reporter(
     options: &RunOptions,
     target: TargetSpec,
     reporter: &mut dyn FnMut(RunLifecycleEvent) -> anyhow::Result<()>,
-) -> anyhow::Result<pikaci::RunRecord> {
+) -> anyhow::Result<jerichoci::RunRecord> {
     let changed_files = git_changed_files(&options.source_root);
     let metadata = RunMetadata {
         rerun_of: None,
@@ -1729,16 +1733,16 @@ fn run_target_with_reporter(
 
 fn rerun_target(
     options: &RunOptions,
-    previous: &pikaci::RunRecord,
-) -> anyhow::Result<pikaci::RunRecord> {
+    previous: &jerichoci::RunRecord,
+) -> anyhow::Result<jerichoci::RunRecord> {
     rerun_target_with_reporter(options, previous, &mut |_| Ok(()))
 }
 
 fn rerun_target_with_reporter(
     options: &RunOptions,
-    previous: &pikaci::RunRecord,
+    previous: &jerichoci::RunRecord,
     reporter: &mut dyn FnMut(RunLifecycleEvent) -> anyhow::Result<()>,
-) -> anyhow::Result<pikaci::RunRecord> {
+) -> anyhow::Result<jerichoci::RunRecord> {
     let target = target_spec_for_rerun(previous)?;
     let metadata = rerun_metadata(previous, &target);
 
@@ -1755,7 +1759,7 @@ fn rerun_target_with_reporter(
     )
 }
 
-fn rerun_metadata(previous: &pikaci::RunRecord, target: &TargetSpec) -> RunMetadata {
+fn rerun_metadata(previous: &jerichoci::RunRecord, target: &TargetSpec) -> RunMetadata {
     RunMetadata {
         rerun_of: Some(previous.run_id.clone()),
         target_id: previous
@@ -1793,7 +1797,7 @@ fn rerun_metadata(previous: &pikaci::RunRecord, target: &TargetSpec) -> RunMetad
     }
 }
 
-fn target_spec_for_rerun(previous: &pikaci::RunRecord) -> anyhow::Result<TargetSpec> {
+fn target_spec_for_rerun(previous: &jerichoci::RunRecord) -> anyhow::Result<TargetSpec> {
     if let Some(target_id) = previous.target_id.as_deref() {
         return target_spec(target_id);
     }
@@ -1839,7 +1843,7 @@ mod tests {
         staged_linux_remote_defaults_json, target_spec, target_spec_for_rerun,
     };
     use clap::Parser;
-    use pikaci::{
+    use jerichoci::{
         JobPlacementKind, JobRecord, JobRuntimeKind, PreparedOutputConsumerKind,
         RemoteLinuxVmBackend, RunLifecycleEvent, RunRecord, RunStatus, RunnerKind,
         staged_linux_remote_defaults,
@@ -2241,7 +2245,7 @@ mod tests {
         );
         assert_eq!(
             metadata.prepared_output_invocation_mode,
-            Some(pikaci::PreparedOutputInvocationMode::DirectHelperExecV1)
+            Some(jerichoci::PreparedOutputInvocationMode::DirectHelperExecV1)
         );
         assert_eq!(metadata.prepared_output_invocation_wrapper_program, None);
         assert_eq!(metadata.prepared_output_launcher_transport_mode, None);
@@ -2253,7 +2257,7 @@ mod tests {
         let mut run = sample_run_record();
         run.target_id = Some("pre-merge-pika-rust".to_string());
         run.prepared_output_invocation_mode =
-            Some(pikaci::PreparedOutputInvocationMode::ExternalWrapperCommandV1);
+            Some(jerichoci::PreparedOutputInvocationMode::ExternalWrapperCommandV1);
         run.prepared_output_invocation_wrapper_program =
             Some("/tmp/bin/pikaci-wrapper".to_string());
 
@@ -2262,7 +2266,7 @@ mod tests {
 
         assert_eq!(
             metadata.prepared_output_invocation_mode,
-            Some(pikaci::PreparedOutputInvocationMode::ExternalWrapperCommandV1)
+            Some(jerichoci::PreparedOutputInvocationMode::ExternalWrapperCommandV1)
         );
         assert_eq!(
             metadata
@@ -2278,11 +2282,11 @@ mod tests {
         let mut run = sample_run_record();
         run.target_id = Some("pre-merge-pika-rust".to_string());
         run.prepared_output_invocation_mode =
-            Some(pikaci::PreparedOutputInvocationMode::ExternalWrapperCommandV1);
+            Some(jerichoci::PreparedOutputInvocationMode::ExternalWrapperCommandV1);
         run.prepared_output_invocation_wrapper_program =
             Some("/tmp/bin/pikaci-launch-fulfill-prepared-output".to_string());
         run.prepared_output_launcher_transport_mode =
-            Some(pikaci::PreparedOutputLauncherTransportMode::CommandTransportV1);
+            Some(jerichoci::PreparedOutputLauncherTransportMode::CommandTransportV1);
         run.prepared_output_launcher_transport_program = Some("/tmp/bin/fake-ssh".to_string());
 
         let target = target_spec_for_rerun(&run).expect("target");
@@ -2290,7 +2294,7 @@ mod tests {
 
         assert_eq!(
             metadata.prepared_output_launcher_transport_mode,
-            Some(pikaci::PreparedOutputLauncherTransportMode::CommandTransportV1)
+            Some(jerichoci::PreparedOutputLauncherTransportMode::CommandTransportV1)
         );
         assert_eq!(
             metadata
@@ -2305,11 +2309,11 @@ mod tests {
         let mut run = sample_run_record();
         run.target_id = Some("pre-merge-pika-rust".to_string());
         run.prepared_output_invocation_mode =
-            Some(pikaci::PreparedOutputInvocationMode::ExternalWrapperCommandV1);
+            Some(jerichoci::PreparedOutputInvocationMode::ExternalWrapperCommandV1);
         run.prepared_output_invocation_wrapper_program =
             Some("/tmp/bin/pikaci-launch-fulfill-prepared-output".to_string());
         run.prepared_output_launcher_transport_mode =
-            Some(pikaci::PreparedOutputLauncherTransportMode::SshLauncherTransportV1);
+            Some(jerichoci::PreparedOutputLauncherTransportMode::SshLauncherTransportV1);
         run.prepared_output_launcher_transport_program = Some("/usr/bin/ssh".to_string());
         run.prepared_output_launcher_transport_host = Some("pika-build".to_string());
         run.prepared_output_launcher_transport_remote_launcher_program =
@@ -2324,7 +2328,7 @@ mod tests {
 
         assert_eq!(
             metadata.prepared_output_launcher_transport_mode,
-            Some(pikaci::PreparedOutputLauncherTransportMode::SshLauncherTransportV1)
+            Some(jerichoci::PreparedOutputLauncherTransportMode::SshLauncherTransportV1)
         );
         assert_eq!(
             metadata
@@ -2360,11 +2364,11 @@ mod tests {
     fn status_lines_include_launcher_transport_observability() {
         let mut run = sample_run_record();
         run.prepared_output_invocation_mode =
-            Some(pikaci::PreparedOutputInvocationMode::ExternalWrapperCommandV1);
+            Some(jerichoci::PreparedOutputInvocationMode::ExternalWrapperCommandV1);
         run.prepared_output_invocation_wrapper_program =
             Some("/tmp/bin/pikaci-launch-fulfill-prepared-output".to_string());
         run.prepared_output_launcher_transport_mode =
-            Some(pikaci::PreparedOutputLauncherTransportMode::CommandTransportV1);
+            Some(jerichoci::PreparedOutputLauncherTransportMode::CommandTransportV1);
         run.prepared_output_launcher_transport_program = Some("/tmp/bin/fake-ssh".to_string());
 
         let lines = format_status_lines(&run);
@@ -2384,11 +2388,11 @@ mod tests {
     fn status_lines_include_ssh_launcher_transport_details() {
         let mut run = sample_run_record();
         run.prepared_output_invocation_mode =
-            Some(pikaci::PreparedOutputInvocationMode::ExternalWrapperCommandV1);
+            Some(jerichoci::PreparedOutputInvocationMode::ExternalWrapperCommandV1);
         run.prepared_output_invocation_wrapper_program =
             Some("/tmp/bin/pikaci-launch-fulfill-prepared-output".to_string());
         run.prepared_output_launcher_transport_mode =
-            Some(pikaci::PreparedOutputLauncherTransportMode::SshLauncherTransportV1);
+            Some(jerichoci::PreparedOutputLauncherTransportMode::SshLauncherTransportV1);
         run.prepared_output_launcher_transport_program = Some("/usr/bin/ssh".to_string());
         run.prepared_output_launcher_transport_host = Some("pika-build".to_string());
         run.prepared_output_launcher_transport_remote_launcher_program =
@@ -2478,7 +2482,7 @@ mod tests {
             prepared_output_consumer: Some(PreparedOutputConsumerKind::FulfillRequestCliV1),
             prepared_output_mode: Some("pre_merge_pika_rust_subprocess_fulfillment_v1".to_string()),
             prepared_output_invocation_mode: Some(
-                pikaci::PreparedOutputInvocationMode::DirectHelperExecV1,
+                jerichoci::PreparedOutputInvocationMode::DirectHelperExecV1,
             ),
             prepared_output_invocation_wrapper_program: None,
             prepared_output_launcher_transport_mode: None,

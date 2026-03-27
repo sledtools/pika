@@ -474,7 +474,7 @@ async fn api_forge_branch_logs_keeps_run_metadata_when_prepared_outputs_are_inva
 
     let config = forge_test_config_with_git_dir(&dir.path().join("pika.git"));
     write_pikaci_run_fixture(&config, "pikaci-run-invalid-prepared");
-    let prepared_outputs_path = PikaciRunStore::from_config(&config)
+    let prepared_outputs_path = JerichociRunStore::from_config(&config)
         .expect("pikaci run store")
         .prepared_outputs_path("pikaci-run-invalid-prepared");
     fs::write(&prepared_outputs_path, "{not valid json").expect("corrupt prepared outputs");

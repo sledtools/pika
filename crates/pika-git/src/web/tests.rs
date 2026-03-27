@@ -10,7 +10,7 @@ use axum::http::{header::AUTHORIZATION, HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use chrono::{TimeZone, Utc};
 
-use crate::pikaci_store::{PikaciRunStore, TestPikaciJobFixture, TestPikaciRunFixture};
+use crate::jerichoci_store::{JerichociRunStore, TestJerichociJobFixture, TestJerichociRunFixture};
 
 use super::{
     api_forge_branch_detail_handler, api_forge_branch_logs_handler,
@@ -126,16 +126,16 @@ impl WebTestContext {
 }
 
 fn write_pikaci_run_fixture(config: &Config, run_id: &str) {
-    let run_store = PikaciRunStore::from_config(config).expect("pikaci run store");
-    let mut fixture = TestPikaciRunFixture::passed(
+    let run_store = JerichociRunStore::from_config(config).expect("pikaci run store");
+    let mut fixture = TestJerichociRunFixture::passed(
         run_id,
         Some("pre-merge-pika-rust"),
         Some("Run staged pika rust"),
     );
-    let mut job = TestPikaciJobFixture::passed_remote_linux("job-one", "job one");
-    job.remote_linux_vm_execution = Some(pikaci::RemoteLinuxVmExecutionRecord {
-        backend: pikaci::RemoteLinuxVmBackend::Incus,
-        incus_image: Some(pikaci::RemoteLinuxVmImageRecord {
+    let mut job = TestJerichociJobFixture::passed_remote_linux("job-one", "job one");
+    job.remote_linux_vm_execution = Some(jerichoci::RemoteLinuxVmExecutionRecord {
+        backend: jerichoci::RemoteLinuxVmBackend::Incus,
+        incus_image: Some(jerichoci::RemoteLinuxVmImageRecord {
             project: "pika-managed-agents".to_string(),
             alias: "pikaci/dev".to_string(),
             fingerprint: Some("abc123".to_string()),
@@ -164,13 +164,13 @@ fn test_state_with_live_buffer(store: Store, config: Config, live_buffer: usize)
         live_updates.clone(),
         Arc::clone(&forge_runtime),
     ));
-    let pikaci_run_store = PikaciRunStore::from_config(&config);
+    let jerichoci_run_store = JerichociRunStore::from_config(&config);
     Arc::new(AppState {
         auth: Arc::new(AuthState::new(&config.bootstrap_admin_npubs, store.clone())),
         store,
         config,
         live_updates,
-        pikaci_run_store,
+        jerichoci_run_store,
         webhook_secret: None,
         forge_runtime,
         forge_service,

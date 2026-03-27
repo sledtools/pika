@@ -16,6 +16,7 @@ use axum::Router;
 use chrono::{DateTime, NaiveDateTime, TimeDelta, Utc};
 use futures::stream;
 use hmac::{Hmac, Mac};
+use jerichoci::{LogKind, PreparedOutputsRecord, RunLogsMetadata, RunRecord};
 use pika_forge_model::{
     BranchActionResponse, BranchDetailResponse as ForgeBranchDetailResponse,
     BranchLogsResponse as SharedForgeBranchLogsResponse,
@@ -26,7 +27,6 @@ use pika_forge_model::{
     ForgeCiStatus, LaneMutationResponse, NightlyDetailResponse as ForgeNightlyDetailResponse,
     RecoverRunResponse, WakeCiResponse,
 };
-use pikaci::{LogKind, PreparedOutputsRecord, RunLogsMetadata, RunRecord};
 use pulldown_cmark::{html, Options, Parser};
 use sha2::Sha256;
 use tokio::sync::broadcast::error::RecvError;
@@ -45,10 +45,10 @@ use crate::forge_service::{
     CloseBranchResult, ForgeService, ForgeServiceError, MergeBranchResult,
     NightlyLaneMutationResult, NightlyLaneRerunResult, NightlyRunRecoveryResult,
 };
+use crate::jerichoci_store::{require_jerichoci_run_store, JerichociRunStore};
 use crate::live::{CiLiveUpdate, CiLiveUpdates};
 use crate::mirror;
 use crate::model;
-use crate::pikaci_store::{require_pikaci_run_store, PikaciRunStore};
 use crate::render::is_safe_http_url;
 use crate::storage::{ChatAllowlistEntry, InboxReviewContext, Store};
 use crate::tutorial::TutorialDoc;
@@ -60,7 +60,7 @@ type ForgeBranchLogsResponse =
 struct AppState {
     store: Store,
     config: Config,
-    pikaci_run_store: Option<PikaciRunStore>,
+    jerichoci_run_store: Option<JerichociRunStore>,
     auth: Arc<AuthState>,
     live_updates: CiLiveUpdates,
     webhook_secret: Option<String>,
@@ -628,7 +628,7 @@ pub async fn serve(
     let state = Arc::new(AppState {
         store,
         config: config.clone(),
-        pikaci_run_store: PikaciRunStore::from_config(&config),
+        jerichoci_run_store: JerichociRunStore::from_config(&config),
         auth,
         live_updates: live_updates.clone(),
         webhook_secret,

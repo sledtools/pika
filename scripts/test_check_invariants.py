@@ -57,14 +57,17 @@ statement = "second"
                     "area": "pikaci",
                     "kind": "must",
                     "statement": "Example statement.",
-                    "scope": ["crates/pikaci/**", "ci/**"],
+                    "scope": ["crates/jerichoci/**", "crates/pikaci/**", "ci/**"],
                     "hint": "Focus on library boundaries.",
                 }
             ],
         }
         prompt = module.build_prompt(spec, ROOT / "invariants" / "invariants.toml")
         self.assertIn("id: PIKACI-001", prompt)
-        self.assertIn("scope: crates/pikaci/**, ci/**", prompt)
+        self.assertIn(
+            "scope: crates/jerichoci/**, crates/pikaci/**, ci/**",
+            prompt,
+        )
         self.assertIn("hint: Focus on library boundaries.", prompt)
 
     def test_validate_report_preserves_spec_order(self) -> None:

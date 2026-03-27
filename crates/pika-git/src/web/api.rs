@@ -589,7 +589,7 @@ async fn api_forge_branch_logs_handler(
             };
             let bundle = lane.pikaci_run_id.as_deref().and_then(|pikaci_run_id| {
                 state
-                    .pikaci_run_store
+                    .jerichoci_run_store
                     .as_ref()
                     .and_then(|store| store.load_run_bundle(pikaci_run_id).ok())
             });
@@ -622,7 +622,7 @@ async fn api_forge_pikaci_run_handler(
     if let Err(resp) = require_auth(&state.auth, &headers) {
         return resp;
     }
-    match require_pikaci_run_store(state.pikaci_run_store.as_ref())
+    match require_jerichoci_run_store(state.jerichoci_run_store.as_ref())
         .and_then(|store| store.load_run(&run_id))
     {
         Ok(run) => Json(run).into_response(),
@@ -639,7 +639,7 @@ async fn api_forge_pikaci_logs_handler(
     if let Err(resp) = require_auth(&state.auth, &headers) {
         return resp;
     }
-    match require_pikaci_run_store(state.pikaci_run_store.as_ref()).and_then(|store| {
+    match require_jerichoci_run_store(state.jerichoci_run_store.as_ref()).and_then(|store| {
         store.load_logs(
             &run_id,
             query.job.as_deref(),
@@ -665,7 +665,7 @@ async fn api_forge_pikaci_prepared_outputs_handler(
     if let Err(resp) = require_auth(&state.auth, &headers) {
         return resp;
     }
-    match require_pikaci_run_store(state.pikaci_run_store.as_ref())
+    match require_jerichoci_run_store(state.jerichoci_run_store.as_ref())
         .and_then(|store| store.load_run_bundle(&run_id))
     {
         Ok(bundle) => match bundle.prepared_outputs {

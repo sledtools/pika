@@ -24,14 +24,14 @@ fn main() -> anyhow::Result<()> {
         .context("usage: pikaci-fulfill-prepared-output [--result-path <path>] <request-path>")?;
 
     let result =
-        pikaci::fulfill_prepared_output_request_result(std::path::Path::new(&request_path));
+        jerichoci::fulfill_prepared_output_request_result(std::path::Path::new(&request_path));
     if let Some(result_path) = result_path {
         let result_path = std::path::Path::new(&result_path);
-        pikaci::write_prepared_output_fulfillment_result(result_path, &result)
+        jerichoci::write_prepared_output_fulfillment_result(result_path, &result)
             .with_context(|| format!("write {}", result_path.display()))?;
     }
     println!("{}", serde_json::to_string(&result)?);
-    if result.status == pikaci::PreparedOutputFulfillmentStatus::Succeeded {
+    if result.status == jerichoci::PreparedOutputFulfillmentStatus::Succeeded {
         return Ok(());
     }
     anyhow::bail!(

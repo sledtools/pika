@@ -3827,6 +3827,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 
 [[package]]
+name = "jerichoci"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "fs2",
+ "hex",
+ "pika-cloud",
+ "serde",
+ "serde_json",
+ "sha2",
+ "toml 0.8.23",
+ "uuid",
+]
+
+[[package]]
 name = "jni"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5995,9 +6011,9 @@ dependencies = [
  "globset",
  "hex",
  "hmac",
+ "jerichoci",
  "nostr",
  "pika-forge-model",
- "pikaci",
  "pulldown-cmark",
  "rand 0.8.5",
  "reqwest",
@@ -6247,14 +6263,10 @@ name = "pikaci"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chrono",
  "clap",
- "fs2",
- "hex",
- "pika-cloud",
+ "jerichoci",
  "serde",
  "serde_json",
- "sha2",
  "toml 0.8.23",
  "uuid",
 ]

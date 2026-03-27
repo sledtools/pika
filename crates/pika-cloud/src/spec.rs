@@ -5,7 +5,6 @@ use std::path::{Component, Path};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::ProviderKind;
 use crate::incus::{IncusRuntimePlan, plan_mounts};
 use crate::mount::RuntimeMount;
 use crate::paths::RuntimePaths;
@@ -37,7 +36,6 @@ pub struct IncusRuntimeConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct RuntimeSpec {
     pub identity: RuntimeIdentity,
-    pub provider: ProviderKind,
     pub incus: IncusRuntimeConfig,
     #[serde(default)]
     pub resources: RuntimeResources,
@@ -105,7 +103,6 @@ impl RuntimeSpec {
     ) -> Self {
         Self {
             identity,
-            provider: ProviderKind::Incus,
             incus,
             resources,
             mounts,
@@ -189,7 +186,6 @@ impl RuntimeSpec {
             }
         }
 
-        let _ = self.provider;
         Ok(())
     }
 
@@ -325,7 +321,6 @@ mod tests {
             Vec::new(),
         );
 
-        assert_eq!(spec.provider, ProviderKind::Incus);
         assert_eq!(spec.paths, RuntimePaths::default());
         assert_eq!(spec.policies, RuntimePolicies::default());
         assert_eq!(spec.entry_command, None);
@@ -334,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_spec_defaults_paths_to_runtime_root() {
+    fn runtime_spec_defaults_paths_to_runtime_root_and_tolerates_legacy_provider_field() {
         let decoded: RuntimeSpec = serde_json::from_value(serde_json::json!({
             "identity": {
                 "runtime_id": "runtime-1",

@@ -307,6 +307,47 @@ fn branch_status_renders_waiting_and_failure_details() {
 }
 
 #[test]
+fn branch_status_warns_when_latest_ci_run_is_for_stale_head() {
+    let branch = BranchDetailResponse {
+        branch: BranchSummary {
+            branch_id: 8,
+            repo: "sledtools/pika".to_string(),
+            branch_name: "feature/stale".to_string(),
+            title: "stale".to_string(),
+            branch_state: BranchState::Open,
+            updated_at: "2026-03-24T00:00:00Z".to_string(),
+            target_branch: "master".to_string(),
+            head_sha: "cafebabecafebabe".to_string(),
+            merge_base_sha: "deadbeefdeadbeef".to_string(),
+            merge_commit_sha: None,
+            tutorial_status: TutorialStatus::Ready,
+            ci_status: ForgeCiStatus::Success,
+            error_message: None,
+        },
+        ci_runs: vec![CiRun {
+            id: 12,
+            source_head_sha: "deadbeefdeadbeef".to_string(),
+            status: ForgeCiStatus::Success,
+            status_tone: Some("success".to_string()),
+            lane_count: 1,
+            rerun_of_run_id: None,
+            created_at: "2026-03-24T00:00:00Z".to_string(),
+            started_at: Some("2026-03-24T00:00:01Z".to_string()),
+            finished_at: Some("2026-03-24T00:02:00Z".to_string()),
+            timing_summary: None,
+            lanes: vec![],
+        }],
+    };
+
+    let rendered = render_branch_status(&branch);
+
+    assert!(rendered.contains("run #12 success head deadbeefdead"));
+    assert!(rendered.contains(
+        "warning: latest ci run is for head deadbeefdead but branch head is cafebabecafe"
+    ));
+}
+
+#[test]
 fn authenticated_commands_refuse_cross_host_token_reuse() {
     let state_dir = tempdir().expect("state dir");
     save_session(
@@ -731,6 +772,222 @@ fn merge_force_overrides_failed_ci_guard() {
     ]);
     cmd_merge(&cli, Some("feature/forced-merge"), true).expect("forced merge");
     assert_eq!(merge_auth.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn merge_refuses_stale_successful_ci_without_force() {
+    let state_dir = tempdir().expect("state dir");
+    save_session(
+        state_dir.path(),
+        &Session {
+            base_url: "http://placeholder".to_string(),
+            token: "token-123".to_string(),
+            npub: "npub1test".to_string(),
+            is_admin: false,
+            can_forge_write: true,
+        },
+    )
+    .expect("save session");
+    let merge_auth = Arc::new(AtomicUsize::new(0));
+    let base_url = spawn_test_server({
+        let merge_auth = Arc::clone(&merge_auth);
+        Router::new()
+            .route(
+                "/git/api/forge/branch/resolve",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "branch_id": 14,
+                        "repo": "sledtools/pika",
+                        "branch_name": "feature/stale-green",
+                        "branch_state": "open"
+                    }))
+                }),
+            )
+            .route(
+                "/git/api/forge/branch/14",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "branch": {
+                            "branch_id": 14,
+                            "repo": "sledtools/pika",
+                            "branch_name": "feature/stale-green",
+                            "title": "merge",
+                            "branch_state": "open",
+                            "updated_at": "2026-03-19T00:00:00Z",
+                            "target_branch": "master",
+                            "head_sha": "cafebabe",
+                            "merge_base_sha": "base",
+                            "merge_commit_sha": null,
+                            "tutorial_status": "ready",
+                            "ci_status": "success",
+                            "error_message": null
+                        },
+                        "ci_runs": [{
+                            "id": 6,
+                            "source_head_sha": "deadbeef",
+                            "status": "success",
+                            "lane_count": 1,
+                            "rerun_of_run_id": null,
+                            "created_at": "2026-03-19T00:00:00Z",
+                            "started_at": "2026-03-19T00:00:01Z",
+                            "finished_at": "2026-03-19T00:00:02Z",
+                            "lanes": [{
+                                "id": 10,
+                                "lane_id": "check-pika",
+                                "title": "check-pika",
+                                "entrypoint": "just checks::pre-merge-pika",
+                                "status": "success",
+                                "pikaci_run_id": null,
+                                "pikaci_target_id": null,
+                                "log_text": null,
+                                "retry_count": 0,
+                                "rerun_of_lane_run_id": null,
+                                "created_at": "2026-03-19T00:00:00Z",
+                                "started_at": "2026-03-19T00:00:01Z",
+                                "finished_at": "2026-03-19T00:00:02Z"
+                            }]
+                        }]
+                    }))
+                }),
+            )
+            .route(
+                "/git/api/forge/branch/14/merge",
+                post(move |headers: axum::http::HeaderMap| {
+                    let merge_auth = Arc::clone(&merge_auth);
+                    async move {
+                        if headers.get("authorization").and_then(|v| v.to_str().ok())
+                            == Some("Bearer token-123")
+                        {
+                            merge_auth.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Json(serde_json::json!({
+                            "status": "ok",
+                            "branch_id": 14,
+                            "merge_commit_sha": "abc123"
+                        }))
+                    }
+                }),
+            )
+    });
+    let mut session = load_session(state_dir.path()).expect("session");
+    session.base_url = base_url;
+    save_session(state_dir.path(), &session).expect("save session");
+    let cli = Cli::parse_from([
+        "ph",
+        "--state-dir",
+        state_dir.path().to_str().expect("state dir path"),
+        "merge",
+        "feature/stale-green",
+    ]);
+    let err = cmd_merge(&cli, Some("feature/stale-green"), false).expect_err("merge blocked");
+    assert!(
+        err.to_string()
+            .contains("latest ci run #6 is for head deadbeef")
+    );
+    assert!(err.to_string().contains("branch head is cafebabe"));
+    assert!(err.to_string().contains("--force"));
+    assert_eq!(merge_auth.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn wait_returns_error_when_successful_ci_is_for_stale_head() {
+    let state_dir = tempdir().expect("state dir");
+    save_session(
+        state_dir.path(),
+        &Session {
+            base_url: "http://placeholder".to_string(),
+            token: "token".to_string(),
+            npub: "npub1test".to_string(),
+            is_admin: false,
+            can_forge_write: true,
+        },
+    )
+    .expect("save session");
+
+    let base_url = spawn_test_server(
+        Router::new()
+            .route(
+                "/git/api/forge/branch/resolve",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "branch_id": 15,
+                        "repo": "sledtools/pika",
+                        "branch_name": "feature/stale-wait",
+                        "branch_state": "open"
+                    }))
+                }),
+            )
+            .route(
+                "/git/api/forge/branch/15",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "branch": {
+                            "branch_id": 15,
+                            "repo": "sledtools/pika",
+                            "branch_name": "feature/stale-wait",
+                            "title": "wait",
+                            "branch_state": "open",
+                            "updated_at": "2026-03-19T00:00:00Z",
+                            "target_branch": "master",
+                            "head_sha": "cafebabe",
+                            "merge_base_sha": "base",
+                            "merge_commit_sha": null,
+                            "tutorial_status": "ready",
+                            "ci_status": "success",
+                            "error_message": null
+                        },
+                        "ci_runs": [{
+                            "id": 16,
+                            "source_head_sha": "deadbeef",
+                            "status": "success",
+                            "lane_count": 1,
+                            "rerun_of_run_id": null,
+                            "created_at": "2026-03-19T00:00:00Z",
+                            "started_at": "2026-03-19T00:00:01Z",
+                            "finished_at": "2026-03-19T00:00:02Z",
+                            "lanes": [{
+                                "id": 17,
+                                "lane_id": "check-pika",
+                                "title": "check-pika",
+                                "entrypoint": "just checks::pre-merge-pika",
+                                "status": "success",
+                                "pikaci_run_id": null,
+                                "pikaci_target_id": null,
+                                "log_text": null,
+                                "retry_count": 0,
+                                "rerun_of_lane_run_id": null,
+                                "created_at": "2026-03-19T00:00:00Z",
+                                "started_at": "2026-03-19T00:00:01Z",
+                                "finished_at": "2026-03-19T00:00:02Z"
+                            }]
+                        }]
+                    }))
+                }),
+            ),
+    );
+    let mut session = load_session(state_dir.path()).expect("session");
+    session.base_url = base_url.clone();
+    save_session(state_dir.path(), &session).expect("update session");
+    let cli = Cli::parse_from([
+        "ph",
+        "--state-dir",
+        state_dir.path().to_str().expect("state dir path"),
+        "wait",
+        "--poll-secs",
+        "0",
+        "feature/stale-wait",
+    ]);
+    let err = cmd_wait(
+        &cli,
+        match &cli.command {
+            PhCommand::Wait { branch_or_id, .. } => branch_or_id.as_deref(),
+            _ => unreachable!(),
+        },
+        0,
+    )
+    .expect_err("stale green should fail wait");
+    assert!(err.to_string().contains("stale head deadbeef"));
+    assert!(err.to_string().contains("branch head is cafebabe"));
 }
 
 #[test]

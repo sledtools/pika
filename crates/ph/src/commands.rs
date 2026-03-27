@@ -83,7 +83,14 @@ pub(crate) fn cmd_wait(
             last_snapshot = Some(snapshot);
         }
         if !branch_ci_active(&branch) {
-            return if branch.branch.ci_status.is_success() {
+            return if let Some(run) = stale_branch_ci_run(&branch) {
+                Err(anyhow!(
+                    "branch ci settled on stale head {} while branch head is {} (latest run #{})",
+                    short_sha(&run.source_head_sha),
+                    short_sha(&branch.branch.head_sha),
+                    run.id
+                ))
+            } else if branch.branch.ci_status.is_success() {
                 Ok(())
             } else {
                 Err(anyhow!(
@@ -269,10 +276,15 @@ pub(crate) fn branch_wait_snapshot(branch: &BranchDetailResponse) -> String {
         .flat_map(|run| run.lanes.iter().map(render_lane_snapshot_fragment))
         .collect::<Vec<_>>()
         .join(",");
+    let latest_run_head = latest_branch_run(branch)
+        .map(|run| run.source_head_sha.as_str())
+        .unwrap_or_default();
     format!(
-        "{}|{}|{}",
+        "{}|{}|{}|{}|{}",
         branch.branch.ci_status,
         branch.ci_runs.len(),
+        branch.branch.head_sha,
+        latest_run_head,
         active
     )
 }
@@ -285,7 +297,19 @@ pub(crate) fn branch_ci_active(branch: &BranchDetailResponse) -> bool {
 }
 
 fn ensure_merge_ci_guard(branch: &BranchDetailResponse, force: bool) -> anyhow::Result<()> {
-    if force || branch.branch.ci_status.is_success() || branch_ci_active(branch) {
+    if force {
+        return Ok(());
+    }
+    if let Some(run) = stale_branch_ci_run(branch) {
+        return Err(anyhow!(
+            "refusing to merge branch #{} because the latest ci run #{} is for head {} while the branch head is {}. Rerun CI for the current head, or pass --force if absolutely necessary; --force is discouraged under normal circumstances.",
+            branch.branch.branch_id,
+            run.id,
+            short_sha(&run.source_head_sha),
+            short_sha(&branch.branch.head_sha)
+        ));
+    }
+    if branch.branch.ci_status.is_success() || branch_ci_active(branch) {
         return Ok(());
     }
     Err(anyhow!(
@@ -293,6 +317,14 @@ fn ensure_merge_ci_guard(branch: &BranchDetailResponse, force: bool) -> anyhow::
         branch.branch.branch_id,
         branch.branch.ci_status
     ))
+}
+
+fn latest_branch_run(branch: &BranchDetailResponse) -> Option<&crate::api::CiRun> {
+    branch.ci_runs.first()
+}
+
+fn stale_branch_ci_run(branch: &BranchDetailResponse) -> Option<&crate::api::CiRun> {
+    latest_branch_run(branch).filter(|run| run.source_head_sha != branch.branch.head_sha)
 }
 
 fn active_lane_titles(branch: &BranchDetailResponse) -> Vec<String> {
@@ -327,6 +359,13 @@ pub(crate) fn render_branch_status(branch: &BranchDetailResponse) -> String {
             run.status,
             short_sha(&run.source_head_sha)
         ));
+        if run.source_head_sha != branch.branch.head_sha {
+            lines.push(format!(
+                "warning: latest ci run is for head {} but branch head is {}",
+                short_sha(&run.source_head_sha),
+                short_sha(&branch.branch.head_sha)
+            ));
+        }
         let active = active_lane_titles(branch);
         if active.is_empty() {
             lines.push("active lanes: none".to_string());

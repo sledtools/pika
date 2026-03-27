@@ -16,7 +16,7 @@ use tempfile::tempdir;
 
 use crate::api::{
     ApiClient, BranchDetailResponse, BranchState, BranchSummary, CiLane, CiLaneExecutionReason,
-    CiLaneFailureKind, CiRun, CiTargetHealthState, ForgeCiStatus, TutorialStatus,
+    CiLaneFailureKind, CiRun, ForgeCiStatus, TutorialStatus,
 };
 use crate::commands::{
     branch_wait_snapshot, cmd_close, cmd_fail_lane, cmd_login, cmd_merge, cmd_requeue_lane,
@@ -211,7 +211,7 @@ fn wait_returns_error_when_ci_fails() {
 }
 
 #[test]
-fn branch_status_renders_blocked_unhealthy_and_failure_details() {
+fn branch_status_renders_waiting_and_failure_details() {
     let branch = BranchDetailResponse {
         branch: BranchSummary {
             branch_id: 7,
@@ -233,7 +233,7 @@ fn branch_status_renders_blocked_unhealthy_and_failure_details() {
             source_head_sha: "deadbeefdeadbeef".to_string(),
             status: ForgeCiStatus::Running,
             status_tone: Some("warning".to_string()),
-            lane_count: 3,
+            lane_count: 2,
             rerun_of_run_id: None,
             created_at: "2026-03-24T00:00:00Z".to_string(),
             started_at: Some("2026-03-24T00:00:01Z".to_string()),
@@ -256,8 +256,6 @@ fn branch_status_renders_blocked_unhealthy_and_failure_details() {
                     pikaci_run_id: None,
                     pikaci_target_id: None,
                     ci_target_key: None,
-                    target_health_state: None,
-                    target_health_summary: None,
                     log_text: None,
                     retry_count: 0,
                     rerun_of_lane_run_id: None,
@@ -271,38 +269,6 @@ fn branch_status_renders_blocked_unhealthy_and_failure_details() {
                 },
                 CiLane {
                     id: 92,
-                    lane_id: "apple-sanity".to_string(),
-                    title: "apple".to_string(),
-                    entrypoint: "just apple".to_string(),
-                    status: pika_forge_model::CiLaneStatus::Queued,
-                    status_tone: Some("warning".to_string()),
-                    status_badge_class: None,
-                    is_failed: None,
-                    execution_reason: CiLaneExecutionReason::TargetUnhealthy,
-                    execution_reason_label: Some("target unhealthy".to_string()),
-                    failure_kind: None,
-                    failure_kind_label: None,
-                    pikaci_run_id: None,
-                    pikaci_target_id: None,
-                    ci_target_key: Some("apple-host".to_string()),
-                    target_health_state: Some(CiTargetHealthState::Unhealthy),
-                    target_health_summary: Some(
-                        "target apple-host unhealthy · consecutive infra failures 2 · cooloff until 2026-03-24T00:15:00Z"
-                            .to_string(),
-                    ),
-                    log_text: None,
-                    retry_count: 1,
-                    rerun_of_lane_run_id: None,
-                    created_at: "2026-03-24T00:00:00Z".to_string(),
-                    started_at: None,
-                    finished_at: None,
-                    timing_summary: None,
-                    last_heartbeat_at: None,
-                    lease_expires_at: None,
-                    operator_hint: None,
-                },
-                CiLane {
-                    id: 93,
                     lane_id: "linux-tests".to_string(),
                     title: "linux".to_string(),
                     entrypoint: "just linux".to_string(),
@@ -317,8 +283,6 @@ fn branch_status_renders_blocked_unhealthy_and_failure_details() {
                     pikaci_run_id: Some("pikaci-123".to_string()),
                     pikaci_target_id: Some("pre-merge-pika-rust".to_string()),
                     ci_target_key: Some("pre-merge-pika-rust".to_string()),
-                    target_health_state: Some(CiTargetHealthState::Healthy),
-                    target_health_summary: None,
                     log_text: Some("ci runner error: permission denied".to_string()),
                     retry_count: 0,
                     rerun_of_lane_run_id: None,
@@ -336,13 +300,10 @@ fn branch_status_renders_blocked_unhealthy_and_failure_details() {
 
     let rendered = render_branch_status(&branch);
     assert!(rendered.contains("wait-capacity queued · waiting for capacity"));
-    assert!(rendered.contains("apple-sanity queued · target unhealthy"));
-    assert!(rendered.contains("target apple-host unhealthy"));
     assert!(rendered.contains("linux-tests failed · failure=infrastructure"));
 
     let snapshot = branch_wait_snapshot(&branch);
     assert!(snapshot.contains("waiting_for_capacity"));
-    assert!(snapshot.contains("target_unhealthy"));
 }
 
 #[test]

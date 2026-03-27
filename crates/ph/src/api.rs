@@ -5,8 +5,8 @@ use anyhow::{Context, anyhow};
 pub(crate) use pika_forge_model::{
     BranchActionResponse, BranchDetailResponse, BranchLogsResponse, BranchResolveResponse,
     BranchState, BranchSummary, CiLane, CiLaneExecutionReason, CiLaneFailureKind, CiRun,
-    CiTargetHealthState, ForgeCiStatus, LaneMutationResponse, NightlyDetailResponse,
-    RecoverRunResponse, TutorialStatus, WakeCiResponse,
+    ForgeCiStatus, LaneMutationResponse, NightlyDetailResponse, RecoverRunResponse, TutorialStatus,
+    WakeCiResponse,
 };
 use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::{Method, StatusCode};

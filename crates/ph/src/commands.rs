@@ -5,7 +5,7 @@ use anyhow::anyhow;
 
 use crate::api::{
     ApiClient, BranchActionResponse, BranchDetailResponse, BranchLogsResponse, CiLane,
-    CiLaneExecutionReason, CiTargetHealthState,
+    CiLaneExecutionReason,
 };
 use crate::resolve::{
     resolve_branch_lane, resolve_branch_ref, resolve_branch_run_id, resolve_nightly_lane,
@@ -382,15 +382,6 @@ fn render_lane_status_line(lane: &CiLane) -> String {
         line.push_str(" · failure=");
         line.push_str(failure_kind.label());
     }
-    if let Some(summary) = lane.target_health_summary.as_deref() {
-        line.push_str(" · ");
-        line.push_str(summary);
-    } else if matches!(
-        lane.target_health_state.as_ref(),
-        Some(CiTargetHealthState::Unhealthy)
-    ) {
-        line.push_str(" · target unhealthy");
-    }
     let target = lane
         .pikaci_target_id
         .as_deref()
@@ -412,17 +403,13 @@ fn render_lane_status_line(lane: &CiLane) -> String {
 
 fn render_lane_snapshot_fragment(lane: &CiLane) -> String {
     format!(
-        "{}:{}:{}:{}:{}",
+        "{}:{}:{}:{}",
         lane.id,
         lane.status,
         lane.execution_reason.as_str(),
         lane.failure_kind
             .as_ref()
             .map(|kind| kind.label().to_string())
-            .unwrap_or_default(),
-        lane.target_health_state
-            .as_ref()
-            .map(|state| state.as_str().to_string())
             .unwrap_or_default(),
     )
 }

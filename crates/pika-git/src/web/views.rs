@@ -306,18 +306,11 @@ fn map_ci_run_view(run: BranchCiRunRecord, now: DateTime<Utc>) -> CiRunView {
 }
 
 fn map_ci_lane_view(lane: BranchCiLaneRecord, now: DateTime<Utc>) -> CiLaneView {
-    let target_health_summary = lane_target_health_summary(
-        lane.ci_target_key.as_deref(),
-        lane.target_health.as_ref(),
-        now,
-    );
     let operator_hint = lane_operator_hint(&LaneHintContext {
         now,
         status: lane.status.as_str(),
         execution_reason: lane.execution_reason,
         failure_kind: lane.failure_kind,
-        ci_target_key: lane.ci_target_key.as_deref(),
-        target_health: lane.target_health.as_ref(),
         created_at: &lane.created_at,
         started_at: lane.started_at.as_deref(),
         finished_at: lane.finished_at.as_deref(),
@@ -333,10 +326,6 @@ fn map_ci_lane_view(lane: BranchCiLaneRecord, now: DateTime<Utc>) -> CiLaneView 
         lane.finished_at.as_deref(),
         now,
     );
-    let target_health_state = lane
-        .target_health
-        .as_ref()
-        .map(|snapshot| snapshot.effective_state(now).as_str().to_string());
     CiLaneView {
         id: lane.id,
         lane_id: lane.lane_id,
@@ -351,8 +340,6 @@ fn map_ci_lane_view(lane: BranchCiLaneRecord, now: DateTime<Utc>) -> CiLaneView 
         pikaci_run_id: lane.pikaci_run_id,
         pikaci_target_id: lane.pikaci_target_id,
         ci_target_key: lane.ci_target_key,
-        target_health_state,
-        target_health_summary,
         log_text: lane.log_text,
         retry_count: lane.retry_count,
         rerun_of_lane_run_id: lane.rerun_of_lane_run_id,
@@ -401,18 +388,11 @@ fn map_nightly_lane_view(lane: NightlyLaneRecord) -> NightlyLaneView {
     let now = Utc::now();
     let status_badge_class = lane_status_badge_class(lane.status.as_str()).to_string();
     let is_failed = lane.status == CiLaneStatus::Failed;
-    let target_health_summary = lane_target_health_summary(
-        lane.ci_target_key.as_deref(),
-        lane.target_health.as_ref(),
-        now,
-    );
     let operator_hint = lane_operator_hint(&LaneHintContext {
         now,
         status: lane.status.as_str(),
         execution_reason: lane.execution_reason,
         failure_kind: lane.failure_kind,
-        ci_target_key: lane.ci_target_key.as_deref(),
-        target_health: lane.target_health.as_ref(),
         created_at: &lane.created_at,
         started_at: lane.started_at.as_deref(),
         finished_at: lane.finished_at.as_deref(),
@@ -421,10 +401,6 @@ fn map_nightly_lane_view(lane: NightlyLaneRecord) -> NightlyLaneView {
     });
     let failure_kind = lane.failure_kind.map(|kind| kind.as_str().to_string());
     let failure_kind_label = lane.failure_kind.map(|kind| kind.label().to_string());
-    let target_health_state = lane
-        .target_health
-        .as_ref()
-        .map(|snapshot| snapshot.effective_state(now).as_str().to_string());
     NightlyLaneView {
         id: lane.id,
         lane_id: lane.lane_id,
@@ -440,8 +416,6 @@ fn map_nightly_lane_view(lane: NightlyLaneRecord) -> NightlyLaneView {
         pikaci_run_id: lane.pikaci_run_id,
         pikaci_target_id: lane.pikaci_target_id,
         ci_target_key: lane.ci_target_key,
-        target_health_state,
-        target_health_summary,
         log_text: lane.log_text,
         retry_count: lane.retry_count,
         rerun_of_lane_run_id: lane.rerun_of_lane_run_id,
@@ -534,8 +508,6 @@ struct LaneHintContext<'a> {
     status: &'a str,
     execution_reason: CiLaneExecutionReason,
     failure_kind: Option<CiLaneFailureKind>,
-    ci_target_key: Option<&'a str>,
-    target_health: Option<&'a CiTargetHealthSnapshot>,
     created_at: &'a str,
     started_at: Option<&'a str>,
     finished_at: Option<&'a str>,
@@ -553,21 +525,6 @@ fn lane_operator_hint(context: &LaneHintContext<'_>) -> Option<String> {
                 "Waiting for scheduler capacity. Other runnable lanes are already consuming the active worker slots."
                     .to_string(),
             ),
-            CiLaneExecutionReason::TargetUnhealthy => {
-                let target = context.ci_target_key.unwrap_or("unknown-target");
-                let detail = context
-                    .target_health
-                    .and_then(|snapshot| {
-                        snapshot.cooloff_active_until(context.now).map(|cooloff_until| {
-                            format!(
-                                " after {} consecutive infra failures until {}",
-                                snapshot.consecutive_infra_failure_count, cooloff_until
-                            )
-                        })
-                    })
-                    .unwrap_or_default();
-                Some(format!("Target {target} is currently unhealthy{detail}."))
-            }
             CiLaneExecutionReason::StaleRecovered => Some(
                 "Recovered after a stale lease expired. This lane is ready to be reclaimed."
                     .to_string(),
@@ -620,26 +577,6 @@ fn lane_operator_hint(context: &LaneHintContext<'_>) -> Option<String> {
             .map(|started_at| format!("State updated after start at {started_at}."))
             .or_else(|| Some(format!("Current state: {}.", context.status))),
     }
-}
-
-fn lane_target_health_summary(
-    ci_target_key: Option<&str>,
-    target_health: Option<&CiTargetHealthSnapshot>,
-    now: DateTime<Utc>,
-) -> Option<String> {
-    let snapshot = target_health?;
-    if snapshot.effective_state(now) != CiTargetHealthState::Unhealthy {
-        return None;
-    }
-    let target = ci_target_key.unwrap_or(&snapshot.target_id);
-    let cooloff_suffix = snapshot
-        .cooloff_active_until(now)
-        .map(|cooloff_until| format!(" · cooloff until {cooloff_until}"))
-        .unwrap_or_default();
-    Some(format!(
-        "target {target} unhealthy · consecutive infra failures {}{cooloff_suffix}",
-        snapshot.consecutive_infra_failure_count
-    ))
 }
 #[derive(serde::Deserialize)]
 struct ForgeBranchResolveQuery {

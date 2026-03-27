@@ -250,7 +250,7 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
     }
 
     #[test]
-    fn branch_ci_page_renders_waiting_and_unhealthy_lane_state() {
+    fn branch_ci_page_renders_waiting_lane_state() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let db_path = dir.path().join("pika-git.db");
         let store = Store::open(&db_path).expect("open store");
@@ -291,27 +291,9 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
                      WHERE lane_id = 'wait-capacity'",
                     [],
                 )?;
-                conn.execute(
-                    "UPDATE branch_ci_run_lanes
-                     SET execution_reason = 'target_unhealthy'
-                     WHERE lane_id = 'apple-sanity'",
-                    [],
-                )?;
-                conn.execute(
-                    "INSERT INTO ci_target_health(
-                        target_id,
-                        state,
-                        consecutive_infra_failure_count,
-                        last_failure_at,
-                        last_failure_kind,
-                        cooloff_until,
-                        updated_at
-                     ) VALUES (?1, 'unhealthy', 2, CURRENT_TIMESTAMP, 'infrastructure', datetime('now', '+15 minutes'), CURRENT_TIMESTAMP)",
-                    rusqlite::params!["apple-host"],
-                )?;
                 Ok::<(), anyhow::Error>(())
             })
-            .expect("set waiting/unhealthy state");
+            .expect("set waiting state");
 
         let detail = store
             .get_branch_detail(branch.branch_id)
@@ -325,7 +307,6 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
             .render()
             .expect("render branch ci html");
         assert!(rendered.contains("waiting for scheduler capacity"));
-        assert!(rendered.contains("target apple-host unhealthy"));
     }
 
     #[test]

@@ -62,10 +62,6 @@
       {% when Some with (ci_target_key) %}
       <p class="muted">target <code>{{ ci_target_key }}</code></p>
       {% when None %}{% endmatch %}
-      {% match lane.target_health_summary %}
-      {% when Some with (target_health_summary) %}
-      <p class="muted">{{ target_health_summary }}</p>
-      {% when None %}{% endmatch %}
       {% match lane.operator_hint %}
       {% when Some with (operator_hint) %}
       <p class="muted">{{ operator_hint }}</p>

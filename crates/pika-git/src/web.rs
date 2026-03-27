@@ -23,8 +23,8 @@ use pika_forge_model::{
     BranchSummary as ForgeBranchSummaryResponse, CiLane,
     CiLaneExecutionReason as ForgeCiLaneExecutionReason,
     CiLaneFailureKind as ForgeCiLaneFailureKind, CiLaneStatus as ForgeCiLaneStatus, CiRun,
-    CiTargetHealthState as ForgeApiTargetHealthState, ForgeCiStatus, LaneMutationResponse,
-    NightlyDetailResponse as ForgeNightlyDetailResponse, RecoverRunResponse, WakeCiResponse,
+    ForgeCiStatus, LaneMutationResponse, NightlyDetailResponse as ForgeNightlyDetailResponse,
+    RecoverRunResponse, WakeCiResponse,
 };
 use pikaci::{LogKind, PreparedOutputsRecord, RunLogsMetadata, RunRecord};
 use pulldown_cmark::{html, Options, Parser};
@@ -34,10 +34,7 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::auth::{normalize_npub, AuthState};
 use crate::branch_store::{BranchDetailRecord, BranchFeedItem};
 use crate::ci;
-use crate::ci_state::{
-    CiLaneExecutionReason, CiLaneFailureKind, CiLaneStatus, CiTargetHealthSnapshot,
-    CiTargetHealthState,
-};
+use crate::ci_state::{CiLaneExecutionReason, CiLaneFailureKind, CiLaneStatus};
 use crate::ci_store::{
     BranchCiLaneRecord, BranchCiRunRecord, NightlyFeedItem, NightlyLaneRecord, NightlyRunRecord,
 };
@@ -241,8 +238,6 @@ struct CiLaneView {
     pikaci_run_id: Option<String>,
     pikaci_target_id: Option<String>,
     ci_target_key: Option<String>,
-    target_health_state: Option<String>,
-    target_health_summary: Option<String>,
     log_text: Option<String>,
     retry_count: i64,
     rerun_of_lane_run_id: Option<i64>,
@@ -271,8 +266,6 @@ struct NightlyLaneView {
     pikaci_run_id: Option<String>,
     pikaci_target_id: Option<String>,
     ci_target_key: Option<String>,
-    target_health_state: Option<String>,
-    target_health_summary: Option<String>,
     log_text: Option<String>,
     retry_count: i64,
     rerun_of_lane_run_id: Option<i64>,
@@ -437,8 +430,6 @@ fn ci_status_tone(status: &str) -> &'static str {
         | "waiting"
         | "waiting_for_capacity"
         | "blocked_by_concurrency_group"
-        | "target_unhealthy"
-        | "blocked_by_target_health"
         | "needs_attention" => "warning",
         _ => "neutral",
     }

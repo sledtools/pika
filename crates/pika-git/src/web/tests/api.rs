@@ -171,7 +171,7 @@ async fn api_forge_branch_detail_returns_ci_summary() {
 }
 
 #[tokio::test]
-async fn api_forge_branch_detail_exposes_waiting_and_unhealthy_lane_state() {
+async fn api_forge_branch_detail_exposes_waiting_lane_state() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let db_path = dir.path().join("pika-git.db");
     let store = Store::open(&db_path).expect("open store");
@@ -212,27 +212,9 @@ async fn api_forge_branch_detail_exposes_waiting_and_unhealthy_lane_state() {
                  WHERE lane_id = 'wait-capacity'",
                 [],
             )?;
-            conn.execute(
-                "UPDATE branch_ci_run_lanes
-                 SET execution_reason = 'target_unhealthy'
-                 WHERE lane_id = 'apple-sanity'",
-                [],
-            )?;
-            conn.execute(
-                "INSERT INTO ci_target_health(
-                    target_id,
-                    state,
-                    consecutive_infra_failure_count,
-                    last_failure_at,
-                    last_failure_kind,
-                    cooloff_until,
-                    updated_at
-                 ) VALUES (?1, 'unhealthy', 2, CURRENT_TIMESTAMP, 'infrastructure', datetime('now', '+15 minutes'), CURRENT_TIMESTAMP)",
-                rusqlite::params!["apple-host"],
-            )?;
             Ok::<(), anyhow::Error>(())
         })
-        .expect("set waiting/unhealthy state");
+        .expect("set waiting state");
     let mut config = forge_test_config_without_admins();
     config
         .forge_repo
@@ -257,16 +239,8 @@ async fn api_forge_branch_detail_exposes_waiting_and_unhealthy_lane_state() {
     );
     assert_eq!(
         json["ci_runs"][0]["lanes"][1]["execution_reason"],
-        "target_unhealthy"
+        "queued"
     );
-    assert_eq!(
-        json["ci_runs"][0]["lanes"][1]["target_health_state"],
-        "unhealthy"
-    );
-    assert!(json["ci_runs"][0]["lanes"][1]["target_health_summary"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("apple-host"));
 }
 
 #[tokio::test]
@@ -915,4 +889,3 @@ async fn wake_ci_handler_requires_trusted_access() {
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
-

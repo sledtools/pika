@@ -58,10 +58,6 @@ fn map_api_ci_lane_from_view(view: CiLaneView) -> CiLane {
         pikaci_run_id: view.pikaci_run_id,
         pikaci_target_id: view.pikaci_target_id,
         ci_target_key: view.ci_target_key,
-        target_health_state: view
-            .target_health_state
-            .map(ForgeApiTargetHealthState::from),
-        target_health_summary: view.target_health_summary,
         log_text: view.log_text,
         retry_count: view.retry_count,
         rerun_of_lane_run_id: view.rerun_of_lane_run_id,
@@ -93,10 +89,6 @@ fn map_api_nightly_lane(lane: NightlyLaneRecord) -> CiLane {
         pikaci_run_id: view.pikaci_run_id,
         pikaci_target_id: view.pikaci_target_id,
         ci_target_key: view.ci_target_key,
-        target_health_state: view
-            .target_health_state
-            .map(ForgeApiTargetHealthState::from),
-        target_health_summary: view.target_health_summary,
         log_text: view.log_text,
         retry_count: view.retry_count,
         rerun_of_lane_run_id: view.rerun_of_lane_run_id,

@@ -1,16 +1,15 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::str::FromStr;
 
 use anyhow::{bail, Context};
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{SecondsFormat, Utc};
 use pika_forge_model::ForgeCiStatus;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use crate::ci_manifest::ForgeLane;
 use crate::ci_state::{
-    classify_ci_failure, configured_target_key_for_lane, next_target_cooloff_until,
-    CiLaneExecutionReason, CiLaneFailureKind, CiLaneStatus, CiTargetHealthSnapshot,
-    CiTargetHealthState, CI_TARGET_HEALTH_INFRA_FAILURE_THRESHOLD,
+    classify_ci_failure, configured_target_key_for_lane, CiLaneExecutionReason, CiLaneFailureKind,
+    CiLaneStatus,
 };
 use crate::storage::Store;
 
@@ -41,7 +40,6 @@ pub struct BranchCiLaneRecord {
     pub pikaci_run_id: Option<String>,
     pub pikaci_target_id: Option<String>,
     pub ci_target_key: Option<String>,
-    pub target_health: Option<CiTargetHealthSnapshot>,
     pub log_text: Option<String>,
     pub retry_count: i64,
     pub rerun_of_lane_run_id: Option<i64>,
@@ -107,7 +105,6 @@ pub struct NightlyLaneRecord {
     pub pikaci_run_id: Option<String>,
     pub pikaci_target_id: Option<String>,
     pub ci_target_key: Option<String>,
-    pub target_health: Option<CiTargetHealthSnapshot>,
     pub log_text: Option<String>,
     pub retry_count: i64,
     pub rerun_of_lane_run_id: Option<i64>,
@@ -1256,8 +1253,6 @@ impl Store {
             let lease_window = format!("+{} seconds", lease_secs);
             let mut running_groups =
                 running_concurrency_groups(&tx).context("load running ci concurrency groups")?;
-            let unhealthy_targets =
-                current_unhealthy_target_ids(&tx, Utc::now()).context("load unhealthy ci targets")?;
             let mut jobs = Vec::new();
             {
                 let mut stmt = tx
@@ -1295,19 +1290,6 @@ impl Store {
                     candidates.push(row.context("read queued branch ci lane row")?);
                 }
                 for job in candidates {
-                    let target_key = tx
-                        .query_row(
-                            "SELECT ci_target_key FROM branch_ci_run_lanes WHERE id = ?1",
-                            params![job.lane_run_id],
-                            |row| row.get::<_, Option<String>>(0),
-                        )
-                        .with_context(|| format!("lookup target key for branch lane {}", job.lane_run_id))?;
-                    if target_key
-                        .as_deref()
-                        .is_some_and(|target| unhealthy_targets.contains(target))
-                    {
-                        continue;
-                    }
                     if let Some(group) = job.concurrency_group.as_deref() {
                         if running_groups.contains(group) {
                             continue;
@@ -1419,11 +1401,11 @@ impl Store {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .context("start finish branch ci lane transaction")?;
-            let (suite_id, ci_target_key): (i64, Option<String>) = tx
+            let suite_id: i64 = tx
                 .query_row(
-                    "SELECT branch_ci_run_id, ci_target_key FROM branch_ci_run_lanes WHERE id = ?1",
+                    "SELECT branch_ci_run_id FROM branch_ci_run_lanes WHERE id = ?1",
                     params![lane_run_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| row.get(0),
                 )
                 .with_context(|| format!("lookup branch ci suite for lane {}", lane_run_id))?;
             let updated = tx
@@ -1449,13 +1431,6 @@ impl Store {
             if updated == 0 {
                 bail!("{CI_LANE_LEASE_LOST}");
             }
-            update_target_health_after_lane_finish(
-                &tx,
-                ci_target_key.as_deref(),
-                status,
-                failure_kind,
-                Utc::now(),
-            )?;
             update_branch_ci_suite_status(&tx, suite_id)?;
             tx.commit()
                 .context("commit finish branch ci lane transaction")?;
@@ -1503,8 +1478,6 @@ impl Store {
             let lease_window = format!("+{} seconds", lease_secs);
             let mut running_groups =
                 running_concurrency_groups(&tx).context("load running ci concurrency groups")?;
-            let unhealthy_targets =
-                current_unhealthy_target_ids(&tx, Utc::now()).context("load unhealthy ci targets")?;
             let mut jobs = Vec::new();
             {
                 let mut stmt = tx
@@ -1539,19 +1512,6 @@ impl Store {
                     candidates.push(row.context("read queued nightly lane row")?);
                 }
                 for job in candidates {
-                    let target_key = tx
-                        .query_row(
-                            "SELECT ci_target_key FROM nightly_run_lanes WHERE id = ?1",
-                            params![job.lane_run_id],
-                            |row| row.get::<_, Option<String>>(0),
-                        )
-                        .with_context(|| format!("lookup target key for nightly lane {}", job.lane_run_id))?;
-                    if target_key
-                        .as_deref()
-                        .is_some_and(|target| unhealthy_targets.contains(target))
-                    {
-                        continue;
-                    }
                     if let Some(group) = job.concurrency_group.as_deref() {
                         if running_groups.contains(group) {
                             continue;
@@ -1663,11 +1623,11 @@ impl Store {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .context("start finish nightly lane transaction")?;
-            let (nightly_run_id, ci_target_key): (i64, Option<String>) = tx
+            let nightly_run_id: i64 = tx
                 .query_row(
-                    "SELECT nightly_run_id, ci_target_key FROM nightly_run_lanes WHERE id = ?1",
+                    "SELECT nightly_run_id FROM nightly_run_lanes WHERE id = ?1",
                     params![lane_run_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| row.get(0),
                 )
                 .with_context(|| format!("lookup nightly run for lane {}", lane_run_id))?;
             let updated = tx
@@ -1693,13 +1653,6 @@ impl Store {
             if updated == 0 {
                 bail!("{CI_LANE_LEASE_LOST}");
             }
-            update_target_health_after_lane_finish(
-                &tx,
-                ci_target_key.as_deref(),
-                status,
-                failure_kind,
-                Utc::now(),
-            )?;
             update_nightly_run_status(&tx, nightly_run_id)?;
             tx.commit()
                 .context("commit finish nightly lane transaction")?;
@@ -1759,7 +1712,6 @@ fn list_branch_ci_run_lanes(
                 pikaci_run_id: row.get(7)?,
                 pikaci_target_id: row.get(8)?,
                 ci_target_key,
-                target_health: None,
                 log_text: row.get(10)?,
                 retry_count: row.get(11)?,
                 rerun_of_lane_run_id: row.get(12)?,
@@ -1775,7 +1727,6 @@ fn list_branch_ci_run_lanes(
     for row in rows {
         lanes.push(row.context("read branch ci lane row")?);
     }
-    hydrate_lane_target_health(conn, &mut lanes)?;
     Ok(lanes)
 }
 
@@ -1805,7 +1756,6 @@ fn list_nightly_run_lanes(
                 pikaci_run_id: row.get(7)?,
                 pikaci_target_id: row.get(8)?,
                 ci_target_key,
-                target_health: None,
                 log_text: row.get(10)?,
                 retry_count: row.get(11)?,
                 rerun_of_lane_run_id: row.get(12)?,
@@ -1821,7 +1771,6 @@ fn list_nightly_run_lanes(
     for row in rows {
         lanes.push(row.context("read nightly lane row")?);
     }
-    hydrate_nightly_lane_target_health(conn, &mut lanes)?;
     Ok(lanes)
 }
 
@@ -1867,137 +1816,6 @@ fn parse_optional_failure_kind(raw: Option<String>) -> rusqlite::Result<Option<C
     .transpose()
 }
 
-fn parse_target_health_state(raw: &str) -> rusqlite::Result<CiTargetHealthState> {
-    CiTargetHealthState::from_str(raw).map_err(|_| {
-        rusqlite::Error::FromSqlConversionFailure(
-            raw.len(),
-            rusqlite::types::Type::Text,
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("invalid ci target health state `{raw}`"),
-            )),
-        )
-    })
-}
-
-fn load_ci_target_health_snapshots(
-    conn: &Connection,
-    target_ids: &[String],
-) -> anyhow::Result<HashMap<String, CiTargetHealthSnapshot>> {
-    if target_ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-    let placeholders = (0..target_ids.len())
-        .map(|idx| format!("?{}", idx + 1))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!(
-        "SELECT target_id, state, consecutive_infra_failure_count, last_success_at, last_failure_at, last_failure_kind, cooloff_until
-         FROM ci_target_health
-         WHERE target_id IN ({placeholders})"
-    );
-    let mut stmt = conn
-        .prepare(&sql)
-        .context("prepare ci target health query")?;
-    let mut params_dyn: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(target_ids.len());
-    for target_id in target_ids {
-        params_dyn.push(target_id);
-    }
-    let rows = stmt
-        .query_map(params_dyn.as_slice(), |row| {
-            let last_failure_kind = parse_optional_failure_kind(row.get(5)?)?;
-            Ok(CiTargetHealthSnapshot {
-                target_id: row.get(0)?,
-                state: parse_target_health_state(&row.get::<_, String>(1)?)?,
-                consecutive_infra_failure_count: row.get(2)?,
-                last_success_at: row.get(3)?,
-                last_failure_at: row.get(4)?,
-                last_failure_kind,
-                cooloff_until: row.get(6)?,
-            })
-        })
-        .context("query ci target health rows")?;
-    let mut snapshots = HashMap::new();
-    for row in rows {
-        let snapshot = row.context("read ci target health row")?;
-        snapshots.insert(snapshot.target_id.clone(), snapshot);
-    }
-    Ok(snapshots)
-}
-
-fn hydrate_lane_target_health(
-    conn: &Connection,
-    lanes: &mut [BranchCiLaneRecord],
-) -> anyhow::Result<()> {
-    let target_ids = lanes
-        .iter()
-        .filter_map(|lane| lane.ci_target_key.clone())
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    let snapshots = load_ci_target_health_snapshots(conn, &target_ids)?;
-    for lane in lanes {
-        lane.target_health = lane
-            .ci_target_key
-            .as_ref()
-            .and_then(|target_id| snapshots.get(target_id).cloned());
-    }
-    Ok(())
-}
-
-fn hydrate_nightly_lane_target_health(
-    conn: &Connection,
-    lanes: &mut [NightlyLaneRecord],
-) -> anyhow::Result<()> {
-    let target_ids = lanes
-        .iter()
-        .filter_map(|lane| lane.ci_target_key.clone())
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    let snapshots = load_ci_target_health_snapshots(conn, &target_ids)?;
-    for lane in lanes {
-        lane.target_health = lane
-            .ci_target_key
-            .as_ref()
-            .and_then(|target_id| snapshots.get(target_id).cloned());
-    }
-    Ok(())
-}
-
-fn current_unhealthy_target_ids(
-    conn: &Connection,
-    now: DateTime<Utc>,
-) -> anyhow::Result<HashSet<String>> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT target_id, state, consecutive_infra_failure_count, last_success_at, last_failure_at, last_failure_kind, cooloff_until
-             FROM ci_target_health",
-        )
-        .context("prepare unhealthy ci target query")?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok(CiTargetHealthSnapshot {
-                target_id: row.get(0)?,
-                state: parse_target_health_state(&row.get::<_, String>(1)?)?,
-                consecutive_infra_failure_count: row.get(2)?,
-                last_success_at: row.get(3)?,
-                last_failure_at: row.get(4)?,
-                last_failure_kind: parse_optional_failure_kind(row.get(5)?)?,
-                cooloff_until: row.get(6)?,
-            })
-        })
-        .context("query unhealthy ci targets")?;
-    let mut unhealthy = HashSet::new();
-    for row in rows {
-        let snapshot = row.context("read unhealthy ci target row")?;
-        if snapshot.is_currently_unhealthy(now) {
-            unhealthy.insert(snapshot.target_id);
-        }
-    }
-    Ok(unhealthy)
-}
-
 fn refresh_ci_lane_execution_reasons_tx(
     conn: &Connection,
     ci_concurrency: Option<usize>,
@@ -2020,21 +1838,18 @@ fn refresh_ci_lane_execution_reasons_tx(
     let running_count = running_lane_count(conn)?;
     let mut available_slots = ci_concurrency.map(|limit| limit.saturating_sub(running_count));
     let mut running_groups = running_concurrency_groups(conn)?;
-    let unhealthy_targets = current_unhealthy_target_ids(conn, Utc::now())?;
 
     refresh_queued_lane_reasons_for_table(
         conn,
         "nightly_run_lanes",
         &mut available_slots,
         &mut running_groups,
-        &unhealthy_targets,
     )?;
     refresh_queued_lane_reasons_for_table(
         conn,
         "branch_ci_run_lanes",
         &mut available_slots,
         &mut running_groups,
-        &unhealthy_targets,
     )?;
     Ok(())
 }
@@ -2044,7 +1859,6 @@ fn refresh_queued_lane_reasons_for_table(
     table: &str,
     available_slots: &mut Option<usize>,
     running_groups: &mut HashSet<String>,
-    unhealthy_targets: &HashSet<String>,
 ) -> anyhow::Result<()> {
     let sql = format!(
         "SELECT id, execution_reason, concurrency_group, ci_target_key
@@ -2067,14 +1881,9 @@ fn refresh_queued_lane_reasons_for_table(
         .with_context(|| format!("query queued execution reasons for {table}"))?;
 
     for row in rows {
-        let (lane_run_id, current_reason, concurrency_group, ci_target_key) =
+        let (lane_run_id, current_reason, concurrency_group, _ci_target_key) =
             row.with_context(|| format!("read queued execution reason row from {table}"))?;
-        let next_reason = if ci_target_key
-            .as_deref()
-            .is_some_and(|target_id| unhealthy_targets.contains(target_id))
-        {
-            CiLaneExecutionReason::TargetUnhealthy
-        } else if concurrency_group
+        let next_reason = if concurrency_group
             .as_deref()
             .is_some_and(|group| running_groups.contains(group))
         {
@@ -2130,127 +1939,6 @@ fn running_lane_count(conn: &Connection) -> anyhow::Result<usize> {
         )
         .context("count running nightly lanes for refresh")?;
     Ok((branch_count + nightly_count).max(0) as usize)
-}
-
-fn update_target_health_after_lane_finish(
-    conn: &Connection,
-    ci_target_key: Option<&str>,
-    status: CiLaneStatus,
-    failure_kind: Option<CiLaneFailureKind>,
-    now: DateTime<Utc>,
-) -> anyhow::Result<()> {
-    let Some(target_id) = ci_target_key.filter(|value| !value.trim().is_empty()) else {
-        return Ok(());
-    };
-    let current: Option<(i64, Option<String>)> = conn
-        .query_row(
-            "SELECT consecutive_infra_failure_count, last_success_at
-             FROM ci_target_health
-             WHERE target_id = ?1",
-            params![target_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .with_context(|| format!("lookup target health for {target_id}"))?;
-    let existing_failures = current.as_ref().map(|row| row.0).unwrap_or(0);
-    let existing_last_success_at = current.as_ref().and_then(|row| row.1.clone());
-    let now_string = now.to_rfc3339_opts(SecondsFormat::Millis, true);
-
-    match (status, failure_kind) {
-        (CiLaneStatus::Failed, Some(kind)) => {
-            if kind.counts_toward_target_health() {
-                let consecutive_failures = existing_failures + 1;
-                let state = if consecutive_failures >= CI_TARGET_HEALTH_INFRA_FAILURE_THRESHOLD {
-                    CiTargetHealthState::Unhealthy
-                } else {
-                    CiTargetHealthState::Healthy
-                };
-                let cooloff_until = if state == CiTargetHealthState::Unhealthy {
-                    Some(next_target_cooloff_until(now))
-                } else {
-                    None
-                };
-                conn.execute(
-                    "INSERT INTO ci_target_health(
-                        target_id,
-                        state,
-                        consecutive_infra_failure_count,
-                        last_success_at,
-                        last_failure_at,
-                        last_failure_kind,
-                        cooloff_until,
-                        updated_at
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                     ON CONFLICT(target_id) DO UPDATE SET
-                        state = excluded.state,
-                        consecutive_infra_failure_count = excluded.consecutive_infra_failure_count,
-                        last_success_at = excluded.last_success_at,
-                        last_failure_at = excluded.last_failure_at,
-                        last_failure_kind = excluded.last_failure_kind,
-                        cooloff_until = excluded.cooloff_until,
-                        updated_at = excluded.updated_at",
-                    params![
-                        target_id,
-                        state.as_str(),
-                        consecutive_failures,
-                        existing_last_success_at,
-                        now_string,
-                        kind.as_str(),
-                        cooloff_until,
-                        now_string,
-                    ],
-                )
-                .with_context(|| format!("record unhealthy target state for {target_id}"))?;
-            } else {
-                conn.execute(
-                    "INSERT INTO ci_target_health(
-                        target_id,
-                        state,
-                        consecutive_infra_failure_count,
-                        last_success_at,
-                        last_failure_at,
-                        last_failure_kind,
-                        cooloff_until,
-                        updated_at
-                     ) VALUES (?1, 'healthy', 0, ?2, ?3, ?4, NULL, ?3)
-                     ON CONFLICT(target_id) DO UPDATE SET
-                        state = 'healthy',
-                        consecutive_infra_failure_count = 0,
-                        last_success_at = COALESCE(excluded.last_success_at, ci_target_health.last_success_at),
-                        last_failure_at = excluded.last_failure_at,
-                        last_failure_kind = excluded.last_failure_kind,
-                        cooloff_until = NULL,
-                        updated_at = excluded.updated_at",
-                    params![target_id, existing_last_success_at, now_string, kind.as_str()],
-                )
-                .with_context(|| format!("record healthy target test failure for {target_id}"))?;
-            }
-        }
-        (CiLaneStatus::Success, _) => {
-            conn.execute(
-                "INSERT INTO ci_target_health(
-                    target_id,
-                    state,
-                    consecutive_infra_failure_count,
-                    last_success_at,
-                    last_failure_at,
-                    last_failure_kind,
-                    cooloff_until,
-                    updated_at
-                 ) VALUES (?1, 'healthy', 0, ?2, NULL, NULL, NULL, ?2)
-                 ON CONFLICT(target_id) DO UPDATE SET
-                    state = 'healthy',
-                    consecutive_infra_failure_count = 0,
-                    last_success_at = excluded.last_success_at,
-                    cooloff_until = NULL,
-                    updated_at = excluded.updated_at",
-                params![target_id, now_string],
-            )
-            .with_context(|| format!("record healthy target success for {target_id}"))?;
-        }
-        _ => {}
-    }
-    Ok(())
 }
 
 fn aggregate_lane_status(

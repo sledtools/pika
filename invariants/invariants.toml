@@ -21,7 +21,7 @@ scope = [
   "crates/jerichoci/**",
   "crates/pikaci/**",
 ]
-hint = "Focus on whether production jerichoci modules define Pika-specific target IDs or staged-lane tables. It is fine for jerichoci to expose generic command helpers and executor machinery."
+hint = "Focus on whether production jerichoci modules define Pika-specific target IDs or staged-lane tables. Ignore #[cfg(test)] fixture catalogs even if they use similar names for test coverage. It is fine for jerichoci to expose generic command helpers and executor machinery."
 
 [[invariant]]
 id = "PIKACI-003"

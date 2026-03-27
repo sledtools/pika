@@ -106,12 +106,13 @@ if [ -z "${device_type_id:-}" ]; then
 fi
 
 device_name="$target_device_name"
-udid="$(
+device_lookup="$(
   "$SIMCTL" list -j devices | python3 -c '
 import json, sys
 
 runtime_id = sys.argv[1]
 device_name = sys.argv[2]
+device_type_id = sys.argv[3]
 devices = json.load(sys.stdin).get("devices", {})
 
 for device in devices.get(runtime_id, []):
@@ -119,10 +120,28 @@ for device in devices.get(runtime_id, []):
         continue
     if device.get("isAvailable") is False:
         continue
-    print(device.get("udid", ""))
-    break
-' "$runtime_id" "$device_name"
+    udid = device.get("udid", "")
+    if not udid:
+        continue
+    if device.get("deviceTypeIdentifier") == device_type_id:
+        print(f"exact:{udid}")
+        sys.exit(0)
+    print(f"mismatch:{udid}")
+    sys.exit(0)
+' "$runtime_id" "$device_name" "$device_type_id"
 )"
+udid=""
+case "${device_lookup:-}" in
+  exact:*)
+    udid="${device_lookup#exact:}"
+    ;;
+  mismatch:*)
+    mismatch_udid="${device_lookup#mismatch:}"
+    "$SIMCTL" shutdown "$mismatch_udid" >/dev/null 2>&1 || true
+    "$SIMCTL" delete "$mismatch_udid" >/dev/null 2>&1 || true
+    echo "recreated simulator to match pinned device type: $device_name"
+    ;;
+esac
 if [ -z "${udid:-}" ]; then
   udid="$("$SIMCTL" create "$device_name" "$device_type_id" "$runtime_id" | tr -d '[:space:]')"
   echo "created simulator: $device_name ($udid)"

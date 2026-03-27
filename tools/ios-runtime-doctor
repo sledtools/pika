@@ -47,7 +47,19 @@ has_runtimes() {
 }
 
 has_target_runtime() {
-  "$SIMCTL" list runtimes | grep -Fq "$target_runtime"
+  "$SIMCTL" list -j runtimes | python3 -c '
+import json
+import sys
+
+target_runtime = sys.argv[1]
+for rt in json.load(sys.stdin).get("runtimes", []):
+    if (rt.get("name") or "") != target_runtime:
+        continue
+    if rt.get("isAvailable") is False:
+        continue
+    sys.exit(0)
+sys.exit(1)
+' "$target_runtime"
 }
 
 if has_runtimes && has_target_runtime; then

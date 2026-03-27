@@ -37,7 +37,15 @@ emit_path_hashes() {
         VERSION \
         Cargo.toml \
         Cargo.lock \
-        ios \
+        ios/.build-number \
+        ios/project.yml \
+        ios/Info.plist \
+        ios/Pika.entitlements \
+        ios/NotificationService \
+        ios/ShareExtension \
+        ios/Sources \
+        ios/Tests \
+        ios/UITests \
         scripts/ios-build \
         scripts/lib/mobile-build.sh \
         tools/lib/dotenv.sh \

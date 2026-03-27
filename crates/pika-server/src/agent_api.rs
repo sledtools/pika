@@ -26,6 +26,12 @@ use crate::managed_openclaw_guest::{
     build_managed_guest_autostart, ManagedVmCreateInput as ManagedRuntimeCreateInput,
     DEFAULT_OPENCLAW_GATEWAY_PORT, GUEST_AUTOSTART_SCRIPT_PATH, GUEST_OPENCLAW_CONFIG_PATH,
 };
+use crate::managed_runtime_contract::{
+    AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams, ManagedOpenClawLaunchAuth,
+    ManagedRuntimeBackupStatus, ManagedRuntimeStatus,
+    ManagedVmProvisionParams as ManagedRuntimeProvisionParams, VmBackupFreshness, VmBackupUnitKind,
+    VmRecoveryPointKind,
+};
 use crate::models::agent_allowlist::AgentAllowlistEntry;
 use crate::models::agent_instance::{
     AgentInstance, AGENT_PHASE_CREATING, AGENT_PHASE_ERROR, AGENT_PHASE_READY,
@@ -36,12 +42,9 @@ use crate::nostr_auth::{
 };
 use crate::{RequestContext, State};
 use pika_cloud::{
-    incus_mount_device_config, incus_runtime_config, AgentProvisionRequest, AgentStartupPhase,
-    IncusProvisionParams, IncusRuntimeConfig, IncusRuntimePlan, LifecycleState,
-    ManagedOpenClawLaunchAuth, ManagedRuntimeBackupStatus, ManagedRuntimeStatus,
-    ManagedVmProvisionParams as ManagedRuntimeProvisionParams, MountKind, MountMode,
-    RuntimeArtifacts, RuntimeIdentity, RuntimeMount, RuntimeResources, RuntimeSpec,
-    RuntimeStatusSnapshot, VmBackupFreshness, VmBackupUnitKind, VmRecoveryPointKind, STATUS_PATH,
+    incus_mount_device_config, incus_runtime_config, IncusRuntimeConfig, IncusRuntimePlan,
+    LifecycleState, MountKind, MountMode, RuntimeArtifacts, RuntimeIdentity, RuntimeMount,
+    RuntimeResources, RuntimeSpec, RuntimeStatusSnapshot, STATUS_PATH,
 };
 use pika_relay_profiles::default_message_relays;
 

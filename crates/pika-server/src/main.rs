@@ -5,6 +5,7 @@ mod browser_auth;
 mod customer;
 mod listener;
 mod managed_openclaw_guest;
+mod managed_runtime_contract;
 mod models;
 mod nostr_auth;
 mod routes;

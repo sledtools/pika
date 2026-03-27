@@ -6011,6 +6011,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pika-managed-agent-contract"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "pika-marmot-runtime"
 version = "0.1.0"
 dependencies = [
@@ -6098,6 +6106,7 @@ dependencies = [
  "ipnet",
  "nostr-sdk",
  "pika-cloud",
+ "pika-managed-agent-contract",
  "pika-relay-profiles",
  "pika-test-utils",
  "rand 0.8.5",
@@ -6165,7 +6174,7 @@ dependencies = [
  "nostr-connect",
  "nostr-sdk",
  "paranoid-android",
- "pika-cloud",
+ "pika-managed-agent-contract",
  "pika-marmot-runtime",
  "pika-media",
  "pika-relay-profiles",
@@ -6202,7 +6211,7 @@ dependencies = [
  "nostr-blossom",
  "nostr-sdk",
  "pika-agent-protocol",
- "pika-cloud",
+ "pika-managed-agent-contract",
  "pika-marmot-runtime",
  "pika-relay-profiles",
  "pika-test-utils",

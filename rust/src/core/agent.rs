@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use nostr_sdk::prelude::{EventBuilder, Keys, Kind, Tag, TagKind};
-use pika_cloud::{AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams};
+use pika_managed_agent_contract::{AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams};
 use reqwest::Method;
 use serde::Deserialize;
 

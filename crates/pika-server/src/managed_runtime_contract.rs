@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub(crate) use pika_cloud::{
+pub(crate) use pika_managed_agent_contract::{
     AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams, ManagedVmProvisionParams,
 };
 

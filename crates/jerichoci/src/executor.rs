@@ -2498,10 +2498,6 @@ mod tests {
         include_str!("../../../nix/incus/pika-cloud-lifecycle.py.in")
     }
 
-    fn local_linux_guest_module_source() -> &'static str {
-        include_str!("../../../nix/pikaci/guest-module.nix")
-    }
-
     fn local_terminal_result_fragment_source() -> &'static str {
         include_str!("../../../nix/pikaci/local-terminal-result-fragment.sh.in")
     }
@@ -2779,20 +2775,19 @@ mod tests {
     }
 
     #[test]
-    fn local_linux_guest_module_uses_shared_terminal_result_fragment() {
-        let source = local_linux_guest_module_source();
+    fn remote_linux_incus_image_uses_shared_runtime_paths() {
+        let source = incus_guest_image_source();
 
         assert_contains_all(
             source,
             &[
-                "localTerminalResultFragment = builtins.readFile ./local-terminal-result-fragment.sh.in;",
-                "renderLocalTerminalResultFragment =",
-                "\"__PIKACI_RESULT_PATH__\"",
-                "\"__PIKACI_SCHEMA_VERSION__\"",
-                "\"__PIKACI_FINISHED_AT_COMMAND__\"",
-                "\"/artifacts/result.json\"",
-                "\"date -Iseconds\"",
-                "${renderLocalTerminalResultFragment \"/artifacts/result.json\" \"date -Iseconds\"}",
+                "state_dir = pathlib.Path(\"/run/pika-cloud\")",
+                "logs_dir = state_dir / \"logs\"",
+                "artifacts_dir = state_dir / \"artifacts\"",
+                "guest_log_path = logs_dir / \"guest.log\"",
+                "status_path = state_dir / \"status.json\"",
+                "events_path = state_dir / \"events.jsonl\"",
+                "result_path = state_dir / \"result.json\"",
             ],
         );
     }

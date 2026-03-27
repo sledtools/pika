@@ -981,12 +981,6 @@ EOF
         pikachat-openclaw = import ./nix/openclaw/home-manager.nix { inherit self; };
       };
 
-      lib = {
-        pikaci = {
-          mkGuestModule = import ./nix/pikaci/guest-module.nix;
-        };
-      };
-
       # Phase 2a staged Linux Rust build outputs.
       # The preferred staged Linux Rust target is now x86_64-linux so the
       # deterministic Rust lane can align with pika-build instead of the old

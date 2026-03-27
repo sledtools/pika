@@ -1,3 +1,5 @@
+pub use pika_incus_guest_role::IncusGuestRole;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -14,6 +16,8 @@ pub enum AgentStartupPhase {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Default)]
 pub struct IncusProvisionParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guest_role: Option<IncusGuestRole>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -62,6 +66,7 @@ mod tests {
     fn agent_provision_request_round_trips_incus_backend() {
         let request = AgentProvisionRequest {
             incus: IncusProvisionParams {
+                guest_role: Some(IncusGuestRole::ManagedOpenclaw),
                 endpoint: Some("https://incus.internal:8443".to_string()),
                 project: Some("managed-agents".to_string()),
                 profile: Some("pika-agent".to_string()),

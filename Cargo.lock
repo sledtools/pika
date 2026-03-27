@@ -3835,6 +3835,7 @@ dependencies = [
  "fs2",
  "hex",
  "pika-cloud",
+ "pika-incus-guest-role",
  "serde",
  "serde_json",
  "sha2",
@@ -6027,9 +6028,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pika-incus-guest-role"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "pika-managed-agent-contract"
 version = "0.1.0"
 dependencies = [
+ "pika-incus-guest-role",
  "serde",
  "serde_json",
 ]
@@ -6122,6 +6132,7 @@ dependencies = [
  "ipnet",
  "nostr-sdk",
  "pika-cloud",
+ "pika-incus-guest-role",
  "pika-managed-agent-contract",
  "pika-relay-profiles",
  "pika-test-utils",
@@ -6275,6 +6286,7 @@ dependencies = [
  "clap",
  "globset",
  "jerichoci",
+ "pika-incus-guest-role",
  "serde",
  "serde_json",
  "uuid",

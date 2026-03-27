@@ -1751,6 +1751,7 @@ fn agent_provision_request(runtime: &AgentRuntimeArgs) -> Option<AgentProvisionR
     }
     Some(AgentProvisionRequest {
         incus: IncusProvisionParams {
+            guest_role: None,
             endpoint: runtime.incus_endpoint.clone(),
             project: runtime.incus_project.clone(),
             profile: runtime.incus_profile.clone(),
@@ -2880,6 +2881,7 @@ mod tests {
         assert_eq!(
             request.incus,
             IncusProvisionParams {
+                guest_role: None,
                 endpoint: Some("https://pika-build:8443".to_string()),
                 project: Some("pika-managed-agents".to_string()),
                 profile: Some("pika-agent-dev".to_string()),

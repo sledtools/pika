@@ -11,6 +11,7 @@ already decided. The goal here is to keep the next code slices coherent and smal
 Related context:
 
 - [`todos/agents-platform.md`](./agents-platform.md)
+- [`todos/pika-cloud-arbitrary-guest-config-spike.md`](./pika-cloud-arbitrary-guest-config-spike.md)
 
 ## Core Direction
 

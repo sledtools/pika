@@ -11,3 +11,4 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 jerichoci = { workspace = true }
+pika-incus-guest-role = { workspace = true }

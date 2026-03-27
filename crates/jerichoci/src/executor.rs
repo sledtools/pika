@@ -14,13 +14,14 @@ use pika_cloud::{
     CLOUD_GUEST_LOG_PATH, EVENTS_PATH, LIFECYCLE_SCHEMA_VERSION, RESULT_PATH, RuntimeArtifacts,
     RuntimeResultStatus, RuntimeTerminalResult, STATUS_PATH, runtime_terminal_result_for_exit_code,
 };
+use pika_incus_guest_role::IncusGuestRole;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::model::{
-    GuestCommand, JobOutcome, JobPlacementKind, JobRuntimeKind, JobSpec, RemoteLinuxVmBackend,
-    RemoteLinuxVmExecutionRecord, RemoteLinuxVmImageRecord, RemoteLinuxVmPhase,
-    RemoteLinuxVmPhaseRecord, RunStatus,
+    GuestCommand, JobOutcome, JobPlacementKind, JobRuntimeConfig, JobRuntimeKind, JobSpec,
+    RemoteLinuxVmBackend, RemoteLinuxVmExecutionRecord, RemoteLinuxVmImageRecord,
+    RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord, RunStatus,
 };
 use crate::snapshot::{SnapshotMetadata, materialize_workspace, read_snapshot_metadata};
 
@@ -81,6 +82,7 @@ struct RemoteLinuxVmSharedContext {
 #[derive(Clone, Debug)]
 struct RemoteIncusContext {
     shared: RemoteLinuxVmSharedContext,
+    incus_guest_role: IncusGuestRole,
     incus_project: String,
     incus_profile: String,
     incus_image_alias: String,
@@ -97,6 +99,14 @@ impl RemoteLinuxVmContext {
         match self {
             Self::Incus(remote) => &remote.shared,
         }
+    }
+}
+
+impl RemoteIncusContext {
+    fn recorded_guest_role(&self) -> Option<IncusGuestRole> {
+        self.incus_guest_role
+            .uses_default_image_alias(&self.incus_image_alias)
+            .then_some(self.incus_guest_role)
     }
 }
 
@@ -220,12 +230,12 @@ const PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_DEFAULT: &str = "nix";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_DEFAULT: &str = "pika-build";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_DEFAULT: &str =
     "/var/tmp/pikaci-prepared-output";
+const REMOTE_LINUX_VM_INCUS_GUEST_ROLE_ENV: &str = "PIKACI_REMOTE_LINUX_VM_INCUS_GUEST_ROLE";
 const REMOTE_LINUX_VM_INCUS_PROJECT_ENV: &str = "PIKACI_REMOTE_LINUX_VM_INCUS_PROJECT";
 const REMOTE_LINUX_VM_INCUS_PROFILE_ENV: &str = "PIKACI_REMOTE_LINUX_VM_INCUS_PROFILE";
 const REMOTE_LINUX_VM_INCUS_IMAGE_ALIAS_ENV: &str = "PIKACI_REMOTE_LINUX_VM_INCUS_IMAGE_ALIAS";
 const REMOTE_LINUX_VM_INCUS_PROJECT_DEFAULT: &str = "pika-managed-agents";
 const REMOTE_LINUX_VM_INCUS_PROFILE_DEFAULT: &str = "pika-agent-dev";
-const REMOTE_LINUX_VM_INCUS_IMAGE_ALIAS_DEFAULT: &str = "pikaci/dev";
 const REMOTE_LINUX_VM_INCUS_READ_ONLY_DISK_IO_BUS: &str = "virtiofs";
 const REMOTE_LINUX_VM_INCUS_RUN_BINARY: &str = "/run/current-system/sw/bin/pikaci-incus-run";
 const REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH: &str = "/workspace/snapshot";
@@ -1795,11 +1805,13 @@ fn remote_linux_vm_context(
         remote_cargo_home_dir: remote_work_dir.join("cache").join("cargo-home"),
         remote_target_dir: remote_work_dir.join("cache").join("cargo-target"),
     };
+    let incus_guest_role = remote_linux_vm_incus_guest_role(job)?;
     Ok(RemoteLinuxVmContext::Incus(RemoteIncusContext {
         shared,
+        incus_guest_role,
         incus_project: remote_linux_vm_incus_project(),
         incus_profile: remote_linux_vm_incus_profile(),
-        incus_image_alias: remote_linux_vm_incus_image_alias(),
+        incus_image_alias: remote_linux_vm_incus_image_alias(incus_guest_role),
         incus_instance_name: remote_linux_vm_incus_instance_name(run_id, job.id),
     }))
 }
@@ -1855,9 +1867,34 @@ fn remote_linux_vm_incus_profile() -> String {
         .unwrap_or_else(|_| REMOTE_LINUX_VM_INCUS_PROFILE_DEFAULT.to_string())
 }
 
-fn remote_linux_vm_incus_image_alias() -> String {
+fn remote_linux_vm_incus_guest_role(job: &JobSpec) -> anyhow::Result<IncusGuestRole> {
+    if let Some(value) = std::env::var(REMOTE_LINUX_VM_INCUS_GUEST_ROLE_ENV)
+        .ok()
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return value.parse::<IncusGuestRole>().map_err(|_| {
+            anyhow!(
+                "{REMOTE_LINUX_VM_INCUS_GUEST_ROLE_ENV} must be one of `managed-openclaw` or `pikaci-runner`, got {value:?}"
+            )
+        });
+    }
+
+    match job.runtime_config() {
+        JobRuntimeConfig::Incus(config) => Ok(config.guest_role),
+        JobRuntimeConfig::HostProcess(_) | JobRuntimeConfig::Tart(_) => {
+            bail!(
+                "remote Incus guest role requested for non-Incus job `{}`",
+                job.id
+            )
+        }
+    }
+}
+
+fn remote_linux_vm_incus_image_alias(guest_role: IncusGuestRole) -> String {
     std::env::var(REMOTE_LINUX_VM_INCUS_IMAGE_ALIAS_ENV)
-        .unwrap_or_else(|_| REMOTE_LINUX_VM_INCUS_IMAGE_ALIAS_DEFAULT.to_string())
+        .unwrap_or_else(|_| guest_role.default_image_alias().to_string())
 }
 
 fn remote_linux_vm_incus_instance_name(run_id: &str, job_id: &str) -> String {
@@ -2445,6 +2482,7 @@ fn shell_escape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
+    use pika_incus_guest_role::IncusGuestRole;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -2460,16 +2498,17 @@ mod tests {
 
     use super::{
         HostContext, HostLocalCommandMode, HostLocalDevEnvState, HostLocalEnvironmentRefresh,
-        REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH, RemoteIncusContext, RemoteLinuxVmSharedContext,
-        StagedPreparedPayload, attach_remote_linux_vm_execution,
-        build_sync_directory_finalize_command, cached_host_local_dev_env_is_usable,
-        host_local_command_mode, host_local_dev_env_script_path, host_local_dev_env_shell_program,
-        incus, prepare_host_local_cached_dev_env_with, read_host_local_dev_env_state,
-        remote_linux_vm_execution_from_error, remote_snapshot_ready_for_use,
-        render_tart_guest_script, run_job_on_runner, run_status_from_terminal_result,
-        shell_single_quote, staged_linux_remote_defaults, staged_linux_remote_snapshot_dir,
-        staged_payload_remote_dirs, write_host_local_dev_env_script,
-        write_host_local_dev_env_state,
+        REMOTE_LINUX_VM_INCUS_GUEST_ROLE_ENV, REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH,
+        RemoteIncusContext, RemoteLinuxVmSharedContext, StagedPreparedPayload,
+        attach_remote_linux_vm_execution, build_sync_directory_finalize_command,
+        cached_host_local_dev_env_is_usable, host_local_command_mode,
+        host_local_dev_env_script_path, host_local_dev_env_shell_program, incus,
+        prepare_host_local_cached_dev_env_with, read_host_local_dev_env_state,
+        remote_linux_vm_execution_from_error, remote_linux_vm_incus_guest_role,
+        remote_snapshot_ready_for_use, render_tart_guest_script, run_job_on_runner,
+        run_status_from_terminal_result, shell_single_quote, staged_linux_remote_defaults,
+        staged_linux_remote_snapshot_dir, staged_payload_remote_dirs,
+        write_host_local_dev_env_script, write_host_local_dev_env_state,
     };
     use crate::model::{
         GuestCommand, HostProcessRuntimeConfig, IncusRuntimeConfig, JobExecutionConfig,
@@ -2516,6 +2555,7 @@ mod tests {
 
     fn remote_incus_runtime() -> JobRuntimeConfig {
         JobRuntimeConfig::Incus(IncusRuntimeConfig {
+            guest_role: IncusGuestRole::PikaciRunner,
             staged_linux_command: None,
         })
     }
@@ -2570,10 +2610,46 @@ mod tests {
     fn sample_incus_context() -> RemoteIncusContext {
         RemoteIncusContext {
             shared: sample_remote_shared_context(),
+            incus_guest_role: IncusGuestRole::PikaciRunner,
             incus_project: "pika-managed-agents".to_string(),
             incus_profile: "pika-agent-dev".to_string(),
             incus_image_alias: "pikaci/dev".to_string(),
             incus_instance_name: "pikaci-run-job".to_string(),
+        }
+    }
+
+    #[test]
+    fn remote_linux_incus_records_guest_role_only_for_canonical_aliases() {
+        let canonical = sample_incus_context();
+        assert_eq!(
+            canonical.recorded_guest_role(),
+            Some(IncusGuestRole::PikaciRunner)
+        );
+
+        let custom = RemoteIncusContext {
+            incus_image_alias: "custom/pikaci".to_string(),
+            ..sample_incus_context()
+        };
+        assert_eq!(custom.recorded_guest_role(), None);
+    }
+
+    #[test]
+    fn remote_linux_incus_guest_role_env_rejects_invalid_values() {
+        let _guard = crate::test_support::env_lock();
+        unsafe {
+            std::env::set_var(REMOTE_LINUX_VM_INCUS_GUEST_ROLE_ENV, "not-a-role");
+        }
+
+        let err = remote_linux_vm_incus_guest_role(&sample_shell_job("actionlint"))
+            .expect_err("invalid guest-role env must fail cleanly");
+
+        assert!(
+            err.to_string()
+                .contains(REMOTE_LINUX_VM_INCUS_GUEST_ROLE_ENV)
+        );
+
+        unsafe {
+            std::env::remove_var(REMOTE_LINUX_VM_INCUS_GUEST_ROLE_ENV);
         }
     }
 
@@ -2830,6 +2906,7 @@ mod tests {
         let record = RemoteLinuxVmExecutionRecord {
             backend: RemoteLinuxVmBackend::Incus,
             incus_image: Some(RemoteLinuxVmImageRecord {
+                guest_role: Some(IncusGuestRole::PikaciRunner),
                 project: "pika-managed-agents".to_string(),
                 alias: "pikaci/dev".to_string(),
                 fingerprint: Some("abcdef".to_string()),

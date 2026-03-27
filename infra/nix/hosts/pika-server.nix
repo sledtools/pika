@@ -10,7 +10,7 @@
       incusProject = "pika-managed-agents";
       incusProfile = "pika-agent-dev";
       incusStoragePool = "default";
-      incusImageAlias = "pika-agent/dev";
+      incusGuestRole = "managed-openclaw";
       incusOpenclawGuestIpv4Cidr = "10.193.52.0/24";
       incusOpenclawProxyHost = "100.81.250.67";
       incusInsecureTls = true;

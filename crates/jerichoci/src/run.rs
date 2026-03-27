@@ -4558,6 +4558,7 @@ mod tests {
         staged_linux_command: Option<StagedLinuxCommandConfig>,
     ) -> JobRuntimeConfig {
         JobRuntimeConfig::Incus(IncusRuntimeConfig {
+            guest_role: pika_incus_guest_role::IncusGuestRole::PikaciRunner,
             staged_linux_command,
         })
     }

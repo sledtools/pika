@@ -64,10 +64,19 @@ Use the direct Apple remote wrapper when you want the narrow live-validation pat
 
 `apple-host-sanity` runs the tiny blocking smoke lane (`just desktop-ui-test`) on the mini, and `apple-host-bundle` runs the heavy nightly bundle.
 
+For manual operator access, keep using plain SSH directly to the mini:
+
+```bash
+ssh mini@pika-mini.tail029da2.ts.net
+```
+
+The checked-in wrapper is the forge/CI transport contract, not the general manual login path.
+
 The Apple CI config/secret model now follows the repo's checked-in secret pattern:
 
 - Non-secret Apple CI config is checked into [.github/pikaci-apple.env](/Users/justin/code/pika/worktrees/pikaci-mac/.github/pikaci-apple.env).
 - Apple CI secrets are checked into `secrets/pikaci-apple.sops.yaml` (with legacy fallback to `secrets/pikaci-apple.env.age` during migration).
+- Runtime SSH auth is single-path for the wrapper: `./scripts/pikaci-apple-remote.sh` must receive an explicit identity file via `PIKACI_APPLE_SSH_KEY_FILE`, and it always forces `IdentitiesOnly=yes` with `IdentityAgent=none`. It does not fall back to ambient `ssh-agent` keys.
 
 The checked-in public config currently carries:
 
@@ -91,6 +100,8 @@ PIKACI_APPLE_SSH_KEY_FILE="$HOME/.ssh/<apple-mini-private-key>" \
 
 - `PIKACI_APPLE_TAILSCALE_AUTHKEY`
 - `PIKACI_APPLE_SSH_KEY`
+
+At rest, the secret is stored as inline key material (`PIKACI_APPLE_SSH_KEY`). At runtime, the forge host materializes that secret to a file path and exports `PIKACI_APPLE_SSH_KEY_FILE` to the wrapper. The wrapper's single-path contract is the runtime file path, not the encrypted-at-rest variable name.
 
 It uses a git-backed source contract on the mini: the caller sends an exact git bundle for the requested ref, the mini imports it into a bare mirror under `/Volumes/pikaci-data/pikaci-apple`, materializes a stable prepared worktree under `prepared/<commit>`, and reuses that checkout across repeated runs of the same commit. When the wrapper sees a schema-valid prepared checkout for the exact commit, it skips source upload/import entirely and goes straight to the prepared worktree. `prepare` now builds a stronger Apple-shaped staged state there: it prewarms the Apple dev shell, compiles the Rust/Desktop test binaries, and for the nightly bundle it runs `xcodebuild build-for-testing` via `./tools/ios-ui-test prepare`. `run` then reuses that prepared checkout, executes the requested checked-in `just` recipe (default `apple-host-bundle`), and lets `./tools/ios-ui-test run` switch to `xcodebuild test-without-building` when the prepared iOS outputs exist. The wrapper returns phase timing artifacts to the caller, takes a host-local run lock before touching the shared mirror/target state, honors the checked-in `PIKACI_APPLE_LOCK_TIMEOUT_SEC` when callers load `.github/pikaci-apple.env`, schema-checks the prepared marker before reuse, scrubs run-local `.pikaci` state and stale XCTest logs before each operation, prunes old remote run dirs automatically, and keeps only a bounded number of prepared commit dirs.
 

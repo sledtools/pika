@@ -111,11 +111,13 @@ pub(crate) fn cmd_logs(
     Ok(())
 }
 
-pub(crate) fn cmd_merge(cli: &Cli, branch_or_id: Option<&str>) -> anyhow::Result<()> {
+pub(crate) fn cmd_merge(cli: &Cli, branch_or_id: Option<&str>, force: bool) -> anyhow::Result<()> {
     let session = load_session(&cli.state_dir)?;
     let base_url = resolve_authenticated_base_url(cli.base_url.as_deref(), &session)?;
     let api = ApiClient::new(base_url, Some(session.token))?;
     let resolved = resolve_branch_ref(&api, branch_or_id)?;
+    let branch = api.branch_detail(resolved.branch_id)?;
+    ensure_merge_ci_guard(&branch, force)?;
     let response = api.merge_branch(resolved.branch_id)?;
     print_branch_action("merged", &response);
     Ok(())
@@ -280,6 +282,17 @@ pub(crate) fn branch_ci_active(branch: &BranchDetailResponse) -> bool {
         || branch.ci_runs.iter().any(|run| {
             run.status.is_active() || run.lanes.iter().any(|lane| lane.status.is_active())
         })
+}
+
+fn ensure_merge_ci_guard(branch: &BranchDetailResponse, force: bool) -> anyhow::Result<()> {
+    if force || branch.branch.ci_status.is_success() || branch_ci_active(branch) {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "refusing to merge branch #{} because ci is {}. Rerun or fix CI, or pass --force if absolutely necessary; --force is discouraged under normal circumstances.",
+        branch.branch.branch_id,
+        branch.branch.ci_status
+    ))
 }
 
 fn active_lane_titles(branch: &BranchDetailResponse) -> Vec<String> {

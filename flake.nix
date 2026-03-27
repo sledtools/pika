@@ -193,6 +193,17 @@
           ./uniffi-bindgen
         ];
       };
+      mkPhSrc = lib: lib.fileset.toSource {
+        root = ./.;
+        fileset = lib.fileset.unions [
+          ./Cargo.toml
+          ./Cargo.lock
+          ./cli
+          ./crates
+          ./rust
+          ./uniffi-bindgen
+        ];
+      };
       mkPikaciPkg = pkgs: src:
         pkgs.rustPlatform.buildRustPackage {
           pname = "pikaci";
@@ -212,27 +223,6 @@
           nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
           meta = {
             mainProgram = "pikaci";
-          };
-        };
-      mkPhPkg = pkgs: src:
-        pkgs.rustPlatform.buildRustPackage {
-          pname = "ph";
-          version = "0.1.0";
-          inherit src;
-          cargoLock = {
-            lockFile = ./Cargo.lock;
-            outputHashes = {
-              "hypernote-mdx-0.3.0" = "sha256-SBhXVXPyCvxs+VudVLYitaioS8jwYSsE0k2SwPU+9GY=";
-              "mdk-core-0.7.1" = "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
-              "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
-            };
-          };
-          cargoBuildFlags = [ "-p" "ph" ];
-          cargoTestFlags = [ "-p" "ph" ];
-          doCheck = false;
-          nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
-          meta = {
-            mainProgram = "ph";
           };
         };
       mkPikachatPkg = pkgs: src:
@@ -472,6 +462,7 @@
             "aarch64-apple-ios-sim"
           ];
         };
+        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
         hasAndroidSdk = builtins.hasAttr system android-nixpkgs.sdk;
         hasMoqRelay = builtins.hasAttr system moq.packages;
@@ -604,7 +595,36 @@
         linuxEglVendorPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/share/glvnd/egl_vendor.d" else "";
         linuxVulkanIcdPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/share/vulkan/icd.d" else "";
         pikaciPkg = mkPikaciPkg pkgs (mkPikaciSrc pkgs.lib);
-        phPkg = mkPhPkg pkgs (mkPikaciSrc pkgs.lib);
+        phSrc = mkPhSrc pkgs.lib;
+        phCargoCommonArgs = {
+          pname = "ph";
+          version = "0.1.0";
+          src = phSrc;
+          cargoLock = ./Cargo.lock;
+          outputHashes = {
+            "git+https://github.com/futurepaul/hypernote-mdx?rev=db23b3d72e81389247716c5a59174cc4f4d55a34#db23b3d72e81389247716c5a59174cc4f4d55a34" =
+              "sha256-SBhXVXPyCvxs+VudVLYitaioS8jwYSsE0k2SwPU+9GY=";
+            "git+https://github.com/marmot-protocol/mdk?rev=ca0663ee332958aa92efadf916d19c6e1b1f99c7#ca0663ee332958aa92efadf916d19c6e1b1f99c7" =
+              "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
+            "git+https://github.com/kixelated/moq?rev=5ad5c064875d11d22f31779537fc0e541d792717#5ad5c064875d11d22f31779537fc0e541d792717" =
+              "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
+          };
+          cargoExtraArgs = "--locked -p ph";
+          strictDeps = true;
+          doCheck = false;
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = [ pkgs.openssl ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
+        };
+        phCargoArtifacts = craneLib.buildDepsOnly ((builtins.removeAttrs phCargoCommonArgs [ "src" ]) // {
+          pname = "ph-deps";
+          dummySrc = craneLib.mkDummySrc phCargoCommonArgs;
+        });
+        phPkg = craneLib.buildPackage (phCargoCommonArgs // {
+          cargoArtifacts = phCargoArtifacts;
+          meta = {
+            mainProgram = "ph";
+          };
+        });
         pikachatPkgHost = mkPikachatPkg pkgs (
           pkgs.lib.fileset.toSource {
             root = ./.;

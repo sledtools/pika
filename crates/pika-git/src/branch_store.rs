@@ -888,32 +888,6 @@ mod tests {
         lane
     }
 
-    fn target_health_row(
-        store: &Store,
-        target_id: &str,
-    ) -> (String, i64, Option<String>, Option<String>, Option<String>) {
-        store
-            .with_connection(|conn| {
-                conn.query_row(
-                    "SELECT state, consecutive_infra_failure_count, last_success_at, last_failure_kind, cooloff_until
-                     FROM ci_target_health
-                     WHERE target_id = ?1",
-                    params![target_id],
-                    |row| {
-                        Ok((
-                            row.get(0)?,
-                            row.get(1)?,
-                            row.get(2)?,
-                            row.get(3)?,
-                            row.get(4)?,
-                        ))
-                    },
-                )
-                .map_err(Into::into)
-            })
-            .expect("lookup target health row")
-    }
-
     #[test]
     fn branch_name_reuse_creates_new_numeric_record() {
         let store = open_store();
@@ -1465,7 +1439,7 @@ mod tests {
     }
 
     #[test]
-    fn queue_reasons_and_unhealthy_targets_do_not_block_unrelated_claims() {
+    fn queue_reasons_do_not_block_unrelated_claims() {
         let store = open_store();
         let running_branch = store
             .upsert_branch_record(&upsert_input("feature/running", "head-running"))
@@ -1473,9 +1447,6 @@ mod tests {
         let blocked_branch = store
             .upsert_branch_record(&upsert_input("feature/blocked", "head-blocked"))
             .expect("insert blocked branch");
-        let unhealthy_branch = store
-            .upsert_branch_record(&upsert_input("feature/unhealthy", "head-unhealthy"))
-            .expect("insert unhealthy branch");
         let ready_branch = store
             .upsert_branch_record(&upsert_input("feature/ready", "head-ready"))
             .expect("insert ready branch");
@@ -1503,30 +1474,6 @@ mod tests {
                 &[sample_lane_with_group("shared-blocked", "shared-group")],
             )
             .expect("queue blocked branch");
-        store
-            .queue_branch_ci_run_for_head(
-                unhealthy_branch.branch_id,
-                "head-unhealthy",
-                &[sample_lane_with_target("apple-sanity", "apple-host")],
-            )
-            .expect("queue unhealthy branch");
-        store
-            .with_connection(|conn| {
-                conn.execute(
-                    "INSERT INTO ci_target_health(
-                        target_id,
-                        state,
-                        consecutive_infra_failure_count,
-                        last_failure_at,
-                        last_failure_kind,
-                        cooloff_until,
-                        updated_at
-                     ) VALUES (?1, 'unhealthy', 2, CURRENT_TIMESTAMP, 'infrastructure', datetime('now', '+15 minutes'), CURRENT_TIMESTAMP)",
-                    params!["apple-host"],
-                )?;
-                Ok::<(), anyhow::Error>(())
-            })
-            .expect("insert unhealthy target");
         store
             .queue_branch_ci_run_for_head(
                 ready_branch.branch_id,
@@ -1558,21 +1505,6 @@ mod tests {
         assert_eq!(
             blocked_runs[0].lanes[0].execution_reason,
             CiLaneExecutionReason::BlockedByConcurrencyGroup
-        );
-        let unhealthy_runs = store
-            .list_branch_ci_runs(unhealthy_branch.branch_id, 1)
-            .expect("list unhealthy runs");
-        assert_eq!(
-            unhealthy_runs[0].lanes[0].execution_reason,
-            CiLaneExecutionReason::TargetUnhealthy
-        );
-        assert_eq!(
-            unhealthy_runs[0].lanes[0]
-                .target_health
-                .as_ref()
-                .expect("target health")
-                .consecutive_infra_failure_count,
-            2
         );
         let waiting_runs = store
             .list_branch_ci_runs(waiting_branch.branch_id, 1)
@@ -1606,108 +1538,6 @@ mod tests {
                 "ok",
             )
             .expect("finish claimed ready lane");
-    }
-
-    #[test]
-    fn target_health_tracks_infra_failures_and_resets_after_success() {
-        let store = open_store();
-        let branch = store
-            .upsert_branch_record(&upsert_input("feature/target-health", "head-target-health"))
-            .expect("insert branch");
-        let lane = sample_lane_with_target("pika-rust", "pre-merge-pika-rust");
-        store
-            .queue_branch_ci_run_for_head(
-                branch.branch_id,
-                "head-target-health",
-                std::slice::from_ref(&lane),
-            )
-            .expect("queue ci");
-
-        let first = store
-            .claim_pending_branch_ci_lane_runs(1, 120)
-            .expect("claim first run")
-            .into_iter()
-            .next()
-            .expect("first run");
-        store
-            .finish_branch_ci_lane_run(
-                first.lane_run_id,
-                first.claim_token,
-                crate::ci_state::CiLaneStatus::Failed,
-                "ci runner error: permission denied",
-            )
-            .expect("finish first infra failure");
-        let first_health = target_health_row(&store, "pre-merge-pika-rust");
-        assert_eq!(first_health.0, "healthy");
-        assert_eq!(first_health.1, 1);
-        assert_eq!(first_health.3.as_deref(), Some("infrastructure"));
-        assert!(first_health.4.is_none());
-
-        store
-            .requeue_branch_ci_lane(branch.branch_id, first.lane_run_id)
-            .expect("requeue first lane")
-            .expect("lane exists");
-        let second = store
-            .claim_pending_branch_ci_lane_runs(1, 120)
-            .expect("claim second run")
-            .into_iter()
-            .next()
-            .expect("second run");
-        store
-            .finish_branch_ci_lane_run(
-                second.lane_run_id,
-                second.claim_token,
-                crate::ci_state::CiLaneStatus::Failed,
-                "ci runner error: unbound variable",
-            )
-            .expect("finish second infra failure");
-        let second_health = target_health_row(&store, "pre-merge-pika-rust");
-        assert_eq!(second_health.0, "unhealthy");
-        assert_eq!(second_health.1, 2);
-        assert_eq!(second_health.3.as_deref(), Some("infrastructure"));
-        assert!(second_health.4.is_some());
-
-        store
-            .requeue_branch_ci_lane(branch.branch_id, second.lane_run_id)
-            .expect("requeue second lane")
-            .expect("lane exists");
-        assert!(store
-            .claim_pending_branch_ci_lane_runs(1, 120)
-            .expect("claim while unhealthy")
-            .is_empty());
-
-        store
-            .with_connection(|conn| {
-                conn.execute(
-                    "UPDATE ci_target_health
-                     SET cooloff_until = datetime('now', '-1 minute')
-                     WHERE target_id = ?1",
-                    params!["pre-merge-pika-rust"],
-                )?;
-                Ok::<(), anyhow::Error>(())
-            })
-            .expect("expire cooloff");
-        store
-            .refresh_ci_lane_execution_reasons(Some(1))
-            .expect("refresh after cooloff");
-        let third = store
-            .claim_pending_branch_ci_lane_runs(1, 120)
-            .expect("claim after cooloff")
-            .into_iter()
-            .next()
-            .expect("third run");
-        store
-            .finish_branch_ci_lane_run(
-                third.lane_run_id,
-                third.claim_token,
-                crate::ci_state::CiLaneStatus::Success,
-                "ok",
-            )
-            .expect("finish healthy success");
-        let final_health = target_health_row(&store, "pre-merge-pika-rust");
-        assert_eq!(final_health.0, "healthy");
-        assert_eq!(final_health.1, 0);
-        assert!(final_health.2.is_some());
     }
 
     #[test]

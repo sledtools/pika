@@ -340,8 +340,6 @@
                     pikaci_run_id: None,
                     pikaci_target_id: None,
                     ci_target_key: None,
-                    target_health_state: None,
-                    target_health_summary: None,
                     log_text: None,
                     retry_count: 0,
                     rerun_of_lane_run_id: None,

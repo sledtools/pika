@@ -99,8 +99,6 @@ string_enum! {
         Waiting => "waiting",
         WaitingForCapacity => "waiting_for_capacity",
         BlockedByConcurrencyGroup => "blocked_by_concurrency_group",
-        TargetUnhealthy => "target_unhealthy",
-        BlockedByTargetHealth => "blocked_by_target_health",
         NeedsAttention => "needs_attention",
         Lost => "lost",
         TimedOut => "timed_out",
@@ -146,7 +144,6 @@ string_enum! {
         Running => "running",
         BlockedByConcurrencyGroup => "blocked_by_concurrency_group",
         WaitingForCapacity => "waiting_for_capacity",
-        TargetUnhealthy => "target_unhealthy",
         StaleRecovered => "stale_recovered",
     }
 }
@@ -165,7 +162,6 @@ impl CiLaneExecutionReason {
             Self::Running => "running",
             Self::BlockedByConcurrencyGroup => "blocked by concurrency group",
             Self::WaitingForCapacity => "waiting for capacity",
-            Self::TargetUnhealthy => "target unhealthy",
             Self::StaleRecovered => "stale recovered",
             Self::Unknown(value) => value.as_str(),
         }
@@ -188,13 +184,6 @@ impl CiLaneFailureKind {
             Self::Infrastructure => "infrastructure",
             Self::Unknown(value) => value.as_str(),
         }
-    }
-}
-
-string_enum! {
-    pub enum CiTargetHealthState {
-        Healthy => "healthy",
-        Unhealthy => "unhealthy",
     }
 }
 
@@ -271,10 +260,6 @@ pub struct CiLane {
     pub pikaci_target_id: Option<String>,
     #[serde(default)]
     pub ci_target_key: Option<String>,
-    #[serde(default)]
-    pub target_health_state: Option<CiTargetHealthState>,
-    #[serde(default)]
-    pub target_health_summary: Option<String>,
     pub log_text: Option<String>,
     pub retry_count: i64,
     pub rerun_of_lane_run_id: Option<i64>,

@@ -493,12 +493,10 @@ fn ci_queue_state_schema_present(conn: &Connection) -> anyhow::Result<bool> {
         table_has_column(conn, "nightly_run_lanes", "execution_reason")?;
     let branch_has_failure_kind = table_has_column(conn, "branch_ci_run_lanes", "failure_kind")?;
     let nightly_has_failure_kind = table_has_column(conn, "nightly_run_lanes", "failure_kind")?;
-    let has_target_health = table_exists(conn, "ci_target_health")?;
     Ok(branch_has_execution_reason
         && nightly_has_execution_reason
         && branch_has_failure_kind
-        && nightly_has_failure_kind
-        && has_target_health)
+        && nightly_has_failure_kind)
 }
 
 fn table_has_column(conn: &Connection, table: &str, column: &str) -> anyhow::Result<bool> {
@@ -672,6 +670,11 @@ fn migrations() -> Vec<Migration> {
             version: 25,
             name: "0025_drop_legacy_pr_surface",
             sql: include_str!("../migrations/0025_drop_legacy_pr_surface.sql"),
+        },
+        Migration {
+            version: 26,
+            name: "0026_drop_ci_target_health",
+            sql: include_str!("../migrations/0026_drop_ci_target_health.sql"),
         },
     ]
 }
@@ -852,7 +855,7 @@ mod tests {
                     "execution_reason"
                 )?);
                 assert!(table_has_column(conn, "nightly_run_lanes", "failure_kind")?);
-                assert!(table_exists(conn, "ci_target_health")?);
+                assert!(!table_exists(conn, "ci_target_health")?);
                 assert!(table_exists(conn, MIGRATIONS_TABLE)?);
                 assert!(!table_exists(conn, LEGACY_MIGRATIONS_TABLE)?);
                 let migration_name: String = conn.query_row(
@@ -864,6 +867,168 @@ mod tests {
                 Ok::<_, anyhow::Error>(())
             })
             .expect("verify queue state migration");
+    }
+
+    #[test]
+    fn drop_target_health_migration_rewrites_legacy_unhealthy_rows() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("pika-git.db");
+        let conn = Connection::open(&db_path).expect("open sqlite");
+
+        conn.execute_batch(&format!(
+            "CREATE TABLE IF NOT EXISTS {MIGRATIONS_TABLE} (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );"
+        ))
+        .expect("create migrations table");
+
+        for migration in migrations()
+            .into_iter()
+            .filter(|migration| migration.version <= 25)
+        {
+            let tx = conn
+                .unchecked_transaction()
+                .expect("start migration transaction");
+            tx.execute_batch(migration.sql).expect("apply migration");
+            tx.execute(
+                &format!("INSERT INTO {MIGRATIONS_TABLE}(version, name) VALUES (?1, ?2)"),
+                params![migration.version, migration.name],
+            )
+            .expect("record migration");
+            tx.commit().expect("commit migration");
+        }
+
+        conn.execute(
+            "INSERT INTO repos(repo, default_branch) VALUES (?1, ?2)",
+            params!["sledtools/pika", "master"],
+        )
+        .expect("insert repo");
+        let repo_id: i64 = conn
+            .query_row(
+                "SELECT id FROM repos WHERE repo = ?1",
+                params!["sledtools/pika"],
+                |row| row.get(0),
+            )
+            .expect("lookup repo id");
+        conn.execute(
+            "INSERT INTO branch_records(
+                repo_id, branch_name, target_branch, title, state, head_sha, merge_base_sha, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                repo_id,
+                "feature/rewrite-unhealthy",
+                "master",
+                "feature/rewrite-unhealthy title",
+                "open",
+                "head-1",
+                "base-1",
+                "2026-03-26T12:00:00Z"
+            ],
+        )
+        .expect("insert branch");
+        let branch_id: i64 = conn
+            .query_row(
+                "SELECT id FROM branch_records WHERE branch_name = ?1",
+                params!["feature/rewrite-unhealthy"],
+                |row| row.get(0),
+            )
+            .expect("lookup branch id");
+        conn.execute(
+            "INSERT INTO branch_ci_runs(
+                branch_id, source_head_sha, entrypoint, command_json, status
+             ) VALUES (?1, ?2, ?3, ?4, 'queued')",
+            params![branch_id, "head-1", "just pre-merge", "[]"],
+        )
+        .expect("insert branch run");
+        let branch_run_id: i64 = conn
+            .query_row(
+                "SELECT id FROM branch_ci_runs WHERE branch_id = ?1",
+                params![branch_id],
+                |row| row.get(0),
+            )
+            .expect("lookup branch run");
+        conn.execute(
+            "INSERT INTO branch_ci_run_lanes(
+                branch_ci_run_id, lane_id, title, entrypoint, command_json, status, execution_reason
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 'queued', 'target_unhealthy')",
+            params![
+                branch_run_id,
+                "branch-lane",
+                "branch lane",
+                "just branch",
+                "[]"
+            ],
+        )
+        .expect("insert branch lane");
+
+        conn.execute(
+            "INSERT INTO nightly_runs(
+                repo_id, source_ref, source_head_sha, status, scheduled_for
+             ) VALUES (?1, ?2, ?3, 'queued', ?4)",
+            params![
+                repo_id,
+                "refs/heads/master",
+                "head-1",
+                "2026-03-26T08:00:00Z"
+            ],
+        )
+        .expect("insert nightly run");
+        let nightly_run_id: i64 = conn
+            .query_row(
+                "SELECT id FROM nightly_runs WHERE repo_id = ?1",
+                params![repo_id],
+                |row| row.get(0),
+            )
+            .expect("lookup nightly run");
+        conn.execute(
+            "INSERT INTO nightly_run_lanes(
+                nightly_run_id, lane_id, title, entrypoint, command_json, status, execution_reason
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 'queued', 'target_unhealthy')",
+            params![
+                nightly_run_id,
+                "nightly-lane",
+                "nightly lane",
+                "just nightly",
+                "[]"
+            ],
+        )
+        .expect("insert nightly lane");
+
+        conn.execute(
+            "INSERT INTO ci_target_health(target_id, state, consecutive_infra_failure_count, updated_at)
+             VALUES (?1, 'unhealthy', 2, CURRENT_TIMESTAMP)",
+            params!["apple-host"],
+        )
+        .expect("insert target health");
+        drop(conn);
+
+        let store = Store::open(&db_path).expect("open store after migration 26");
+        store
+            .with_connection(|conn| {
+                let branch_reason: String = conn.query_row(
+                    "SELECT execution_reason FROM branch_ci_run_lanes WHERE branch_ci_run_id = ?1",
+                    params![branch_run_id],
+                    |row| row.get(0),
+                )?;
+                let nightly_reason: String = conn.query_row(
+                    "SELECT execution_reason FROM nightly_run_lanes WHERE nightly_run_id = ?1",
+                    params![nightly_run_id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(branch_reason, "queued");
+                assert_eq!(nightly_reason, "queued");
+                assert!(!table_exists(conn, "ci_target_health")?);
+                let migration_name: String = conn.query_row(
+                    &format!("SELECT name FROM {MIGRATIONS_TABLE} WHERE version = 26"),
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(migration_name, "0026_drop_ci_target_health");
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("verify drop target health migration");
     }
 
     #[test]

@@ -33,6 +33,8 @@ let
       pname,
       buildScript,
       installScript,
+      allowedWorkspacePackages,
+      targetPackages,
     }:
     pkgs.rustPlatform.buildRustPackage {
       inherit pname src cargoLock;
@@ -59,6 +61,55 @@ pub fn _pika_nix_placeholder_target() {}
 EOF
           fi
         done
+        export PIKA_ALLOWED_WORKSPACE_PACKAGES='${builtins.toJSON allowedWorkspacePackages}'
+        export PIKA_TARGET_PACKAGES='${builtins.toJSON targetPackages}'
+        python3 - <<'PY'
+import json
+import os
+import subprocess
+import sys
+
+allowed = set(json.loads(os.environ["PIKA_ALLOWED_WORKSPACE_PACKAGES"]))
+targets = json.loads(os.environ["PIKA_TARGET_PACKAGES"])
+metadata = json.loads(
+    subprocess.check_output(["cargo", "metadata", "--format-version", "1", "--no-deps"], text=True)
+)
+workspace_packages = {pkg["name"] for pkg in metadata["packages"]}
+seen_workspace = set()
+
+for target in targets:
+    output = subprocess.check_output(
+        [
+            "cargo",
+            "tree",
+            "--quiet",
+            "--edges",
+            "normal,build",
+            "--prefix",
+            "none",
+            "--format",
+            "{p}",
+            "-p",
+            target,
+        ],
+        text=True,
+    )
+    for line in output.splitlines():
+        if not line:
+            continue
+        name = line.split()[0]
+        if name in workspace_packages:
+            seen_workspace.add(name)
+
+unexpected = sorted(name for name in seen_workspace if name not in allowed)
+if unexpected:
+    print(
+        "error: Apple Nix fileset omitted real workspace build dependencies: "
+        + ", ".join(unexpected),
+        file=sys.stderr,
+    )
+    sys.exit(1)
+PY
         ${buildScript}
         runHook postBuild
       '';
@@ -76,6 +127,17 @@ in
 {
   desktopCompile = mkAppleRustPackage {
     pname = "apple-desktop-compile";
+    allowedWorkspacePackages = [
+      "hypernote-protocol"
+      "pika-cloud"
+      "pika-desktop"
+      "pika-marmot-runtime"
+      "pika-media"
+      "pika-relay-profiles"
+      "pika-tls"
+      "pika_core"
+    ];
+    targetPackages = [ "pika-desktop" ];
     buildScript = ''
       ./tools/cargo-with-xcode test -p pika-desktop --no-run --message-format=short \
         > "$TMPDIR/apple-desktop-compile.log"
@@ -89,6 +151,24 @@ in
 
   iosXcframework = mkAppleRustPackage {
     pname = "apple-ios-xcframework";
+    allowedWorkspacePackages = [
+      "hypernote-protocol"
+      "pika-cloud"
+      "pika-marmot-runtime"
+      "pika-media"
+      "pika-nse"
+      "pika-relay-profiles"
+      "pika-share"
+      "pika-tls"
+      "pika_core"
+      "uniffi-bindgen"
+    ];
+    targetPackages = [
+      "pika_core"
+      "pika-nse"
+      "pika-share"
+      "uniffi-bindgen"
+    ];
     buildScript = ''
       ./scripts/ios-build ios-xcframework
     '';

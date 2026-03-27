@@ -19,6 +19,7 @@ futures = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
 nostr-sdk = { workspace = true, features = ["nip59"] }
+pika-managed-agent-contract = { workspace = true }
 pika-cloud = { path = "../pika-cloud" }
 pika-relay-profiles = { path = "../pika-relay-profiles" }
 rand = { workspace = true }

@@ -14,7 +14,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use hypernote_protocol as hn;
 use mdk_core::prelude::*;
 use nostr_sdk::prelude::*;
-use pika_cloud::{AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams};
+use pika_managed_agent_contract::{AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams};
 use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
 use pika_marmot_runtime::runtime::MarmotRuntime;

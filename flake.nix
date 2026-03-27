@@ -667,9 +667,11 @@
             ./VERSION
             ./Cargo.toml
             ./Cargo.lock
+            ./cli/Cargo.toml
             ./config
             ./crates
             ./rust
+            ./uniffi-bindgen/Cargo.toml
             ./tools/cargo-with-xcode
             ./tools/xcode-dev-dir
           ];
@@ -680,6 +682,7 @@
             ./VERSION
             ./Cargo.toml
             ./Cargo.lock
+            ./cli/Cargo.toml
             ./config
             ./crates
             ./rust

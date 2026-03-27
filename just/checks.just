@@ -157,6 +157,7 @@ apple-host-ios-compile:
     mkdir -p "$(dirname "$derived_data_path")"
     ./scripts/apple-host-record-phase apple-host-ios-compile.xcodebuild apple-native -- \
       env PIKACI_APPLE_IOS_XCFRAMEWORK_RESULT="$result_path" PIKA_IOS_DERIVED_DATA_PATH="$derived_data_path" \
+      PIKA_XCODE_SKIP_VERSION_STAMP=1 \
       ./scripts/ios-build ios-build-generic-sim
     echo "apple-host-ios-compile complete"
 

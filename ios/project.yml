@@ -65,6 +65,11 @@ targets:
     postBuildScripts:
       - name: "Stamp version and build number"
         script: |
+          if [ "${PIKA_XCODE_SKIP_VERSION_STAMP:-0}" = "1" ]; then
+            mkdir -p "$(dirname "$SCRIPT_OUTPUT_FILE_0")"
+            : > "$SCRIPT_OUTPUT_FILE_0"
+            exit 0
+          fi
           PLIST_PATH="${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
           if [ ! -f "$PLIST_PATH" ]; then
             echo "warning: skipping plist stamp; $PLIST_PATH not found"
@@ -80,7 +85,11 @@ targets:
             BUILD_NUMBER=$(date -u +"%Y%m%d%H%M%S")
           fi
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$PLIST_PATH"
-        basedOnDependencyAnalysis: false
+          mkdir -p "$(dirname "$SCRIPT_OUTPUT_FILE_0")"
+          : > "$SCRIPT_OUTPUT_FILE_0"
+        basedOnDependencyAnalysis: true
+        outputFiles:
+          - $(DERIVED_FILE_DIR)/Pika-version-stamp
 
   PikaNotificationService:
     type: app-extension
@@ -104,6 +113,11 @@ targets:
     postBuildScripts:
       - name: "Stamp version and build number"
         script: |
+          if [ "${PIKA_XCODE_SKIP_VERSION_STAMP:-0}" = "1" ]; then
+            mkdir -p "$(dirname "$SCRIPT_OUTPUT_FILE_0")"
+            : > "$SCRIPT_OUTPUT_FILE_0"
+            exit 0
+          fi
           PLIST_PATH="${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
           if [ ! -f "$PLIST_PATH" ]; then
             echo "warning: skipping plist stamp; $PLIST_PATH not found"
@@ -119,7 +133,11 @@ targets:
             BUILD_NUMBER=$(date -u +"%Y%m%d%H%M%S")
           fi
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$PLIST_PATH"
-        basedOnDependencyAnalysis: false
+          mkdir -p "$(dirname "$SCRIPT_OUTPUT_FILE_0")"
+          : > "$SCRIPT_OUTPUT_FILE_0"
+        basedOnDependencyAnalysis: true
+        outputFiles:
+          - $(DERIVED_FILE_DIR)/PikaNotificationService-version-stamp
 
   PikaShareExtension:
     type: app-extension
@@ -143,6 +161,11 @@ targets:
     postBuildScripts:
       - name: "Stamp version and build number"
         script: |
+          if [ "${PIKA_XCODE_SKIP_VERSION_STAMP:-0}" = "1" ]; then
+            mkdir -p "$(dirname "$SCRIPT_OUTPUT_FILE_0")"
+            : > "$SCRIPT_OUTPUT_FILE_0"
+            exit 0
+          fi
           PLIST_PATH="${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}"
           if [ ! -f "$PLIST_PATH" ]; then
             echo "warning: skipping plist stamp; $PLIST_PATH not found"
@@ -158,7 +181,11 @@ targets:
             BUILD_NUMBER=$(date -u +"%Y%m%d%H%M%S")
           fi
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$PLIST_PATH"
-        basedOnDependencyAnalysis: false
+          mkdir -p "$(dirname "$SCRIPT_OUTPUT_FILE_0")"
+          : > "$SCRIPT_OUTPUT_FILE_0"
+        basedOnDependencyAnalysis: true
+        outputFiles:
+          - $(DERIVED_FILE_DIR)/PikaShareExtension-version-stamp
 
   PikaTests:
     type: bundle.unit-test

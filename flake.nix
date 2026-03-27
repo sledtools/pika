@@ -621,6 +621,7 @@
               ./rust
               ./uniffi-bindgen/Cargo.toml
               ./crates/pika-cloud
+              ./crates/pika-incus-guest-role
               ./crates/pika-relay-profiles
               ./crates/pika-managed-agent-contract
               ./crates/pika-marmot-runtime
@@ -646,6 +647,7 @@
               ./ios
               ./uniffi-bindgen
               ./crates/pika-cloud
+              ./crates/pika-incus-guest-role
               ./crates/pika-relay-profiles
               ./crates/pika-managed-agent-contract
               ./crates/pika-marmot-runtime
@@ -700,6 +702,7 @@
 
           packages = [
             rustToolchain
+            pkgs.sccache
             pkgs.just
             pkgs.nodejs_22
             pkgs.python3
@@ -856,6 +859,12 @@
                 export RANLIB="$TOOLCHAIN_BIN/ranlib"
                 export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER="$TOOLCHAIN_BIN/clang"
                 export CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER="$TOOLCHAIN_BIN/clang"
+              fi
+
+              if command -v sccache >/dev/null 2>&1; then
+                export RUSTC_WRAPPER="$(command -v sccache)"
+                export SCCACHE_DIR="''${PIKA_SCCACHE_DIR:-''${XDG_CACHE_HOME:-$HOME/.cache}/pika/sccache}"
+                mkdir -p "$SCCACHE_DIR"
               fi
             fi
 

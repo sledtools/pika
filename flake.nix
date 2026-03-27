@@ -661,39 +661,76 @@
             ./scripts
           ];
         };
+        workspaceCrateManifestFiles = [
+          ./crates/pikaci/Cargo.toml
+          ./crates/pika-agent-protocol/Cargo.toml
+          ./crates/pika-cloud/Cargo.toml
+          ./crates/pika-relay-profiles/Cargo.toml
+          ./crates/pika-marmot-runtime/Cargo.toml
+          ./crates/hypernote-protocol/Cargo.toml
+          ./crates/pikachat-sidecar/Cargo.toml
+          ./crates/pika-desktop/Cargo.toml
+          ./crates/pika-media/Cargo.toml
+          ./crates/pika-nse/Cargo.toml
+          ./crates/pika-share/Cargo.toml
+          ./crates/pika-tls/Cargo.toml
+          ./crates/rmp-cli/Cargo.toml
+          ./crates/pika-server/Cargo.toml
+          ./crates/pika-git/Cargo.toml
+          ./crates/ph/Cargo.toml
+          ./crates/pika-test-utils/Cargo.toml
+          ./crates/pikahut/Cargo.toml
+        ];
         appleDesktopWorkspaceSrc = pkgs.lib.fileset.toSource {
           root = ./.;
-          fileset = pkgs.lib.fileset.unions [
-            ./VERSION
-            ./Cargo.toml
-            ./Cargo.lock
-            ./cli/Cargo.toml
-            ./config
-            ./crates
-            ./rust
-            ./uniffi-bindgen/Cargo.toml
-            ./tools/cargo-with-xcode
-            ./tools/xcode-dev-dir
-          ];
+          fileset = pkgs.lib.fileset.unions (
+            workspaceCrateManifestFiles ++ [
+              ./VERSION
+              ./Cargo.toml
+              ./Cargo.lock
+              ./cli/Cargo.toml
+              ./config
+              ./rust
+              ./uniffi-bindgen/Cargo.toml
+              ./crates/pika-cloud
+              ./crates/pika-relay-profiles
+              ./crates/pika-marmot-runtime
+              ./crates/hypernote-protocol
+              ./crates/pika-desktop
+              ./crates/pika-media
+              ./crates/pika-tls
+              ./tools/cargo-with-xcode
+              ./tools/xcode-dev-dir
+            ]
+          );
         };
         appleIosWorkspaceSrc = pkgs.lib.fileset.toSource {
           root = ./.;
-          fileset = pkgs.lib.fileset.unions [
-            ./VERSION
-            ./Cargo.toml
-            ./Cargo.lock
-            ./cli/Cargo.toml
-            ./config
-            ./crates
-            ./rust
-            ./ios
-            ./uniffi-bindgen
-            ./scripts/ios-build
-            ./scripts/lib/mobile-build.sh
-            ./tools/lib/dotenv.sh
-            ./tools/xcode-dev-dir
-            ./tools/xcode-run
-          ];
+          fileset = pkgs.lib.fileset.unions (
+            workspaceCrateManifestFiles ++ [
+              ./VERSION
+              ./Cargo.toml
+              ./Cargo.lock
+              ./cli/Cargo.toml
+              ./config
+              ./rust
+              ./ios
+              ./uniffi-bindgen
+              ./crates/pika-cloud
+              ./crates/pika-relay-profiles
+              ./crates/pika-marmot-runtime
+              ./crates/hypernote-protocol
+              ./crates/pika-media
+              ./crates/pika-nse
+              ./crates/pika-share
+              ./crates/pika-tls
+              ./scripts/ios-build
+              ./scripts/lib/mobile-build.sh
+              ./tools/lib/dotenv.sh
+              ./tools/xcode-dev-dir
+              ./tools/xcode-run
+            ]
+          );
         };
         pikaFollowupGradleDepsHost =
           if hasAndroidSdk then

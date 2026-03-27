@@ -46,6 +46,19 @@ let
         export HOME="$TMPDIR/home"
         mkdir -p "$HOME"
         export PIKA_XCODE_INSTALL_PROMPT=0
+        # Keep workspace metadata valid without hashing whole unrelated member trees.
+        for manifest in ./cli/Cargo.toml ./uniffi-bindgen/Cargo.toml ./crates/*/Cargo.toml; do
+          if [ ! -f "$manifest" ]; then
+            continue
+          fi
+          crate_dir="''${manifest%/Cargo.toml}"
+          if [ ! -e "$crate_dir/src/lib.rs" ] && [ ! -e "$crate_dir/src/main.rs" ]; then
+            mkdir -p "$crate_dir/src"
+            cat > "$crate_dir/src/lib.rs" <<'EOF'
+pub fn _pika_nix_placeholder_target() {}
+EOF
+          fi
+        done
         ${buildScript}
         runHook postBuild
       '';

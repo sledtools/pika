@@ -130,8 +130,8 @@ pub(crate) fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                 "Run one tiny iOS unit test in a Tart macOS guest",
             )],
         }),
-        "agent-control-plane-unit" => single_job_target_spec(
-            "agent-control-plane-unit",
+        "pika-cloud-unit" => single_job_target_spec(
+            "pika-cloud-unit",
             "Run all pika-cloud unit tests in a remote Linux VM",
             &[],
             agent_contract_jobs(),
@@ -442,7 +442,7 @@ pub(crate) fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
 fn agent_contract_jobs() -> Vec<JobSpec> {
     vec![
         JobSpec {
-            id: "agent-control-plane-unit",
+            id: "pika-cloud-unit",
             description: "Run all pika-cloud unit tests in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
@@ -450,7 +450,7 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
                 package: "pika-cloud",
             },
             runtime_config: remote_incus_runtime(Some(
-                PikaStagedLinuxLane::AgentContractsControlPlaneUnit.command_config(),
+                PikaStagedLinuxLane::AgentContractsPikaCloudUnit.command_config(),
             )),
             ..remote_incus_job_base()
         },

@@ -9,6 +9,8 @@ set -euo pipefail
 
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEV_DIR="$("$TOOLS_DIR/xcode-dev-dir")"
+XCODE_BIN="$DEV_DIR/usr/bin"
+XCODE_TOOLCHAIN_BIN="$DEV_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin"
 
 unset_args=(
   -u LD
@@ -49,4 +51,15 @@ while IFS='=' read -r name _; do
   esac
 done < <(env)
 
-exec env "${unset_args[@]}" DEVELOPER_DIR="$DEV_DIR" "$@"
+path_prefixes=("$XCODE_BIN")
+if [ -d "$XCODE_TOOLCHAIN_BIN" ]; then
+  path_prefixes+=("$XCODE_TOOLCHAIN_BIN")
+fi
+path_prefixes+=("/usr/bin")
+
+PATH_PREFIX="$(IFS=:; echo "${path_prefixes[*]}")"
+if [ -n "${PATH:-}" ]; then
+  PATH_PREFIX="$PATH_PREFIX:$PATH"
+fi
+
+exec env "${unset_args[@]}" DEVELOPER_DIR="$DEV_DIR" PATH="$PATH_PREFIX" "$@"

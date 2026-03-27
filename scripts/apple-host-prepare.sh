@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-usage: ./scripts/apple-host-prepare.sh <generic|sanity|bundle> <phase-timings-file>
+usage: ./scripts/apple-host-prepare.sh <generic|desktop|ios|compile|bundle> <phase-timings-file>
 
 Runs the bounded Apple-host prewarm steps used by pikaci's prepare phase and writes
 tab-separated phase timings to the provided file.
@@ -22,7 +22,7 @@ if [[ -z "$profile" || -z "$phase_file" ]]; then
 fi
 
 case "$profile" in
-  generic|sanity|bundle)
+  generic|desktop|ios|compile|bundle)
     ;;
   *)
     echo "error: unsupported Apple prepare profile: $profile" >&2
@@ -60,6 +60,17 @@ record_phase() {
 
 record_phase cargo-metadata cargo metadata --format-version=1 --no-deps >/dev/null
 
+build_apple_desktop_compile_nix() {
+  nix --extra-experimental-features "nix-command flakes" build .#appleDesktopCompile --no-link
+}
+
+ios_xcframework_result=""
+build_apple_ios_xcframework_nix() {
+  ios_xcframework_result="$(
+    nix --extra-experimental-features "nix-command flakes" build .#appleIosXcframework --print-out-paths --no-link
+  )"
+}
+
 case "$profile" in
   generic)
     record_phase pikaci-bin cargo build -q -p pikaci --bin pikaci
@@ -68,14 +79,18 @@ case "$profile" in
       --entry "pikaci-bin" \
       --binary "$target_dir/debug/pikaci"
     ;;
-  sanity)
-    record_phase desktop-tests-no-run \
-      ./scripts/apple-host-record-prepared-entry \
-      --manifest "$manifest_file" \
-      --entry "pika-desktop-package-tests" \
-      -- ./tools/cargo-with-xcode test -p pika-desktop --no-run --message-format=json
+  desktop)
+    record_phase apple-desktop-compile-nix build_apple_desktop_compile_nix
+    ;;
+  ios)
+    record_phase apple-ios-xcframework-nix build_apple_ios_xcframework_nix
+    ;;
+  compile)
+    record_phase apple-desktop-compile-nix build_apple_desktop_compile_nix
+    record_phase apple-ios-xcframework-nix build_apple_ios_xcframework_nix
     ;;
   bundle)
+    record_phase apple-ios-xcframework-nix build_apple_ios_xcframework_nix
     record_phase pikaci-bin cargo build -q -p pikaci --bin pikaci
     ./scripts/apple-host-record-prepared-entry \
       --manifest "$manifest_file" \
@@ -115,7 +130,6 @@ if [[ "$profile" == "bundle" ]]; then
     --manifest "$manifest_file" \
     --entry "pikahut-integration-primal" \
     -- cargo test -p pikahut --test integration_primal --no-run --message-format=json
-  record_phase ios-xcframework just ios-xcframework
   record_phase ios-xcodeproj just ios-xcodeproj
-  record_phase ios-build-for-testing ./tools/ios-ui-test prepare
+  record_phase ios-build-for-testing env PIKACI_APPLE_IOS_XCFRAMEWORK_RESULT="$ios_xcframework_result" ./tools/ios-ui-test prepare
 fi

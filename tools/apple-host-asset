@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ASSET_FILE="$ROOT/ci/apple-host-assets.toml"
+
+usage() {
+  cat <<'EOF'
+usage: ./tools/apple-host-asset <xcode_version|ios_runtime|ios_device_type|ios_device_name>
+
+Read one pinned Apple host asset value from ci/apple-host-assets.toml.
+EOF
+}
+
+key="${1:-}"
+if [[ -z "$key" || "$key" == "-h" || "$key" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+python3 - "$ASSET_FILE" "$key" <<'PY'
+from pathlib import Path
+import sys
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover
+    import tomli as tomllib  # type: ignore
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+data = tomllib.loads(path.read_text(encoding="utf-8"))
+if key not in data:
+    raise SystemExit(f"error: unknown apple host asset key: {key}")
+value = data[key]
+if not isinstance(value, str):
+    raise SystemExit(f"error: apple host asset `{key}` is not a string")
+sys.stdout.write(value)
+sys.stdout.write("\n")
+PY

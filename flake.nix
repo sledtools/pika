@@ -545,8 +545,9 @@
           };
         };
 
-        # Xcode version pinned for the team. Install with: xcodes install 26.2
-        xcodeVersion = "26.2";
+        appleHostAssets = builtins.fromTOML (builtins.readFile ./ci/apple-host-assets.toml);
+        # Xcode version pinned for the team. Install with: xcodes install <version>
+        xcodeVersion = appleHostAssets.xcode_version;
         # Local dev machines (xcodes) use dash; CI runners use underscore.
         xcodeBaseDir = "/Applications/Xcode-${xcodeVersion}.0.app";
         xcodeBaseDirAlt = "/Applications/Xcode_${xcodeVersion}.0.app";
@@ -659,6 +660,82 @@
             ./scripts
           ];
         };
+        workspaceCrateManifestFiles = [
+          ./crates/pikaci/Cargo.toml
+          ./crates/pika-agent-protocol/Cargo.toml
+          ./crates/pika-cloud/Cargo.toml
+          ./crates/pika-forge-model/Cargo.toml
+          ./crates/pika-managed-agent-contract/Cargo.toml
+          ./crates/pika-relay-profiles/Cargo.toml
+          ./crates/pika-marmot-runtime/Cargo.toml
+          ./crates/hypernote-protocol/Cargo.toml
+          ./crates/jerichoci/Cargo.toml
+          ./crates/pikachat-sidecar/Cargo.toml
+          ./crates/pika-desktop/Cargo.toml
+          ./crates/pika-media/Cargo.toml
+          ./crates/pika-nse/Cargo.toml
+          ./crates/pika-share/Cargo.toml
+          ./crates/pika-tls/Cargo.toml
+          ./crates/rmp-cli/Cargo.toml
+          ./crates/pika-server/Cargo.toml
+          ./crates/pika-git/Cargo.toml
+          ./crates/ph/Cargo.toml
+          ./crates/pika-test-utils/Cargo.toml
+          ./crates/pikahut/Cargo.toml
+        ];
+        appleDesktopWorkspaceSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions (
+            workspaceCrateManifestFiles ++ [
+              ./VERSION
+              ./Cargo.toml
+              ./Cargo.lock
+              ./cli/Cargo.toml
+              ./config
+              ./rust
+              ./uniffi-bindgen/Cargo.toml
+              ./crates/pika-cloud
+              ./crates/pika-relay-profiles
+              ./crates/pika-managed-agent-contract
+              ./crates/pika-marmot-runtime
+              ./crates/hypernote-protocol
+              ./crates/pika-desktop
+              ./crates/pika-media
+              ./crates/pika-tls
+              ./tools/cargo-with-xcode
+              ./tools/xcode-dev-dir
+            ]
+          );
+        };
+        appleIosWorkspaceSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions (
+            workspaceCrateManifestFiles ++ [
+              ./VERSION
+              ./Cargo.toml
+              ./Cargo.lock
+              ./cli/Cargo.toml
+              ./config
+              ./rust
+              ./ios
+              ./uniffi-bindgen
+              ./crates/pika-cloud
+              ./crates/pika-relay-profiles
+              ./crates/pika-managed-agent-contract
+              ./crates/pika-marmot-runtime
+              ./crates/hypernote-protocol
+              ./crates/pika-media
+              ./crates/pika-nse
+              ./crates/pika-share
+              ./crates/pika-tls
+              ./scripts/ios-build
+              ./scripts/lib/mobile-build.sh
+              ./tools/lib/dotenv.sh
+              ./tools/xcode-dev-dir
+              ./tools/xcode-run
+            ]
+          );
+        };
         pikaFollowupGradleDepsHost =
           if hasAndroidSdk then
             import ./nix/ci/pika-followup-gradle-deps.nix {
@@ -670,6 +747,22 @@
           else
             null;
         pikachatOpenclawExtensionPkg = mkPikachatOpenclawExtensionPkg pkgs (mkPikachatOpenclawExtensionSrc pkgs.lib);
+        appleRustCi =
+          if pkgs.stdenv.isDarwin then
+            import ./nix/ci/apple-rust.nix {
+              inherit pkgs rustToolchain xcodeWrapper;
+              src = appleIosWorkspaceSrc;
+            }
+          else
+            null;
+        appleDesktopCi =
+          if pkgs.stdenv.isDarwin then
+            import ./nix/ci/apple-rust.nix {
+              inherit pkgs rustToolchain xcodeWrapper;
+              src = appleDesktopWorkspaceSrc;
+            }
+          else
+            null;
         mkPikaDevShell = { includeAndroid ? hasAndroidSdk, shellName ? "default" }:
           let
             withAndroid = includeAndroid && hasAndroidSdk;
@@ -936,6 +1029,10 @@ EOF
             rustToolchain = rustToolchain;
             pikachat = pikachatPkgHost;
             pikachat-openclaw-extension = pikachatOpenclawExtensionPkg;
+          }
+          // pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
+            appleDesktopCompile = appleDesktopCi.desktopCompile;
+            appleIosXcframework = appleRustCi.iosXcframework;
           }
           // pkgs.lib.optionalAttrs hasAndroidSdk {
             androidSdk = androidSdk;

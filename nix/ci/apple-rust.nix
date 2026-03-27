@@ -1,0 +1,189 @@
+{ pkgs, rustToolchain, xcodeWrapper, src }:
+
+let
+  cargoLock = {
+    lockFile = src + "/Cargo.lock";
+    outputHashes = {
+      "hypernote-mdx-0.3.0" = "sha256-SBhXVXPyCvxs+VudVLYitaioS8jwYSsE0k2SwPU+9GY=";
+      "mdk-core-0.7.1" = "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
+      "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
+    };
+  };
+
+  commonNativeBuildInputs = [
+    rustToolchain
+    pkgs.just
+    pkgs.nodejs_22
+    pkgs.python3
+    pkgs.git
+    pkgs.findutils
+    pkgs.gnugrep
+    pkgs.gnused
+    pkgs.coreutils
+    pkgs.pkg-config
+    pkgs.openssl
+    pkgs.xcodegen
+    xcodeWrapper
+  ];
+
+  commonBuildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
+
+  mkAppleRustPackage =
+    {
+      pname,
+      buildScript,
+      installScript,
+      allowedWorkspacePackages,
+      cargoTreeEdges,
+      targetPackages,
+    }:
+    pkgs.rustPlatform.buildRustPackage {
+      inherit pname src cargoLock;
+      version = "0.1.0";
+
+      nativeBuildInputs = commonNativeBuildInputs;
+      buildInputs = commonBuildInputs;
+
+      buildPhase = ''
+        runHook preBuild
+        export HOME="$TMPDIR/home"
+        mkdir -p "$HOME"
+        export PIKA_XCODE_INSTALL_PROMPT=0
+        # Keep workspace metadata valid without hashing whole unrelated member trees.
+        for manifest in ./cli/Cargo.toml ./uniffi-bindgen/Cargo.toml ./crates/*/Cargo.toml; do
+          if [ ! -f "$manifest" ]; then
+            continue
+          fi
+          crate_dir="''${manifest%/Cargo.toml}"
+          if [ ! -e "$crate_dir/src/lib.rs" ] && [ ! -e "$crate_dir/src/main.rs" ]; then
+            mkdir -p "$crate_dir/src"
+            cat > "$crate_dir/src/lib.rs" <<'EOF'
+pub fn _pika_nix_placeholder_target() {}
+EOF
+          fi
+        done
+        export PIKA_ALLOWED_WORKSPACE_PACKAGES='${builtins.toJSON allowedWorkspacePackages}'
+        export PIKA_CARGO_TREE_EDGES='${cargoTreeEdges}'
+        export PIKA_TARGET_PACKAGES='${builtins.toJSON targetPackages}'
+        python3 - <<'PY'
+import json
+import os
+import subprocess
+import sys
+
+allowed = set(json.loads(os.environ["PIKA_ALLOWED_WORKSPACE_PACKAGES"]))
+targets = json.loads(os.environ["PIKA_TARGET_PACKAGES"])
+metadata = json.loads(
+    subprocess.check_output(["cargo", "metadata", "--format-version", "1", "--no-deps"], text=True)
+)
+workspace_packages = {pkg["name"] for pkg in metadata["packages"]}
+seen_workspace = set()
+
+for target in targets:
+    output = subprocess.check_output(
+        [
+            "cargo",
+            "tree",
+            "--quiet",
+            "--edges",
+            os.environ["PIKA_CARGO_TREE_EDGES"],
+            "--prefix",
+            "none",
+            "--format",
+            "{p}",
+            "-p",
+            target,
+        ],
+        text=True,
+    )
+    for line in output.splitlines():
+        if not line:
+            continue
+        name = line.split()[0]
+        if name in workspace_packages:
+            seen_workspace.add(name)
+
+unexpected = sorted(name for name in seen_workspace if name not in allowed)
+if unexpected:
+    print(
+        "error: Apple Nix fileset omitted real workspace build dependencies: "
+        + ", ".join(unexpected),
+        file=sys.stderr,
+    )
+    sys.exit(1)
+PY
+        ${buildScript}
+        runHook postBuild
+      '';
+
+      installPhase = ''
+        runHook preInstall
+        ${installScript}
+        runHook postInstall
+      '';
+
+      doCheck = false;
+      dontCargoInstall = true;
+    };
+in
+{
+  desktopCompile = mkAppleRustPackage {
+    pname = "apple-desktop-compile";
+    allowedWorkspacePackages = [
+      "hypernote-protocol"
+      "pika-cloud"
+      "pika-desktop"
+      "pika-managed-agent-contract"
+      "pika-marmot-runtime"
+      "pika-media"
+      "pika-relay-profiles"
+      "pika-tls"
+      "pika_core"
+    ];
+    cargoTreeEdges = "normal,build,dev";
+    targetPackages = [ "pika-desktop" ];
+    buildScript = ''
+      ./tools/cargo-with-xcode test -p pika-desktop --no-run --message-format=short \
+        > "$TMPDIR/apple-desktop-compile.log"
+    '';
+    installScript = ''
+      mkdir -p "$out"
+      cp "$TMPDIR/apple-desktop-compile.log" "$out/build.log"
+      printf 'apple-desktop-compile-ok\n' > "$out/status.txt"
+    '';
+  };
+
+  iosXcframework = mkAppleRustPackage {
+    pname = "apple-ios-xcframework";
+    allowedWorkspacePackages = [
+      "hypernote-protocol"
+      "pika-cloud"
+      "pika-managed-agent-contract"
+      "pika-marmot-runtime"
+      "pika-media"
+      "pika-nse"
+      "pika-relay-profiles"
+      "pika-share"
+      "pika-tls"
+      "pika_core"
+      "uniffi-bindgen"
+    ];
+    cargoTreeEdges = "normal,build";
+    targetPackages = [
+      "pika_core"
+      "pika-nse"
+      "pika-share"
+      "uniffi-bindgen"
+    ];
+    buildScript = ''
+      ./scripts/ios-build ios-xcframework
+    '';
+    installScript = ''
+      mkdir -p "$out"
+      cp -R ios/Bindings "$out/Bindings"
+      cp -R ios/NSEBindings "$out/NSEBindings"
+      cp -R ios/ShareBindings "$out/ShareBindings"
+      cp -R ios/Frameworks "$out/Frameworks"
+    '';
+  };
+}

@@ -1,0 +1,4 @@
+xcode_version = "26.2"
+ios_runtime = "iOS 26.2"
+ios_device_type = "iPhone 15"
+ios_device_name = "Pika iPhone 15"

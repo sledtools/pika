@@ -184,7 +184,8 @@ mod tests {
         assert!(lane_ids.contains(&"pika_rust"));
         assert!(lane_ids.contains(&"pika_followup"));
         assert!(lane_ids.contains(&"pikachat"));
-        assert!(lane_ids.contains(&"apple_host_sanity"));
+        assert!(lane_ids.contains(&"apple_desktop_compile"));
+        assert!(lane_ids.contains(&"apple_ios_compile"));
     }
 
     #[test]

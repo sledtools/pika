@@ -67,7 +67,9 @@ Current policy note:
 | `just nightly-pikachat` | `just openclaw-pikachat-e2e` | `integration_openclaw::openclaw_gateway_e2e` | heavy | nightly-pikachat | openclaw-repo, public-network | Canonical nightly OpenClaw selector. |
 | `just nightly-pika-e2e` | local-only call-path boundary selectors + media smoke | `integration_deterministic::call_over_local_moq_relay_boundary`, `integration_deterministic::call_with_pikachat_daemon_boundary`, `integration_deterministic::cli_smoke_media_local` | heavy | nightly-pika-e2e | public-network | Both local call boundaries are now owned directly by `pikahut` selectors. `cli_smoke_media_local` remains the public-network-dependent part of this lane. |
 | `just nightly-primal-ios-interop` | `cargo test -p pikahut --test integration_primal primal_nostrconnect_smoke -- --ignored --nocapture` | `integration_primal::primal_nostrconnect_smoke` | heavy | manual-only | host-macos, xcode, public-network | Retained Primal iOS compatibility canary. Rust scenario clones into an isolated checkout under scenario state and validates marker/log artifacts without mutating a default local repo. Kept out of the core Apple nightly because it depends on public network, external Primal build behavior, and cross-app interop timing. |
-| `just apple-host-sanity` | `just desktop-ui-test` | retained non-selector Apple-host smoke lane | deterministic | pre-merge CI-owned: `check-apple-host-sanity` | host-macos, xcode | Tiny blocking Apple-host smoke lane on the Mac mini. Keeps the blocking Mac signal focused on the native desktop package test so pre-merge latency stays acceptable. |
+| `just apple-host-desktop-compile` | `nix build .#appleDesktopCompile` | retained non-selector Apple-host desktop compile lane | deterministic | pre-merge CI-owned: `check-apple-desktop-compile` | host-macos, xcode | Blocking Mac mini desktop compile/link smoke. Intentionally compile-only and backed by the Nix-addressable `appleDesktopCompile` package. |
+| `just apple-host-ios-compile` | `nix build .#appleIosXcframework` + generic-simulator `xcodebuild build` | retained non-selector Apple-host iOS compile lane | deterministic | pre-merge CI-owned: `check-apple-ios-compile` | host-macos, xcode | Blocking Mac mini iOS compile smoke. Reuses the Nix-built xcframework inputs, then performs a generic simulator app compile without running UI tests. |
+| `just apple-host-sanity` | `just apple-host-desktop-compile` + `just apple-host-ios-compile` | retained non-selector Apple-host compile bundle | deterministic | advisory/convenience | host-macos, xcode | Convenience wrapper for the two blocking Apple compile lanes; the canonical owners are the split forge lanes, not this combined wrapper. |
 | `just apple-host-bundle` | `just apple-host-sanity` + `cargo run -q -p pikaci --bin pikaci -- run pre-merge-pikachat-apple-followup` + `just cli-smoke` + `just openclaw-pikachat-deterministic` + `just shared-runtime-regression` + `just ios-ui-test` | retained non-selector Apple-host nightly bundle | heavy | nightly CI-owned: `nightly-apple-host-bundle` | host-macos, xcode | Canonical heavy mini-owned Apple coverage. Retains the full iOS XCTest lane and the Apple-side `pikaci` follow-up and regression work under the remote mini wrapper instead of hosted macOS nightly jobs. |
 | `just primal-ios-lab` | manual tooling + selector contract | `integration_manual::manual_primal_lab_runbook_contract` | manual | manual-only | host-macos, xcode, primal-repo | Manual lab remains intentionally non-CI. |
 | `just primal-ios-lab-patch-primal` | manual helper | `integration_manual::manual_primal_lab_runbook_contract` | manual | manual-only | host-macos, primal-repo | Manual-only helper command. |
@@ -98,7 +100,8 @@ Current policy note:
 | Lane | Canonical contract |
 | --- | --- |
 | `pre-merge-pikachat` | deterministic selectors (incl. `ui_e2e_local_desktop`) + deterministic OpenClaw scenario selectors |
-| `check-apple-host-sanity` | `just apple-host-sanity` on the Mac mini via the Apple remote wrapper |
+| `check-apple-desktop-compile` | `just apple-host-desktop-compile` on the Mac mini via the Apple remote wrapper |
+| `check-apple-ios-compile` | `just apple-host-ios-compile` on the Mac mini via the Apple remote wrapper |
 | `pre-merge-agent-contracts` | staged Linux agent-provider contract target (`pika-cloud`, `pika-server` `agent_api::tests`, `pika_core` NIP-98) |
 | `check-pikachat-openclaw-e2e` (path-scoped) | `integration_openclaw::openclaw_gateway_e2e` |
 | `nightly-pikachat` | `integration_openclaw::openclaw_gateway_e2e` |
@@ -108,13 +111,15 @@ Current policy note:
 | `integration-manual` | two `integration_manual` runbook selectors |
 
 Apple Silicon contract note:
-`just pre-merge-pikachat` still explicitly composes staged Linux `pre-merge-pikachat-rust` with the `pikaci` target `pre-merge-pikachat-apple-followup`, and the canonical Apple nightly treats that Apple follow-up as part of `apple-host-bundle` instead of the blocking `check-apple-host-sanity` smoke lane.
+`just pre-merge-pikachat` still explicitly composes staged Linux `pre-merge-pikachat-rust` with the `pikaci` target `pre-merge-pikachat-apple-followup`, and the canonical Apple nightly treats that Apple follow-up as part of `apple-host-bundle` instead of the blocking split compile lanes `check-apple-desktop-compile` / `check-apple-ios-compile`.
 
 ## Non-Owner Entry Points
 
 | Entrypoint | Policy class | Current role |
 | --- | --- | --- |
-| `just apple-host-sanity` | pre-merge CI-owned | Tiny blocking Mac mini smoke lane: `desktop-ui-test` only. |
+| `just apple-host-desktop-compile` | pre-merge CI-owned | Blocking Mac mini desktop compile/link smoke backed by the Nix `appleDesktopCompile` package. |
+| `just apple-host-ios-compile` | pre-merge CI-owned | Blocking Mac mini iOS compile smoke: Nix-built xcframework inputs plus generic simulator `xcodebuild build`. |
+| `just apple-host-sanity` | advisory/convenience | Convenience wrapper for the two split pre-merge Apple compile lanes. |
 | `just apple-host-bundle` | nightly CI-owned | Heavy Mac mini nightly bundle: `apple-host-sanity` plus `pre-merge-pikachat-apple-followup`, retained iOS XCTest, and Apple-host regression coverage. |
 | `just ios-ui-test` | compatibility-only -> `nightly-apple-host-bundle` | Retained `Pika` XCTest suite on simulator. This remains real nightly coverage, but ownership now sits with the mini-owned nightly Apple bundle instead of a dedicated hosted macOS job. The default retained run excludes the flaky OpenClaw live-network UI E2E case; opt back in with `PIKA_IOS_UI_TEST_INCLUDE_OPENCLAW_E2E=1` or target it directly via `PIKA_IOS_UI_TEST_ONLY_TESTING=...`. |
 | `just android-ui-test` | advisory/convenience | Native Android instrumentation suite for manual/dev use. Current pre-merge only compiles Android test code; it does not execute this suite. |
@@ -123,7 +128,7 @@ Apple Silicon contract note:
 | `just e2e-local-relay` | advisory/convenience | Manual bundle for `ios-ui-e2e-local` + `android-ui-e2e-local`; useful for humans, not a lane owner. |
 | `just nightly-primal-ios-interop` | manual-only | Retained Primal iOS interop smoke. Keep it explicitly inventoried as manual compatibility coverage, not part of the core Apple nightly bundle. |
 | `just shared-runtime-regression` | compatibility-only -> `nightly-apple-host-bundle` | High-signal Apple-host rerun set retained inside the nightly mini bundle. |
-| `just desktop-ui-test` | compatibility-only -> `check-apple-host-sanity` | Native desktop package test retained as the entire blocking Mac mini smoke contract. |
+| `just desktop-ui-test` | compatibility-only -> `nightly-apple-host-bundle` | Native desktop package test retained in the heavy Mac mini nightly bundle, not the blocking pre-merge Apple compile contract. |
 | `just pre-merge-apple-deterministic` | advisory/convenience | Checked-in Tart/`pikaci` Apple lane entrypoint, but not part of current canonical pre-merge enforcement. |
 
 ## Migration Notes
@@ -134,7 +139,7 @@ Apple Silicon contract note:
 
 ## Deferred Root CI / `pikaci` Asks
 
-- The blocking Mac signal is now intentionally tiny: `check-apple-host-sanity` owns `just apple-host-sanity` on the mini, and that lane is just `desktop-ui-test` while `just pre-merge-pikachat` remains the canonical Linux-first deterministic pikachat lane.
+- The blocking Mac signal is now intentionally compile-only: `check-apple-desktop-compile` and `check-apple-ios-compile` own the Mac mini pre-merge contract, while `just pre-merge-pikachat` remains the canonical Linux-first deterministic pikachat lane.
 - The heavier retained Apple coverage moved under `nightly-apple-host-bundle`; promoting `ios-ui-e2e-local` into CI would still be a separate policy change, not a wording cleanup.
 
 ## Shared Runtime Regression Set

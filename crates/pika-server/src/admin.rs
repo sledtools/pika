@@ -16,6 +16,7 @@ use crate::agent_api::{
     restore_managed_environment_from_backup, AgentApiError, ManagedEnvironmentBackupFreshness,
 };
 use crate::browser_auth::BrowserAuthConfig;
+use crate::managed_runtime_contract::AgentStartupPhase;
 use crate::models::agent_allowlist::AgentAllowlistEntry;
 use crate::nostr_auth::{expected_host_from_headers, verify_nip98_event};
 use crate::{RequestContext, State};
@@ -358,18 +359,16 @@ fn admin_app_state_label(
     }
 }
 
-fn admin_startup_phase_label(phase: Option<pika_cloud::AgentStartupPhase>) -> &'static str {
+fn admin_startup_phase_label(phase: Option<AgentStartupPhase>) -> &'static str {
     match phase {
         None => "not_started",
-        Some(pika_cloud::AgentStartupPhase::Requested) => "requested",
-        Some(pika_cloud::AgentStartupPhase::ProvisioningVm) => "provisioning_vm",
-        Some(pika_cloud::AgentStartupPhase::BootingGuest) => "booting_guest",
-        Some(pika_cloud::AgentStartupPhase::WaitingForServiceReady) => "waiting_for_service_ready",
-        Some(pika_cloud::AgentStartupPhase::WaitingForKeypackagePublish) => {
-            "waiting_for_keypackage_publish"
-        }
-        Some(pika_cloud::AgentStartupPhase::Ready) => "ready",
-        Some(pika_cloud::AgentStartupPhase::Failed) => "failed",
+        Some(AgentStartupPhase::Requested) => "requested",
+        Some(AgentStartupPhase::ProvisioningVm) => "provisioning_vm",
+        Some(AgentStartupPhase::BootingGuest) => "booting_guest",
+        Some(AgentStartupPhase::WaitingForServiceReady) => "waiting_for_service_ready",
+        Some(AgentStartupPhase::WaitingForKeypackagePublish) => "waiting_for_keypackage_publish",
+        Some(AgentStartupPhase::Ready) => "ready",
+        Some(AgentStartupPhase::Failed) => "failed",
     }
 }
 

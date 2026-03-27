@@ -14,7 +14,7 @@ use crate::forge;
 use crate::live::CiLiveUpdates;
 use crate::storage::Store;
 
-pub const FORGE_LANE_MANIFEST_PATH: &str = "ci/forge-lanes.toml";
+pub const FORGE_LANE_DEFINITION_PATH: &str = ci_manifest::FORGE_LANE_DEFINITION_PATH;
 pub const CI_LANE_LEASE_SECS: u64 = 120;
 pub const CI_LANE_HEARTBEAT_INTERVAL_SECS: u64 = 30;
 
@@ -40,25 +40,16 @@ struct LaneJobOutcome {
 }
 
 pub fn load_manifest_from_default_branch(
-    forge_repo: &crate::config::ForgeRepoConfig,
+    _forge_repo: &crate::config::ForgeRepoConfig,
 ) -> anyhow::Result<ForgeCiManifest> {
-    let default_ref = format!("refs/heads/{}", forge_repo.default_branch);
-    load_manifest_at_ref(forge_repo, &default_ref)
+    Ok(ci_manifest::compiled_forge_ci_manifest())
 }
 
 pub fn load_manifest_for_head(
-    forge_repo: &crate::config::ForgeRepoConfig,
-    head_sha: &str,
+    _forge_repo: &crate::config::ForgeRepoConfig,
+    _head_sha: &str,
 ) -> anyhow::Result<ForgeCiManifest> {
-    load_manifest_at_ref(forge_repo, head_sha)
-}
-
-fn load_manifest_at_ref(
-    forge_repo: &crate::config::ForgeRepoConfig,
-    git_ref: &str,
-) -> anyhow::Result<ForgeCiManifest> {
-    let raw = forge::read_file_at_ref(forge_repo, git_ref, FORGE_LANE_MANIFEST_PATH)?;
-    ci_manifest::parse_manifest(&raw)
+    Ok(ci_manifest::compiled_forge_ci_manifest())
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -597,7 +588,7 @@ fn schedule_due_nightlies_at(
         &forge_repo.repo,
         &forge_repo.canonical_git_dir,
         &forge_repo.default_branch,
-        FORGE_LANE_MANIFEST_PATH,
+        FORGE_LANE_DEFINITION_PATH,
     )?;
     let queued = store.queue_nightly_run(
         repo_id,
@@ -728,7 +719,7 @@ mod tests {
         perms.set_mode(0o755);
         fs::set_permissions(seed.join("nightly.sh"), perms).expect("chmod nightly script");
         fs::write(
-            seed.join("ci/forge-lanes.toml"),
+            seed.join("crates/pikaci/src/forge_lanes.rs"),
             r#"
 version = 1
 nightly_schedule_utc = "00:00"
@@ -743,7 +734,12 @@ command = ["./nightly.sh"]
         .expect("write nightly manifest");
         git(
             seed,
-            &["add", "README.md", "nightly.sh", "ci/forge-lanes.toml"],
+            &[
+                "add",
+                "README.md",
+                "nightly.sh",
+                "crates/pikaci/src/forge_lanes.rs",
+            ],
         );
         git(seed, &["commit", "-m", "initial"]);
         git(seed, &["branch", "-M", "master"]);
@@ -818,7 +814,7 @@ command = ["./nightly.sh"]
             fs::set_permissions(seed.join(script), perms).expect("chmod ci script");
         }
         fs::write(
-            seed.join("ci/forge-lanes.toml"),
+            seed.join("crates/pikaci/src/forge_lanes.rs"),
             r#"
 version = 1
 nightly_schedule_utc = "08:00"
@@ -832,7 +828,7 @@ nightly_schedule_utc = "08:00"
                 "README.md",
                 "lane-a.sh",
                 "lane-b.sh",
-                "ci/forge-lanes.toml",
+                "crates/pikaci/src/forge_lanes.rs",
             ],
         );
         git(seed, &["commit", "-m", "initial"]);
@@ -862,7 +858,7 @@ nightly_schedule_utc = "08:00"
                 &forge_repo.repo,
                 &forge_repo.canonical_git_dir,
                 &forge_repo.default_branch,
-                super::FORGE_LANE_MANIFEST_PATH,
+                super::FORGE_LANE_DEFINITION_PATH,
             )
             .expect("ensure repo metadata");
         let branch = store
@@ -870,7 +866,7 @@ nightly_schedule_utc = "08:00"
                 repo: forge_repo.repo.clone(),
                 canonical_git_dir: forge_repo.canonical_git_dir.clone(),
                 default_branch: forge_repo.default_branch.clone(),
-                ci_entrypoint: super::FORGE_LANE_MANIFEST_PATH.to_string(),
+                ci_entrypoint: super::FORGE_LANE_DEFINITION_PATH.to_string(),
                 branch_name: "feature/drain".to_string(),
                 title: "feature/drain".to_string(),
                 head_sha: head_sha.clone(),
@@ -952,7 +948,7 @@ nightly_schedule_utc = "08:00"
             fs::set_permissions(seed.join(script), perms).expect("chmod ci script");
         }
         fs::write(
-            seed.join("ci/forge-lanes.toml"),
+            seed.join("crates/pikaci/src/forge_lanes.rs"),
             "version = 1\nnightly_schedule_utc = \"08:00\"\n",
         )
         .expect("write manifest");
@@ -964,7 +960,7 @@ nightly_schedule_utc = "08:00"
                 "lane-a.sh",
                 "lane-b.sh",
                 "lane-c.sh",
-                "ci/forge-lanes.toml",
+                "crates/pikaci/src/forge_lanes.rs",
             ],
         );
         git(seed, &["commit", "-m", "initial"]);
@@ -994,7 +990,7 @@ nightly_schedule_utc = "08:00"
                 repo: forge_repo.repo.clone(),
                 canonical_git_dir: forge_repo.canonical_git_dir.clone(),
                 default_branch: forge_repo.default_branch.clone(),
-                ci_entrypoint: super::FORGE_LANE_MANIFEST_PATH.to_string(),
+                ci_entrypoint: super::FORGE_LANE_DEFINITION_PATH.to_string(),
                 branch_name: "feature/parallel-cap".to_string(),
                 title: "feature/parallel-cap".to_string(),
                 head_sha: head_sha.clone(),
@@ -1080,7 +1076,7 @@ nightly_schedule_utc = "08:00"
             fs::set_permissions(seed.join(script), perms).expect("chmod ci script");
         }
         fs::write(
-            seed.join("ci/forge-lanes.toml"),
+            seed.join("crates/pikaci/src/forge_lanes.rs"),
             "version = 1\nnightly_schedule_utc = \"08:00\"\n",
         )
         .expect("write manifest");
@@ -1092,7 +1088,7 @@ nightly_schedule_utc = "08:00"
                 "lane-a.sh",
                 "lane-b.sh",
                 "lane-c.sh",
-                "ci/forge-lanes.toml",
+                "crates/pikaci/src/forge_lanes.rs",
             ],
         );
         git(seed, &["commit", "-m", "initial"]);
@@ -1122,7 +1118,7 @@ nightly_schedule_utc = "08:00"
                 repo: forge_repo.repo.clone(),
                 canonical_git_dir: forge_repo.canonical_git_dir.clone(),
                 default_branch: forge_repo.default_branch.clone(),
-                ci_entrypoint: super::FORGE_LANE_MANIFEST_PATH.to_string(),
+                ci_entrypoint: super::FORGE_LANE_DEFINITION_PATH.to_string(),
                 branch_name: "feature/unbounded".to_string(),
                 title: "feature/unbounded".to_string(),
                 head_sha: head_sha.clone(),
@@ -1214,7 +1210,7 @@ nightly_schedule_utc = "08:00"
             fs::set_permissions(seed.join(script), perms).expect("chmod ci script");
         }
         fs::write(
-            seed.join("ci/forge-lanes.toml"),
+            seed.join("crates/pikaci/src/forge_lanes.rs"),
             "version = 1\nnightly_schedule_utc = \"08:00\"\n",
         )
         .expect("write manifest");
@@ -1225,7 +1221,7 @@ nightly_schedule_utc = "08:00"
                 "README.md",
                 "slow.sh",
                 "fast.sh",
-                "ci/forge-lanes.toml",
+                "crates/pikaci/src/forge_lanes.rs",
             ],
         );
         git(seed, &["commit", "-m", "initial"]);
@@ -1256,7 +1252,7 @@ nightly_schedule_utc = "08:00"
                 repo: forge_repo.repo.clone(),
                 canonical_git_dir: forge_repo.canonical_git_dir.clone(),
                 default_branch: forge_repo.default_branch.clone(),
-                ci_entrypoint: super::FORGE_LANE_MANIFEST_PATH.to_string(),
+                ci_entrypoint: super::FORGE_LANE_DEFINITION_PATH.to_string(),
                 branch_name: "feature/slow".to_string(),
                 title: "feature/slow".to_string(),
                 head_sha: head_sha.clone(),
@@ -1293,7 +1289,7 @@ nightly_schedule_utc = "08:00"
                 repo: forge_repo.repo.clone(),
                 canonical_git_dir: forge_repo.canonical_git_dir.clone(),
                 default_branch: forge_repo.default_branch.clone(),
-                ci_entrypoint: super::FORGE_LANE_MANIFEST_PATH.to_string(),
+                ci_entrypoint: super::FORGE_LANE_DEFINITION_PATH.to_string(),
                 branch_name: "feature/fast".to_string(),
                 title: "feature/fast".to_string(),
                 head_sha: head_sha.clone(),
@@ -1389,7 +1385,7 @@ nightly_schedule_utc = "08:00"
             fs::set_permissions(seed.join(script), perms).expect("chmod script");
         }
         fs::write(
-            seed.join("ci/forge-lanes.toml"),
+            seed.join("crates/pikaci/src/forge_lanes.rs"),
             "version = 1\nnightly_schedule_utc = \"08:00\"\n",
         )
         .expect("write manifest");
@@ -1401,7 +1397,7 @@ nightly_schedule_utc = "08:00"
                 "slow.sh",
                 "fast-fail.sh",
                 "fast-ok.sh",
-                "ci/forge-lanes.toml",
+                "crates/pikaci/src/forge_lanes.rs",
             ],
         );
         git(seed, &["commit", "-m", "initial"]);
@@ -1431,7 +1427,7 @@ nightly_schedule_utc = "08:00"
                 repo: forge_repo.repo.clone(),
                 canonical_git_dir: forge_repo.canonical_git_dir.clone(),
                 default_branch: forge_repo.default_branch.clone(),
-                ci_entrypoint: super::FORGE_LANE_MANIFEST_PATH.to_string(),
+                ci_entrypoint: super::FORGE_LANE_DEFINITION_PATH.to_string(),
                 branch_name: "feature/refill".to_string(),
                 title: "feature/refill".to_string(),
                 head_sha: head_sha.clone(),
@@ -1520,7 +1516,7 @@ nightly_schedule_utc = "08:00"
         perms.set_mode(0o755);
         fs::set_permissions(seed.join("slow-lane.sh"), perms).expect("chmod slow lane script");
         fs::write(
-            seed.join("ci/forge-lanes.toml"),
+            seed.join("crates/pikaci/src/forge_lanes.rs"),
             r#"
 version = 1
 nightly_schedule_utc = "08:00"
@@ -1529,7 +1525,12 @@ nightly_schedule_utc = "08:00"
         .expect("write manifest");
         git(
             seed,
-            &["add", "README.md", "slow-lane.sh", "ci/forge-lanes.toml"],
+            &[
+                "add",
+                "README.md",
+                "slow-lane.sh",
+                "crates/pikaci/src/forge_lanes.rs",
+            ],
         );
         git(seed, &["commit", "-m", "initial"]);
         git(seed, &["branch", "-M", "master"]);
@@ -1558,7 +1559,7 @@ nightly_schedule_utc = "08:00"
                 repo: forge_repo.repo.clone(),
                 canonical_git_dir: forge_repo.canonical_git_dir.clone(),
                 default_branch: forge_repo.default_branch.clone(),
-                ci_entrypoint: super::FORGE_LANE_MANIFEST_PATH.to_string(),
+                ci_entrypoint: super::FORGE_LANE_DEFINITION_PATH.to_string(),
                 branch_name: "feature/heartbeat".to_string(),
                 title: "feature/heartbeat".to_string(),
                 head_sha: head_sha.clone(),
@@ -1639,7 +1640,7 @@ nightly_schedule_utc = "08:00"
             fs::set_permissions(seed.join(script), perms).expect("chmod script");
         }
         fs::write(
-            seed.join("ci/forge-lanes.toml"),
+            seed.join("crates/pikaci/src/forge_lanes.rs"),
             r#"
 version = 1
 nightly_schedule_utc = "08:00"
@@ -1659,7 +1660,7 @@ command = ["./nightly.sh"]
                 "README.md",
                 "branch-lane.sh",
                 "nightly.sh",
-                "ci/forge-lanes.toml",
+                "crates/pikaci/src/forge_lanes.rs",
             ],
         );
         git(seed, &["commit", "-m", "initial"]);
@@ -1689,7 +1690,7 @@ command = ["./nightly.sh"]
                 repo: forge_repo.repo.clone(),
                 canonical_git_dir: forge_repo.canonical_git_dir.clone(),
                 default_branch: forge_repo.default_branch.clone(),
-                ci_entrypoint: super::FORGE_LANE_MANIFEST_PATH.to_string(),
+                ci_entrypoint: super::FORGE_LANE_DEFINITION_PATH.to_string(),
                 branch_name: "feature/nightly-priority".to_string(),
                 title: "feature/nightly-priority".to_string(),
                 head_sha: head_sha.clone(),

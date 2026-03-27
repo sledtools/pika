@@ -621,7 +621,7 @@ fn policy_docs_call_out_non_owner_surfaces_and_deferred_mismatches() -> Result<(
 #[test]
 fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
     let root = workspace_root();
-    let manifest = fs::read_to_string(root.join("ci/forge-lanes.toml"))?;
+    let manifest = fs::read_to_string(root.join("crates/pikaci/src/forge_lanes.rs"))?;
     let pikachat_filter = extract_branch_lane_paths(&manifest, "pikachat");
     let pikachat_filter: HashSet<_> = pikachat_filter.into_iter().collect();
 
@@ -895,7 +895,7 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
 #[test]
 fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<()> {
     let root = workspace_root();
-    let manifest = fs::read_to_string(root.join("ci/forge-lanes.toml"))?;
+    let manifest = fs::read_to_string(root.join("crates/pikaci/src/forge_lanes.rs"))?;
     let agent_filter = extract_branch_lane_paths(&manifest, "agent_contracts");
     let agent_filter: HashSet<_> = agent_filter.into_iter().collect();
     let checks = fs::read_to_string(root.join("just/checks.just"))?;
@@ -993,7 +993,7 @@ fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<(
 #[test]
 fn pre_merge_notifications_filter_tracks_checked_in_lane_surface() -> Result<()> {
     let root = workspace_root();
-    let manifest = fs::read_to_string(root.join("ci/forge-lanes.toml"))?;
+    let manifest = fs::read_to_string(root.join("crates/pikaci/src/forge_lanes.rs"))?;
     let notifications_filter = extract_branch_lane_paths(&manifest, "notifications");
     let notifications_filter: HashSet<_> = notifications_filter.into_iter().collect();
     let checks = fs::read_to_string(root.join("just/checks.just"))?;
@@ -1090,7 +1090,7 @@ fn pre_merge_notifications_filter_tracks_checked_in_lane_surface() -> Result<()>
 #[test]
 fn pre_merge_fixture_filter_tracks_checked_in_lane_surface() -> Result<()> {
     let root = workspace_root();
-    let manifest = fs::read_to_string(root.join("ci/forge-lanes.toml"))?;
+    let manifest = fs::read_to_string(root.join("crates/pikaci/src/forge_lanes.rs"))?;
     let fixture_filter = extract_branch_lane_paths(&manifest, "fixture");
     let fixture_filter: HashSet<_> = fixture_filter.into_iter().collect();
     let checks = fs::read_to_string(root.join("just/checks.just"))?;

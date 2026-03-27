@@ -1,5 +1,5 @@
 use crate::catalog::{PikaStagedLinuxLane, PikaStagedLinuxTarget};
-use crate::forge_manifest::branch_lane_paths_for_staged_target;
+use crate::forge_lanes::branch_lane_paths_for_staged_target;
 use anyhow::{anyhow, bail};
 use jerichoci::{
     GuestCommand, HostProcessRuntimeConfig, IncusRuntimeConfig, JobExecutionConfig,
@@ -82,7 +82,7 @@ fn staged_linux_target_spec(
     let config = target.config();
     let filters = branch_lane_paths_for_staged_target(config.target_id)?.ok_or_else(|| {
         anyhow!(
-            "missing forge lane manifest entry for `{}`",
+            "missing compiled forge lane entry for `{}`",
             config.target_id
         )
     })?;
@@ -110,6 +110,38 @@ fn single_job_target_spec(
         filters: static_filters(filters),
         jobs: vec![job],
     })
+}
+
+fn host_shell_job(
+    id: &'static str,
+    description: &'static str,
+    timeout_secs: u64,
+    command: &'static str,
+) -> JobSpec {
+    JobSpec {
+        id,
+        description,
+        timeout_secs,
+        writable_workspace: false,
+        guest_command: GuestCommand::HostShellCommand { command },
+        runtime_config: JobRuntimeConfig::HostProcess(HostProcessRuntimeConfig),
+        ..host_local_job_base()
+    }
+}
+
+fn host_shell_target_spec(
+    id: &'static str,
+    description: &'static str,
+    filters: &'static [&'static str],
+    timeout_secs: u64,
+    command: &'static str,
+) -> TargetSpec {
+    TargetSpec {
+        id,
+        description,
+        filters: static_filters(filters),
+        jobs: vec![host_shell_job(id, description, timeout_secs, command)],
+    }
 }
 
 fn static_filters(filters: &'static [&'static str]) -> Vec<String> {
@@ -250,6 +282,48 @@ pub(crate) fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
             ]),
             jobs: pikachat_apple_followup_jobs(),
         }),
+        "apple_host_sanity" => Ok(host_shell_target_spec(
+            "apple_host_sanity",
+            "Run the Apple host sanity lane via pikaci",
+            &[],
+            3600,
+            "./scripts/pikaci-apple-remote.sh run --just-recipe apple-host-sanity",
+        )),
+        "nightly_linux" => Ok(host_shell_target_spec(
+            "nightly_linux",
+            "Run the nightly Linux lane via pikaci",
+            &[],
+            14400,
+            "nix develop .#default -c just rmp_tools::rmp-nightly-linux",
+        )),
+        "nightly_pika" => Ok(host_shell_target_spec(
+            "nightly_pika",
+            "Run the nightly Pika lane via pikaci",
+            &[],
+            14400,
+            "nix develop .#default -c just checks::nightly-pika-e2e",
+        )),
+        "nightly_pikachat" => Ok(host_shell_target_spec(
+            "nightly_pikachat",
+            "Run the nightly Pikachat lane via pikaci",
+            &[],
+            14400,
+            "nix develop .#default -c just checks::nightly-pikachat",
+        )),
+        "nightly_pika_ui_android" => Ok(host_shell_target_spec(
+            "nightly_pika_ui_android",
+            "Run the nightly Android UI lane via pikaci",
+            &[],
+            14400,
+            "./scripts/forge-nightly-pika-ui-android.sh",
+        )),
+        "nightly_apple_host_bundle" => Ok(host_shell_target_spec(
+            "nightly_apple_host_bundle",
+            "Run the nightly Apple host bundle lane via pikaci",
+            &[],
+            14400,
+            "./scripts/pikaci-apple-remote.sh run --just-recipe apple-host-bundle",
+        )),
         "pika-desktop-package-tests" => single_job_target_spec(
             "pika-desktop-package-tests",
             "Run pika-desktop package tests in a remote Linux VM",

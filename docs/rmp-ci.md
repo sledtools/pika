@@ -12,7 +12,7 @@ RMP checks are integrated into the repo's single CI entrypoint, not a separate w
 ## Pre-merge
 
 - Canonical orchestrator: the forge on `git.pikachat.org`
-- Authoritative lane catalog and path filters: `ci/forge-lanes.toml`
+- Authoritative lane catalog and path filters: `crates/pikaci/src/forge_lanes.rs`
 - Internal lanes:
   - `check-pika`: existing app checks via `just pre-merge-pika`
   - `check-rmp`: RMP template/CLI checks via `just pre-merge-rmp`
@@ -25,7 +25,7 @@ RMP checks are integrated into the repo's single CI entrypoint, not a separate w
 ## Nightly
 
 - Canonical scheduler: the forge service on `git.pikachat.org`
-- Authoritative lane catalog: `ci/forge-lanes.toml`
+- Authoritative lane catalog: `crates/pikaci/src/forge_lanes.rs`
 - Linux lane (`nightly-linux`): `just rmp-nightly-linux`
   - scaffolds project
   - ensures Android AVD

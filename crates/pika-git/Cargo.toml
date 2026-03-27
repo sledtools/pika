@@ -17,12 +17,12 @@ chrono = { workspace = true, features = ["clock", "serde"] }
 clap = { workspace = true }
 futures = { workspace = true }
 fs2 = { workspace = true }
-globset = "0.4"
 hex = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 jerichoci = { workspace = true }
 nostr = { workspace = true }
+pikaci = { path = "../pikaci" }
 pika-forge-model = { path = "../pika-forge-model" }
 rand = { workspace = true }
 pulldown-cmark = "0.10"

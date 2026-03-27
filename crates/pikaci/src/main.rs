@@ -1,5 +1,6 @@
 mod catalog;
-mod forge_manifest;
+#[allow(dead_code)]
+mod forge_lanes;
 mod output;
 mod targets;
 
@@ -745,7 +746,7 @@ mod tests {
             target
                 .filters
                 .iter()
-                .any(|pattern| pattern == "ci/forge-lanes.toml")
+                .any(|pattern| pattern == "crates/pikaci/src/forge_lanes.rs")
         );
         assert!(target.filters.iter().any(|pattern| pattern == "scripts/**"));
     }

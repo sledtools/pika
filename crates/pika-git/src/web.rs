@@ -611,7 +611,7 @@ pub async fn serve(
             "forge: canonical_repo={} default_branch={} lane_manifest={}",
             forge_repo.canonical_git_dir,
             forge_repo.default_branch,
-            ci::FORGE_LANE_MANIFEST_PATH
+            ci::FORGE_LANE_DEFINITION_PATH
         );
         if let Some(remote_name) = forge_repo.mirror_remote.as_deref() {
             let interval = forge_repo.mirror_poll_interval_secs.unwrap_or(0);

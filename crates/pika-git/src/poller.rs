@@ -66,7 +66,7 @@ pub fn poll_once_limited_with_updates(
                 repo: forge_repo.repo.clone(),
                 canonical_git_dir: forge_repo.canonical_git_dir.clone(),
                 default_branch: forge_repo.default_branch.clone(),
-                ci_entrypoint: ci::FORGE_LANE_MANIFEST_PATH.to_string(),
+                ci_entrypoint: ci::FORGE_LANE_DEFINITION_PATH.to_string(),
                 branch_name: branch_name.clone(),
                 title,
                 head_sha: head_sha.clone(),
@@ -82,7 +82,7 @@ pub fn poll_once_limited_with_updates(
             match ci::load_manifest_for_head(&forge_repo, &head_sha).and_then(|manifest| {
                 if changed_paths
                     .iter()
-                    .any(|path| path == ci::FORGE_LANE_MANIFEST_PATH)
+                    .any(|path| path == ci::FORGE_LANE_DEFINITION_PATH)
                 {
                     Ok(manifest.branch_lanes)
                 } else {
@@ -125,12 +125,11 @@ pub fn poll_once_limited_with_updates(
 
 #[cfg(test)]
 mod tests {
-    use crate::ci_state::CiLaneStatus;
     use crate::config::{Config, ForgeRepoConfig};
     use crate::test_support::GitTestRepo;
 
     use super::poll_once_limited;
-    use crate::ci;
+    use crate::{ci, ci_manifest};
 
     fn config_for_bare_repo(bare: &std::path::Path) -> Config {
         Config::test_with_forge_repo(ForgeRepoConfig {
@@ -147,57 +146,22 @@ mod tests {
     }
 
     #[test]
-    fn branch_push_queues_lanes_from_branch_head_manifest() {
+    fn branch_push_queues_compiled_lanes_for_changed_paths() {
         let repo = GitTestRepo::new();
         repo.write_seed("README.md", "hello\n");
-        repo.write_seed(
-            "lane-a.sh",
-            "#!/usr/bin/env bash\nset -euo pipefail\necho lane-a\n",
-        );
-        repo.write_seed(
-            "lane-b.sh",
-            "#!/usr/bin/env bash\nset -euo pipefail\necho lane-b\n",
-        );
-        for script in ["lane-a.sh", "lane-b.sh"] {
-            repo.chmod_seed_executable(script);
-        }
-        repo.write_seed(
-            "ci/forge-lanes.toml",
-            r#"
-version = 1
-nightly_schedule_utc = "08:00"
-
-[[branch.lanes]]
-id = "master_lane"
-title = "master lane"
-entrypoint = "./lane-a.sh"
-command = ["./lane-a.sh"]
-paths = ["README.md"]
-"#,
-        );
-        repo.seed_add(&["README.md", "lane-a.sh", "lane-b.sh", "ci/forge-lanes.toml"]);
+        repo.write_seed("rust/src/lib.rs", "pub fn feature_branch() {}\n");
+        repo.seed_add(&["README.md", "rust/src/lib.rs"]);
         repo.seed_commit("initial");
         repo.seed_push_master();
 
-        repo.seed_checkout_new_branch("feature/manifest");
-        repo.write_seed("README.md", "branch\n");
+        repo.seed_checkout_new_branch("feature/rust");
         repo.write_seed(
-            "ci/forge-lanes.toml",
-            r#"
-version = 1
-nightly_schedule_utc = "08:00"
-
-[[branch.lanes]]
-id = "branch_lane"
-title = "branch lane"
-entrypoint = "./lane-b.sh"
-command = ["./lane-b.sh"]
-paths = []
-"#,
+            "rust/src/lib.rs",
+            "pub fn feature_branch() { println!(\"hi\"); }\n",
         );
-        repo.seed_add(&["README.md", "ci/forge-lanes.toml"]);
-        repo.seed_commit("branch manifest");
-        repo.seed_push_branch("feature/manifest");
+        repo.seed_add(&["rust/src/lib.rs"]);
+        repo.seed_commit("touch rust core");
+        repo.seed_push_branch("feature/rust");
 
         let config = config_for_bare_repo(repo.bare_path());
         let store = repo.open_store();
@@ -206,43 +170,39 @@ paths = []
             .list_branch_feed_items()
             .expect("list branch feed")
             .into_iter()
-            .find(|item| item.branch_name == "feature/manifest")
+            .find(|item| item.branch_name == "feature/rust")
             .expect("branch feed item");
         let queued = store
             .list_branch_ci_runs(branch.branch_id, 4)
             .expect("list branch ci runs");
         assert_eq!(queued.len(), 1);
-        assert_eq!(queued[0].lanes.len(), 1);
-        assert_eq!(queued[0].lanes[0].lane_id, "branch_lane");
-
-        let pass = ci::run_ci_pass(&store, &config).expect("run ci pass");
-        assert_eq!(pass.succeeded, 1);
-
-        let finished = store
-            .list_branch_ci_runs(branch.branch_id, 4)
-            .expect("list finished ci runs");
-        assert_eq!(finished[0].lanes[0].lane_id, "branch_lane");
-        assert_eq!(finished[0].lanes[0].status, CiLaneStatus::Success);
-        assert_eq!(finished[0].lanes[0].log_text.as_deref(), Some("lane-b\n"));
+        let lane_ids = queued[0]
+            .lanes
+            .iter()
+            .map(|lane| lane.lane_id.as_str())
+            .collect::<Vec<_>>();
+        assert!(lane_ids.contains(&"pika_rust"));
+        assert!(lane_ids.contains(&"pika_followup"));
+        assert!(lane_ids.contains(&"pikachat"));
+        assert!(lane_ids.contains(&"apple_host_sanity"));
     }
 
     #[test]
-    fn invalid_branch_manifest_records_failed_suite_for_head() {
+    fn branch_push_of_lane_definition_file_queues_all_branch_lanes() {
         let repo = GitTestRepo::new();
-        repo.write_seed("README.md", "hello\n");
-        repo.write_seed(
-            "ci/forge-lanes.toml",
-            "version = 1\nnightly_schedule_utc = \"08:00\"\n",
-        );
-        repo.seed_add(&["README.md", "ci/forge-lanes.toml"]);
+        repo.write_seed(ci::FORGE_LANE_DEFINITION_PATH, "// lane source of truth\n");
+        repo.seed_add(&[ci::FORGE_LANE_DEFINITION_PATH]);
         repo.seed_commit("initial");
         repo.seed_push_master();
 
-        repo.seed_checkout_new_branch("feature/bad-manifest");
-        repo.write_seed("ci/forge-lanes.toml", "not = [valid\n");
-        repo.seed_add(&["ci/forge-lanes.toml"]);
-        repo.seed_commit("break manifest");
-        repo.seed_push_branch("feature/bad-manifest");
+        repo.seed_checkout_new_branch("feature/lanes");
+        repo.write_seed(
+            ci::FORGE_LANE_DEFINITION_PATH,
+            "// lane source of truth changed\n",
+        );
+        repo.seed_add(&[ci::FORGE_LANE_DEFINITION_PATH]);
+        repo.seed_commit("touch lane source");
+        repo.seed_push_branch("feature/lanes");
 
         let config = config_for_bare_repo(repo.bare_path());
         let store = repo.open_store();
@@ -251,27 +211,13 @@ paths = []
             .list_branch_feed_items()
             .expect("list branch feed")
             .into_iter()
-            .find(|item| item.branch_name == "feature/bad-manifest")
+            .find(|item| item.branch_name == "feature/lanes")
             .expect("branch feed item");
-        let failed_suite = store
-            .with_connection(|conn| {
-                conn.query_row(
-                    "SELECT status, log_text
-                     FROM branch_ci_runs
-                     WHERE branch_id = ?1
-                     ORDER BY id DESC
-                     LIMIT 1",
-                    rusqlite::params![branch.branch_id],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
-                )
-                .map_err(Into::into)
-            })
-            .expect("load failed suite");
-        assert_eq!(failed_suite.0, "failed");
-        assert!(failed_suite
-            .1
-            .as_deref()
-            .unwrap_or_default()
-            .contains("forge ci manifest error"));
+        let queued = store
+            .list_branch_ci_runs(branch.branch_id, 4)
+            .expect("list branch ci runs");
+        assert_eq!(queued.len(), 1);
+        let manifest = ci_manifest::compiled_forge_ci_manifest();
+        assert_eq!(queued[0].lanes.len(), manifest.branch_lanes.len());
     }
 }

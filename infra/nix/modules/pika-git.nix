@@ -129,6 +129,8 @@ in
       pkgs.claude-code
       pkgs.curl
       pkgs.git
+      pkgs.gnutar
+      pkgs.gzip
       pkgs.just
       pkgs.nix
       pkgs.openssh

@@ -452,6 +452,8 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
+    // Test-only fixture catalog for model behavior checks. This is not production
+    // JerichoCI catalog data and should not count against architecture invariants.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum StagedLinuxRustTarget {
         PreMergePikaRust,
@@ -475,6 +477,8 @@ mod tests {
         workspace_output_system: &'static str,
     }
 
+    // Test-only fixture catalog for model behavior checks. This is not production
+    // JerichoCI catalog data and should not count against architecture invariants.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum StagedLinuxRustLane {
         PikaFollowupActionlint,

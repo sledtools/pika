@@ -4471,6 +4471,8 @@ mod tests {
         action()
     }
 
+    // Test-only fixture catalog for run-path checks. This is not production
+    // JerichoCI catalog data and should not count against architecture invariants.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum StagedLinuxRustLane {
         PikaFollowupActionlint,

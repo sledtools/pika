@@ -16,7 +16,7 @@ These lanes are defined canonically in `ci/forge-lanes.toml` and orchestrated by
 - `check-agent-contracts`:
   - Runs the checked-in staged Linux agent provider contract surface on `pikaci`.
   - Covers: `pika-cloud` unit tests, `pika-server` `agent_api::tests`, and the `pika_core` NIP-98 signing contract test.
-  - Intentionally does not cover the old host-side `pikahut` deterministic HTTP / CLI selectors anymore. Those selectors still encode legacy vm-spawner-era assumptions, so they were removed from provider-contract CI instead of being silently treated as an Incus parity problem. They are currently manual-only until they are rewritten against the surviving Incus/OpenClaw product contract and given a new truthful lane.
+  - Intentionally does not cover the old host-side `pikahut` deterministic HTTP / CLI selectors anymore. Those selectors still encode legacy pre-Incus assumptions, so they were removed from provider-contract CI instead of being silently treated as an Incus parity problem. They are currently manual-only until they are rewritten against the surviving Incus/OpenClaw product contract and given a new truthful lane.
   - Command: `nix develop .#default -c just pre-merge-agent-contracts`
 
 ## Advisory Integration Lanes

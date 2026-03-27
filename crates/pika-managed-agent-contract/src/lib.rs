@@ -91,9 +91,10 @@ mod tests {
 
     #[test]
     fn agent_provision_request_rejects_removed_legacy_fields() {
-        let err =
-            serde_json::from_str::<AgentProvisionRequest>(r#"{"microvm":{"kind":"openclaw"}}"#)
-                .expect_err("removed legacy request fields must fail closed");
+        let err = serde_json::from_str::<AgentProvisionRequest>(
+            r#"{"legacy_backend":{"kind":"openclaw"}}"#,
+        )
+        .expect_err("removed legacy request fields must fail closed");
         assert!(err.to_string().contains("unknown field"));
     }
 }

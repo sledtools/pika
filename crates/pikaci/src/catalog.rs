@@ -59,7 +59,7 @@ pub(crate) enum PikaStagedLinuxLane {
     PikaFollowupRustDepsHygiene,
     PikaCoreLibAppFlows,
     PikaCoreMessagingE2e,
-    AgentContractsControlPlaneUnit,
+    AgentContractsPikaCloudUnit,
     AgentContractsServerAgentApi,
     AgentContractsCoreNip98,
     NotificationsServerPackageTests,
@@ -92,7 +92,7 @@ impl PikaStagedLinuxLane {
             Self::PikaCoreLibAppFlows | Self::PikaCoreMessagingE2e => {
                 PikaStagedLinuxTarget::PreMergePikaRust
             }
-            Self::AgentContractsControlPlaneUnit
+            Self::AgentContractsPikaCloudUnit
             | Self::AgentContractsServerAgentApi
             | Self::AgentContractsCoreNip98 => PikaStagedLinuxTarget::PreMergeAgentContracts,
             Self::NotificationsServerPackageTests => PikaStagedLinuxTarget::PreMergeNotifications,
@@ -147,7 +147,7 @@ impl PikaStagedLinuxLane {
                 Self::PikaCoreMessagingE2e => {
                     "/staged/linux-rust/workspace-build/bin/run-pika-core-messaging-e2e-tests"
                 }
-                Self::AgentContractsControlPlaneUnit => {
+                Self::AgentContractsPikaCloudUnit => {
                     "/staged/linux-rust/workspace-build/bin/run-pika-cloud-unit-tests"
                 }
                 Self::AgentContractsServerAgentApi => {

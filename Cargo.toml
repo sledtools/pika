@@ -8,6 +8,7 @@ members = [
   "crates/pika-forge-model",
   "crates/pikaci",
   "crates/pika-agent-protocol",
+  "crates/pika-managed-agent-contract",
   "crates/pika-cloud",
   "crates/pika-relay-profiles",
   "crates/pika-marmot-runtime",
@@ -35,6 +36,7 @@ mdk-storage-traits = { git = "https://github.com/marmot-protocol/mdk", rev = "ca
 hypernote-mdx = { git = "https://github.com/futurepaul/hypernote-mdx", rev = "db23b3d72e81389247716c5a59174cc4f4d55a34", version = "0.3.0" }
 hypernote-protocol = { path = "crates/hypernote-protocol" }
 jerichoci = { path = "crates/jerichoci" }
+pika-managed-agent-contract = { path = "crates/pika-managed-agent-contract" }
 pika-forge-model = { path = "crates/pika-forge-model" }
 
 anyhow = "1"

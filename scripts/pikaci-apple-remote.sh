@@ -480,6 +480,7 @@ run_locked_body() {
   prepare_started_at="$(date +%s)"
 
   mkdir -p "$prepared_root" "$shared_target_dir"
+  rm -f "$prepare_phase_file"
 
   if [[ "$skip_source_import" == "1" ]]; then
     if [[ ! -e "${prepared_worktree_dir}/.git" ]]; then
@@ -550,6 +551,8 @@ run_locked_body() {
     export CARGO_TARGET_DIR="$shared_target_dir"
     nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c \
       ./scripts/apple-host-prepare.sh "$desired_prepare_profile" "$prepare_phase_file"
+  else
+    : > "$prepare_phase_file"
   fi
 
   mkdir -p "$prepared_dir"

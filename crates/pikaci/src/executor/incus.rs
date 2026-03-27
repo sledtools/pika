@@ -645,12 +645,14 @@ pub(super) fn build_snapshot_mount_plan_for_test(
             timeout_secs: 120,
             writable_workspace: false,
             execution: super::super::JobExecutionConfig::REMOTE_SSH_INCUS,
+            runtime_config: super::super::JobRuntimeConfig::Incus(
+                super::super::IncusRuntimeConfig {
+                    staged_linux_command: None,
+                },
+            ),
             guest_command: GuestCommand::ShellCommand {
                 command: "actionlint",
             },
-            staged_linux_command: None,
-            host_setup_command: None,
-            mount_host_rust_toolchain: false,
         },
         remote,
     )?)?

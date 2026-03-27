@@ -6,10 +6,12 @@ use catalog::{PikaStagedLinuxLane, PikaStagedLinuxTarget, PikaStagedLinuxTargetI
 use clap::{Parser, Subcommand, ValueEnum};
 use forge_manifest::branch_lane_paths_for_staged_target;
 use pikaci::{
-    GuestCommand, JobExecutionConfig, JobSpec, LogKind, RunLifecycleEvent, RunMetadata, RunOptions,
-    RunRecord, RunStatus, StagedLinuxRemoteDefaults, fulfill_prepared_output_request, gc_runs,
-    git_changed_files, list_runs, load_logs, load_logs_metadata, load_prepared_outputs_record,
-    load_run_record, record_skipped_run_with_reporter, rerun_jobs_with_metadata_and_reporter,
+    GuestCommand, HostProcessRuntimeConfig, IncusRuntimeConfig, JobExecutionConfig,
+    JobRuntimeConfig, JobSpec, LogKind, RunLifecycleEvent, RunMetadata, RunOptions, RunRecord,
+    RunStatus, StagedLinuxCommandConfig, StagedLinuxRemoteDefaults, TartRuntimeConfig,
+    fulfill_prepared_output_request, gc_runs, git_changed_files, list_runs, load_logs,
+    load_logs_metadata, load_prepared_outputs_record, load_run_record,
+    record_skipped_run_with_reporter, rerun_jobs_with_metadata_and_reporter,
     run_jobs_with_metadata_and_reporter, staged_linux_remote_defaults,
 };
 use std::path::PathBuf;
@@ -27,6 +29,21 @@ const TART_HOST_SETUP_COMMAND: &str = concat!(
     "just ios-xcframework ios-xcodeproj",
 );
 
+fn remote_incus_runtime(
+    staged_linux_command: Option<StagedLinuxCommandConfig>,
+) -> JobRuntimeConfig {
+    JobRuntimeConfig::Incus(IncusRuntimeConfig {
+        staged_linux_command,
+    })
+}
+
+fn tart_runtime(mount_host_rust_toolchain: bool) -> JobRuntimeConfig {
+    JobRuntimeConfig::Tart(TartRuntimeConfig {
+        host_setup_command: Some(TART_HOST_SETUP_COMMAND),
+        mount_host_rust_toolchain,
+    })
+}
+
 fn remote_incus_job_base() -> JobSpec {
     JobSpec {
         id: "",
@@ -34,10 +51,8 @@ fn remote_incus_job_base() -> JobSpec {
         timeout_secs: 0,
         writable_workspace: false,
         execution: JobExecutionConfig::REMOTE_SSH_INCUS,
+        runtime_config: remote_incus_runtime(None),
         guest_command: GuestCommand::ShellCommand { command: "" },
-        staged_linux_command: None,
-        host_setup_command: None,
-        mount_host_rust_toolchain: false,
     }
 }
 
@@ -48,10 +63,8 @@ fn host_local_job_base() -> JobSpec {
         timeout_secs: 0,
         writable_workspace: false,
         execution: JobExecutionConfig::HOST_LOCAL,
+        runtime_config: JobRuntimeConfig::HostProcess(HostProcessRuntimeConfig),
         guest_command: GuestCommand::HostShellCommand { command: "" },
-        staged_linux_command: None,
-        host_setup_command: None,
-        mount_host_rust_toolchain: false,
     }
 }
 
@@ -62,10 +75,8 @@ fn tart_job_base() -> JobSpec {
         timeout_secs: 0,
         writable_workspace: false,
         execution: JobExecutionConfig::LOCAL_TART,
+        runtime_config: tart_runtime(false),
         guest_command: GuestCommand::ShellCommand { command: "" },
-        staged_linux_command: None,
-        host_setup_command: Some(TART_HOST_SETUP_COMMAND),
-        mount_host_rust_toolchain: false,
     }
 }
 
@@ -674,7 +685,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                         "emulator -list-avds",
                     ),
                 },
-                staged_linux_command: None,
+                runtime_config: remote_incus_runtime(None),
                 ..remote_incus_job_base()
             }],
         }),
@@ -706,7 +717,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                         "./tools/android-ui-test-ci",
                     ),
                 },
-                staged_linux_command: None,
+                runtime_config: remote_incus_runtime(None),
                 ..remote_incus_job_base()
             }],
         }),
@@ -730,8 +741,7 @@ fn target_spec(name: &str) -> anyhow::Result<TargetSpec> {
                         "./tools/ios-sim-ensure",
                     ),
                 },
-                staged_linux_command: None,
-                mount_host_rust_toolchain: true,
+                runtime_config: tart_runtime(true),
                 ..tart_job_base()
             }],
         }),
@@ -964,9 +974,9 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::PackageUnitTests {
                 package: "pika-cloud",
             },
-            staged_linux_command: Some(
+            runtime_config: remote_incus_runtime(Some(
                 PikaStagedLinuxLane::AgentContractsControlPlaneUnit.command_config(),
-            ),
+            )),
             ..remote_incus_job_base()
         },
         JobSpec {
@@ -978,9 +988,9 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
                 package: "pika-server",
                 filter: "agent_api::tests",
             },
-            staged_linux_command: Some(
+            runtime_config: remote_incus_runtime(Some(
                 PikaStagedLinuxLane::AgentContractsServerAgentApi.command_config(),
-            ),
+            )),
             ..remote_incus_job_base()
         },
         JobSpec {
@@ -992,9 +1002,9 @@ fn agent_contract_jobs() -> Vec<JobSpec> {
                 package: "pika_core",
                 test_name: "core::agent::tests::run_agent_flow_signs_requests_with_nip98_authorization",
             },
-            staged_linux_command: Some(
+            runtime_config: remote_incus_runtime(Some(
                 PikaStagedLinuxLane::AgentContractsCoreNip98.command_config(),
-            ),
+            )),
             ..remote_incus_job_base()
         },
     ]
@@ -1010,7 +1020,9 @@ fn pika_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
             },
-            staged_linux_command: Some(PikaStagedLinuxLane::PikaCoreLibAppFlows.command_config()),
+            runtime_config: remote_incus_runtime(Some(
+                PikaStagedLinuxLane::PikaCoreLibAppFlows.command_config(),
+            )),
             ..remote_incus_job_base()
         },
         JobSpec {
@@ -1021,7 +1033,9 @@ fn pika_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pika_core --test e2e_messaging --test e2e_group_profiles -- --nocapture",
             },
-            staged_linux_command: Some(PikaStagedLinuxLane::PikaCoreMessagingE2e.command_config()),
+            runtime_config: remote_incus_runtime(Some(
+                PikaStagedLinuxLane::PikaCoreMessagingE2e.command_config(),
+            )),
             ..remote_incus_job_base()
         },
     ]
@@ -1044,9 +1058,9 @@ fn notification_jobs() -> Vec<JobSpec> {
                 "cargo test -p pika-server -- --test-threads=1 --nocapture"
             ),
         },
-        staged_linux_command: Some(
+        runtime_config: remote_incus_runtime(Some(
             PikaStagedLinuxLane::NotificationsServerPackageTests.command_config(),
-        ),
+        )),
         ..remote_incus_job_base()
     }]
 }
@@ -1061,7 +1075,9 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::PackageTests {
                 package: "pikachat",
             },
-            staged_linux_command: Some(PikaStagedLinuxLane::PikachatPackageTests.command_config()),
+            runtime_config: remote_incus_runtime(Some(
+                PikaStagedLinuxLane::PikachatPackageTests.command_config(),
+            )),
             ..remote_incus_job_base()
         },
         JobSpec {
@@ -1072,9 +1088,9 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "PIKACHAT_TTS_FIXTURE=1 cargo test -p pikachat-sidecar -- --nocapture",
             },
-            staged_linux_command: Some(
+            runtime_config: remote_incus_runtime(Some(
                 PikaStagedLinuxLane::PikachatSidecarPackageTests.command_config(),
-            ),
+            )),
             ..remote_incus_job_base()
         },
         JobSpec {
@@ -1085,9 +1101,9 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::PackageTests {
                 package: "pika-desktop",
             },
-            staged_linux_command: Some(
+            runtime_config: remote_incus_runtime(Some(
                 PikaStagedLinuxLane::PikachatDesktopPackageTests.command_config(),
-            ),
+            )),
             ..remote_incus_job_base()
         },
         JobSpec {
@@ -1098,7 +1114,9 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture",
             },
-            staged_linux_command: Some(PikaStagedLinuxLane::PikachatCliSmokeLocal.command_config()),
+            runtime_config: remote_incus_runtime(Some(
+                PikaStagedLinuxLane::PikachatCliSmokeLocal.command_config(),
+            )),
             ..remote_incus_job_base()
         },
         JobSpec {
@@ -1109,9 +1127,9 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic post_rebase_invalid_event_rejection_boundary -- --ignored --nocapture",
             },
-            staged_linux_command: Some(
+            runtime_config: remote_incus_runtime(Some(
                 PikaStagedLinuxLane::PikachatPostRebaseInvalidEvent.command_config(),
-            ),
+            )),
             ..remote_incus_job_base()
         },
         JobSpec {
@@ -1122,9 +1140,9 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic post_rebase_logout_session_convergence_boundary -- --ignored --nocapture",
             },
-            staged_linux_command: Some(
+            runtime_config: remote_incus_runtime(Some(
                 PikaStagedLinuxLane::PikachatPostRebaseLogoutSession.command_config(),
-            ),
+            )),
             ..remote_incus_job_base()
         },
         JobSpec {
@@ -1135,7 +1153,9 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat -- --ignored --nocapture",
             },
-            staged_linux_command: Some(PikaStagedLinuxLane::OpenclawInviteAndChat.command_config()),
+            runtime_config: remote_incus_runtime(Some(
+                PikaStagedLinuxLane::OpenclawInviteAndChat.command_config(),
+            )),
             ..remote_incus_job_base()
         },
         JobSpec {
@@ -1146,9 +1166,9 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat_rust_bot -- --ignored --nocapture",
             },
-            staged_linux_command: Some(
+            runtime_config: remote_incus_runtime(Some(
                 PikaStagedLinuxLane::OpenclawInviteAndChatRustBot.command_config(),
-            ),
+            )),
             ..remote_incus_job_base()
         },
         JobSpec {
@@ -1159,9 +1179,9 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic openclaw_scenario_invite_and_chat_daemon -- --ignored --nocapture",
             },
-            staged_linux_command: Some(
+            runtime_config: remote_incus_runtime(Some(
                 PikaStagedLinuxLane::OpenclawInviteAndChatDaemon.command_config(),
-            ),
+            )),
             ..remote_incus_job_base()
         },
         JobSpec {
@@ -1172,7 +1192,9 @@ fn pikachat_rust_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo test -p pikahut --test integration_deterministic openclaw_scenario_audio_echo -- --ignored --nocapture",
             },
-            staged_linux_command: Some(PikaStagedLinuxLane::OpenclawAudioEcho.command_config()),
+            runtime_config: remote_incus_runtime(Some(
+                PikaStagedLinuxLane::OpenclawAudioEcho.command_config(),
+            )),
             ..remote_incus_job_base()
         },
     ]
@@ -1188,9 +1210,9 @@ fn pika_followup_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cd android && ./gradlew :app:compileDebugAndroidTestKotlin",
             },
-            staged_linux_command: Some(
+            runtime_config: remote_incus_runtime(Some(
                 PikaStagedLinuxLane::PikaFollowupAndroidTestCompile.command_config(),
-            ),
+            )),
             ..remote_incus_job_base()
         },
         JobSpec {
@@ -1201,9 +1223,9 @@ fn pika_followup_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "cargo build -p pikachat",
             },
-            staged_linux_command: Some(
+            runtime_config: remote_incus_runtime(Some(
                 PikaStagedLinuxLane::PikaFollowupPikachatBuild.command_config(),
-            ),
+            )),
             ..remote_incus_job_base()
         },
         JobSpec {
@@ -1214,9 +1236,9 @@ fn pika_followup_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "just desktop-check",
             },
-            staged_linux_command: Some(
+            runtime_config: remote_incus_runtime(Some(
                 PikaStagedLinuxLane::PikaFollowupDesktopCheck.command_config(),
-            ),
+            )),
             ..remote_incus_job_base()
         },
         JobSpec {
@@ -1227,9 +1249,9 @@ fn pika_followup_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "actionlint",
             },
-            staged_linux_command: Some(
+            runtime_config: remote_incus_runtime(Some(
                 PikaStagedLinuxLane::PikaFollowupActionlint.command_config(),
-            ),
+            )),
             ..remote_incus_job_base()
         },
         JobSpec {
@@ -1240,9 +1262,9 @@ fn pika_followup_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "npx --yes @justinmoon/agent-tools check-docs && npx --yes @justinmoon/agent-tools check-justfile",
             },
-            staged_linux_command: Some(
+            runtime_config: remote_incus_runtime(Some(
                 PikaStagedLinuxLane::PikaFollowupDocContracts.command_config(),
-            ),
+            )),
             ..remote_incus_job_base()
         },
         JobSpec {
@@ -1253,9 +1275,9 @@ fn pika_followup_jobs() -> Vec<JobSpec> {
             guest_command: GuestCommand::ShellCommand {
                 command: "./scripts/check-cargo-machete",
             },
-            staged_linux_command: Some(
+            runtime_config: remote_incus_runtime(Some(
                 PikaStagedLinuxLane::PikaFollowupRustDepsHygiene.command_config(),
-            ),
+            )),
             ..remote_incus_job_base()
         },
     ]
@@ -1268,7 +1290,9 @@ fn pikachat_openclaw_e2e_jobs() -> Vec<JobSpec> {
         timeout_secs: 3600,
         writable_workspace: false,
         guest_command: GuestCommand::ShellCommand { command: "ignored" },
-        staged_linux_command: Some(PikaStagedLinuxLane::OpenclawGatewayE2e.command_config()),
+        runtime_config: remote_incus_runtime(Some(
+            PikaStagedLinuxLane::OpenclawGatewayE2e.command_config(),
+        )),
         ..remote_incus_job_base()
     }]
 }
@@ -1280,7 +1304,9 @@ fn pikachat_typescript_jobs() -> Vec<JobSpec> {
         timeout_secs: 1800,
         writable_workspace: false,
         guest_command: GuestCommand::ShellCommand { command: "ignored" },
-        staged_linux_command: Some(PikaStagedLinuxLane::PikachatTypescript.command_config()),
+        runtime_config: remote_incus_runtime(Some(
+            PikaStagedLinuxLane::PikachatTypescript.command_config(),
+        )),
         ..remote_incus_job_base()
     }]
 }
@@ -1293,7 +1319,9 @@ fn fixture_rust_jobs() -> Vec<JobSpec> {
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand { command: "ignored" },
-            staged_linux_command: Some(PikaStagedLinuxLane::FixturePikahutClippy.command_config()),
+            runtime_config: remote_incus_runtime(Some(
+                PikaStagedLinuxLane::FixturePikahutClippy.command_config(),
+            )),
             ..remote_incus_job_base()
         },
         JobSpec {
@@ -1302,7 +1330,9 @@ fn fixture_rust_jobs() -> Vec<JobSpec> {
             timeout_secs: 300,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand { command: "ignored" },
-            staged_linux_command: Some(PikaStagedLinuxLane::FixtureRelaySmoke.command_config()),
+            runtime_config: remote_incus_runtime(Some(
+                PikaStagedLinuxLane::FixtureRelaySmoke.command_config(),
+            )),
             ..remote_incus_job_base()
         },
     ]
@@ -1322,7 +1352,7 @@ fn pikachat_apple_followup_jobs() -> Vec<JobSpec> {
                     "cargo clippy -p pikachat -- -D warnings"
                 ),
             },
-            staged_linux_command: None,
+            runtime_config: JobRuntimeConfig::HostProcess(HostProcessRuntimeConfig),
             ..host_local_job_base()
         },
         JobSpec {
@@ -1337,7 +1367,7 @@ fn pikachat_apple_followup_jobs() -> Vec<JobSpec> {
                     "cargo clippy -p pikachat-sidecar -- -D warnings"
                 ),
             },
-            staged_linux_command: None,
+            runtime_config: JobRuntimeConfig::HostProcess(HostProcessRuntimeConfig),
             ..host_local_job_base()
         },
         JobSpec {
@@ -1356,7 +1386,7 @@ fn pikachat_apple_followup_jobs() -> Vec<JobSpec> {
                     "fi'"
                 ),
             },
-            staged_linux_command: None,
+            runtime_config: JobRuntimeConfig::HostProcess(HostProcessRuntimeConfig),
             ..host_local_job_base()
         },
         JobSpec {
@@ -1372,7 +1402,7 @@ fn pikachat_apple_followup_jobs() -> Vec<JobSpec> {
                     "pikachat-openclaw/openclaw/extensions/pikachat-openclaw/src/channel-behavior.test.ts"
                 ),
             },
-            staged_linux_command: None,
+            runtime_config: JobRuntimeConfig::HostProcess(HostProcessRuntimeConfig),
             ..host_local_job_base()
         },
     ]
@@ -1405,7 +1435,9 @@ fn rmp_jobs() -> Vec<JobSpec> {
                 "echo 'ok: rmp init ci smoke passed'"
             ),
         },
-        staged_linux_command: Some(PikaStagedLinuxLane::RmpInitSmokeCi.command_config()),
+        runtime_config: remote_incus_runtime(Some(
+            PikaStagedLinuxLane::RmpInitSmokeCi.command_config(),
+        )),
         ..remote_incus_job_base()
     }]
 }
@@ -1444,8 +1476,7 @@ fn tart_agent_button_job(id: &'static str, description: &'static str) -> JobSpec
                 "-skip-testing:PikaUITests",
             ),
         },
-        staged_linux_command: None,
-        mount_host_rust_toolchain: true,
+        runtime_config: tart_runtime(true),
         ..tart_job_base()
     }
 }
@@ -1521,7 +1552,7 @@ fn tart_ios_unit_suite_job(
         guest_command: GuestCommand::ShellCommand {
             command: Box::leak(command.into_boxed_str()),
         },
-        staged_linux_command: None,
+        runtime_config: tart_runtime(false),
         ..tart_job_base()
     }
 }
@@ -1561,7 +1592,7 @@ fn tart_ios_ui_test_job(id: &'static str, description: &'static str) -> JobSpec 
                 "-skip-testing:PikaUITests/PikaUITests/testE2E_multiImageGrid",
             ),
         },
-        staged_linux_command: None,
+        runtime_config: tart_runtime(false),
         ..tart_job_base()
     }
 }
@@ -1600,7 +1631,7 @@ fn tart_ios_ui_note_to_self_job(id: &'static str, description: &'static str) -> 
                 "-skip-testing:PikaUITests/PikaUITests/testE2E_deployedRustBot_pingPong",
             ),
         },
-        staged_linux_command: None,
+        runtime_config: tart_runtime(false),
         ..tart_job_base()
     }
 }
@@ -1622,7 +1653,7 @@ fn tart_desktop_package_tests_job(id: &'static str, description: &'static str) -
                 "./tools/cargo-with-xcode test -p pika-desktop -- --nocapture",
             ),
         },
-        staged_linux_command: None,
+        runtime_config: tart_runtime(false),
         ..tart_job_base()
     }
 }

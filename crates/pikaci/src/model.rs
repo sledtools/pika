@@ -30,6 +30,37 @@ pub enum GuestCommand {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostProcessRuntimeConfig;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IncusRuntimeConfig {
+    pub staged_linux_command: Option<StagedLinuxCommandConfig>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TartRuntimeConfig {
+    pub host_setup_command: Option<&'static str>,
+    pub mount_host_rust_toolchain: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JobRuntimeConfig {
+    HostProcess(HostProcessRuntimeConfig),
+    Incus(IncusRuntimeConfig),
+    Tart(TartRuntimeConfig),
+}
+
+impl JobRuntimeConfig {
+    pub fn kind(self) -> JobRuntimeKind {
+        match self {
+            Self::HostProcess(_) => JobRuntimeKind::HostProcess,
+            Self::Incus(_) => JobRuntimeKind::Incus,
+            Self::Tart(_) => JobRuntimeKind::Tart,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct JobSpec {
     pub id: &'static str,
@@ -37,10 +68,8 @@ pub struct JobSpec {
     pub timeout_secs: u64,
     pub writable_workspace: bool,
     pub execution: JobExecutionConfig,
+    pub runtime_config: JobRuntimeConfig,
     pub guest_command: GuestCommand,
-    pub staged_linux_command: Option<StagedLinuxCommandConfig>,
-    pub host_setup_command: Option<&'static str>,
-    pub mount_host_rust_toolchain: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -182,12 +211,17 @@ impl JobSpec {
         self.execution
     }
 
+    pub fn runtime_config(&self) -> JobRuntimeConfig {
+        debug_assert_eq!(self.execution.runtime, self.runtime_config.kind());
+        self.runtime_config
+    }
+
     pub fn placement_kind(&self) -> JobPlacementKind {
         self.execution.placement
     }
 
     pub fn runtime_kind(&self) -> JobRuntimeKind {
-        self.execution.runtime
+        self.runtime_config().kind()
     }
 
     pub fn runner_kind(&self) -> RunnerKind {
@@ -208,7 +242,10 @@ impl JobSpec {
     }
 
     pub fn staged_linux_command(&self) -> Option<StagedLinuxCommandConfig> {
-        self.staged_linux_command
+        match self.runtime_config() {
+            JobRuntimeConfig::Incus(config) => config.staged_linux_command,
+            JobRuntimeConfig::HostProcess(_) | JobRuntimeConfig::Tart(_) => None,
+        }
     }
 
     pub fn supports_parallel_execute(&self) -> bool {
@@ -216,11 +253,17 @@ impl JobSpec {
     }
 
     pub fn host_setup_command(&self) -> Option<&'static str> {
-        self.host_setup_command
+        match self.runtime_config() {
+            JobRuntimeConfig::Tart(config) => config.host_setup_command,
+            JobRuntimeConfig::HostProcess(_) | JobRuntimeConfig::Incus(_) => None,
+        }
     }
 
     pub fn mount_host_rust_toolchain(&self) -> bool {
-        self.mount_host_rust_toolchain
+        match self.runtime_config() {
+            JobRuntimeConfig::Tart(config) => config.mount_host_rust_toolchain,
+            JobRuntimeConfig::HostProcess(_) | JobRuntimeConfig::Incus(_) => false,
+        }
     }
 }
 
@@ -400,10 +443,11 @@ fn should_default_remote_linux_vm_to_incus() -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        GuestCommand, JobExecutionConfig, JobSpec, RemoteLinuxVmBackend,
-        RemoteLinuxVmExecutionRecord, RemoteLinuxVmImageRecord, RemoteLinuxVmPhase,
-        RemoteLinuxVmPhaseRecord, StagedLinuxCommandConfig, StagedLinuxRustPayloadRole,
-        StagedLinuxRustTargetPayloadSpec, StagedLinuxSnapshotProfile,
+        GuestCommand, HostProcessRuntimeConfig, IncusRuntimeConfig, JobExecutionConfig,
+        JobRuntimeConfig, JobSpec, RemoteLinuxVmBackend, RemoteLinuxVmExecutionRecord,
+        RemoteLinuxVmImageRecord, RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord,
+        StagedLinuxCommandConfig, StagedLinuxRustPayloadRole, StagedLinuxRustTargetPayloadSpec,
+        StagedLinuxSnapshotProfile,
     };
     use std::fs;
     use std::path::Path;
@@ -722,6 +766,14 @@ mod tests {
             .unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
     }
 
+    fn remote_incus_runtime(
+        staged_linux_command: Option<StagedLinuxCommandConfig>,
+    ) -> JobRuntimeConfig {
+        JobRuntimeConfig::Incus(IncusRuntimeConfig {
+            staged_linux_command,
+        })
+    }
+
     fn remote_incus_job_base() -> JobSpec {
         JobSpec {
             id: "",
@@ -729,10 +781,8 @@ mod tests {
             timeout_secs: 0,
             writable_workspace: false,
             execution: JobExecutionConfig::REMOTE_SSH_INCUS,
+            runtime_config: remote_incus_runtime(None),
             guest_command: GuestCommand::ShellCommand { command: "" },
-            staged_linux_command: None,
-            host_setup_command: None,
-            mount_host_rust_toolchain: false,
         }
     }
 
@@ -743,10 +793,8 @@ mod tests {
             timeout_secs: 0,
             writable_workspace: false,
             execution: JobExecutionConfig::HOST_LOCAL,
+            runtime_config: JobRuntimeConfig::HostProcess(HostProcessRuntimeConfig),
             guest_command: GuestCommand::HostShellCommand { command: "" },
-            staged_linux_command: None,
-            host_setup_command: None,
-            mount_host_rust_toolchain: false,
         }
     }
 
@@ -760,9 +808,9 @@ mod tests {
             guest_command: GuestCommand::PackageUnitTests {
                 package: "pika-cloud",
             },
-            staged_linux_command: Some(
+            runtime_config: remote_incus_runtime(Some(
                 StagedLinuxRustLane::AgentContractsControlPlaneUnit.command_config(),
-            ),
+            )),
             ..remote_incus_job_base()
         };
 
@@ -856,9 +904,9 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "actionlint",
             },
-            staged_linux_command: Some(
+            runtime_config: remote_incus_runtime(Some(
                 StagedLinuxRustLane::PikaFollowupActionlint.command_config(),
-            ),
+            )),
             ..remote_incus_job_base()
         };
 
@@ -880,7 +928,9 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "/staged/linux-rust/workspace-build/bin/run-openclaw-gateway-e2e",
             },
-            staged_linux_command: Some(StagedLinuxRustLane::OpenclawGatewayE2e.command_config()),
+            runtime_config: remote_incus_runtime(Some(
+                StagedLinuxRustLane::OpenclawGatewayE2e.command_config(),
+            )),
             ..remote_incus_job_base()
         };
 
@@ -902,9 +952,9 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "actionlint",
             },
-            staged_linux_command: Some(
+            runtime_config: remote_incus_runtime(Some(
                 StagedLinuxRustLane::PikaFollowupActionlint.command_config(),
-            ),
+            )),
             ..remote_incus_job_base()
         };
 
@@ -926,9 +976,9 @@ mod tests {
             guest_command: GuestCommand::ShellCommand {
                 command: "actionlint",
             },
-            staged_linux_command: Some(
+            runtime_config: remote_incus_runtime(Some(
                 StagedLinuxRustLane::PikaFollowupActionlint.command_config(),
-            ),
+            )),
             ..remote_incus_job_base()
         };
 
@@ -950,7 +1000,6 @@ mod tests {
             guest_command: GuestCommand::PackageUnitTests {
                 package: "pika-cloud",
             },
-            staged_linux_command: None,
             ..remote_incus_job_base()
         };
 
@@ -972,7 +1021,6 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "cargo clippy -p pikachat -- -D warnings",
             },
-            staged_linux_command: None,
             ..host_local_job_base()
         };
 

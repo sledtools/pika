@@ -42,3 +42,13 @@ scope = [
   "crates/pikaci/**",
 ]
 hint = "Focus on JobSpec, planner records, and executor dispatch. It is fine for backend-specific command compilation or cache behavior to depend on explicit job fields. Fail only if production code still chooses the runtime backend from naming conventions or command-shape heuristics."
+
+[[invariant]]
+id = "PIKACI-005"
+area = "pikaci"
+kind = "must"
+statement = "Backend-specific setup lives in explicit runtime config data, not ad hoc top-level JobSpec fields. Production code should carry staged Linux command config, Tart host setup, and similar backend knobs under runtime-specific config."
+scope = [
+  "crates/pikaci/**",
+]
+hint = "Focus on the JobSpec data model and how main.rs builds jobs. It is fine for helper methods to read backend-specific settings from a runtime config enum. Fail if production JobSpec still has loose top-level fields like staged_linux_command, host_setup_command, or mount_host_rust_toolchain."

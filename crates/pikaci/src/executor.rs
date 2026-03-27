@@ -2473,7 +2473,8 @@ mod tests {
         write_host_local_dev_env_state,
     };
     use crate::model::{
-        GuestCommand, JobExecutionConfig, JobSpec, PreparedOutputPayloadManifestRecord,
+        GuestCommand, HostProcessRuntimeConfig, IncusRuntimeConfig, JobExecutionConfig,
+        JobRuntimeConfig, JobSpec, PreparedOutputPayloadManifestRecord,
         PreparedOutputPayloadMountRecord, RemoteLinuxVmBackend, RemoteLinuxVmExecutionRecord,
         RemoteLinuxVmImageRecord, RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord, RunStatus,
         StagedLinuxRustPayloadRole,
@@ -2518,6 +2519,12 @@ mod tests {
         .expect("write snapshot metadata");
     }
 
+    fn remote_incus_runtime() -> JobRuntimeConfig {
+        JobRuntimeConfig::Incus(IncusRuntimeConfig {
+            staged_linux_command: None,
+        })
+    }
+
     fn remote_incus_job_base() -> JobSpec {
         JobSpec {
             id: "",
@@ -2525,10 +2532,8 @@ mod tests {
             timeout_secs: 0,
             writable_workspace: false,
             execution: JobExecutionConfig::REMOTE_SSH_INCUS,
+            runtime_config: remote_incus_runtime(),
             guest_command: GuestCommand::ShellCommand { command: "" },
-            staged_linux_command: None,
-            host_setup_command: None,
-            mount_host_rust_toolchain: false,
         }
     }
 
@@ -2539,10 +2544,8 @@ mod tests {
             timeout_secs: 0,
             writable_workspace: false,
             execution: JobExecutionConfig::HOST_LOCAL,
+            runtime_config: JobRuntimeConfig::HostProcess(HostProcessRuntimeConfig),
             guest_command: GuestCommand::HostShellCommand { command: "" },
-            staged_linux_command: None,
-            host_setup_command: None,
-            mount_host_rust_toolchain: false,
         }
     }
 
@@ -2553,7 +2556,6 @@ mod tests {
             timeout_secs: 120,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommand { command },
-            staged_linux_command: None,
             ..remote_incus_job_base()
         }
     }
@@ -2612,7 +2614,6 @@ mod tests {
             timeout_secs: 45,
             writable_workspace: false,
             guest_command: GuestCommand::ShellCommandAsRoot { command: "id -u" },
-            staged_linux_command: None,
             ..remote_incus_job_base()
         });
         assert_eq!(root_request.command, "bash --noprofile --norc -lc 'id -u'");
@@ -3126,7 +3127,6 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "python3 -c 'from pathlib import Path; import os; cwd = Path.cwd().resolve(); expected = Path(os.environ[\"EXPECTED_WORKSPACE_DIR\"]).resolve(); assert cwd == expected; assert (cwd / \"pikaci-host-local-marker\").is_file(); assert not (cwd / \"stale-marker\").exists(); assert os.environ[\"CARGO_HOME\"]; assert os.environ[\"CARGO_TARGET_DIR\"]; print(\"ok\")'",
             },
-            staged_linux_command: None,
             ..host_local_job_base()
         };
         let ctx = HostContext {
@@ -3196,7 +3196,6 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "python3 -c 'from pathlib import Path; assert Path(\"cache-sentinel\").is_file(); assert Path(\"pikaci-host-local-marker\").is_file(); print(\"ok\")'",
             },
-            staged_linux_command: None,
             ..host_local_job_base()
         };
         let ctx = HostContext {
@@ -3658,7 +3657,6 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "python3 -c 'from pathlib import Path; import os; assert Path(os.environ[\"OPENCLAW_DIR\"]).resolve() == Path(os.environ[\"EXPECTED_OPENCLAW_DIR\"]).resolve(); print(\"ok\")'",
             },
-            staged_linux_command: None,
             ..host_local_job_base()
         };
         let ctx = HostContext {
@@ -3724,7 +3722,6 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "python3 -c 'import time; time.sleep(2)'",
             },
-            staged_linux_command: None,
             ..host_local_job_base()
         };
         let ctx = HostContext {
@@ -3782,7 +3779,6 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "python3 -c 'from pathlib import Path; import time; assert Path(\"marker\").is_file(); time.sleep(1.0); assert Path(\"marker\").is_file(); print(\"ok\")'",
             },
-            staged_linux_command: None,
             ..host_local_job_base()
         };
         let first_ctx = HostContext {
@@ -3825,7 +3821,6 @@ mod tests {
             guest_command: GuestCommand::HostShellCommand {
                 command: "python3 -c 'from pathlib import Path; import time; assert Path(\"marker\").is_file(); time.sleep(1.0); assert Path(\"marker\").is_file(); print(\"ok\")'",
             },
-            staged_linux_command: None,
             ..host_local_job_base()
         };
         let second = thread::spawn(move || run_job_on_runner(&second_job, &second_ctx));

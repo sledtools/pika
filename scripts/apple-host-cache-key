@@ -37,7 +37,6 @@ emit_path_hashes() {
         VERSION \
         Cargo.toml \
         Cargo.lock \
-        ios/.build-number \
         ios/project.yml \
         ios/Info.plist \
         ios/Pika.entitlements \

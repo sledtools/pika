@@ -94,6 +94,20 @@ prepare_profile_for_recipe() {
   esac
 }
 
+execution_scope_for_recipe() {
+  case "$1" in
+    apple-host-bundle)
+      printf '%s\n' "runtime"
+      ;;
+    apple-host-desktop-compile|apple-host-ios-compile|apple-host-sanity)
+      printf '%s\n' "compile"
+      ;;
+    *)
+      printf '%s\n' "generic"
+      ;;
+  esac
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ref)
@@ -195,6 +209,7 @@ bundle_created=0
 prepared_probe="unknown"
 upload_skipped=0
 desired_prepare_profile="$(prepare_profile_for_recipe "$just_recipe")"
+execution_scope="$(execution_scope_for_recipe "$just_recipe")"
 ssh_wrapper=""
 ssh_key_file=""
 
@@ -275,21 +290,22 @@ fi
 REMOTE_ROOT
 )"
 
-remote_run_dir="${resolved_remote_root}/runs/${run_id}"
-remote_prepared_dir="${resolved_remote_root}/prepared/${resolved_commit}"
+remote_scope_root="${resolved_remote_root}/scopes/${execution_scope}"
+remote_run_dir="${remote_scope_root}/runs/${run_id}"
+remote_prepared_dir="${remote_scope_root}/prepared/${resolved_commit}"
 remote_artifact_path="${remote_run_dir}/artifact.tgz"
 local_remote_artifact="${artifact_dir}/remote-artifact.tgz"
 local_log="${artifact_dir}/wrapper.log"
 
 query_remote_prepared_status() {
   "$ssh_binary" "$ssh_target" \
-    "bash -s -- $(printf '%q' "$resolved_remote_root") $(printf '%q' "$resolved_commit") $(printf '%q' "$prepared_schema_version")" <<'REMOTE_STATUS'
+    "bash -s -- $(printf '%q' "$remote_scope_root") $(printf '%q' "$resolved_commit") $(printf '%q' "$prepared_schema_version")" <<'REMOTE_STATUS'
 set -euo pipefail
 
-resolved_remote_root="$1"
+remote_scope_root="$1"
 resolved_commit="$2"
 prepared_schema_version="$3"
-prepared_dir="${resolved_remote_root}/prepared/${resolved_commit}"
+prepared_dir="${remote_scope_root}/prepared/${resolved_commit}"
 prepared_worktree_dir="${prepared_dir}/worktree"
 prepared_marker="${prepared_dir}/prepared.env"
 
@@ -360,6 +376,8 @@ REF=${ref}
 RESOLVED_COMMIT=${resolved_commit}
 SSH_TARGET=${ssh_target}
 REMOTE_ROOT=${resolved_remote_root}
+REMOTE_SCOPE=${execution_scope}
+REMOTE_SCOPE_ROOT=${remote_scope_root}
 REMOTE_RUN_DIR=${remote_run_dir}
 REMOTE_PREPARED_DIR=${remote_prepared_dir}
 KEEP_RUNS=${keep_runs}
@@ -377,7 +395,7 @@ run_remote_operation() {
   local remote_exit_local
   set +e
   "$ssh_binary" "$ssh_target" \
-    "bash -s -- $(printf '%q' "$resolved_remote_root") $(printf '%q' "$command") $(printf '%q' "$run_id") $(printf '%q' "$bundle_ref") $(printf '%q' "$resolved_commit") $(printf '%q' "$keep_runs") $(printf '%q' "$keep_prepared") $(printf '%q' "$lock_timeout_sec") $(printf '%q' "$prepared_schema_version") $(printf '%q' "$skip_source_import") $(printf '%q' "$just_recipe") $(printf '%q' "$desired_prepare_profile")" \
+    "bash -s -- $(printf '%q' "$resolved_remote_root") $(printf '%q' "$command") $(printf '%q' "$run_id") $(printf '%q' "$bundle_ref") $(printf '%q' "$resolved_commit") $(printf '%q' "$keep_runs") $(printf '%q' "$keep_prepared") $(printf '%q' "$lock_timeout_sec") $(printf '%q' "$prepared_schema_version") $(printf '%q' "$skip_source_import") $(printf '%q' "$just_recipe") $(printf '%q' "$desired_prepare_profile") $(printf '%q' "$execution_scope")" \
     2>&1 <<'REMOTE_RUN' | tee -a "$local_log"
 set -euo pipefail
 
@@ -393,13 +411,15 @@ prepared_schema_version="$9"
 skip_source_import="${10}"
 just_recipe="${11}"
 desired_prepare_profile="${12}"
+execution_scope="${13}"
 
-run_dir="${resolved_remote_root}/runs/${run_id}"
+scope_root="${resolved_remote_root}/scopes/${execution_scope}"
+run_dir="${scope_root}/runs/${run_id}"
 bundle_path="${run_dir}/source.bundle"
-mirror_dir="${resolved_remote_root}/repo.git"
-shared_target_dir="${resolved_remote_root}/shared-target"
-lock_file="${resolved_remote_root}/run.lock"
-prepared_root="${resolved_remote_root}/prepared"
+mirror_dir="${scope_root}/repo.git"
+shared_target_dir="${scope_root}/shared-target"
+lock_file="${scope_root}/run.lock"
+prepared_root="${scope_root}/prepared"
 prepared_dir="${prepared_root}/${resolved_commit}"
 prepared_worktree_dir="${prepared_dir}/worktree"
 prepared_ref="refs/pikaci-apple/prepared/${resolved_commit}"
@@ -569,7 +589,7 @@ EOF
   }
 
   prune_runs() {
-  python3 - "$resolved_remote_root/runs" "$run_id" "$keep_runs" <<'PY'
+  python3 - "$scope_root/runs" "$run_id" "$keep_runs" <<'PY'
 from pathlib import Path
 import shutil
 import sys
@@ -697,7 +717,7 @@ PY
 
 export resolved_remote_root command run_id bundle_ref resolved_commit keep_runs keep_prepared \
   lock_timeout_sec prepared_schema_version skip_source_import just_recipe desired_prepare_profile \
-  run_dir bundle_path mirror_dir shared_target_dir lock_file prepared_root prepared_dir \
+  execution_scope scope_root run_dir bundle_path mirror_dir shared_target_dir lock_file prepared_root prepared_dir \
   prepared_worktree_dir prepared_ref prepared_marker prepare_phase_file rust_manifest_file \
   artifacts_dir logs_dir remote_artifact_path bundle_phase_file \
   prepare_status prepare_duration_sec bundle_duration_sec

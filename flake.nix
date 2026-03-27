@@ -670,8 +670,6 @@
             ./config
             ./crates
             ./rust
-            ./cli
-            ./uniffi-bindgen
             ./tools/cargo-with-xcode
             ./tools/xcode-dev-dir
           ];
@@ -685,7 +683,6 @@
             ./config
             ./crates
             ./rust
-            ./cli
             ./ios
             ./uniffi-bindgen
             ./scripts/ios-build

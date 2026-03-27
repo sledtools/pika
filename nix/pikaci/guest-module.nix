@@ -227,6 +227,8 @@ in
     '';
   };
 
+  # This is the upstream microvm.nix module namespace used for the local
+  # ephemeral guest runner. It is not the removed product/runtime provider.
   microvm = {
     inherit hypervisor;
     vcpu = 2;

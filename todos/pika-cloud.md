@@ -27,10 +27,10 @@ Related context:
 
 These are no longer open questions.
 
-- Replace `pika-agent-control-plane` with `pika-cloud` in one branch. Do not keep a shim crate.
-- Delete `pika-agent-microvm`.
-- Delete the `microvm` backend from `pikaci`.
-- Treat `vm-spawner` as dead code and remove it as soon as the surviving consumers are gone.
+- Replace the old shared control-plane crate with `pika-cloud` in one branch. Do not keep a shim crate.
+- Delete the legacy dedicated microvm crate.
+- Delete the old product/backend split from `pikaci` while keeping the upstream local guest module contract.
+- Treat the old spawner path as dead code and remove it as soon as the surviving consumers are gone.
 - Fix imports, CI targets, Nix references, and docs aggressively instead of carrying both names.
 
 Git history is the compatibility layer for removed code.
@@ -61,7 +61,7 @@ In scope:
 - shared Incus runtime helpers
 - migration of the first real `pikaci` Incus path onto the shared contract
 - migration of the managed-agent internals toward the same runtime vocabulary
-- deletion of dead microvm-era code that no longer serves the target system
+- deletion of dead legacy runtime code that no longer serves the target system
 
 Out of scope for the first slices:
 
@@ -69,7 +69,7 @@ Out of scope for the first slices:
 - redesigning `/v1/agents/*`
 - redesigning forge scheduling
 - supporting multiple substrates
-- preserving `microvm.nix` as an actively maintained backend
+- preserving a separate legacy local-guest backend abstraction
 
 ## Design Rules
 
@@ -79,7 +79,7 @@ Do not design new code around a generic hypervisor abstraction.
 
 - no new `ProviderKind`-driven architecture
 - no new backend-neutral VM interface for its own sake
-- no further investment in `microvm` parity work
+- no further investment in legacy local-guest parity work
 
 The shared boundary may become broader later, but the first implementation should be explicit and
 honest: this is an Incus substrate.
@@ -260,30 +260,30 @@ runtime" root types.
 
 These are the main simplification targets:
 
-- `pika-agent-control-plane` currently mixes substrate, app contract, spawner request types, and
+- the old shared control-plane crate mixed substrate, app contract, spawner request types, and
   legacy control envelopes
 - `pika-server` still uses spawner-shaped types like `SpawnerVmResponse`
 - `pikaci` still has its own Incus guest contract under `/artifacts/*.json`
-- `pikaci` still carries a `microvm` backend branch we no longer want
-- CI and docs still name `pika-agent-control-plane` as a canonical surface
+- the only remaining `microvm` namespace should be the upstream local guest module contract
+- CI and docs still named the old shared control-plane crate as a canonical surface
 
 ## Implementation Phases
 
 ### Phase 1: Hard Cut to `pika-cloud`
 
 - add `crates/pika-cloud`
-- move the surviving shared contract types out of `pika-agent-control-plane`
-- delete `crates/pika-agent-control-plane`
+- move the surviving shared contract types out of the old shared control-plane crate
+- delete that crate
 - update Cargo manifests, imports, tests, lane filters, Nix references, and docs
 
 This phase is a rename by replacement, not a compatibility bridge.
 
-### Phase 2: Delete Microvm Dead Weight
+### Phase 2: Delete Legacy Runtime Dead Weight
 
-- delete `crates/pika-agent-microvm`
-- delete the `microvm` backend from `pikaci`
+- delete the legacy dedicated microvm crate
+- delete the old product/backend split from `pikaci` while keeping the upstream local guest module contract
 - remove related target definitions, tests, and docs
-- remove `vm-spawner` once nothing active depends on it
+- remove the old spawner path once nothing active depends on it
 
 The point is not to preserve optionality. The point is to shrink the system.
 
@@ -297,7 +297,7 @@ Migrate the current `pikaci` Incus path to the shared guest lifecycle contract:
 - make the Incus guest image and `pikaci` Rust code agree on the new contract
 - keep `pikaci` scheduler and lane logic where it is
 
-The first migrated path is the existing remote Incus executor. No microvm fallback remains.
+The first migrated path is the existing remote Incus executor. No legacy product/backend fallback remains, while the upstream local guest module contract stays in place for local execution.
 
 ### Phase 4: Shared Managed-Agent Contract
 
@@ -323,7 +323,7 @@ The first slice should be intentionally small:
 3. Add the shared lifecycle event, status, and result schemas.
 4. Add the first `RuntimeSpec`, mount, and policy types.
 5. Migrate the `pikaci` Incus guest contract to `/run/pika-cloud/...`.
-6. Remove the `microvm` backend from `pikaci`.
+6. Remove the old product/backend split from `pikaci` while keeping the upstream local guest module contract.
 
 This slice should not try to finish the whole migration.
 
@@ -344,4 +344,4 @@ Start implementation with the crate hard cut and the first shared contract:
 - define canonical `/run/pika-cloud/...` paths
 - add the first lifecycle/status/result schema
 - switch the `pikaci` Incus guest contract to that layout
-- remove the `microvm` backend from `pikaci`
+- remove the old product/backend split from `pikaci` while keeping the upstream local guest module contract

@@ -289,7 +289,7 @@ impl Store {
                 params![
                     branch_id,
                     head_sha,
-                    "ci/forge-lanes.toml",
+                    "crates/pikaci/src/forge_lanes.rs",
                     selected_lane_ids,
                     suite_status.as_str(),
                     suite_log,
@@ -372,7 +372,13 @@ impl Store {
                     log_text,
                     finished_at
                  ) VALUES (?1, ?2, ?3, ?4, 'failed', ?5, CURRENT_TIMESTAMP)",
-                params![branch_id, head_sha, "ci/forge-lanes.toml", "[]", log_text],
+                params![
+                    branch_id,
+                    head_sha,
+                    "crates/pikaci/src/forge_lanes.rs",
+                    "[]",
+                    log_text
+                ],
             )
             .context("insert failed branch ci suite")?;
 

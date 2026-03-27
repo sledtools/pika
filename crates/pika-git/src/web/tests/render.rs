@@ -7,7 +7,7 @@
             "#!/usr/bin/env bash\nset -euo pipefail\necho branch-ci-ok\n",
         );
         repo.write_seed(
-            "ci/forge-lanes.toml",
+            "crates/pikaci/src/forge_lanes.rs",
             r#"
 version = 1
 nightly_schedule_utc = "23:59"
@@ -17,11 +17,11 @@ id = "render_history"
 title = "render history"
 entrypoint = "./ci.sh"
 command = ["./ci.sh"]
-paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
+paths = ["README.md", "feature.txt", "crates/pikaci/src/forge_lanes.rs"]
 "#,
         );
         repo.chmod_seed_executable("ci.sh");
-        repo.seed_add(&["README.md", "ci.sh", "ci/forge-lanes.toml"]);
+        repo.seed_add(&["README.md", "ci.sh", "crates/pikaci/src/forge_lanes.rs"]);
         repo.seed_commit("initial");
         repo.seed_push_master();
         repo.seed_checkout_new_branch("feature/render-history");
@@ -786,7 +786,7 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
                 "sledtools/pika",
                 "/tmp/pika.git",
                 "master",
-                "ci/forge-lanes.toml",
+                "crates/pikaci/src/forge_lanes.rs",
             )
             .expect("ensure repo metadata");
         let lane = crate::ci_manifest::ForgeLane {
@@ -847,7 +847,7 @@ paths = ["README.md", "feature.txt", "ci/forge-lanes.toml"]
                 "sledtools/pika",
                 "/tmp/pika.git",
                 "master",
-                "ci/forge-lanes.toml",
+                "crates/pikaci/src/forge_lanes.rs",
             )
             .expect("ensure repo metadata");
         let lane = crate::ci_manifest::ForgeLane {

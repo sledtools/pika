@@ -222,15 +222,6 @@ pub fn changed_paths(
         .collect())
 }
 
-pub fn read_file_at_ref(
-    repo: &ForgeRepoConfig,
-    git_ref: &str,
-    relative_path: &str,
-) -> anyhow::Result<String> {
-    git_bare(repo, ["show", &format!("{git_ref}:{relative_path}")])
-        .with_context(|| format!("read `{relative_path}` from `{git_ref}` in canonical bare repo"))
-}
-
 pub fn merge_branch(
     repo: &ForgeRepoConfig,
     branch_name: &str,

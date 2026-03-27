@@ -6008,12 +6008,12 @@ dependencies = [
  "clap",
  "fs2",
  "futures",
- "globset",
  "hex",
  "hmac",
  "jerichoci",
  "nostr",
  "pika-forge-model",
+ "pikaci",
  "pulldown-cmark",
  "rand 0.8.5",
  "reqwest",
@@ -6273,10 +6273,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "globset",
  "jerichoci",
  "serde",
  "serde_json",
- "toml 0.8.23",
  "uuid",
 ]
 

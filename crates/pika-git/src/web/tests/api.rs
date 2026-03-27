@@ -646,7 +646,7 @@ async fn rerun_nightly_handler_rejects_lane_from_another_run() {
             "sledtools/pika",
             "/tmp/pika.git",
             "master",
-            "ci/forge-lanes.toml",
+            "crates/pikaci/src/forge_lanes.rs",
         )
         .expect("ensure repo metadata");
     let lane = crate::ci_manifest::ForgeLane {
@@ -810,7 +810,7 @@ async fn fail_nightly_handler_rejects_lane_from_another_run() {
             "sledtools/pika",
             "/tmp/pika.git",
             "master",
-            "ci/forge-lanes.toml",
+            "crates/pikaci/src/forge_lanes.rs",
         )
         .expect("ensure repo metadata");
     let lane = crate::ci_manifest::ForgeLane {

@@ -1,7 +1,7 @@
 ---
 summary: Deterministic CI lanes for `pikachat agent` providers and how to reproduce them
 read_when:
-  - changing provider CI gating in `ci/forge-lanes.toml`
+  - changing provider CI gating in `crates/pikaci/src/forge_lanes.rs`
   - debugging `check-agent-contracts` failures
 ---
 
@@ -11,7 +11,7 @@ This document defines deterministic CI coverage for `pikachat agent new` provide
 
 ## Blocking Pre-merge Contract Lanes
 
-These lanes are defined canonically in `ci/forge-lanes.toml` and orchestrated by the forge on `git.pikachat.org`.
+These lanes are defined canonically in `crates/pikaci/src/forge_lanes.rs` and orchestrated by the forge on `git.pikachat.org`.
 
 - `check-agent-contracts`:
   - Runs the checked-in staged Linux agent provider contract surface on `pikaci`.

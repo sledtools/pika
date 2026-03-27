@@ -27,14 +27,13 @@ hint = "Focus on whether production jerichoci modules define Pika-specific targe
 id = "PIKACI-003"
 area = "pikaci"
 kind = "must"
-statement = "For forge branch lanes, branch-lane path-filter policy has a single source of truth in ci/forge-lanes.toml. pikaci may define local-only targets and may map staged targets to local CLI entries, but it must not duplicate forge branch-lane path filters."
+statement = "For forge branch lanes, branch-lane path-filter policy has a single source of truth in crates/pikaci/src/forge_lanes.rs. pikaci may define local-only targets, but it must not duplicate forge branch-lane path filters in separate data files or parallel Rust tables."
 scope = [
   "crates/jerichoci/**",
   "crates/pikaci/**",
-  "ci/**",
   "crates/pika-git/**",
 ]
-hint = "Look specifically for duplicated branch-lane path filters between ci/forge-lanes.toml, pika-git manifest loading, and pikaci target selection. Do not fail this invariant just because pikaci has a local catalog of staged targets."
+hint = "Look specifically for duplicated branch-lane path filters between crates/pikaci/src/forge_lanes.rs, pika-git lane selection, and pikaci target selection. Do not fail this invariant just because pikaci has local-only targets or tests."
 
 [[invariant]]
 id = "PIKACI-004"
@@ -67,3 +66,15 @@ scope = [
   "crates/pikaci/**",
 ]
 hint = "Look for generic CI engine modules being reintroduced under crates/pikaci/src, such as reusable run records, executor backends, snapshotting, or lifecycle core logic."
+
+[[invariant]]
+id = "PIKACI-007"
+area = "pikaci"
+kind = "must"
+statement = "pikaci owns all forge CI lanes. Forge branch/nightly lane definitions must reference pikaci-owned targets instead of directly shelling out to repo scripts or just recipes. Temporary exception: GitHub Actions release lanes outside the forge may remain outside pikaci for now."
+scope = [
+  "crates/pikaci/**",
+  "crates/pika-git/**",
+  ".github/**",
+]
+hint = "Focus on forge branch/nightly lane definitions and how they are executed. Fail if forge still defines direct command lanes that bypass pikaci, except for GitHub Actions release/publish workflows outside the forge."

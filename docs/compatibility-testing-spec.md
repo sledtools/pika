@@ -294,7 +294,7 @@ Always print fixed seed for reproducibility.
 
 Pika already has nightly lanes in:
 
-- `ci/forge-lanes.toml`
+- `crates/pikaci/src/forge_lanes.rs`
 
 Rollout plan:
 

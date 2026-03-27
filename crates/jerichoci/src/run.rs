@@ -4478,7 +4478,7 @@ mod tests {
         PikaFollowupActionlint,
         PikaCoreLibAppFlows,
         PikaCoreMessagingE2e,
-        AgentContractsControlPlaneUnit,
+        AgentContractsPikaCloudUnit,
     }
 
     impl StagedLinuxRustLane {
@@ -4511,7 +4511,7 @@ mod tests {
                     "ci.x86_64-linux.workspaceBuild",
                     ".#ci.x86_64-linux.workspaceBuild",
                 ),
-                Self::AgentContractsControlPlaneUnit => sample_staged_linux_command(
+                Self::AgentContractsPikaCloudUnit => sample_staged_linux_command(
                     StagedLinuxSnapshotProfile::Rust,
                     "agent-contracts-linux-rust",
                     "/staged/linux-rust/workspace-build/bin/run-pika-cloud-unit-tests",
@@ -5784,8 +5784,8 @@ mod tests {
         let plan = RunPlanRecord {
             schema_version: 1,
             run_id: "run-1".to_string(),
-            target_id: Some("agent-control-plane-unit".to_string()),
-            target_description: Some("Run all pika-agent-control-plane unit tests".to_string()),
+            target_id: Some("pika-cloud-unit".to_string()),
+            target_description: Some("Run all pika-cloud unit tests".to_string()),
             created_at: "2026-03-07T00:00:00Z".to_string(),
             scope: PlanScope::PostHostSetupAndSnapshot,
             preconditions: vec![
@@ -5793,16 +5793,14 @@ mod tests {
                 "workspace_snapshot_created".to_string(),
             ],
             nodes: vec![PlanNodeRecord::Execute {
-                id: "execute-agent-control-plane-unit".to_string(),
-                description: "Run all pika-agent-control-plane unit tests in a remote Linux VM"
-                    .to_string(),
+                id: "execute-pika-cloud-unit".to_string(),
+                description: "Run all pika-cloud unit tests in a remote Linux VM".to_string(),
                 executor: PlanExecutorKind::RemoteLinuxVm,
                 placement: Some(JobPlacementKind::RemoteSsh),
                 runtime: Some(JobRuntimeKind::Incus),
                 depends_on: Vec::new(),
                 execute: ExecuteNode::VmCommand {
-                    command: "cargo test -p pika-agent-control-plane --lib -- --nocapture"
-                        .to_string(),
+                    command: "cargo test -p pika-cloud --lib -- --nocapture".to_string(),
                     run_as_root: false,
                     timeout_secs: 1800,
                     writable_workspace: false,
@@ -6554,15 +6552,15 @@ mod tests {
     #[test]
     fn resolve_run_prepared_output_consumer_kind_accepts_other_staged_linux_targets() {
         let jobs = vec![JobSpec {
-            id: "agent-control-plane-unit",
-            description: "Run all pika-agent-control-plane unit tests in a remote Linux VM",
+            id: "pika-cloud-unit",
+            description: "Run all pika-cloud unit tests in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
             guest_command: GuestCommand::PackageUnitTests {
-                package: "pika-agent-control-plane",
+                package: "pika-cloud",
             },
             runtime_config: remote_incus_runtime(Some(
-                StagedLinuxRustLane::AgentContractsControlPlaneUnit.command_config(),
+                StagedLinuxRustLane::AgentContractsPikaCloudUnit.command_config(),
             )),
             ..remote_incus_job_base()
         }];

@@ -585,14 +585,14 @@ mod tests {
 
     #[test]
     fn standalone_agent_contract_target_uses_staged_remote_linux_lane() {
-        let standalone = target_spec("agent-control-plane-unit").expect("standalone target");
+        let standalone = target_spec("pika-cloud-unit").expect("standalone target");
         let pre_merge = target_spec("pre-merge-agent-contracts").expect("pre-merge target");
 
         assert_eq!(standalone.jobs.len(), 1);
         assert_eq!(standalone.jobs[0].runner_kind(), RunnerKind::RemoteLinuxVm);
         assert_eq!(
             standalone.jobs[0].staged_linux_command(),
-            Some(PikaStagedLinuxLane::AgentContractsControlPlaneUnit.command_config())
+            Some(PikaStagedLinuxLane::AgentContractsPikaCloudUnit.command_config())
         );
 
         assert_eq!(pre_merge.jobs.len(), 3);
@@ -905,10 +905,10 @@ mod tests {
     fn rerun_falls_back_to_single_job_id() {
         let mut run = sample_run_record();
         run.target_id = None;
-        run.jobs = vec![sample_job_record("agent-control-plane-unit")];
+        run.jobs = vec![sample_job_record("pika-cloud-unit")];
 
         let target = target_spec_for_rerun(&run).expect("target");
-        assert_eq!(target.id, "agent-control-plane-unit");
+        assert_eq!(target.id, "pika-cloud-unit");
     }
 
     #[test]

@@ -484,7 +484,7 @@ mod tests {
         PikaFollowupActionlint,
         PikaFollowupDocContracts,
         PikaFollowupRustDepsHygiene,
-        AgentContractsControlPlaneUnit,
+        AgentContractsPikaCloudUnit,
         NotificationsServerPackageTests,
         FixturePikahutClippy,
         FixtureRelaySmoke,
@@ -668,9 +668,7 @@ mod tests {
                 Self::PikaFollowupActionlint
                 | Self::PikaFollowupDocContracts
                 | Self::PikaFollowupRustDepsHygiene => StagedLinuxRustTarget::PreMergePikaFollowup,
-                Self::AgentContractsControlPlaneUnit => {
-                    StagedLinuxRustTarget::PreMergeAgentContracts
-                }
+                Self::AgentContractsPikaCloudUnit => StagedLinuxRustTarget::PreMergeAgentContracts,
                 Self::NotificationsServerPackageTests => {
                     StagedLinuxRustTarget::PreMergeNotifications
                 }
@@ -701,7 +699,7 @@ mod tests {
                     Self::PikaFollowupRustDepsHygiene => {
                         "/staged/linux-rust/workspace-build/bin/run-pika-rust-deps-hygiene"
                     }
-                    Self::AgentContractsControlPlaneUnit => {
+                    Self::AgentContractsPikaCloudUnit => {
                         "/staged/linux-rust/workspace-build/bin/run-pika-cloud-unit-tests"
                     }
                     Self::NotificationsServerPackageTests => {
@@ -805,7 +803,7 @@ mod tests {
     #[test]
     fn agent_contract_jobs_map_to_staged_linux_rust_lanes() {
         let spec = JobSpec {
-            id: "agent-control-plane-unit",
+            id: "pika-cloud-unit",
             description: "Run all pika-cloud unit tests in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
@@ -813,7 +811,7 @@ mod tests {
                 package: "pika-cloud",
             },
             runtime_config: remote_incus_runtime(Some(
-                StagedLinuxRustLane::AgentContractsControlPlaneUnit.command_config(),
+                StagedLinuxRustLane::AgentContractsPikaCloudUnit.command_config(),
             )),
             ..remote_incus_job_base()
         };
@@ -821,7 +819,7 @@ mod tests {
         with_remote_linux_vm_envs(None, None, || {
             assert_eq!(
                 spec.staged_linux_command(),
-                Some(StagedLinuxRustLane::AgentContractsControlPlaneUnit.command_config())
+                Some(StagedLinuxRustLane::AgentContractsPikaCloudUnit.command_config())
             );
             assert_eq!(spec.runner_kind(), super::RunnerKind::RemoteLinuxVm);
             assert_eq!(
@@ -997,7 +995,7 @@ mod tests {
     #[test]
     fn unstaged_non_host_jobs_can_be_described_explicitly() {
         let spec = JobSpec {
-            id: "agent-control-plane-unit",
+            id: "pika-cloud-unit",
             description: "Run all pika-cloud unit tests in a remote Linux VM",
             timeout_secs: 1800,
             writable_workspace: false,
@@ -1088,7 +1086,7 @@ mod tests {
 
     #[test]
     fn agent_contract_lane_uses_agent_contracts_workspace_outputs() {
-        let lane = StagedLinuxRustLane::AgentContractsControlPlaneUnit;
+        let lane = StagedLinuxRustLane::AgentContractsPikaCloudUnit;
 
         assert_eq!(
             lane.workspace_deps_output_name(),

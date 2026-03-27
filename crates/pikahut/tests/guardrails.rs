@@ -1144,7 +1144,7 @@ fn pre_merge_fixture_filter_tracks_checked_in_lane_surface() -> Result<()> {
     let linux_rust = fs::read_to_string(root.join("nix/ci/linux-rust.nix"))?;
     assert!(
         linux_rust.contains("cargo clippy --locked -j \"$cargoJobs\" -p pikahut -- -D warnings"),
-        "staged fixture workspace build must validate pikahut clippy before remote execute so the microVM lane stays offline"
+        "staged fixture workspace build must validate pikahut clippy before remote execute so the staged guest lane stays offline"
     );
     assert!(
         linux_rust.contains("cp ${pikaRelayPkg}/bin/pika-relay \"$out/bin/pika-relay\""),

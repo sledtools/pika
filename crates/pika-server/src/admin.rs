@@ -85,7 +85,6 @@ mod tests {
         let rendered = template.render().expect("render admin dashboard");
         assert!(rendered.contains("Restore From Recovery Point"));
         assert!(rendered.contains("Persistent State Volume"));
-        assert!(!rendered.contains("/var/lib/microvms"));
     }
 
     #[test]
@@ -111,7 +110,6 @@ mod tests {
         let rendered = template.render().expect("render restore confirm");
         assert!(rendered.contains("Confirm Restore From Recovery Point"));
         assert!(rendered.contains("Persistent State Volume"));
-        assert!(!rendered.contains("/var/lib/microvms"));
     }
 }
 

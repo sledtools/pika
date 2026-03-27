@@ -10206,7 +10206,7 @@ mod tests {
                     agent_kind: crate::state::AgentKind::Openclaw,
                     phase: crate::state::AgentProvisioningPhase::ProvisioningVm,
                     agent_npub: None,
-                    status_message: "Provisioning microVM...".into(),
+                    status_message: "Provisioning Incus environment...".into(),
                     elapsed_secs: 0,
                 });
 

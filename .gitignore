@@ -51,6 +51,7 @@ ios/.build-number
 .android-emulator-home/
 .direnv/
 emulator.log
+/result
 
 .worktrees
 worktrees

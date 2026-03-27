@@ -260,6 +260,7 @@ pub(super) fn load_remote_incus_image_record(
         ),
     )?;
     Ok(RemoteLinuxVmImageRecord {
+        guest_role: remote.recorded_guest_role(),
         project: project.to_string(),
         alias: image_alias.to_string(),
         fingerprint: Some(decoded.fingerprint),
@@ -650,6 +651,7 @@ pub(super) fn build_snapshot_mount_plan_for_test(
             execution: super::super::JobExecutionConfig::REMOTE_SSH_INCUS,
             runtime_config: super::super::JobRuntimeConfig::Incus(
                 super::super::IncusRuntimeConfig {
+                    guest_role: pika_incus_guest_role::IncusGuestRole::PikaciRunner,
                     staged_linux_command: None,
                 },
             ),

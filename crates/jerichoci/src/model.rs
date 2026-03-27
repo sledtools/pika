@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use pika_incus_guest_role::IncusGuestRole;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
@@ -35,6 +36,7 @@ pub struct HostProcessRuntimeConfig;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IncusRuntimeConfig {
+    pub guest_role: IncusGuestRole,
     pub staged_linux_command: Option<StagedLinuxCommandConfig>,
 }
 
@@ -442,6 +444,8 @@ fn should_default_remote_linux_vm_to_incus() -> bool {
 
 #[cfg(test)]
 mod tests {
+    use pika_incus_guest_role::IncusGuestRole;
+
     use super::{
         GuestCommand, HostProcessRuntimeConfig, IncusRuntimeConfig, JobExecutionConfig,
         JobRuntimeConfig, JobSpec, RemoteLinuxVmBackend, RemoteLinuxVmExecutionRecord,
@@ -772,6 +776,7 @@ mod tests {
         staged_linux_command: Option<StagedLinuxCommandConfig>,
     ) -> JobRuntimeConfig {
         JobRuntimeConfig::Incus(IncusRuntimeConfig {
+            guest_role: IncusGuestRole::PikaciRunner,
             staged_linux_command,
         })
     }
@@ -1067,6 +1072,7 @@ mod tests {
         let record = RemoteLinuxVmExecutionRecord {
             backend: RemoteLinuxVmBackend::Incus,
             incus_image: Some(RemoteLinuxVmImageRecord {
+                guest_role: Some(IncusGuestRole::PikaciRunner),
                 project: "pika-managed-agents".to_string(),
                 alias: "pikaci/dev".to_string(),
                 fingerprint: Some("abc123".to_string()),
@@ -1075,6 +1081,7 @@ mod tests {
         };
 
         let json = serde_json::to_value(&record).expect("encode metadata");
+        assert_eq!(json["incus_image"]["guest_role"], "pikaci-runner");
         assert_eq!(json["incus_image"]["project"], "pika-managed-agents");
         assert_eq!(json["incus_image"]["alias"], "pikaci/dev");
         assert_eq!(json["incus_image"]["fingerprint"], "abc123");
@@ -1082,6 +1089,55 @@ mod tests {
         let decoded: RemoteLinuxVmExecutionRecord =
             serde_json::from_value(json).expect("decode metadata");
         assert_eq!(decoded, record);
+    }
+
+    #[test]
+    fn remote_linux_vm_execution_metadata_accepts_legacy_incus_image_without_guest_role() {
+        let decoded: RemoteLinuxVmExecutionRecord = serde_json::from_value(serde_json::json!({
+            "backend": "incus",
+            "incus_image": {
+                "project": "pika-managed-agents",
+                "alias": "pikaci/dev",
+                "fingerprint": "abc123"
+            },
+            "phases": []
+        }))
+        .expect("decode legacy metadata");
+
+        assert_eq!(
+            decoded.incus_image,
+            Some(RemoteLinuxVmImageRecord {
+                guest_role: None,
+                project: "pika-managed-agents".to_string(),
+                alias: "pikaci/dev".to_string(),
+                fingerprint: Some("abc123".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn remote_linux_vm_execution_metadata_accepts_legacy_role_alias_key() {
+        let decoded: RemoteLinuxVmExecutionRecord = serde_json::from_value(serde_json::json!({
+            "backend": "incus",
+            "incus_image": {
+                "role": "pikaci-runner",
+                "project": "pika-managed-agents",
+                "alias": "pikaci/dev",
+                "fingerprint": "abc123"
+            },
+            "phases": []
+        }))
+        .expect("decode legacy role alias metadata");
+
+        assert_eq!(
+            decoded.incus_image,
+            Some(RemoteLinuxVmImageRecord {
+                guest_role: Some(IncusGuestRole::PikaciRunner),
+                project: "pika-managed-agents".to_string(),
+                alias: "pikaci/dev".to_string(),
+                fingerprint: Some("abc123".to_string()),
+            })
+        );
     }
 
     #[test]
@@ -1738,6 +1794,8 @@ pub struct RemoteLinuxVmPhaseRecord {
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct RemoteLinuxVmImageRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "role")]
+    pub guest_role: Option<IncusGuestRole>,
     pub project: String,
     pub alias: String,
     #[serde(default)]

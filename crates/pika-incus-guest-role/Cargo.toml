@@ -1,9 +1,11 @@
 [package]
-name = "pika-managed-agent-contract"
+name = "pika-incus-guest-role"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-pika-incus-guest-role = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
 serde_json = { workspace = true }

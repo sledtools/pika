@@ -5,6 +5,7 @@ use jerichoci::{
     GuestCommand, HostProcessRuntimeConfig, IncusRuntimeConfig, JobExecutionConfig,
     JobRuntimeConfig, JobSpec, StagedLinuxCommandConfig, TartRuntimeConfig,
 };
+use pika_incus_guest_role::IncusGuestRole;
 
 pub(crate) struct TargetSpec {
     pub(crate) id: &'static str,
@@ -23,6 +24,7 @@ fn remote_incus_runtime(
     staged_linux_command: Option<StagedLinuxCommandConfig>,
 ) -> JobRuntimeConfig {
     JobRuntimeConfig::Incus(IncusRuntimeConfig {
+        guest_role: IncusGuestRole::PikaciRunner,
         staged_linux_command,
     })
 }

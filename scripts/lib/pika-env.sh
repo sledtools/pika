@@ -85,5 +85,5 @@ set_agent_incus_lane_defaults() {
   set_default "PIKA_AGENT_INCUS_PROJECT" "pika-managed-agents"
   set_default "PIKA_AGENT_INCUS_PROFILE" "pika-agent-dev"
   set_default "PIKA_AGENT_INCUS_STORAGE_POOL" "default"
-  set_default "PIKA_AGENT_INCUS_IMAGE_ALIAS" "pika-agent/dev"
+  set_default "PIKA_AGENT_INCUS_GUEST_ROLE" "managed-openclaw"
 }

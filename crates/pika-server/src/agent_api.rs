@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::net::Ipv4Addr;
+use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context};
@@ -46,6 +47,7 @@ use pika_cloud::{
     LifecycleState, MountKind, MountMode, RuntimeArtifacts, RuntimeIdentity, RuntimeMount,
     RuntimeResources, RuntimeSpec, RuntimeStatusSnapshot, STATUS_PATH,
 };
+use pika_incus_guest_role::IncusGuestRole;
 use pika_relay_profiles::default_message_relays;
 
 const AGENT_OWNER_ACTIVE_INDEX: &str = "agent_instances_owner_active_idx";
@@ -54,6 +56,7 @@ const INCUS_ENDPOINT_ENV: &str = "PIKA_AGENT_INCUS_ENDPOINT";
 const INCUS_PROJECT_ENV: &str = "PIKA_AGENT_INCUS_PROJECT";
 const INCUS_PROFILE_ENV: &str = "PIKA_AGENT_INCUS_PROFILE";
 const INCUS_STORAGE_POOL_ENV: &str = "PIKA_AGENT_INCUS_STORAGE_POOL";
+const INCUS_GUEST_ROLE_ENV: &str = "PIKA_AGENT_INCUS_GUEST_ROLE";
 const INCUS_IMAGE_ALIAS_ENV: &str = "PIKA_AGENT_INCUS_IMAGE_ALIAS";
 const INCUS_INSECURE_TLS_ENV: &str = "PIKA_AGENT_INCUS_INSECURE_TLS";
 const INCUS_CLIENT_CERT_PATH_ENV: &str = "PIKA_AGENT_INCUS_CLIENT_CERT_PATH";
@@ -67,6 +70,7 @@ const INCUS_PERSISTENT_VOLUME_CONTENT_TYPE: &str = "filesystem";
 const INCUS_PERSISTENT_VOLUME_PATH: &str = "/mnt/pika-state";
 const INCUS_DEV_VM_MEMORY_MIB: u32 = 2048;
 const INCUS_CLOUD_INIT_USER_DATA_KEY: &str = "cloud-init.user-data";
+const INCUS_GUEST_ROLE_CONFIG_KEY: &str = "user.pika.guest_role";
 const INCUS_OPENCLAW_PROXY_DEVICE_NAME: &str = "pikaopenclaw";
 const INCUS_OPENCLAW_PROXY_PORT_START: u16 = 24000;
 const INCUS_OPENCLAW_PROXY_PORT_SPAN: u16 = 10000;
@@ -222,6 +226,7 @@ pub(crate) struct OpenClawProxyTarget {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct ResolvedIncusParams {
+    guest_role: IncusGuestRole,
     endpoint: String,
     project: String,
     profile: String,
@@ -377,6 +382,7 @@ fn materialized_managed_runtime_params(
     match config {
         ResolvedManagedRuntimeProviderConfig::Incus(resolved) => ManagedRuntimeProvisionParams {
             incus: IncusProvisionParams {
+                guest_role: materialized_guest_role(resolved),
                 endpoint: Some(resolved.endpoint.clone()),
                 project: Some(resolved.project.clone()),
                 profile: Some(resolved.profile.clone()),
@@ -388,6 +394,13 @@ fn materialized_managed_runtime_params(
             },
         },
     }
+}
+
+fn materialized_guest_role(resolved: &ResolvedIncusParams) -> Option<IncusGuestRole> {
+    resolved
+        .guest_role
+        .uses_default_image_alias(&resolved.image_alias)
+        .then_some(resolved.guest_role)
 }
 
 fn serialize_managed_runtime_incus_config(
@@ -422,6 +435,10 @@ fn merge_incus_provision_params(
     let mut merged = base.unwrap_or_default();
     let mut changed = false;
     if let Some(requested) = requested {
+        if requested.guest_role.is_some() {
+            merged.guest_role = requested.guest_role;
+            changed = true;
+        }
         if requested
             .endpoint
             .as_deref()
@@ -484,6 +501,7 @@ fn merge_incus_provision_params(
         }
     }
     if changed
+        || merged.guest_role.is_some()
         || merged.endpoint.is_some()
         || merged.project.is_some()
         || merged.profile.is_some()
@@ -594,8 +612,9 @@ fn non_empty_env_var(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn default_incus_params_from_env() -> IncusProvisionParams {
-    IncusProvisionParams {
+fn default_incus_params_from_env() -> anyhow::Result<IncusProvisionParams> {
+    Ok(IncusProvisionParams {
+        guest_role: incus_guest_role_from_env(INCUS_GUEST_ROLE_ENV)?,
         endpoint: non_empty_env_var(INCUS_ENDPOINT_ENV),
         project: non_empty_env_var(INCUS_PROJECT_ENV),
         profile: non_empty_env_var(INCUS_PROFILE_ENV),
@@ -606,7 +625,16 @@ fn default_incus_params_from_env() -> IncusProvisionParams {
             .map(|value| value == "1" || value.eq_ignore_ascii_case("true")),
         openclaw_guest_ipv4_cidr: non_empty_env_var(INCUS_OPENCLAW_GUEST_IPV4_CIDR_ENV),
         openclaw_proxy_host: non_empty_env_var(INCUS_OPENCLAW_PROXY_HOST_ENV),
-    }
+    })
+}
+
+fn incus_guest_role_from_env(env_var: &str) -> anyhow::Result<Option<IncusGuestRole>> {
+    let Some(raw) = non_empty_env_var(env_var) else {
+        return Ok(None);
+    };
+    IncusGuestRole::from_str(&raw).map(Some).map_err(|_| {
+        anyhow!("{env_var} must be one of `managed-openclaw` or `pikaci-runner`, got {raw:?}")
+    })
 }
 
 fn build_incus_http_client(resolved: &ResolvedIncusParams) -> anyhow::Result<reqwest::Client> {
@@ -670,17 +698,18 @@ fn resolved_incus_tls_config(
 }
 
 fn incus_params_provided(params: &IncusProvisionParams) -> bool {
-    [
-        params.endpoint.as_deref(),
-        params.project.as_deref(),
-        params.profile.as_deref(),
-        params.storage_pool.as_deref(),
-        params.image_alias.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    .map(str::trim)
-    .any(|value| !value.is_empty())
+    params.guest_role.is_some()
+        || [
+            params.endpoint.as_deref(),
+            params.project.as_deref(),
+            params.profile.as_deref(),
+            params.storage_pool.as_deref(),
+            params.image_alias.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .any(|value| !value.is_empty())
         || params.insecure_tls.is_some()
         || params.openclaw_guest_ipv4_cidr.is_some()
         || params.openclaw_proxy_host.is_some()
@@ -1610,6 +1639,12 @@ impl IncusManagedRuntimeProvider {
                 serde_json::Value::String("openclaw".to_string()),
             ),
         ]);
+        if let Some(guest_role) = materialized_guest_role(&self.resolved) {
+            instance_config.insert(
+                INCUS_GUEST_ROLE_CONFIG_KEY.to_string(),
+                serde_json::Value::String(guest_role.as_str().to_string()),
+            );
+        }
         for (key, value) in incus_runtime_config(&runtime_plan) {
             instance_config.insert(key, serde_json::Value::String(value));
         }
@@ -3292,9 +3327,12 @@ fn prepare_agent_for_reprovision(
 fn resolved_incus_params(
     requested: Option<&ManagedRuntimeProvisionParams>,
 ) -> anyhow::Result<ResolvedIncusParams> {
-    let mut params = default_incus_params_from_env();
+    let mut params = default_incus_params_from_env()?;
     if let Some(requested) = requested {
         let requested = &requested.incus;
+        if requested.guest_role.is_some() {
+            params.guest_role = requested.guest_role;
+        }
         if requested
             .endpoint
             .as_deref()
@@ -3358,7 +3396,20 @@ fn resolved_incus_params(
     );
     endpoint_url.set_query(None);
     endpoint_url.set_fragment(None);
+    let guest_role = params.guest_role.unwrap_or(IncusGuestRole::ManagedOpenclaw);
+    anyhow::ensure!(
+        guest_role == IncusGuestRole::ManagedOpenclaw,
+        "managed runtime currently only supports incus.guest_role = managed-openclaw"
+    );
+    let image_alias = required_non_empty_field(
+        params
+            .image_alias
+            .or_else(|| Some(guest_role.default_image_alias().to_string())),
+        "incus.image_alias",
+        INCUS_IMAGE_ALIAS_ENV,
+    )?;
     Ok(ResolvedIncusParams {
+        guest_role,
         endpoint: endpoint_url.to_string().trim_end_matches('/').to_string(),
         project: required_non_empty_field(params.project, "incus.project", INCUS_PROJECT_ENV)?,
         profile: required_non_empty_field(params.profile, "incus.profile", INCUS_PROFILE_ENV)?,
@@ -3367,11 +3418,7 @@ fn resolved_incus_params(
             "incus.storage_pool",
             INCUS_STORAGE_POOL_ENV,
         )?,
-        image_alias: required_non_empty_field(
-            params.image_alias,
-            "incus.image_alias",
-            INCUS_IMAGE_ALIAS_ENV,
-        )?,
+        image_alias,
         insecure_tls: params.insecure_tls.unwrap_or(false),
         openclaw_guest_ipv4_cidr: params.openclaw_guest_ipv4_cidr,
         openclaw_proxy_host: params.openclaw_proxy_host,
@@ -4117,7 +4164,7 @@ pub async fn recover_my_agent(
 }
 
 pub async fn agent_api_healthcheck() -> anyhow::Result<()> {
-    let configured_incus = default_incus_params_from_env();
+    let configured_incus = default_incus_params_from_env()?;
     if !incus_params_provided(&configured_incus) {
         tracing::info!("managed-agent incus config not present; skipping agent api healthcheck");
         return Ok(());
@@ -4137,6 +4184,7 @@ pub async fn agent_api_healthcheck() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::serial_test_guard;
     use chrono::NaiveDate;
     use serde_json::json;
 
@@ -4184,11 +4232,12 @@ mod tests {
         IncusManagedRuntimeProvider {
             client: reqwest::Client::new(),
             resolved: ResolvedIncusParams {
+                guest_role: IncusGuestRole::ManagedOpenclaw,
                 endpoint: "https://incus.example.test".to_string(),
                 project: "pika-managed-agents".to_string(),
                 profile: "pika-agent-dev".to_string(),
                 storage_pool: "default".to_string(),
-                image_alias: "managed-agent/dev".to_string(),
+                image_alias: "pika-agent/dev".to_string(),
                 insecure_tls: false,
                 openclaw_guest_ipv4_cidr: Some("10.77.0.0/24".to_string()),
                 openclaw_proxy_host: Some("203.0.113.10".to_string()),
@@ -4226,7 +4275,7 @@ mod tests {
         assert_eq!(plan.identity.instance_name, "pika-agent-123");
         assert_eq!(plan.incus.project, "pika-managed-agents");
         assert_eq!(plan.incus.profile, "pika-agent-dev");
-        assert_eq!(plan.incus.image_alias, "managed-agent/dev");
+        assert_eq!(plan.incus.image_alias, "pika-agent/dev");
         assert_eq!(plan.resources.memory_mib, Some(INCUS_DEV_VM_MEMORY_MIB));
         assert_eq!(plan.mounts.len(), 1);
         assert_eq!(plan.mounts[0].kind, MountKind::PersistentVolume);
@@ -4234,6 +4283,82 @@ mod tests {
         assert_eq!(plan.mounts[0].guest_path, INCUS_PERSISTENT_VOLUME_PATH);
         assert_eq!(plan.mounts[0].device_name, "pk-persis-1c7cfe10");
         assert!(!plan.mounts[0].read_only);
+    }
+
+    #[test]
+    fn materialized_managed_runtime_params_preserve_guest_role() {
+        let config = ResolvedManagedRuntimeProviderConfig::Incus(ResolvedIncusParams {
+            guest_role: IncusGuestRole::ManagedOpenclaw,
+            endpoint: "https://incus.example.test".to_string(),
+            project: "pika-managed-agents".to_string(),
+            profile: "pika-agent-dev".to_string(),
+            storage_pool: "default".to_string(),
+            image_alias: "pika-agent/dev".to_string(),
+            insecure_tls: false,
+            openclaw_guest_ipv4_cidr: Some("10.77.0.0/24".to_string()),
+            openclaw_proxy_host: Some("203.0.113.10".to_string()),
+        });
+
+        let materialized = materialized_managed_runtime_params(&config);
+
+        assert_eq!(
+            materialized.incus.guest_role,
+            Some(IncusGuestRole::ManagedOpenclaw)
+        );
+        assert_eq!(
+            materialized.incus.image_alias.as_deref(),
+            Some("pika-agent/dev")
+        );
+    }
+
+    #[test]
+    fn materialized_managed_runtime_params_omit_guest_role_for_custom_alias() {
+        let config = ResolvedManagedRuntimeProviderConfig::Incus(ResolvedIncusParams {
+            guest_role: IncusGuestRole::ManagedOpenclaw,
+            endpoint: "https://incus.example.test".to_string(),
+            project: "pika-managed-agents".to_string(),
+            profile: "pika-agent-dev".to_string(),
+            storage_pool: "default".to_string(),
+            image_alias: "custom/openclaw".to_string(),
+            insecure_tls: false,
+            openclaw_guest_ipv4_cidr: Some("10.77.0.0/24".to_string()),
+            openclaw_proxy_host: Some("203.0.113.10".to_string()),
+        });
+
+        let materialized = materialized_managed_runtime_params(&config);
+
+        assert_eq!(materialized.incus.guest_role, None);
+        assert_eq!(
+            materialized.incus.image_alias.as_deref(),
+            Some("custom/openclaw")
+        );
+    }
+
+    #[test]
+    fn resolve_managed_runtime_provider_config_rejects_invalid_guest_role_env() {
+        let _guard = serial_test_guard();
+        unsafe {
+            std::env::set_var(INCUS_GUEST_ROLE_ENV, "not-a-role");
+            std::env::set_var(INCUS_ENDPOINT_ENV, "https://incus.example.test");
+            std::env::set_var(INCUS_PROJECT_ENV, "pika-managed-agents");
+            std::env::set_var(INCUS_PROFILE_ENV, "pika-agent-dev");
+            std::env::set_var(INCUS_STORAGE_POOL_ENV, "default");
+            std::env::set_var(INCUS_IMAGE_ALIAS_ENV, "pika-agent/dev");
+        }
+
+        let err = resolve_managed_runtime_provider_config(None)
+            .expect_err("invalid guest-role env must fail cleanly");
+
+        assert!(err.to_string().contains(INCUS_GUEST_ROLE_ENV));
+
+        unsafe {
+            std::env::remove_var(INCUS_GUEST_ROLE_ENV);
+            std::env::remove_var(INCUS_ENDPOINT_ENV);
+            std::env::remove_var(INCUS_PROJECT_ENV);
+            std::env::remove_var(INCUS_PROFILE_ENV);
+            std::env::remove_var(INCUS_STORAGE_POOL_ENV);
+            std::env::remove_var(INCUS_IMAGE_ALIAS_ENV);
+        }
     }
 
     #[test]

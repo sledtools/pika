@@ -81,6 +81,7 @@ pub(crate) struct ManagedOpenClawLaunchAuth {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pika_managed_agent_contract::IncusGuestRole;
 
     #[test]
     fn managed_runtime_status_accepts_legacy_guest_service_ready_field() {
@@ -103,6 +104,7 @@ mod tests {
                 project: Some("managed-agents".to_string()),
                 profile: Some("pika-agent".to_string()),
                 storage_pool: Some("managed-agents-zfs".to_string()),
+                guest_role: Some(IncusGuestRole::ManagedOpenclaw),
                 image_alias: Some("pika-agent/dev".to_string()),
                 insecure_tls: Some(true),
                 openclaw_guest_ipv4_cidr: Some("10.193.52.0/24".to_string()),

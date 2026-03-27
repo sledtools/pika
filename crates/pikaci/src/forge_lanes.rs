@@ -258,6 +258,7 @@ pub fn compiled_forge_ci_manifest() -> ForgeCiManifest {
                     "crates/pika-cloud/**",
                     "crates/pika-desktop/**",
                     "crates/hypernote-protocol/**",
+                    "crates/pika-incus-guest-role/**",
                     "crates/pika-managed-agent-contract/**",
                     "crates/pika-media/**",
                     "crates/pika-marmot-runtime/**",
@@ -265,10 +266,7 @@ pub fn compiled_forge_ci_manifest() -> ForgeCiManifest {
                     "crates/pika-tls/**",
                     "rust/**",
                     "scripts/apple-host-prepare.sh",
-                    "scripts/apple-host-cache-key",
                     "scripts/apple-host-record-phase",
-                    "scripts/apple-host-record-prepared-entry",
-                    "scripts/lib/release-secrets.sh",
                     "scripts/pikaci-apple-remote.sh",
                     "tools/apple-host-asset",
                     "tools/cargo-with-xcode",
@@ -299,6 +297,7 @@ pub fn compiled_forge_ci_manifest() -> ForgeCiManifest {
                     ".github/pikaci-apple.env",
                     "crates/hypernote-protocol/**",
                     "crates/pika-cloud/**",
+                    "crates/pika-incus-guest-role/**",
                     "crates/pika-managed-agent-contract/**",
                     "crates/pika-media/**",
                     "crates/pika-marmot-runtime/**",
@@ -310,10 +309,8 @@ pub fn compiled_forge_ci_manifest() -> ForgeCiManifest {
                     "scripts/apple-host-prepare.sh",
                     "scripts/apple-host-cache-key",
                     "scripts/apple-host-record-phase",
-                    "scripts/apple-host-record-prepared-entry",
                     "scripts/ios-build",
                     "scripts/lib/mobile-build.sh",
-                    "scripts/pikaci-apple-host-bootstrap.sh",
                     "scripts/pikaci-apple-remote.sh",
                     "tools/apple-host-asset",
                     "tools/lib/dotenv.sh",
@@ -576,6 +573,27 @@ mod tests {
         assert!(ids.contains(&"apple_desktop_compile".to_string()));
         assert!(ids.contains(&"apple_ios_compile".to_string()));
         assert!(ids.contains(&"fixture".to_string()));
+    }
+
+    #[test]
+    fn desktop_only_branch_selects_only_desktop_apple_lane() {
+        let ids = selected_lane_ids(&["crates/pika-desktop/src/main.rs"]);
+        assert!(ids.contains(&"apple_desktop_compile".to_string()));
+        assert!(!ids.contains(&"apple_ios_compile".to_string()));
+    }
+
+    #[test]
+    fn ios_only_branch_selects_only_ios_apple_lane() {
+        let ids = selected_lane_ids(&["ios/Sources/AppManager.swift"]);
+        assert!(ids.contains(&"apple_ios_compile".to_string()));
+        assert!(!ids.contains(&"apple_desktop_compile".to_string()));
+    }
+
+    #[test]
+    fn ios_cache_key_script_selects_only_ios_apple_lane() {
+        let ids = selected_lane_ids(&["scripts/apple-host-cache-key"]);
+        assert!(ids.contains(&"apple_ios_compile".to_string()));
+        assert!(!ids.contains(&"apple_desktop_compile".to_string()));
     }
 
     #[test]

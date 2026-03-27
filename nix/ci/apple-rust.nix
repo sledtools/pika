@@ -132,6 +132,7 @@ in
     allowedWorkspacePackages = [
       "hypernote-protocol"
       "pika-cloud"
+      "pika-incus-guest-role"
       "pika-desktop"
       "pika-managed-agent-contract"
       "pika-marmot-runtime"
@@ -158,6 +159,7 @@ in
     allowedWorkspacePackages = [
       "hypernote-protocol"
       "pika-cloud"
+      "pika-incus-guest-role"
       "pika-managed-agent-contract"
       "pika-marmot-runtime"
       "pika-media"

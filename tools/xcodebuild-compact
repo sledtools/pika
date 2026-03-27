@@ -73,6 +73,7 @@ def render_failure(log_path: Path) -> None:
 
 def main() -> int:
     verbose = os.environ.get("PIKA_XCODEBUILD_VERBOSE", "0") == "1"
+    show_timing_summary = os.environ.get("PIKA_XCODEBUILD_SHOW_TIMING_SUMMARY", "0") == "1"
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -83,8 +84,10 @@ def main() -> int:
 
     cmd = [str(ROOT / "tools" / "xcode-run"), "xcodebuild"]
     args = sys.argv[1:]
-    if not verbose and "-quiet" not in args:
+    if not verbose and not show_timing_summary and "-quiet" not in args:
         args = ["-quiet", *args]
+    if show_timing_summary and "-showBuildTimingSummary" not in args:
+        args = [*args, "-showBuildTimingSummary"]
     cmd.extend(args)
 
     print_err(f"xcodebuild: writing full log to {log_path}")

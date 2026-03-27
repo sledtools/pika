@@ -213,12 +213,14 @@ desired_prepare_profile="$(prepare_profile_for_recipe "$just_recipe")"
 execution_scope="$(execution_scope_for_recipe "$just_recipe")"
 ssh_wrapper=""
 ssh_key_file=""
+ssh_control_path=""
 
 cleanup() {
   set +e
   if [[ "$bundle_created" -eq 1 ]]; then
     git update-ref -d "$bundle_ref" >/dev/null 2>&1 || true
   fi
+  rm -f "$ssh_control_path"
   rm -f "$ssh_wrapper"
   rm -rf "$tmp_dir"
 }
@@ -237,6 +239,7 @@ prepare_ssh_binary() {
   ssh_key_file="$ssh_key_path"
 
   ssh_wrapper="$(mktemp "${TMPDIR:-/tmp}/pikaci-apple-ssh-wrapper.XXXXXX")"
+  ssh_control_path="$(mktemp -u "${TMPDIR:-/tmp}/pikaci-apple-ssh-control.XXXXXX")"
   cat >"$ssh_wrapper" <<EOF
 #!/usr/bin/env bash
 exec $(printf '%q' "$ssh_binary") \\
@@ -245,6 +248,9 @@ exec $(printf '%q' "$ssh_binary") \\
   -o IdentitiesOnly=yes \\
   -o PreferredAuthentications=publickey \\
   -o BatchMode=yes \\
+  -o ControlMaster=auto \\
+  -o ControlPersist=60 \\
+  -o ControlPath=$(printf '%q' "$ssh_control_path") \\
   "\$@"
 EOF
   chmod 700 "$ssh_wrapper"
@@ -473,7 +479,7 @@ prepare_profile_satisfies() {
 
 mkdir -p "$artifacts_dir" "$logs_dir"
 run_locked_body() {
-  exec > >(tee -a "${logs_dir}/remote.log") 2>&1
+  exec >> "${logs_dir}/remote.log" 2>&1
 
   cleanup() {
     set +e

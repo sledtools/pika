@@ -9,10 +9,41 @@ if [[ -z "$kind" ]]; then
   exit 2
 fi
 
+emit_path_hashes() {
+  local path
+  for path in "$@"; do
+    if [[ -f "$path" ]]; then
+      printf 'path=%s\n' "$path"
+      shasum -a 256 "$path"
+    elif [[ -d "$path" ]]; then
+      while IFS= read -r -d '' file; do
+        printf 'path=%s\n' "$file"
+        shasum -a 256 "$file"
+      done < <(find "$path" -type f -print0 | sort -z)
+    fi
+  done
+}
+
 (
   cd "$ROOT"
   printf 'kind=%s\n' "$kind"
   printf 'xcode_version=%s\n' "$("$ROOT/tools/apple-host-asset" xcode_version)"
   printf 'ios_runtime=%s\n' "$("$ROOT/tools/apple-host-asset" ios_runtime)"
-  shasum -a 256 flake.lock ci/apple-host-assets.toml
+  emit_path_hashes flake.nix flake.lock ci/apple-host-assets.toml
+  case "$kind" in
+    ios-generic-sim)
+      printf 'ios_xcframework_result=%s\n' "${PIKACI_APPLE_IOS_XCFRAMEWORK_RESULT:-}"
+      emit_path_hashes \
+        VERSION \
+        Cargo.toml \
+        Cargo.lock \
+        ios \
+        scripts/ios-build \
+        scripts/lib/mobile-build.sh \
+        tools/lib/dotenv.sh \
+        tools/xcode-dev-dir \
+        tools/xcode-run \
+        tools/xcodebuild-compact
+      ;;
+  esac
 ) | shasum -a 256 | awk '{print $1}'

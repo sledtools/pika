@@ -1193,7 +1193,7 @@ fn pre_merge_fixture_filter_tracks_checked_in_lane_surface() -> Result<()> {
 fn pre_merge_pikachat_apple_split_stays_explicit() -> Result<()> {
     let root = workspace_root();
     let checks = fs::read_to_string(root.join("just/checks.just"))?;
-    let pikaci = fs::read_to_string(root.join("crates/pikaci/src/main.rs"))?;
+    let pikaci_targets = fs::read_to_string(root.join("crates/pikaci/src/targets.rs"))?;
 
     let pre_merge_recipe = extract_just_recipe_body(&checks, "pre-merge-pikachat");
     assert!(
@@ -1239,10 +1239,11 @@ fn pre_merge_pikachat_apple_split_stays_explicit() -> Result<()> {
         "Apple Silicon branch must not keep inline TypeScript follow-up outside the pikaci target"
     );
 
-    let apple_followup = extract_rust_function_body(&pikaci, "pikachat_apple_followup_jobs");
+    let apple_followup =
+        extract_rust_function_body(&pikaci_targets, "pikachat_apple_followup_jobs");
     assert!(
         !apple_followup.is_empty(),
-        "pikaci main.rs must keep a checked-in Apple host follow-up jobs helper"
+        "pikaci targets.rs must keep a checked-in Apple host follow-up jobs helper"
     );
     assert!(
         apple_followup.contains("cargo clippy -p pikachat -- -D warnings"),

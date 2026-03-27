@@ -34,6 +34,7 @@ let
       buildScript,
       installScript,
       allowedWorkspacePackages,
+      cargoTreeEdges,
       targetPackages,
     }:
     pkgs.rustPlatform.buildRustPackage {
@@ -62,6 +63,7 @@ EOF
           fi
         done
         export PIKA_ALLOWED_WORKSPACE_PACKAGES='${builtins.toJSON allowedWorkspacePackages}'
+        export PIKA_CARGO_TREE_EDGES='${cargoTreeEdges}'
         export PIKA_TARGET_PACKAGES='${builtins.toJSON targetPackages}'
         python3 - <<'PY'
 import json
@@ -84,7 +86,7 @@ for target in targets:
             "tree",
             "--quiet",
             "--edges",
-            "normal,build",
+            os.environ["PIKA_CARGO_TREE_EDGES"],
             "--prefix",
             "none",
             "--format",
@@ -131,12 +133,14 @@ in
       "hypernote-protocol"
       "pika-cloud"
       "pika-desktop"
+      "pika-managed-agent-contract"
       "pika-marmot-runtime"
       "pika-media"
       "pika-relay-profiles"
       "pika-tls"
       "pika_core"
     ];
+    cargoTreeEdges = "normal,build,dev";
     targetPackages = [ "pika-desktop" ];
     buildScript = ''
       ./tools/cargo-with-xcode test -p pika-desktop --no-run --message-format=short \
@@ -154,6 +158,7 @@ in
     allowedWorkspacePackages = [
       "hypernote-protocol"
       "pika-cloud"
+      "pika-managed-agent-contract"
       "pika-marmot-runtime"
       "pika-media"
       "pika-nse"
@@ -163,6 +168,7 @@ in
       "pika_core"
       "uniffi-bindgen"
     ];
+    cargoTreeEdges = "normal,build";
     targetPackages = [
       "pika_core"
       "pika-nse"

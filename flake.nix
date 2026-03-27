@@ -665,9 +665,12 @@
           ./crates/pikaci/Cargo.toml
           ./crates/pika-agent-protocol/Cargo.toml
           ./crates/pika-cloud/Cargo.toml
+          ./crates/pika-forge-model/Cargo.toml
+          ./crates/pika-managed-agent-contract/Cargo.toml
           ./crates/pika-relay-profiles/Cargo.toml
           ./crates/pika-marmot-runtime/Cargo.toml
           ./crates/hypernote-protocol/Cargo.toml
+          ./crates/jerichoci/Cargo.toml
           ./crates/pikachat-sidecar/Cargo.toml
           ./crates/pika-desktop/Cargo.toml
           ./crates/pika-media/Cargo.toml
@@ -694,6 +697,7 @@
               ./uniffi-bindgen/Cargo.toml
               ./crates/pika-cloud
               ./crates/pika-relay-profiles
+              ./crates/pika-managed-agent-contract
               ./crates/pika-marmot-runtime
               ./crates/hypernote-protocol
               ./crates/pika-desktop
@@ -718,6 +722,7 @@
               ./uniffi-bindgen
               ./crates/pika-cloud
               ./crates/pika-relay-profiles
+              ./crates/pika-managed-agent-contract
               ./crates/pika-marmot-runtime
               ./crates/hypernote-protocol
               ./crates/pika-media

@@ -145,12 +145,16 @@ apple-host-ios-compile:
         export PIKA_XCODE_INSTALL_PROMPT="${PIKA_XCODE_INSTALL_PROMPT:-0}"
         exec nix --extra-experimental-features "nix-command flakes" develop .#apple-host -c just checks::apple-host-ios-compile
     fi
-    cache_key="$(./scripts/apple-host-cache-key ios-generic-sim)"
-    derived_data_path="${PIKA_IOS_DERIVED_DATA_PATH:-$PWD/.pikaci/ios-derived-data/$cache_key}"
+    result_path="$(
+      ./scripts/apple-host-record-phase apple-host-ios-compile.nix rust-nix -- \
+        nix --extra-experimental-features "nix-command flakes" build .#appleIosXcframework --print-out-paths --no-link
+    )"
+    cache_key="$(
+      PIKACI_APPLE_IOS_XCFRAMEWORK_RESULT="$result_path" \
+        ./scripts/apple-host-cache-key ios-generic-sim
+    )"
+    derived_data_path="${PIKA_IOS_DERIVED_DATA_PATH:-$PWD/ios/build/generic-sim-derived-data/$cache_key}"
     mkdir -p "$(dirname "$derived_data_path")"
-    ./scripts/apple-host-record-phase apple-host-ios-compile.nix rust-nix -- \
-      nix --extra-experimental-features "nix-command flakes" build .#appleIosXcframework --no-link
-    result_path="$(nix --extra-experimental-features "nix-command flakes" build .#appleIosXcframework --print-out-paths --no-link)"
     ./scripts/apple-host-record-phase apple-host-ios-compile.xcodebuild apple-native -- \
       env PIKACI_APPLE_IOS_XCFRAMEWORK_RESULT="$result_path" PIKA_IOS_DERIVED_DATA_PATH="$derived_data_path" \
       ./scripts/ios-build ios-build-generic-sim

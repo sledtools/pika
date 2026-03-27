@@ -648,7 +648,10 @@ mod tests {
             ]
         );
         assert!(apple_lane.staged_linux_target.is_none());
-        assert_eq!(apple_lane.concurrency_group.as_deref(), Some("apple-compile"));
+        assert_eq!(
+            apple_lane.concurrency_group.as_deref(),
+            Some("apple-compile")
+        );
 
         let nightly_lane = manifest
             .nightly_lanes
@@ -667,7 +670,10 @@ mod tests {
             ]
         );
         assert!(nightly_lane.staged_linux_target.is_none());
-        assert_eq!(nightly_lane.concurrency_group.as_deref(), Some("apple-runtime"));
+        assert_eq!(
+            nightly_lane.concurrency_group.as_deref(),
+            Some("apple-runtime")
+        );
     }
 
     #[test]

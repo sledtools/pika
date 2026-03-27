@@ -56,77 +56,51 @@ supported_runtime_version="$(
     }
   '
 )"
-# Prefer the exact simulator runtime version that the selected Xcode advertises, then
-# fall back to the highest installed iOS runtime not newer than that SDK, and only then
-# fall back to the newest installed iOS runtime.
 runtime_id="$(
   "$SIMCTL" list -j runtimes | python3 -c '
 import json
-import re
 import sys
 
 j = json.load(sys.stdin)
-supported = sys.argv[1].strip()
-target_runtime = sys.argv[2].strip()
-supported_tuple = None
-if supported:
-    parts = supported.split(".")
-    try:
-        supported_tuple = tuple(int(part) for part in parts[:2])
-    except ValueError:
-        supported_tuple = None
+target_runtime = sys.argv[1].strip()
 
-runtimes = []
 for rt in j.get("runtimes", []):
-    ident = rt.get("identifier") or ""
     name = rt.get("name") or ""
     avail = rt.get("isAvailable")
     if not name.startswith("iOS "):
         continue
     if avail is False:
         continue
-    m = re.search(r"iOS-(\d+)-(\d+)$", ident)
-    if not m:
-        continue
-    version = (int(m.group(1)), int(m.group(2)))
-    runtimes.append((version, ident, name))
-
-if not runtimes:
-    sys.exit(0)
-
-runtimes.sort()
-
-for version, ident, name in runtimes:
     if name == target_runtime:
-        sys.stdout.write(ident)
+        sys.stdout.write(rt.get("identifier") or "")
         sys.exit(0)
-
-if supported_tuple is not None:
-    for version, ident, _name in runtimes:
-        if version == supported_tuple:
-            sys.stdout.write(ident)
-            sys.exit(0)
-    eligible = [item for item in runtimes if item[0] <= supported_tuple]
-    if eligible:
-        sys.stdout.write(eligible[-1][1])
-        sys.exit(0)
-
-sys.stdout.write(runtimes[-1][1])
-' "$supported_runtime_version" "$target_runtime"
+sys.exit(0)
+' "$target_runtime"
 )"
 if [ -z "${runtime_id:-}" ]; then
-  echo "error: Failed to determine an iOS runtime identifier from simctl." >&2
+  echo "error: pinned iOS Simulator runtime is not installed: $target_runtime" >&2
+  if [ -n "${supported_runtime_version:-}" ]; then
+    echo "selected Xcode advertises iPhoneSimulator SDK version: $supported_runtime_version" >&2
+  fi
+  ./tools/ios-runtime-doctor >&2 || true
   "$SIMCTL" list runtimes >&2 || true
   exit 1
 fi
 
-device_type_id="$("$SIMCTL" list devicetypes | awk -F '[()]' -v target="$target_device_type" '$0 ~ target {print $2; exit}')"
+device_type_id="$(
+  "$SIMCTL" list devicetypes | awk -F '[()]' -v target="$target_device_type" '
+    {
+      name = $1
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+      if (name == target) {
+        print $2
+        exit
+      }
+    }
+  '
+)"
 if [ -z "${device_type_id:-}" ]; then
-  # Fallback to first iPhone device type if "iPhone 15" isn't available.
-  device_type_id="$("$SIMCTL" list devicetypes | awk -F '[()]' '/iPhone/ {print $2; exit}')"
-fi
-if [ -z "${device_type_id:-}" ]; then
-  echo "error: Failed to determine an iPhone device type id from simctl." >&2
+  echo "error: pinned iPhone simulator device type is not installed: $target_device_type" >&2
   "$SIMCTL" list devicetypes >&2 || true
   exit 1
 fi

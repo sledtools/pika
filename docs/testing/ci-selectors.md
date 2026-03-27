@@ -49,7 +49,7 @@ This document defines the selector-first contract and current policy ownership f
 | `android-ui-e2e-local` | `integration_deterministic::ui_e2e_local_android` | nightly CI-owned via `nightly-pika-ui-android`; also useful as a manual rerun entrypoint |
 | `ios-ui-e2e-local` | `integration_deterministic::ui_e2e_local_ios` | manual-only today; not CI-enforced |
 | `desktop-e2e-local` | `integration_deterministic::ui_e2e_local_desktop` | convenience alias to a pre-merge-owned selector; not the lane owner itself |
-| `interop-rust-baseline` | `integration_deterministic::interop_rust_baseline` | manual-only today; documented as a heavy future candidate, not a current GitHub lane |
+| `interop-rust-baseline` | `integration_deterministic::interop_rust_baseline` | manual-only today; documented as a heavy future candidate, not a current CI lane |
 
 ## Manual-Only Lane
 

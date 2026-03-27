@@ -667,20 +667,13 @@
             ./VERSION
             ./Cargo.toml
             ./Cargo.lock
-            ./flake.nix
-            ./flake.lock
-            ./ci/apple-host-assets.toml
             ./config
             ./crates
             ./rust
             ./cli
-            ./tests
-            ./tools
-            ./scripts
             ./uniffi-bindgen
-            ./just
-            ./justfile
-            ./nix
+            ./tools/cargo-with-xcode
+            ./tools/xcode-dev-dir
           ];
         };
         appleIosWorkspaceSrc = pkgs.lib.fileset.toSource {
@@ -689,18 +682,17 @@
             ./VERSION
             ./Cargo.toml
             ./Cargo.lock
-            ./flake.nix
-            ./flake.lock
-            ./ci/apple-host-assets.toml
             ./config
             ./crates
             ./rust
             ./cli
             ./ios
-            ./tools
-            ./scripts
             ./uniffi-bindgen
-            ./nix
+            ./scripts/ios-build
+            ./scripts/lib/mobile-build.sh
+            ./tools/lib/dotenv.sh
+            ./tools/xcode-dev-dir
+            ./tools/xcode-run
           ];
         };
         pikaFollowupGradleDepsHost =

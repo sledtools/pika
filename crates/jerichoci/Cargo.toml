@@ -1,13 +1,16 @@
 [package]
-name = "pikaci"
+name = "jerichoci"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
+chrono = { workspace = true }
+fs2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 toml = { workspace = true }
+pika-cloud = { path = "../pika-cloud" }
 uuid = { workspace = true }
-jerichoci = { workspace = true }

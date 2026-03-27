@@ -5,8 +5,9 @@ name = "pika-project-invariants"
 id = "PIKACI-001"
 area = "pikaci"
 kind = "allowed"
-statement = "pikaci may depend on pika-cloud."
+statement = "jerichoci may depend on pika-cloud, and pikaci may depend on jerichoci."
 scope = [
+  "crates/jerichoci/**",
   "crates/pikaci/**",
   "crates/pika-git/**",
 ]
@@ -15,11 +16,12 @@ scope = [
 id = "PIKACI-002"
 area = "pikaci"
 kind = "must"
-statement = "The reusable pikaci library layer does not define the Pika staged-lane catalog, target catalog, or forge target-selection table. Those Pika-specific catalogs live in the pikaci binary modules."
+statement = "The reusable CI engine lives in crates/jerichoci/** and does not define the Pika staged-lane catalog, target catalog, or forge target-selection table. Those Pika-specific catalogs live in crates/pikaci/**."
 scope = [
+  "crates/jerichoci/**",
   "crates/pikaci/**",
 ]
-hint = "Focus on whether production library modules like lib.rs, model.rs, run.rs, and executor.rs define Pika-specific target IDs or staged-lane tables. It is fine for the library to expose generic command helpers and executor machinery."
+hint = "Focus on whether production jerichoci modules define Pika-specific target IDs or staged-lane tables. It is fine for jerichoci to expose generic command helpers and executor machinery."
 
 [[invariant]]
 id = "PIKACI-003"
@@ -27,6 +29,7 @@ area = "pikaci"
 kind = "must"
 statement = "For forge branch lanes, branch-lane path-filter policy has a single source of truth in ci/forge-lanes.toml. pikaci may define local-only targets and may map staged targets to local CLI entries, but it must not duplicate forge branch-lane path filters."
 scope = [
+  "crates/jerichoci/**",
   "crates/pikaci/**",
   "ci/**",
   "crates/pika-git/**",
@@ -37,9 +40,9 @@ hint = "Look specifically for duplicated branch-lane path filters between ci/for
 id = "PIKACI-004"
 area = "pikaci"
 kind = "must"
-statement = "pikaci models execution placement separately from runtime backend. Production code does not choose host vs Incus vs Tart execution from job IDs, tart-* prefixes, or guest-command shape; those choices come from explicit JobSpec fields."
+statement = "jerichoci models execution placement separately from runtime backend. Production code does not choose host vs Incus vs Tart execution from job IDs, tart-* prefixes, or guest-command shape; those choices come from explicit JobSpec fields."
 scope = [
-  "crates/pikaci/**",
+  "crates/jerichoci/**",
 ]
 hint = "Focus on JobSpec, planner records, and executor dispatch. It is fine for backend-specific command compilation or cache behavior to depend on explicit job fields. Fail only if production code still chooses the runtime backend from naming conventions or command-shape heuristics."
 
@@ -47,8 +50,20 @@ hint = "Focus on JobSpec, planner records, and executor dispatch. It is fine for
 id = "PIKACI-005"
 area = "pikaci"
 kind = "must"
-statement = "Backend-specific setup lives in explicit runtime config data, not ad hoc top-level JobSpec fields. Production code should carry staged Linux command config, Tart host setup, and similar backend knobs under runtime-specific config."
+statement = "Backend-specific setup lives in explicit runtime config data, not ad hoc top-level JobSpec fields. Production jerichoci code should carry staged Linux command config, Tart host setup, and similar backend knobs under runtime-specific config."
 scope = [
+  "crates/jerichoci/**",
   "crates/pikaci/**",
 ]
 hint = "Focus on the JobSpec data model and how main.rs builds jobs. It is fine for helper methods to read backend-specific settings from a runtime config enum. Fail if production JobSpec still has loose top-level fields like staged_linux_command, host_setup_command, or mount_host_rust_toolchain."
+
+[[invariant]]
+id = "PIKACI-006"
+area = "pikaci"
+kind = "must"
+statement = "crates/pikaci/** is a Pika-specific frontend layer on top of jerichoci. It may define catalogs, path filters, and CLI commands, but generic run/executor/snapshot core modules live in crates/jerichoci/**."
+scope = [
+  "crates/jerichoci/**",
+  "crates/pikaci/**",
+]
+hint = "Look for generic CI engine modules being reintroduced under crates/pikaci/src, such as reusable run records, executor backends, snapshotting, or lifecycle core logic."

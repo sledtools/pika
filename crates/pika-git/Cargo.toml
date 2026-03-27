@@ -21,11 +21,11 @@ globset = "0.4"
 hex = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
+jerichoci = { workspace = true }
 nostr = { workspace = true }
 pika-forge-model = { path = "../pika-forge-model" }
 rand = { workspace = true }
 pulldown-cmark = "0.10"
-pikaci = { path = "../pikaci" }
 reqwest = { workspace = true, features = ["blocking", "json", "native-tls"] }
 rusqlite = { workspace = true, features = ["bundled"] }
 serde = { workspace = true, features = ["derive"] }

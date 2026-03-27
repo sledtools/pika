@@ -15,7 +15,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let launch_request =
-        pikaci::load_prepared_output_fulfillment_launch_request(Path::new(&request_path))
+        jerichoci::load_prepared_output_fulfillment_launch_request(Path::new(&request_path))
             .with_context(|| format!("load {}", Path::new(&request_path).display()))?;
     if launch_request.schema_version != 1 {
         bail!(

@@ -14,11 +14,11 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context};
 use chrono::Utc;
 use fs2::FileExt;
-use pikaci::{RunLifecycleEvent, RunStatus};
+use jerichoci::{RunLifecycleEvent, RunStatus};
 use tempfile::TempDir;
 
 use crate::config::{ForgeRepoConfig, DEFAULT_MIRROR_TIMEOUT_SECS};
-use crate::pikaci_store::PikaciRunStore;
+use crate::jerichoci_store::JerichociRunStore;
 
 #[derive(Debug, Clone)]
 pub struct CanonicalBranch {
@@ -329,7 +329,7 @@ where
         .map(ToOwned::to_owned)
         .or_else(|| staged_pikaci_target_from_command(command));
     let structured_pikaci_state_root = structured_pikaci_target.as_ref().map(|_| {
-        PikaciRunStore::from_forge_repo(repo)
+        JerichociRunStore::from_forge_repo(repo)
             .state_root()
             .to_path_buf()
     });
@@ -1228,7 +1228,7 @@ mod tests {
     use std::time::Duration;
 
     use chrono::Utc;
-    use pikaci::RunStatus;
+    use jerichoci::RunStatus;
 
     use super::{
         acquire_mirror_lock, close_branch, create_merge_commit, current_branch_head,
@@ -1238,7 +1238,9 @@ mod tests {
         write_merge_tree, write_mirror_lock_metadata, MirrorLockMetadata,
     };
     use crate::config::ForgeRepoConfig;
-    use crate::pikaci_store::{PikaciRunStore, TestPikaciJobFixture, TestPikaciRunFixture};
+    use crate::jerichoci_store::{
+        JerichociRunStore, TestJerichociJobFixture, TestJerichociRunFixture,
+    };
 
     fn git<P: AsRef<Path>>(cwd: P, args: &[&str]) {
         let output = Command::new("git")
@@ -1254,7 +1256,7 @@ mod tests {
         );
     }
 
-    fn event_line(event: pikaci::RunLifecycleEvent) -> String {
+    fn event_line(event: jerichoci::RunLifecycleEvent) -> String {
         serde_json::to_string(&event).expect("serialize test event")
     }
 
@@ -1529,15 +1531,17 @@ mod tests {
     #[test]
     fn staged_pikaci_lane_reports_run_id_and_human_log_summary() {
         let (_root, forge_repo, seed) = setup_repo();
-        let run_store = PikaciRunStore::from_forge_repo(&forge_repo);
-        let mut fixture = TestPikaciRunFixture::passed(
+        let run_store = JerichociRunStore::from_forge_repo(&forge_repo);
+        let mut fixture = TestJerichociRunFixture::passed(
             "pikaci-run-123",
             Some("pre-merge-pika-rust"),
             Some("Run staged pika rust"),
         );
-        fixture.jobs.push(TestPikaciJobFixture::passed_remote_linux(
-            "job-one", "job one",
-        ));
+        fixture
+            .jobs
+            .push(TestJerichociJobFixture::passed_remote_linux(
+                "job-one", "job one",
+            ));
         run_store
             .write_fixture(&fixture)
             .expect("write persisted run fixture");
@@ -1546,11 +1550,11 @@ mod tests {
         let wrapper_path = scripts_dir.join("pikaci-staged-linux-remote.sh");
         let run_started = event_line(fixture.clone().run_started_event());
         let job_started = event_line(
-            TestPikaciJobFixture::passed_remote_linux("job-one", "job one")
+            TestJerichociJobFixture::passed_remote_linux("job-one", "job one")
                 .job_started_event("pikaci-run-123"),
         );
         let job_finished = event_line(
-            TestPikaciJobFixture::passed_remote_linux("job-one", "job one")
+            TestJerichociJobFixture::passed_remote_linux("job-one", "job one")
                 .job_finished_event("pikaci-run-123"),
         );
         let run_finished = event_line(fixture.clone().run_finished_event());
@@ -1627,8 +1631,8 @@ EOF\n"
     #[test]
     fn explicit_structured_pikaci_target_does_not_depend_on_wrapper_name() {
         let (_root, forge_repo, seed) = setup_repo();
-        let run_store = PikaciRunStore::from_forge_repo(&forge_repo);
-        let fixture = TestPikaciRunFixture::passed(
+        let run_store = JerichociRunStore::from_forge_repo(&forge_repo);
+        let fixture = TestJerichociRunFixture::passed(
             "pikaci-run-456",
             Some("pre-merge-pika-rust"),
             Some("Run staged pika rust"),
@@ -1726,11 +1730,11 @@ EOF\n"
     fn structured_pikaci_failure_log_keeps_job_and_run_messages() {
         let job_line = render_pikaci_stdout_line(
             &event_line(
-                TestPikaciJobFixture {
+                TestJerichociJobFixture {
                     status: RunStatus::Failed,
                     exit_code: Some(1),
                     message: Some("cargo test failed in crate pika_core".to_string()),
-                    ..TestPikaciJobFixture::passed_remote_linux("job-one", "job one")
+                    ..TestJerichociJobFixture::passed_remote_linux("job-one", "job one")
                 }
                 .job_finished_event("pikaci-run-123"),
             ),
@@ -1741,10 +1745,10 @@ EOF\n"
 
         let run_line = render_pikaci_stdout_line(
             &event_line(
-                TestPikaciRunFixture {
+                TestJerichociRunFixture {
                     status: RunStatus::Failed,
                     message: Some("prepared-output helper exited 1".to_string()),
-                    ..TestPikaciRunFixture::passed(
+                    ..TestJerichociRunFixture::passed(
                         "pikaci-run-123",
                         Some("pre-merge-pika-rust"),
                         Some("Run staged pika rust"),

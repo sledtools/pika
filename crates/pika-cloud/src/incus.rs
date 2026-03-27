@@ -8,6 +8,7 @@ use crate::paths::RuntimePaths;
 use crate::policy::RuntimePolicies;
 use crate::spec::{IncusRuntimeConfig, RuntimeIdentity, RuntimeResources, RuntimeSpecError};
 
+pub const INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION: u32 = 2;
 pub const INCUS_READ_ONLY_DISK_IO_BUS: &str = "virtiofs";
 pub const INCUS_LIMITS_CPU_KEY: &str = "limits.cpu";
 pub const INCUS_LIMITS_MEMORY_KEY: &str = "limits.memory";
@@ -17,6 +18,15 @@ pub const INCUS_DEVICE_SOURCE_KEY: &str = "source";
 pub const INCUS_DEVICE_PATH_KEY: &str = "path";
 pub const INCUS_DEVICE_READONLY_KEY: &str = "readonly";
 pub const INCUS_DEVICE_IO_BUS_KEY: &str = "io.bus";
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct IncusGuestRunRequest {
+    pub schema_version: u32,
+    pub command: String,
+    pub timeout_secs: u64,
+    pub run_as_root: bool,
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct IncusMountPlan {
@@ -262,5 +272,18 @@ mod tests {
                 (INCUS_DEVICE_TYPE_KEY.to_string(), "disk".to_string()),
             ])
         );
+    }
+
+    #[test]
+    fn incus_guest_run_request_round_trips() {
+        let request = IncusGuestRunRequest {
+            schema_version: INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION,
+            command: "bash --noprofile --norc -lc 'cargo test -p pika-cloud'".to_string(),
+            timeout_secs: 120,
+            run_as_root: false,
+        };
+        let encoded = serde_json::to_string(&request).expect("encode request");
+        let decoded: IncusGuestRunRequest = serde_json::from_str(&encoded).expect("decode request");
+        assert_eq!(decoded, request);
     }
 }

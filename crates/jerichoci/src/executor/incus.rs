@@ -3,7 +3,10 @@ use crate::model::{
     PreparedOutputPayloadManifestRecord, PreparedOutputPayloadMountRecord,
     decode_prepared_output_payload_manifest, prepared_output_payload_manifest_path,
 };
-use pika_cloud::incus::{INCUS_DEVICE_TYPE_KEY, INCUS_DISK_DEVICE_TYPE};
+use pika_cloud::incus::{
+    INCUS_DEVICE_TYPE_KEY, INCUS_DISK_DEVICE_TYPE, INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION,
+    IncusGuestRunRequest,
+};
 use pika_cloud::{
     IncusMountPlan, IncusRuntimeConfig, IncusRuntimePlan, MountKind, MountMode, RuntimeIdentity,
     RuntimeMount, RuntimeResources, RuntimeSpec, incus_disk_device_config, incus_runtime_config,
@@ -50,7 +53,7 @@ pub(super) fn select_image_fingerprint_from_json(
 pub(super) fn build_remote_incus_guest_request(job: &JobSpec) -> IncusGuestRunRequest {
     let (command, run_as_root) = compiled_guest_command(job);
     IncusGuestRunRequest {
-        schema_version: pika_cloud::INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION,
+        schema_version: INCUS_GUEST_RUN_REQUEST_SCHEMA_VERSION,
         command,
         timeout_secs: job.timeout_secs,
         run_as_root,

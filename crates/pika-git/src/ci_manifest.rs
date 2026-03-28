@@ -1,4 +1,4 @@
-pub use pikaci::ci_catalog::LEGACY_FORGE_LANE_DEFINITION_PATH as FORGE_LANE_DEFINITION_PATH;
+pub use pikaci::ci_catalog::CI_CATALOG_DEFINITION_PATH as FORGE_LANE_DEFINITION_PATH;
 
 use pikaci::ci_catalog::{compiled_ci_catalog, select_branch_targets, CiCatalog, CiTarget};
 

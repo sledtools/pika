@@ -1,9 +1,8 @@
 use crate::ci_catalog::{
-    CiCatalog, CiTarget, LEGACY_FORGE_LANE_DEFINITION_PATH, compiled_ci_catalog,
-    select_branch_targets,
+    CI_CATALOG_DEFINITION_PATH, CiCatalog, CiTarget, compiled_ci_catalog, select_branch_targets,
 };
 
-pub const FORGE_LANE_DEFINITION_PATH: &str = LEGACY_FORGE_LANE_DEFINITION_PATH;
+pub const FORGE_LANE_DEFINITION_PATH: &str = CI_CATALOG_DEFINITION_PATH;
 
 #[derive(Debug, Clone)]
 pub struct ForgeCiManifest {

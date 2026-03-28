@@ -1089,7 +1089,7 @@ mod tests {
                 "sledtools/pika",
                 "/tmp/pika.git",
                 "master",
-                "crates/pikaci/src/forge_lanes.rs",
+                "crates/pikaci/src/ci_catalog.rs",
             )
             .expect("ensure repo metadata");
         store
@@ -1158,7 +1158,7 @@ mod tests {
                 "sledtools/pika",
                 "/tmp/pika.git",
                 "master",
-                "crates/pikaci/src/forge_lanes.rs",
+                "crates/pikaci/src/ci_catalog.rs",
             )
             .expect("ensure repo metadata");
         store
@@ -1207,7 +1207,7 @@ mod tests {
                 "sledtools/pika",
                 "/tmp/pika.git",
                 "master",
-                "crates/pikaci/src/forge_lanes.rs",
+                "crates/pikaci/src/ci_catalog.rs",
             )
             .expect("ensure repo metadata");
         store
@@ -1277,7 +1277,7 @@ mod tests {
                 "sledtools/pika",
                 "/tmp/pika.git",
                 "master",
-                "crates/pikaci/src/forge_lanes.rs",
+                "crates/pikaci/src/ci_catalog.rs",
             )
             .expect("ensure repo metadata");
         store
@@ -1650,7 +1650,7 @@ mod tests {
                 "sledtools/pika",
                 "/tmp/pika.git",
                 "master",
-                "crates/pikaci/src/forge_lanes.rs",
+                "crates/pikaci/src/ci_catalog.rs",
             )
             .expect("ensure repo metadata");
         store
@@ -1902,7 +1902,7 @@ mod tests {
                 "sledtools/pika",
                 "/tmp/pika.git",
                 "master",
-                "crates/pikaci/src/forge_lanes.rs",
+                "crates/pikaci/src/ci_catalog.rs",
             )
             .expect("ensure repo metadata");
         store
@@ -2015,7 +2015,7 @@ mod tests {
                 "sledtools/pika",
                 "/tmp/pika.git",
                 "master",
-                "crates/pikaci/src/forge_lanes.rs",
+                "crates/pikaci/src/ci_catalog.rs",
             )
             .expect("ensure repo metadata");
         store
@@ -2117,7 +2117,7 @@ mod tests {
                 "sledtools/pika",
                 "/tmp/pika.git",
                 "master",
-                "crates/pikaci/src/forge_lanes.rs",
+                "crates/pikaci/src/ci_catalog.rs",
             )
             .expect("ensure repo metadata");
         store

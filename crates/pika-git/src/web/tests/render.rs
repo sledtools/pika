@@ -12,7 +12,7 @@
                     paths: vec![
                         "README.md".to_string(),
                         "feature.txt".to_string(),
-                        "crates/pikaci/src/forge_lanes.rs".to_string(),
+                        "crates/pikaci/src/ci_catalog.rs".to_string(),
                     ],
                     concurrency_group: None,
                 }],
@@ -26,7 +26,7 @@
             "#!/usr/bin/env bash\nset -euo pipefail\necho branch-ci-ok\n",
         );
         repo.write_seed(
-            "crates/pikaci/src/forge_lanes.rs",
+            "crates/pikaci/src/ci_catalog.rs",
             r#"
 version = 1
 nightly_schedule_utc = "23:59"
@@ -36,11 +36,11 @@ id = "render_history"
 title = "render history"
 entrypoint = "./ci.sh"
 command = ["./ci.sh"]
-paths = ["README.md", "feature.txt", "crates/pikaci/src/forge_lanes.rs"]
+paths = ["README.md", "feature.txt", "crates/pikaci/src/ci_catalog.rs"]
 "#,
         );
         repo.chmod_seed_executable("ci.sh");
-        repo.seed_add(&["README.md", "ci.sh", "crates/pikaci/src/forge_lanes.rs"]);
+        repo.seed_add(&["README.md", "ci.sh", "crates/pikaci/src/ci_catalog.rs"]);
         repo.seed_commit("initial");
         repo.seed_push_master();
         repo.seed_checkout_new_branch("feature/render-history");
@@ -799,7 +799,7 @@ paths = ["README.md", "feature.txt", "crates/pikaci/src/forge_lanes.rs"]
                 "sledtools/pika",
                 "/tmp/pika.git",
                 "master",
-                "crates/pikaci/src/forge_lanes.rs",
+                "crates/pikaci/src/ci_catalog.rs",
             )
             .expect("ensure repo metadata");
         let lane = crate::ci_manifest::ForgeLane {
@@ -859,7 +859,7 @@ paths = ["README.md", "feature.txt", "crates/pikaci/src/forge_lanes.rs"]
                 "sledtools/pika",
                 "/tmp/pika.git",
                 "master",
-                "crates/pikaci/src/forge_lanes.rs",
+                "crates/pikaci/src/ci_catalog.rs",
             )
             .expect("ensure repo metadata");
         let lane = crate::ci_manifest::ForgeLane {

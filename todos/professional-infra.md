@@ -65,6 +65,14 @@ The first concrete target is:
 7. Only after that, revisit whether `shadow` still needs the personal `hetzner`
    host or should move to a professional replacement.
 
+## Current Execution
+
+- Step 4 has started: `pikaci` now exposes a generic CI catalog seam, and the
+  forge now treats `crates/pikaci/src/ci_catalog.rs` as the checked-in CI
+  source of truth instead of `forge_lanes.rs`.
+- Next up is more forge-neutralization in `pika-git`, then the repo extraction
+  and shared-infra move.
+
 ## Not The Focus Right Now
 
 - redesigning `shadow` runtime strategy

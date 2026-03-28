@@ -102,9 +102,6 @@ fn resolve_concurrency_group(
 
 fn source_of_truth_paths(paths: &[String]) -> Vec<String> {
     std::iter::once(CI_CATALOG_DEFINITION_PATH.to_string())
-        .chain(std::iter::once(
-            LEGACY_FORGE_LANE_DEFINITION_PATH.to_string(),
-        ))
         .chain(std::iter::once(TARGET_CATALOG_DEFINITION_PATH.to_string()))
         .chain(paths.iter().cloned())
         .collect()

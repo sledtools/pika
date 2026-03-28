@@ -77,7 +77,7 @@ async fn completed_nightly_stream_returns_initial_snapshot_and_closes() {
             "sledtools/pika",
             "/tmp/pika.git",
             "master",
-            "crates/pikaci/src/forge_lanes.rs",
+            "crates/pikaci/src/ci_catalog.rs",
         )
         .expect("ensure repo metadata");
     let lane = crate::ci_manifest::ForgeLane {
@@ -212,7 +212,7 @@ async fn nightly_live_snapshot_html_updates_across_lane_transitions() {
             "sledtools/pika",
             "/tmp/pika.git",
             "master",
-            "crates/pikaci/src/forge_lanes.rs",
+            "crates/pikaci/src/ci_catalog.rs",
         )
         .expect("ensure repo metadata");
     let lane = crate::ci_manifest::ForgeLane {
@@ -352,7 +352,7 @@ async fn nightly_live_stream_recovers_with_fresh_snapshot_after_lag() {
             "sledtools/pika",
             "/tmp/pika.git",
             "master",
-            "crates/pikaci/src/forge_lanes.rs",
+            "crates/pikaci/src/ci_catalog.rs",
         )
         .expect("ensure repo metadata");
     let lane = crate::ci_manifest::ForgeLane {

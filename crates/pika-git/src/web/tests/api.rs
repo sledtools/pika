@@ -400,14 +400,14 @@ async fn api_forge_branch_logs_includes_persisted_ci_run_metadata() {
         .await
         .expect("read body");
     let json: serde_json::Value = serde_json::from_slice(&body).expect("parse json");
-    assert_eq!(json["pikaci_run"]["run_id"], "pikaci-run-123");
-    assert_eq!(json["pikaci_log_metadata"]["jobs"][0]["id"], "job-one");
+    assert_eq!(json["ci_run"]["run_id"], "pikaci-run-123");
+    assert_eq!(json["ci_log_metadata"]["jobs"][0]["id"], "job-one");
     assert_eq!(
-        json["pikaci_log_metadata"]["jobs"][0]["host_log_exists"],
+        json["ci_log_metadata"]["jobs"][0]["host_log_exists"],
         true
     );
     assert_eq!(
-        json["pikaci_prepared_outputs"]["outputs"][0]["output_name"],
+        json["ci_prepared_outputs"]["outputs"][0]["output_name"],
         "ci.x86_64-linux.workspaceBuild"
     );
 }
@@ -490,9 +490,9 @@ async fn api_forge_branch_logs_keeps_run_metadata_when_prepared_outputs_are_inva
         .await
         .expect("read body");
     let json: serde_json::Value = serde_json::from_slice(&body).expect("parse json");
-    assert_eq!(json["pikaci_run"]["run_id"], "pikaci-run-invalid-prepared");
-    assert_eq!(json["pikaci_log_metadata"]["jobs"][0]["id"], "job-one");
-    assert!(json["pikaci_prepared_outputs"].is_null());
+    assert_eq!(json["ci_run"]["run_id"], "pikaci-run-invalid-prepared");
+    assert_eq!(json["ci_log_metadata"]["jobs"][0]["id"], "job-one");
+    assert!(json["ci_prepared_outputs"].is_null());
 }
 
 #[tokio::test]

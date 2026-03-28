@@ -593,7 +593,7 @@ async fn api_forge_branch_logs_handler(
                     .as_ref()
                     .and_then(|store| store.load_run_bundle(ci_run_id).ok())
             });
-            let (pikaci_run, pikaci_log_metadata, pikaci_prepared_outputs) = match bundle {
+            let (ci_run, ci_log_metadata, ci_prepared_outputs) = match bundle {
                 Some(bundle) => (Some(bundle.run), Some(bundle.logs), bundle.prepared_outputs),
                 None => (None, None, None),
             };
@@ -603,9 +603,9 @@ async fn api_forge_branch_logs_handler(
                 branch_name: detail.branch_name,
                 run_id,
                 lane: map_api_ci_lane(lane, now),
-                pikaci_run,
-                pikaci_log_metadata,
-                pikaci_prepared_outputs,
+                ci_run,
+                ci_log_metadata,
+                ci_prepared_outputs,
             })
             .into_response()
         }

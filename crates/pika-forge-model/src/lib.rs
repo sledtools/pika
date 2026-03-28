@@ -279,17 +279,17 @@ pub struct CiLane {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BranchLogsResponse<
     Lane = CiLane,
-    PikaCiRun = serde_json::Value,
-    PikaCiLogMetadata = serde_json::Value,
-    PikaCiPreparedOutputs = serde_json::Value,
+    CiRunRecord = serde_json::Value,
+    CiLogMetadata = serde_json::Value,
+    CiPreparedOutputs = serde_json::Value,
 > {
     pub branch_id: i64,
     pub branch_name: String,
     pub run_id: i64,
     pub lane: Lane,
-    pub pikaci_run: Option<PikaCiRun>,
-    pub pikaci_log_metadata: Option<PikaCiLogMetadata>,
-    pub pikaci_prepared_outputs: Option<PikaCiPreparedOutputs>,
+    pub ci_run: Option<CiRunRecord>,
+    pub ci_log_metadata: Option<CiLogMetadata>,
+    pub ci_prepared_outputs: Option<CiPreparedOutputs>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

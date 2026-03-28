@@ -127,7 +127,7 @@
             {% match lane.pikaci_run_id %}
             {% when Some with (pikaci_run_id) %}
             <p class="meta">
-              pikaci run <code>{{ pikaci_run_id }}</code>
+              CI run <code>{{ pikaci_run_id }}</code>
               {% match lane.pikaci_target_id %}
               {% when Some with (pikaci_target_id) %} · target <code>{{ pikaci_target_id }}</code>{% when None %}{% endmatch %}
             </p>

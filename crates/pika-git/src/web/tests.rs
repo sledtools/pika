@@ -14,19 +14,18 @@ use crate::jerichoci_store::{JerichociRunStore, TestJerichociJobFixture, TestJer
 
 use super::{
     api_forge_branch_detail_handler, api_forge_branch_logs_handler,
-    api_forge_branch_resolve_handler, api_forge_pikaci_logs_handler,
-    api_forge_pikaci_prepared_outputs_handler, api_forge_pikaci_run_handler,
-    api_inbox_count_handler, api_inbox_list_handler, api_inbox_mark_reviewed_handler,
-    auth_challenge_handler, branch_ci_stream_handler, fail_branch_ci_lane_handler,
-    fail_nightly_lane_handler, inbox_review_handler, load_branch_ci_live_snapshot,
-    load_nightly_live_snapshot, markdown_to_safe_html, next_branch_ci_live_snapshot,
-    next_nightly_live_snapshot, nightly_stream_handler, recover_branch_ci_run_handler,
-    render_branch_ci_template_with_notices, render_detail_template,
-    render_detail_template_with_notices, render_nightly_template, rerun_branch_ci_lane_handler,
-    rerun_nightly_lane_handler, should_backfill_managed_allowlist_entry,
-    summarize_webhook_ref_updates, verify_signature, wake_ci_handler, webhook_handler, AppState,
-    CiLiveUpdates, ForgeBranchLogsQuery, ForgeBranchResolveQuery, ForgePikaciLogsQuery,
-    InboxListParams, PageNoticeView, ReviewModeQuery,
+    api_forge_branch_resolve_handler, api_forge_ci_logs_handler,
+    api_forge_ci_prepared_outputs_handler, api_forge_ci_run_handler, api_inbox_count_handler,
+    api_inbox_list_handler, api_inbox_mark_reviewed_handler, auth_challenge_handler,
+    branch_ci_stream_handler, fail_branch_ci_lane_handler, fail_nightly_lane_handler,
+    inbox_review_handler, load_branch_ci_live_snapshot, load_nightly_live_snapshot,
+    markdown_to_safe_html, next_branch_ci_live_snapshot, next_nightly_live_snapshot,
+    nightly_stream_handler, recover_branch_ci_run_handler, render_branch_ci_template_with_notices,
+    render_detail_template, render_detail_template_with_notices, render_nightly_template,
+    rerun_branch_ci_lane_handler, rerun_nightly_lane_handler,
+    should_backfill_managed_allowlist_entry, summarize_webhook_ref_updates, verify_signature,
+    wake_ci_handler, webhook_handler, AppState, CiLiveUpdates, ForgeBranchLogsQuery,
+    ForgeBranchResolveQuery, ForgeCiLogsQuery, InboxListParams, PageNoticeView, ReviewModeQuery,
 };
 use crate::auth::AuthState;
 use crate::branch_store::BranchUpsertInput;
@@ -126,7 +125,7 @@ impl WebTestContext {
 }
 
 fn write_pikaci_run_fixture(config: &Config, run_id: &str) {
-    let run_store = JerichociRunStore::from_config(config).expect("pikaci run store");
+    let run_store = JerichociRunStore::from_config(config).expect("CI run store");
     let mut fixture = TestJerichociRunFixture::passed(
         run_id,
         Some("pre-merge-pika-rust"),

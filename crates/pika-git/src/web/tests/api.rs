@@ -369,7 +369,7 @@ async fn api_forge_branch_logs_includes_persisted_pikaci_run_metadata() {
             "pikaci-run-123",
             Some("pre-merge-pika-rust"),
         )
-        .expect("record pikaci run");
+        .expect("record CI run");
     store
         .finish_branch_ci_lane_run(
             job.lane_run_id,
@@ -455,7 +455,7 @@ async fn api_forge_branch_logs_keeps_run_metadata_when_prepared_outputs_are_inva
             "pikaci-run-invalid-prepared",
             Some("pre-merge-pika-rust"),
         )
-        .expect("record pikaci run");
+        .expect("record CI run");
     store
         .finish_branch_ci_lane_run(
             job.lane_run_id,
@@ -468,7 +468,7 @@ async fn api_forge_branch_logs_keeps_run_metadata_when_prepared_outputs_are_inva
     let config = forge_test_config_with_git_dir(&dir.path().join("pika.git"));
     write_pikaci_run_fixture(&config, "pikaci-run-invalid-prepared");
     let prepared_outputs_path = JerichociRunStore::from_config(&config)
-        .expect("pikaci run store")
+        .expect("CI run store")
         .prepared_outputs_path("pikaci-run-invalid-prepared");
     fs::write(&prepared_outputs_path, "{not valid json").expect("corrupt prepared outputs");
     let headers = trusted_headers(&store, TRUSTED_NPUB);
@@ -496,7 +496,7 @@ async fn api_forge_branch_logs_keeps_run_metadata_when_prepared_outputs_are_inva
 }
 
 #[tokio::test]
-async fn api_forge_pikaci_handlers_load_persisted_run_and_logs() {
+async fn api_forge_ci_handlers_load_persisted_run_and_logs() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let db_path = dir.path().join("pika-git.db");
     let store = Store::open(&db_path).expect("open store");
@@ -505,7 +505,7 @@ async fn api_forge_pikaci_handlers_load_persisted_run_and_logs() {
     let headers = trusted_headers(&store, TRUSTED_NPUB);
     let state = test_state(store, config);
 
-    let run_response = api_forge_pikaci_run_handler(
+    let run_response = api_forge_ci_run_handler(
         State(Arc::clone(&state)),
         Path("pikaci-run-abc".to_string()),
         headers.clone(),
@@ -523,12 +523,12 @@ async fn api_forge_pikaci_handlers_load_persisted_run_and_logs() {
         "pikaci/dev"
     );
 
-    let logs_response = api_forge_pikaci_logs_handler(
+    let logs_response = api_forge_ci_logs_handler(
         State(state),
         Path("pikaci-run-abc".to_string()),
-        Query(ForgePikaciLogsQuery {
+        Query(ForgeCiLogsQuery {
             job: Some("job-one".to_string()),
-            kind: super::ForgePikaciLogKind::Both,
+            kind: super::ForgeCiLogKind::Both,
         }),
         headers,
     )
@@ -546,7 +546,7 @@ async fn api_forge_pikaci_handlers_load_persisted_run_and_logs() {
 }
 
 #[tokio::test]
-async fn api_forge_pikaci_prepared_outputs_handler_loads_persisted_record() {
+async fn api_forge_ci_prepared_outputs_handler_loads_persisted_record() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let db_path = dir.path().join("pika-git.db");
     let store = Store::open(&db_path).expect("open store");
@@ -555,7 +555,7 @@ async fn api_forge_pikaci_prepared_outputs_handler_loads_persisted_record() {
     let headers = trusted_headers(&store, TRUSTED_NPUB);
     let state = test_state(store, config);
 
-    let response = api_forge_pikaci_prepared_outputs_handler(
+    let response = api_forge_ci_prepared_outputs_handler(
         State(state),
         Path("pikaci-run-prepared".to_string()),
         headers,

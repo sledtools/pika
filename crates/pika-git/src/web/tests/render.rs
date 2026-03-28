@@ -254,14 +254,14 @@ paths = ["README.md", "feature.txt", "crates/pikaci/src/ci_catalog.rs"]
             .expect("render detail template")
             .render()
             .expect("render detail html");
-        assert!(!detail_rendered.contains("pikaci run"));
+        assert!(!detail_rendered.contains("CI run"));
 
         let ci_rendered =
             render_branch_ci_template_with_notices(detail, ci_runs, Vec::new(), false)
                 .expect("render branch ci template")
                 .render()
                 .expect("render branch ci html");
-        assert!(ci_rendered.contains("pikaci run"));
+        assert!(ci_rendered.contains("CI run"));
         assert!(ci_rendered.contains("pikaci-run-branch-ui"));
         assert!(ci_rendered.contains("pre-merge-pika-rust"));
     }
@@ -901,7 +901,7 @@ paths = ["README.md", "feature.txt", "crates/pikaci/src/ci_catalog.rs"]
         let rendered = render_nightly_template(run)
             .render()
             .expect("render nightly html");
-        assert!(rendered.contains("pikaci run"));
+        assert!(rendered.contains("CI run"));
         assert!(rendered.contains("pikaci-run-nightly-ui"));
         assert!(rendered.contains("pre-merge-pika-rust"));
     }

@@ -614,7 +614,7 @@ async fn api_forge_branch_logs_handler(
     }
 }
 
-async fn api_forge_pikaci_run_handler(
+async fn api_forge_ci_run_handler(
     State(state): State<Arc<AppState>>,
     Path(run_id): Path<String>,
     headers: axum::http::HeaderMap,
@@ -630,10 +630,10 @@ async fn api_forge_pikaci_run_handler(
     }
 }
 
-async fn api_forge_pikaci_logs_handler(
+async fn api_forge_ci_logs_handler(
     State(state): State<Arc<AppState>>,
     Path(run_id): Path<String>,
-    Query(query): Query<ForgePikaciLogsQuery>,
+    Query(query): Query<ForgeCiLogsQuery>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     if let Err(resp) = require_auth(&state.auth, &headers) {
@@ -643,10 +643,10 @@ async fn api_forge_pikaci_logs_handler(
         store.load_logs(
             &run_id,
             query.job.as_deref(),
-            map_forge_pikaci_log_kind(query.kind),
+            map_forge_ci_log_kind(query.kind),
         )
     }) {
-        Ok(logs) => Json(ForgePikaciLogsResponse {
+        Ok(logs) => Json(ForgeCiLogsResponse {
             run_id,
             job: query.job,
             host: logs.host,
@@ -657,7 +657,7 @@ async fn api_forge_pikaci_logs_handler(
     }
 }
 
-async fn api_forge_pikaci_prepared_outputs_handler(
+async fn api_forge_ci_prepared_outputs_handler(
     State(state): State<Arc<AppState>>,
     Path(run_id): Path<String>,
     headers: axum::http::HeaderMap,
@@ -669,7 +669,7 @@ async fn api_forge_pikaci_prepared_outputs_handler(
         .and_then(|store| store.load_run_bundle(&run_id))
     {
         Ok(bundle) => match bundle.prepared_outputs {
-            Some(prepared_outputs) => Json(ForgePikaciPreparedOutputsResponse {
+            Some(prepared_outputs) => Json(ForgeCiPreparedOutputsResponse {
                 run_id,
                 prepared_outputs,
             })
@@ -683,11 +683,11 @@ async fn api_forge_pikaci_prepared_outputs_handler(
     }
 }
 
-fn map_forge_pikaci_log_kind(kind: ForgePikaciLogKind) -> LogKind {
+fn map_forge_ci_log_kind(kind: ForgeCiLogKind) -> LogKind {
     match kind {
-        ForgePikaciLogKind::Host => LogKind::Host,
-        ForgePikaciLogKind::Guest => LogKind::Guest,
-        ForgePikaciLogKind::Both => LogKind::Both,
+        ForgeCiLogKind::Host => LogKind::Host,
+        ForgeCiLogKind::Guest => LogKind::Guest,
+        ForgeCiLogKind::Both => LogKind::Both,
     }
 }
 

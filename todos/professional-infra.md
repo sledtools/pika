@@ -70,6 +70,8 @@ The first concrete target is:
 - Step 4 has started: `pikaci` now exposes a generic CI catalog seam, and the
   forge now treats `crates/pikaci/src/ci_catalog.rs` as the checked-in CI
   source of truth instead of `forge_lanes.rs`.
+- The forge web surface is being neutralized next so shared `Jericho` APIs and
+  UI stop advertising `pikaci` as the product-facing CI name.
 - Next up is more forge-neutralization in `pika-git`, then the repo extraction
   and shared-infra move.
 

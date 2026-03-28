@@ -391,15 +391,15 @@ struct ReviewModeQuery {
 }
 
 #[derive(Clone, serde::Deserialize)]
-struct ForgePikaciLogsQuery {
+struct ForgeCiLogsQuery {
     job: Option<String>,
     #[serde(default)]
-    kind: ForgePikaciLogKind,
+    kind: ForgeCiLogKind,
 }
 
 #[derive(Clone, Copy, Default, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum ForgePikaciLogKind {
+enum ForgeCiLogKind {
     Host,
     Guest,
     #[default]
@@ -407,7 +407,7 @@ enum ForgePikaciLogKind {
 }
 
 #[derive(serde::Serialize)]
-struct ForgePikaciLogsResponse {
+struct ForgeCiLogsResponse {
     run_id: String,
     job: Option<String>,
     host: Option<String>,
@@ -415,7 +415,7 @@ struct ForgePikaciLogsResponse {
 }
 
 #[derive(serde::Serialize)]
-struct ForgePikaciPreparedOutputsResponse {
+struct ForgeCiPreparedOutputsResponse {
     run_id: String,
     prepared_outputs: PreparedOutputsRecord,
 }
@@ -717,17 +717,11 @@ pub async fn serve(
             "/api/forge/branch/:branch_id/logs",
             get(api_forge_branch_logs_handler),
         )
+        .route("/api/forge/ci/run/:run_id", get(api_forge_ci_run_handler))
+        .route("/api/forge/ci/logs/:run_id", get(api_forge_ci_logs_handler))
         .route(
-            "/api/forge/pikaci/run/:run_id",
-            get(api_forge_pikaci_run_handler),
-        )
-        .route(
-            "/api/forge/pikaci/logs/:run_id",
-            get(api_forge_pikaci_logs_handler),
-        )
-        .route(
-            "/api/forge/pikaci/prepared-outputs/:run_id",
-            get(api_forge_pikaci_prepared_outputs_handler),
+            "/api/forge/ci/prepared-outputs/:run_id",
+            get(api_forge_ci_prepared_outputs_handler),
         )
         .route(
             "/api/forge/nightly/:nightly_run_id",

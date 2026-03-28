@@ -125,13 +125,13 @@ async fn api_forge_branch_detail_returns_ci_summary() {
         .next()
         .expect("claimed lane");
     store
-        .record_branch_ci_lane_pikaci_run(
+        .record_branch_ci_lane_ci_run(
             claimed.lane_run_id,
             claimed.claim_token,
             "pikaci-api-detail",
             Some("pre-merge-pika-rust"),
         )
-        .expect("record pikaci metadata");
+        .expect("record CI metadata");
     let mut config = forge_test_config_without_admins();
     config
         .forge_repo
@@ -152,11 +152,11 @@ async fn api_forge_branch_detail_returns_ci_summary() {
     let json: serde_json::Value = serde_json::from_slice(&body).expect("parse json");
     assert_eq!(json["branch"]["branch_name"], "feature/api-detail");
     assert_eq!(
-        json["ci_runs"][0]["lanes"][0]["pikaci_run_id"],
+        json["ci_runs"][0]["lanes"][0]["ci_run_id"],
         "pikaci-api-detail"
     );
     assert_eq!(
-        json["ci_runs"][0]["lanes"][0]["pikaci_target_id"],
+        json["ci_runs"][0]["lanes"][0]["ci_target_id"],
         "pre-merge-pika-rust"
     );
     assert_eq!(
@@ -330,7 +330,7 @@ async fn api_forge_branch_logs_defaults_to_latest_failed_lane() {
 }
 
 #[tokio::test]
-async fn api_forge_branch_logs_includes_persisted_pikaci_run_metadata() {
+async fn api_forge_branch_logs_includes_persisted_ci_run_metadata() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let db_path = dir.path().join("pika-git.db");
     let store = Store::open(&db_path).expect("open store");
@@ -363,7 +363,7 @@ async fn api_forge_branch_logs_includes_persisted_pikaci_run_metadata() {
         .next()
         .expect("lane");
     store
-        .record_branch_ci_lane_pikaci_run(
+        .record_branch_ci_lane_ci_run(
             job.lane_run_id,
             job.claim_token,
             "pikaci-run-123",
@@ -449,7 +449,7 @@ async fn api_forge_branch_logs_keeps_run_metadata_when_prepared_outputs_are_inva
         .next()
         .expect("lane");
     store
-        .record_branch_ci_lane_pikaci_run(
+        .record_branch_ci_lane_ci_run(
             job.lane_run_id,
             job.claim_token,
             "pikaci-run-invalid-prepared",

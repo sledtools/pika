@@ -1,0 +1,5 @@
+ALTER TABLE branch_ci_run_lanes
+RENAME COLUMN structured_pikaci_target_id TO structured_ci_target_id;
+
+ALTER TABLE nightly_run_lanes
+RENAME COLUMN structured_pikaci_target_id TO structured_ci_target_id;

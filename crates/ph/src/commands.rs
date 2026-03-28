@@ -391,11 +391,11 @@ fn print_branch_logs(logs: &BranchLogsResponse) {
         logs.lane.lane_id,
         logs.lane.status
     );
-    if let Some(run_id) = &logs.lane.pikaci_run_id {
-        println!("pikaci run {run_id}");
+    if let Some(run_id) = &logs.lane.ci_run_id {
+        println!("CI run {run_id}");
     }
-    if let Some(target) = &logs.lane.pikaci_target_id {
-        println!("pikaci target {target}");
+    if let Some(target) = &logs.lane.ci_target_id {
+        println!("CI target {target}");
     }
     match logs.lane.log_text.as_deref() {
         Some(text) if !text.trim().is_empty() => {
@@ -435,10 +435,10 @@ fn render_lane_status_line(lane: &CiLane) -> String {
         line.push_str(failure_kind.label());
     }
     let target = lane
-        .pikaci_target_id
+        .ci_target_id
         .as_deref()
         .or(lane.ci_target_key.as_deref());
-    match (&lane.pikaci_run_id, target) {
+    match (&lane.ci_run_id, target) {
         (Some(run_id), Some(target)) => {
             line.push_str(&format!(" [{target} {run_id}]"));
         }

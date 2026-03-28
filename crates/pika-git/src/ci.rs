@@ -425,13 +425,13 @@ fn execute_branch_job(
         forge_repo,
         &job.source_head_sha,
         &job.command,
-        job.structured_pikaci_target_id.as_deref(),
+        job.structured_ci_target_id.as_deref(),
         heartbeat_interval,
         || store.heartbeat_branch_ci_lane_run(job.lane_run_id, job.claim_token, lease_secs),
         |event| {
             match event {
                 forge::CiExecutionEvent::CiRunStarted { run_id, target_id } => {
-                    store.record_branch_ci_lane_pikaci_run(
+                    store.record_branch_ci_lane_ci_run(
                         job.lane_run_id,
                         job.claim_token,
                         &run_id,
@@ -519,13 +519,13 @@ fn execute_nightly_job(
         forge_repo,
         &job.source_head_sha,
         &job.command,
-        job.structured_pikaci_target_id.as_deref(),
+        job.structured_ci_target_id.as_deref(),
         heartbeat_interval,
         || store.heartbeat_nightly_lane_run(job.lane_run_id, job.claim_token, lease_secs),
         |event| {
             match event {
                 forge::CiExecutionEvent::CiRunStarted { run_id, target_id } => {
-                    store.record_nightly_lane_pikaci_run(
+                    store.record_nightly_lane_ci_run(
                         job.lane_run_id,
                         job.claim_token,
                         &run_id,

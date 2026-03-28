@@ -37,8 +37,8 @@ pub struct BranchCiLaneRecord {
     pub status: CiLaneStatus,
     pub execution_reason: CiLaneExecutionReason,
     pub failure_kind: Option<CiLaneFailureKind>,
-    pub pikaci_run_id: Option<String>,
-    pub pikaci_target_id: Option<String>,
+    pub ci_run_id: Option<String>,
+    pub ci_target_id: Option<String>,
     pub ci_target_key: Option<String>,
     pub log_text: Option<String>,
     pub retry_count: i64,
@@ -62,7 +62,7 @@ pub struct PendingBranchCiLaneJob {
     pub title: String,
     pub entrypoint: String,
     pub command: Vec<String>,
-    pub structured_pikaci_target_id: Option<String>,
+    pub structured_ci_target_id: Option<String>,
     pub concurrency_group: Option<String>,
 }
 
@@ -102,8 +102,8 @@ pub struct NightlyLaneRecord {
     pub status: CiLaneStatus,
     pub execution_reason: CiLaneExecutionReason,
     pub failure_kind: Option<CiLaneFailureKind>,
-    pub pikaci_run_id: Option<String>,
-    pub pikaci_target_id: Option<String>,
+    pub ci_run_id: Option<String>,
+    pub ci_target_id: Option<String>,
     pub ci_target_key: Option<String>,
     pub log_text: Option<String>,
     pub retry_count: i64,
@@ -123,7 +123,7 @@ pub struct PendingNightlyLaneJob {
     pub source_head_sha: String,
     pub lane_id: String,
     pub command: Vec<String>,
-    pub structured_pikaci_target_id: Option<String>,
+    pub structured_ci_target_id: Option<String>,
     pub concurrency_group: Option<String>,
 }
 
@@ -136,7 +136,7 @@ struct BranchLaneRerunSource {
     title: String,
     entrypoint: String,
     command_json: String,
-    structured_pikaci_target_id: Option<String>,
+    structured_ci_target_id: Option<String>,
     concurrency_group: Option<String>,
     ci_target_key: Option<String>,
     status: CiLaneStatus,
@@ -161,7 +161,7 @@ struct NightlyLaneRerunSource {
     title: String,
     entrypoint: String,
     command_json: String,
-    structured_pikaci_target_id: Option<String>,
+    structured_ci_target_id: Option<String>,
     concurrency_group: Option<String>,
     ci_target_key: Option<String>,
     status: CiLaneStatus,
@@ -309,7 +309,7 @@ impl Store {
                         title,
                         entrypoint,
                         command_json,
-                        structured_pikaci_target_id,
+                        structured_ci_target_id,
                         concurrency_group,
                         ci_target_key,
                         execution_reason,
@@ -527,7 +527,7 @@ impl Store {
                         title,
                         entrypoint,
                         command_json,
-                        structured_pikaci_target_id,
+                        structured_ci_target_id,
                         concurrency_group,
                         ci_target_key,
                         execution_reason,
@@ -569,7 +569,7 @@ impl Store {
                             lane.title,
                             lane.entrypoint,
                             lane.command_json,
-                            lane.structured_pikaci_target_id,
+                            lane.structured_ci_target_id,
                             lane.concurrency_group,
                             lane.ci_target_key,
                             lane.status
@@ -586,7 +586,7 @@ impl Store {
                             title: row.get(4)?,
                             entrypoint: row.get(5)?,
                             command_json: row.get(6)?,
-                            structured_pikaci_target_id: row.get(7)?,
+                            structured_ci_target_id: row.get(7)?,
                             concurrency_group: row.get(8)?,
                             ci_target_key: row.get(9)?,
                             status: parse_lane_status(&row.get::<_, String>(10)?)?,
@@ -634,7 +634,7 @@ impl Store {
                     title,
                     entrypoint,
                     command_json,
-                    structured_pikaci_target_id,
+                    structured_ci_target_id,
                     concurrency_group,
                     ci_target_key,
                     execution_reason,
@@ -647,7 +647,7 @@ impl Store {
                     row.title,
                     row.entrypoint,
                     row.command_json,
-                    row.structured_pikaci_target_id,
+                    row.structured_ci_target_id,
                     row.concurrency_group,
                     row.ci_target_key,
                     lane_run_id
@@ -679,7 +679,7 @@ impl Store {
                             lane.title,
                             lane.entrypoint,
                             lane.command_json,
-                            lane.structured_pikaci_target_id,
+                            lane.structured_ci_target_id,
                             lane.concurrency_group,
                             lane.ci_target_key,
                             lane.status
@@ -697,7 +697,7 @@ impl Store {
                             title: row.get(5)?,
                             entrypoint: row.get(6)?,
                             command_json: row.get(7)?,
-                            structured_pikaci_target_id: row.get(8)?,
+                            structured_ci_target_id: row.get(8)?,
                             concurrency_group: row.get(9)?,
                             ci_target_key: row.get(10)?,
                             status: parse_lane_status(&row.get::<_, String>(11)?)?,
@@ -744,7 +744,7 @@ impl Store {
                     title,
                     entrypoint,
                     command_json,
-                    structured_pikaci_target_id,
+                    structured_ci_target_id,
                     concurrency_group,
                     ci_target_key,
                     execution_reason,
@@ -757,7 +757,7 @@ impl Store {
                     row.title,
                     row.entrypoint,
                     row.command_json,
-                    row.structured_pikaci_target_id,
+                    row.structured_ci_target_id,
                     row.concurrency_group,
                     row.ci_target_key,
                     lane_run_id
@@ -883,8 +883,8 @@ impl Store {
                      execution_reason = 'queued',
                      failure_kind = NULL,
                      log_text = NULL,
-                     pikaci_run_id = NULL,
-                     pikaci_target_id = NULL,
+                     ci_run_id = NULL,
+                     ci_target_id = NULL,
                      retry_count = retry_count + 1,
                      created_at = CURRENT_TIMESTAMP,
                      started_at = NULL,
@@ -930,8 +930,8 @@ impl Store {
                          execution_reason = 'queued',
                          failure_kind = NULL,
                          log_text = NULL,
-                         pikaci_run_id = NULL,
-                         pikaci_target_id = NULL,
+                         ci_run_id = NULL,
+                         ci_target_id = NULL,
                          retry_count = retry_count + 1,
                          created_at = CURRENT_TIMESTAMP,
                          started_at = NULL,
@@ -1064,8 +1064,8 @@ impl Store {
                      execution_reason = 'queued',
                      failure_kind = NULL,
                      log_text = NULL,
-                     pikaci_run_id = NULL,
-                     pikaci_target_id = NULL,
+                     ci_run_id = NULL,
+                     ci_target_id = NULL,
                      retry_count = retry_count + 1,
                      created_at = CURRENT_TIMESTAMP,
                      started_at = NULL,
@@ -1107,8 +1107,8 @@ impl Store {
                          execution_reason = 'queued',
                          failure_kind = NULL,
                          log_text = NULL,
-                         pikaci_run_id = NULL,
-                         pikaci_target_id = NULL,
+                         ci_run_id = NULL,
+                         ci_target_id = NULL,
                          retry_count = retry_count + 1,
                          created_at = CURRENT_TIMESTAMP,
                          started_at = NULL,
@@ -1144,8 +1144,8 @@ impl Store {
                          execution_reason = 'stale_recovered',
                          failure_kind = NULL,
                          log_text = NULL,
-                         pikaci_run_id = NULL,
-                         pikaci_target_id = NULL,
+                         ci_run_id = NULL,
+                         ci_target_id = NULL,
                          retry_count = retry_count + 1,
                          started_at = NULL,
                          finished_at = NULL,
@@ -1164,8 +1164,8 @@ impl Store {
                          execution_reason = 'stale_recovered',
                          failure_kind = NULL,
                          log_text = NULL,
-                         pikaci_run_id = NULL,
-                         pikaci_target_id = NULL,
+                         ci_run_id = NULL,
+                         ci_target_id = NULL,
                          retry_count = retry_count + 1,
                          started_at = NULL,
                          finished_at = NULL,
@@ -1263,7 +1263,7 @@ impl Store {
             {
                 let mut stmt = tx
                     .prepare(
-                        "SELECT lane.id, lane.claim_token, lane.branch_ci_run_id, suite.branch_id, suite.source_head_sha, lane.lane_id, lane.title, lane.entrypoint, lane.command_json, lane.structured_pikaci_target_id, lane.concurrency_group, lane.ci_target_key
+                        "SELECT lane.id, lane.claim_token, lane.branch_ci_run_id, suite.branch_id, suite.source_head_sha, lane.lane_id, lane.title, lane.entrypoint, lane.command_json, lane.structured_ci_target_id, lane.concurrency_group, lane.ci_target_key
                          FROM branch_ci_run_lanes lane
                          JOIN branch_ci_runs suite ON suite.id = lane.branch_ci_run_id
                          WHERE lane.status = 'queued'
@@ -1286,7 +1286,7 @@ impl Store {
                             title: row.get(6)?,
                             entrypoint: row.get(7)?,
                             command,
-                            structured_pikaci_target_id: row.get(9)?,
+                            structured_ci_target_id: row.get(9)?,
                             concurrency_group: row.get(10)?,
                         })
                     })
@@ -1308,8 +1308,8 @@ impl Store {
                              execution_reason = 'running',
                              failure_kind = NULL,
                              log_text = NULL,
-                             pikaci_run_id = NULL,
-                             pikaci_target_id = NULL,
+                             ci_run_id = NULL,
+                             ci_target_id = NULL,
                              started_at = CURRENT_TIMESTAMP,
                              last_heartbeat_at = CURRENT_TIMESTAMP,
                              lease_expires_at = datetime('now', ?2),
@@ -1444,24 +1444,24 @@ impl Store {
         })
     }
 
-    pub fn record_branch_ci_lane_pikaci_run(
+    pub fn record_branch_ci_lane_ci_run(
         &self,
         lane_run_id: i64,
         claim_token: i64,
-        pikaci_run_id: &str,
-        pikaci_target_id: Option<&str>,
+        ci_run_id: &str,
+        ci_target_id: Option<&str>,
     ) -> anyhow::Result<()> {
         self.with_connection(|conn| {
             let updated = conn
                 .execute(
                     "UPDATE branch_ci_run_lanes
-                     SET pikaci_run_id = ?1,
-                         pikaci_target_id = ?2,
+                     SET ci_run_id = ?1,
+                         ci_target_id = ?2,
                          ci_target_key = COALESCE(ci_target_key, ?2)
                      WHERE id = ?3 AND status = 'running' AND claim_token = ?4",
-                    params![pikaci_run_id, pikaci_target_id, lane_run_id, claim_token],
+                    params![ci_run_id, ci_target_id, lane_run_id, claim_token],
                 )
-                .with_context(|| format!("record branch lane pikaci run {}", lane_run_id))?;
+                .with_context(|| format!("record branch lane CI run {}", lane_run_id))?;
             if updated == 0 {
                 bail!("{CI_LANE_LEASE_LOST}");
             }
@@ -1488,7 +1488,7 @@ impl Store {
             {
                 let mut stmt = tx
                     .prepare(
-                        "SELECT lane.id, lane.claim_token, lane.nightly_run_id, nightly.source_head_sha, lane.lane_id, lane.command_json, lane.structured_pikaci_target_id, lane.concurrency_group, lane.ci_target_key
+                        "SELECT lane.id, lane.claim_token, lane.nightly_run_id, nightly.source_head_sha, lane.lane_id, lane.command_json, lane.structured_ci_target_id, lane.concurrency_group, lane.ci_target_key
                          FROM nightly_run_lanes lane
                          JOIN nightly_runs nightly ON nightly.id = lane.nightly_run_id
                          WHERE lane.status = 'queued'
@@ -1508,7 +1508,7 @@ impl Store {
                             source_head_sha: row.get(3)?,
                             lane_id: row.get(4)?,
                             command,
-                            structured_pikaci_target_id: row.get(6)?,
+                            structured_ci_target_id: row.get(6)?,
                             concurrency_group: row.get(7)?,
                         })
                     })
@@ -1530,8 +1530,8 @@ impl Store {
                              execution_reason = 'running',
                              failure_kind = NULL,
                              log_text = NULL,
-                             pikaci_run_id = NULL,
-                             pikaci_target_id = NULL,
+                             ci_run_id = NULL,
+                             ci_target_id = NULL,
                              started_at = CURRENT_TIMESTAMP,
                              last_heartbeat_at = CURRENT_TIMESTAMP,
                              lease_expires_at = datetime('now', ?2),
@@ -1666,24 +1666,24 @@ impl Store {
         })
     }
 
-    pub fn record_nightly_lane_pikaci_run(
+    pub fn record_nightly_lane_ci_run(
         &self,
         lane_run_id: i64,
         claim_token: i64,
-        pikaci_run_id: &str,
-        pikaci_target_id: Option<&str>,
+        ci_run_id: &str,
+        ci_target_id: Option<&str>,
     ) -> anyhow::Result<()> {
         self.with_connection(|conn| {
             let updated = conn
                 .execute(
                     "UPDATE nightly_run_lanes
-                     SET pikaci_run_id = ?1,
-                         pikaci_target_id = ?2,
+                     SET ci_run_id = ?1,
+                         ci_target_id = ?2,
                          ci_target_key = COALESCE(ci_target_key, ?2)
                      WHERE id = ?3 AND status = 'running' AND claim_token = ?4",
-                    params![pikaci_run_id, pikaci_target_id, lane_run_id, claim_token],
+                    params![ci_run_id, ci_target_id, lane_run_id, claim_token],
                 )
-                .with_context(|| format!("record nightly lane pikaci run {}", lane_run_id))?;
+                .with_context(|| format!("record nightly lane CI run {}", lane_run_id))?;
             if updated == 0 {
                 bail!("{CI_LANE_LEASE_LOST}");
             }
@@ -1698,7 +1698,7 @@ fn list_branch_ci_run_lanes(
 ) -> anyhow::Result<Vec<BranchCiLaneRecord>> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, lane_id, title, entrypoint, status, execution_reason, failure_kind, pikaci_run_id, pikaci_target_id, ci_target_key, log_text, retry_count, rerun_of_lane_run_id, created_at, started_at, finished_at, last_heartbeat_at, lease_expires_at
+            "SELECT id, lane_id, title, entrypoint, status, execution_reason, failure_kind, ci_run_id, ci_target_id, ci_target_key, log_text, retry_count, rerun_of_lane_run_id, created_at, started_at, finished_at, last_heartbeat_at, lease_expires_at
              FROM branch_ci_run_lanes
              WHERE branch_ci_run_id = ?1
              ORDER BY id ASC",
@@ -1715,8 +1715,8 @@ fn list_branch_ci_run_lanes(
                 status: parse_lane_status(&row.get::<_, String>(4)?)?,
                 execution_reason: parse_execution_reason(&row.get::<_, String>(5)?)?,
                 failure_kind: parse_optional_failure_kind(row.get::<_, Option<String>>(6)?)?,
-                pikaci_run_id: row.get(7)?,
-                pikaci_target_id: row.get(8)?,
+                ci_run_id: row.get(7)?,
+                ci_target_id: row.get(8)?,
                 ci_target_key,
                 log_text: row.get(10)?,
                 retry_count: row.get(11)?,
@@ -1742,7 +1742,7 @@ fn list_nightly_run_lanes(
 ) -> anyhow::Result<Vec<NightlyLaneRecord>> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, lane_id, title, entrypoint, status, execution_reason, failure_kind, pikaci_run_id, pikaci_target_id, ci_target_key, log_text, retry_count, rerun_of_lane_run_id, created_at, started_at, finished_at, last_heartbeat_at, lease_expires_at
+            "SELECT id, lane_id, title, entrypoint, status, execution_reason, failure_kind, ci_run_id, ci_target_id, ci_target_key, log_text, retry_count, rerun_of_lane_run_id, created_at, started_at, finished_at, last_heartbeat_at, lease_expires_at
              FROM nightly_run_lanes
              WHERE nightly_run_id = ?1
              ORDER BY id ASC",
@@ -1759,8 +1759,8 @@ fn list_nightly_run_lanes(
                 status: parse_lane_status(&row.get::<_, String>(4)?)?,
                 execution_reason: parse_execution_reason(&row.get::<_, String>(5)?)?,
                 failure_kind: parse_optional_failure_kind(row.get::<_, Option<String>>(6)?)?,
-                pikaci_run_id: row.get(7)?,
-                pikaci_target_id: row.get(8)?,
+                ci_run_id: row.get(7)?,
+                ci_target_id: row.get(8)?,
                 ci_target_key,
                 log_text: row.get(10)?,
                 retry_count: row.get(11)?,

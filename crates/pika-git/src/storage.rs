@@ -676,6 +676,16 @@ fn migrations() -> Vec<Migration> {
             name: "0026_drop_ci_target_health",
             sql: include_str!("../migrations/0026_drop_ci_target_health.sql"),
         },
+        Migration {
+            version: 27,
+            name: "0027_rename_ci_lane_metadata",
+            sql: include_str!("../migrations/0027_rename_ci_lane_metadata.sql"),
+        },
+        Migration {
+            version: 28,
+            name: "0028_rename_structured_ci_target",
+            sql: include_str!("../migrations/0028_rename_structured_ci_target.sql"),
+        },
     ]
 }
 

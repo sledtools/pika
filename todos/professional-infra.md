@@ -75,6 +75,9 @@ The first concrete target is:
 - The forge/runtime boundary is now being hard-cut too: new state goes under
   `jerichoci-state` / `.jerichoci`, and migration of existing hosted data will
   happen operationally at deploy time rather than through compatibility code.
+- The persisted forge lane metadata is being cut over too: `ci_run_id`,
+  `ci_target_id`, and `structured_ci_target_id` are replacing the older
+  `pikaci_*` field names across the store, API model, and `ph`.
 - Next up is more forge-neutralization in `pika-git`, then the repo extraction
   and shared-infra move.
 

@@ -200,10 +200,10 @@ pub fn configured_target_key_for_lane(lane: &ForgeLane) -> Option<String> {
 
 pub fn effective_target_key(
     configured_target_key: Option<&str>,
-    pikaci_target_id: Option<&str>,
+    ci_target_id: Option<&str>,
     concurrency_group: Option<&str>,
 ) -> Option<String> {
-    pikaci_target_id
+    ci_target_id
         .and_then(non_empty_trimmed)
         .or_else(|| configured_target_key.and_then(non_empty_trimmed))
         .or_else(|| inferred_target_key_from_concurrency_group(concurrency_group))

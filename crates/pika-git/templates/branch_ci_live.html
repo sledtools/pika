@@ -124,12 +124,12 @@
             {% when Some with (original_lane_run_id) %}
             <p class="meta">manual rerun of lane #{{ original_lane_run_id }}</p>
             {% when None %}{% endmatch %}
-            {% match lane.pikaci_run_id %}
-            {% when Some with (pikaci_run_id) %}
+            {% match lane.ci_run_id %}
+            {% when Some with (ci_run_id) %}
             <p class="meta">
-              CI run <code>{{ pikaci_run_id }}</code>
-              {% match lane.pikaci_target_id %}
-              {% when Some with (pikaci_target_id) %} · target <code>{{ pikaci_target_id }}</code>{% when None %}{% endmatch %}
+              CI run <code>{{ ci_run_id }}</code>
+              {% match lane.ci_target_id %}
+              {% when Some with (ci_target_id) %} · target <code>{{ ci_target_id }}</code>{% when None %}{% endmatch %}
             </p>
             {% when None %}{% endmatch %}
             {% match lane.started_at %}

@@ -256,8 +256,8 @@ pub struct CiLane {
     pub failure_kind: Option<CiLaneFailureKind>,
     #[serde(default)]
     pub failure_kind_label: Option<String>,
-    pub pikaci_run_id: Option<String>,
-    pub pikaci_target_id: Option<String>,
+    pub ci_run_id: Option<String>,
+    pub ci_target_id: Option<String>,
     #[serde(default)]
     pub ci_target_key: Option<String>,
     pub log_text: Option<String>,
@@ -363,8 +363,8 @@ mod tests {
                 "title": "check-pika-rust",
                 "entrypoint": "./scripts/run.sh",
                 "status": "queued",
-                "pikaci_run_id": null,
-                "pikaci_target_id": null,
+                "ci_run_id": null,
+                "ci_target_id": null,
                 "log_text": null,
                 "retry_count": 0,
                 "rerun_of_lane_run_id": null,

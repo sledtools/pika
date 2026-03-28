@@ -55,8 +55,8 @@ fn map_api_ci_lane_from_view(view: CiLaneView) -> CiLane {
         execution_reason_label: Some(view.execution_reason_label),
         failure_kind: view.failure_kind.map(ForgeCiLaneFailureKind::from),
         failure_kind_label: view.failure_kind_label,
-        pikaci_run_id: view.pikaci_run_id,
-        pikaci_target_id: view.pikaci_target_id,
+        ci_run_id: view.ci_run_id,
+        ci_target_id: view.ci_target_id,
         ci_target_key: view.ci_target_key,
         log_text: view.log_text,
         retry_count: view.retry_count,
@@ -86,8 +86,8 @@ fn map_api_nightly_lane(lane: NightlyLaneRecord) -> CiLane {
         execution_reason_label: Some(view.execution_reason_label),
         failure_kind: view.failure_kind.map(ForgeCiLaneFailureKind::from),
         failure_kind_label: view.failure_kind_label,
-        pikaci_run_id: view.pikaci_run_id,
-        pikaci_target_id: view.pikaci_target_id,
+        ci_run_id: view.ci_run_id,
+        ci_target_id: view.ci_target_id,
         ci_target_key: view.ci_target_key,
         log_text: view.log_text,
         retry_count: view.retry_count,
@@ -587,11 +587,11 @@ async fn api_forge_branch_logs_handler(
             else {
                 return not_found_json_response("no matching lane logs found");
             };
-            let bundle = lane.pikaci_run_id.as_deref().and_then(|pikaci_run_id| {
+            let bundle = lane.ci_run_id.as_deref().and_then(|ci_run_id| {
                 state
                     .jerichoci_run_store
                     .as_ref()
-                    .and_then(|store| store.load_run_bundle(pikaci_run_id).ok())
+                    .and_then(|store| store.load_run_bundle(ci_run_id).ok())
             });
             let (pikaci_run, pikaci_log_metadata, pikaci_prepared_outputs) = match bundle {
                 Some(bundle) => (Some(bundle.run), Some(bundle.logs), bundle.prepared_outputs),

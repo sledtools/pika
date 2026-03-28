@@ -1033,23 +1033,20 @@ mod tests {
             .next()
             .expect("ci lane");
         store
-            .record_branch_ci_lane_pikaci_run(
+            .record_branch_ci_lane_ci_run(
                 job.lane_run_id,
                 job.claim_token,
                 "pikaci-run-1",
                 Some("pre-merge-pika-rust"),
             )
-            .expect("persist branch pikaci metadata");
+            .expect("persist branch CI metadata");
 
         let runs = store
             .list_branch_ci_runs(branch.branch_id, 4)
             .expect("list ci runs");
+        assert_eq!(runs[0].lanes[0].ci_run_id.as_deref(), Some("pikaci-run-1"));
         assert_eq!(
-            runs[0].lanes[0].pikaci_run_id.as_deref(),
-            Some("pikaci-run-1")
-        );
-        assert_eq!(
-            runs[0].lanes[0].pikaci_target_id.as_deref(),
+            runs[0].lanes[0].ci_target_id.as_deref(),
             Some("pre-merge-pika-rust")
         );
     }
@@ -1076,7 +1073,7 @@ mod tests {
             .expect("branch lane");
 
         assert_eq!(
-            job.structured_pikaci_target_id.as_deref(),
+            job.structured_ci_target_id.as_deref(),
             Some("pre-merge-pika-rust")
         );
     }
@@ -1177,24 +1174,24 @@ mod tests {
             .next()
             .expect("nightly lane");
         store
-            .record_nightly_lane_pikaci_run(
+            .record_nightly_lane_ci_run(
                 job.lane_run_id,
                 job.claim_token,
                 "pikaci-nightly-1",
                 Some("pre-merge-pika-rust"),
             )
-            .expect("persist nightly pikaci metadata");
+            .expect("persist nightly CI metadata");
 
         let nightly = store
             .get_nightly_run(job.nightly_run_id)
             .expect("nightly detail")
             .expect("nightly exists");
         assert_eq!(
-            nightly.lanes[0].pikaci_run_id.as_deref(),
+            nightly.lanes[0].ci_run_id.as_deref(),
             Some("pikaci-nightly-1")
         );
         assert_eq!(
-            nightly.lanes[0].pikaci_target_id.as_deref(),
+            nightly.lanes[0].ci_target_id.as_deref(),
             Some("pre-merge-pika-rust")
         );
     }
@@ -1231,7 +1228,7 @@ mod tests {
             .expect("nightly lane");
 
         assert_eq!(
-            job.structured_pikaci_target_id.as_deref(),
+            job.structured_ci_target_id.as_deref(),
             Some("pre-merge-pika-rust")
         );
     }
@@ -1726,8 +1723,8 @@ mod tests {
         assert_eq!(old_branch_lane.status, CiLaneStatus::Queued);
         assert_eq!(old_branch_lane.retry_count, 1);
         assert!(old_branch_lane.log_text.is_none());
-        assert!(old_branch_lane.pikaci_run_id.is_none());
-        assert!(old_branch_lane.pikaci_target_id.is_none());
+        assert!(old_branch_lane.ci_run_id.is_none());
+        assert!(old_branch_lane.ci_target_id.is_none());
         assert_eq!(fresh_branch_lane.status, CiLaneStatus::Running);
         assert_eq!(fresh_branch_lane.retry_count, 0);
 
@@ -1750,8 +1747,8 @@ mod tests {
         assert_eq!(old_nightly_lane.status, CiLaneStatus::Queued);
         assert_eq!(old_nightly_lane.retry_count, 1);
         assert!(old_nightly_lane.log_text.is_none());
-        assert!(old_nightly_lane.pikaci_run_id.is_none());
-        assert!(old_nightly_lane.pikaci_target_id.is_none());
+        assert!(old_nightly_lane.ci_run_id.is_none());
+        assert!(old_nightly_lane.ci_target_id.is_none());
         assert_eq!(fresh_nightly_lane.status, CiLaneStatus::Running);
         assert_eq!(fresh_nightly_lane.retry_count, 0);
     }
@@ -1775,13 +1772,13 @@ mod tests {
             .pop()
             .expect("first job");
         store
-            .record_branch_ci_lane_pikaci_run(
+            .record_branch_ci_lane_ci_run(
                 first_job.lane_run_id,
                 first_job.claim_token,
                 "pikaci-stale",
                 Some("pre-merge-pika-rust"),
             )
-            .expect("record stale pikaci metadata");
+            .expect("record stale CI metadata");
         store
             .with_connection(|conn| {
                 conn.execute(
@@ -1801,8 +1798,8 @@ mod tests {
             .expect("list recovered runs");
         let queued_lane = &recovered[0].lanes[0];
         assert!(queued_lane.log_text.is_none());
-        assert!(queued_lane.pikaci_run_id.is_none());
-        assert!(queued_lane.pikaci_target_id.is_none());
+        assert!(queued_lane.ci_run_id.is_none());
+        assert!(queued_lane.ci_target_id.is_none());
 
         let second_job = store
             .claim_pending_branch_ci_lane_runs(1, 120)
@@ -1827,8 +1824,8 @@ mod tests {
             lane.log_text.as_deref(),
             Some("retry failed before run_started")
         );
-        assert!(lane.pikaci_run_id.is_none());
-        assert!(lane.pikaci_target_id.is_none());
+        assert!(lane.ci_run_id.is_none());
+        assert!(lane.ci_target_id.is_none());
     }
 
     #[test]

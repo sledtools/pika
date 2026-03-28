@@ -207,7 +207,7 @@ paths = ["README.md", "feature.txt", "crates/pikaci/src/ci_catalog.rs"]
     }
 
     #[test]
-    fn branch_detail_renders_pikaci_run_metadata() {
+    fn branch_detail_renders_ci_run_metadata() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let db_path = dir.path().join("pika-git.db");
         let store = Store::open(&db_path).expect("open store");
@@ -235,13 +235,13 @@ paths = ["README.md", "feature.txt", "crates/pikaci/src/ci_catalog.rs"]
             .next()
             .expect("ci lane");
         store
-            .record_branch_ci_lane_pikaci_run(
+            .record_branch_ci_lane_ci_run(
                 running.lane_run_id,
                 running.claim_token,
                 "pikaci-run-branch-ui",
                 Some("pre-merge-pika-rust"),
             )
-            .expect("persist branch pikaci metadata");
+            .expect("persist branch CI metadata");
 
         let detail = store
             .get_branch_detail(branch.branch_id)
@@ -850,7 +850,7 @@ paths = ["README.md", "feature.txt", "crates/pikaci/src/ci_catalog.rs"]
     }
 
     #[test]
-    fn nightly_page_renders_pikaci_run_metadata() {
+    fn nightly_page_renders_ci_run_metadata() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let db_path = dir.path().join("pika-git.db");
         let store = Store::open(&db_path).expect("open store");
@@ -886,13 +886,13 @@ paths = ["README.md", "feature.txt", "crates/pikaci/src/ci_catalog.rs"]
             .next()
             .expect("nightly lane");
         store
-            .record_nightly_lane_pikaci_run(
+            .record_nightly_lane_ci_run(
                 running.lane_run_id,
                 running.claim_token,
                 "pikaci-run-nightly-ui",
                 Some("pre-merge-pika-rust"),
             )
-            .expect("persist nightly pikaci metadata");
+            .expect("persist nightly CI metadata");
 
         let run = store
             .get_nightly_run(running.nightly_run_id)

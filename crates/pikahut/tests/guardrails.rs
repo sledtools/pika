@@ -417,6 +417,26 @@ fn required_lanes_do_not_regress_to_cli_test_harness() -> Result<()> {
 }
 
 #[test]
+fn nightly_pika_lane_builds_pikachat_binary_before_daemon_boundary() -> Result<()> {
+    let root = workspace_root();
+    let checks = fs::read_to_string(root.join("just/checks.just"))?;
+    let recipe = extract_just_recipe_body(&checks, "nightly-pika-e2e");
+
+    assert!(
+        !recipe.is_empty(),
+        "checks.just must keep a checked-in nightly-pika-e2e recipe body"
+    );
+    assert!(
+        recipe
+            .iter()
+            .any(|line| line.contains("cargo build -p pikachat")),
+        "nightly-pika-e2e must build pikachat before the daemon-boundary selector expects target/debug/pikachat"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn integration_wrapper_scripts_dispatch_to_selectors() -> Result<()> {
     let root = workspace_root();
 

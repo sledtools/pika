@@ -254,6 +254,7 @@ nightly:
 
 # Nightly E2E (Rust): local-only deterministic + heavy call-path regression boundaries.
 nightly-pika-e2e:
+    cargo build -p pikachat
     cargo test -p pikahut --test integration_deterministic call_over_local_moq_relay_boundary -- --ignored --nocapture
     cargo test -p pikahut --test integration_deterministic call_with_pikachat_daemon_boundary -- --ignored --nocapture
     cargo test -p pikahut --test integration_deterministic cli_smoke_media_local -- --ignored --nocapture

@@ -23,22 +23,22 @@ mod tests {
     #[test]
     fn docs_only_branch_selects_expected_lanes() {
         let ids = selected_lane_ids(&["docs/testing/ci-selectors.md"]);
-        assert!(ids.contains(&"pika_rust".to_string()));
-        assert!(ids.contains(&"pika_followup".to_string()));
-        assert!(ids.contains(&"fixture".to_string()));
-        assert!(!ids.contains(&"notifications".to_string()));
-        assert!(!ids.contains(&"rmp".to_string()));
+        assert!(ids.contains(&"pre-merge-pika-rust".to_string()));
+        assert!(ids.contains(&"pre-merge-pika-followup".to_string()));
+        assert!(ids.contains(&"pre-merge-fixture-rust".to_string()));
+        assert!(!ids.contains(&"pre-merge-notifications".to_string()));
+        assert!(!ids.contains(&"pre-merge-rmp".to_string()));
     }
 
     #[test]
     fn rust_core_branch_selects_heavier_relevant_lanes() {
         let ids = selected_lane_ids(&["rust/src/lib.rs"]);
-        assert!(ids.contains(&"pika_rust".to_string()));
-        assert!(ids.contains(&"pika_followup".to_string()));
-        assert!(ids.contains(&"pikachat".to_string()));
+        assert!(ids.contains(&"pre-merge-pika-rust".to_string()));
+        assert!(ids.contains(&"pre-merge-pika-followup".to_string()));
+        assert!(ids.contains(&"pre-merge-pikachat-rust".to_string()));
         assert!(ids.contains(&"apple_desktop_compile".to_string()));
         assert!(ids.contains(&"apple_ios_compile".to_string()));
-        assert!(ids.contains(&"fixture".to_string()));
+        assert!(ids.contains(&"pre-merge-fixture-rust".to_string()));
     }
 
     #[test]
@@ -59,7 +59,7 @@ mod tests {
         ] {
             assert_eq!(
                 selected_lane_ids(&[path]),
-                vec!["pikachat_typescript".to_string()],
+                vec!["pre-merge-pikachat-typescript".to_string()],
                 "{path} should select only the dedicated TypeScript lane"
             );
         }

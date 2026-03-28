@@ -17,7 +17,6 @@ async fn completed_branch_ci_stream_returns_initial_snapshot_and_closes() {
                 command: vec!["just".to_string(), "checks::pre-merge-pika".to_string()],
                 paths: vec![],
                 concurrency_group: None,
-                staged_linux_target: None,
             }],
         )
         .expect("queue branch ci");
@@ -88,7 +87,6 @@ async fn completed_nightly_stream_returns_initial_snapshot_and_closes() {
         command: vec!["just".to_string(), "checks::nightly-pika-e2e".to_string()],
         paths: vec![],
         concurrency_group: None,
-        staged_linux_target: None,
     };
     store
         .queue_nightly_run(
@@ -157,7 +155,6 @@ async fn branch_live_snapshot_html_updates_across_lane_transitions() {
                 command: vec!["just".to_string(), "checks::pre-merge-pika".to_string()],
                 paths: vec![],
                 concurrency_group: None,
-                staged_linux_target: None,
             }],
         )
         .expect("queue ci");
@@ -225,7 +222,6 @@ async fn nightly_live_snapshot_html_updates_across_lane_transitions() {
         command: vec!["just".to_string(), "checks::nightly-pika-e2e".to_string()],
         paths: vec![],
         concurrency_group: None,
-        staged_linux_target: None,
     };
     store
         .queue_nightly_run(
@@ -306,7 +302,6 @@ async fn branch_live_stream_recovers_with_fresh_snapshot_after_lag() {
                 command: vec!["just".to_string(), "checks::pre-merge-pika".to_string()],
                 paths: vec![],
                 concurrency_group: None,
-                staged_linux_target: None,
             }],
         )
         .expect("queue ci");
@@ -367,7 +362,6 @@ async fn nightly_live_stream_recovers_with_fresh_snapshot_after_lag() {
         command: vec!["just".to_string(), "checks::nightly-pika-e2e".to_string()],
         paths: vec![],
         concurrency_group: None,
-        staged_linux_target: None,
     };
     store
         .queue_nightly_run(
@@ -421,4 +415,3 @@ async fn nightly_live_stream_recovers_with_fresh_snapshot_after_lag() {
     assert!(snapshot.html.contains("nightly: failed"));
     assert!(!snapshot.active);
 }
-

@@ -1,5 +1,24 @@
     #[test]
     fn merged_branch_page_renders_after_source_branch_deletion() {
+        let _manifest_override = crate::ci::install_test_manifest_override(
+            crate::ci_manifest::ForgeCiManifest {
+                nightly_hour_utc: 23,
+                nightly_minute_utc: 59,
+                branch_lanes: vec![crate::ci_manifest::ForgeLane {
+                    id: "render_history".to_string(),
+                    title: "render history".to_string(),
+                    entrypoint: "./ci.sh".to_string(),
+                    command: vec!["./ci.sh".to_string()],
+                    paths: vec![
+                        "README.md".to_string(),
+                        "feature.txt".to_string(),
+                        "crates/pikaci/src/forge_lanes.rs".to_string(),
+                    ],
+                    concurrency_group: None,
+                }],
+                nightly_lanes: vec![],
+            },
+        );
         let repo = GitTestRepo::new();
         repo.write_seed("README.md", "hello\n");
         repo.write_seed(
@@ -143,7 +162,6 @@ paths = ["README.md", "feature.txt", "crates/pikaci/src/forge_lanes.rs"]
                     command: vec!["just".to_string(), "checks::pre-merge-pika".to_string()],
                     paths: vec![],
                     concurrency_group: None,
-                    staged_linux_target: None,
                 }],
             )
             .expect("queue ci");
@@ -207,7 +225,6 @@ paths = ["README.md", "feature.txt", "crates/pikaci/src/forge_lanes.rs"]
                     command: vec!["just".to_string(), "checks::pre-merge-pika".to_string()],
                     paths: vec![],
                     concurrency_group: None,
-                    staged_linux_target: Some("pre-merge-pika-rust".to_string()),
                 }],
             )
             .expect("queue ci");
@@ -269,7 +286,6 @@ paths = ["README.md", "feature.txt", "crates/pikaci/src/forge_lanes.rs"]
                         command: vec!["just".to_string(), "checks::wait-capacity".to_string()],
                         paths: vec![],
                         concurrency_group: None,
-                        staged_linux_target: None,
                     },
                     crate::ci_manifest::ForgeLane {
                         id: "apple-sanity".to_string(),
@@ -278,7 +294,6 @@ paths = ["README.md", "feature.txt", "crates/pikaci/src/forge_lanes.rs"]
                         command: vec!["just".to_string(), "checks::apple-sanity".to_string()],
                         paths: vec![],
                         concurrency_group: Some("apple-host".to_string()),
-                        staged_linux_target: Some("apple-host".to_string()),
                     },
                 ],
             )
@@ -331,7 +346,6 @@ paths = ["README.md", "feature.txt", "crates/pikaci/src/forge_lanes.rs"]
                     command: vec!["just".to_string(), "checks::pre-merge-pika".to_string()],
                     paths: vec![],
                     concurrency_group: None,
-                    staged_linux_target: None,
                 }],
             )
             .expect("queue ci");
@@ -734,7 +748,6 @@ paths = ["README.md", "feature.txt", "crates/pikaci/src/forge_lanes.rs"]
                     concurrency_group: Some(
                         "staged-linux:pre-merge-pikachat-typescript".to_string(),
                     ),
-                    staged_linux_target: Some("pre-merge-pikachat-typescript".to_string()),
                 }],
             )
             .expect("queue ci");
@@ -796,7 +809,6 @@ paths = ["README.md", "feature.txt", "crates/pikaci/src/forge_lanes.rs"]
             command: vec!["just".to_string(), "checks::nightly-pika-e2e".to_string()],
             paths: vec![],
             concurrency_group: None,
-            staged_linux_target: None,
         };
         store
             .queue_nightly_run(
@@ -857,7 +869,6 @@ paths = ["README.md", "feature.txt", "crates/pikaci/src/forge_lanes.rs"]
             command: vec!["just".to_string(), "checks::nightly-pika-e2e".to_string()],
             paths: vec![],
             concurrency_group: None,
-            staged_linux_target: Some("pre-merge-pika-rust".to_string()),
         };
         store
             .queue_nightly_run(

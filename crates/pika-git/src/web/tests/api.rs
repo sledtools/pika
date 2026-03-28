@@ -109,13 +109,12 @@ async fn api_forge_branch_detail_returns_ci_summary() {
             branch.branch_id,
             "head-detail",
             &[crate::ci_manifest::ForgeLane {
-                id: "pika".to_string(),
+                id: "pre-merge-pika-rust".to_string(),
                 title: "check-pika".to_string(),
                 entrypoint: "just checks::pre-merge-pika".to_string(),
                 command: vec!["just".to_string(), "checks::pre-merge-pika".to_string()],
                 paths: vec![],
                 concurrency_group: None,
-                staged_linux_target: Some("pre-merge-pika-rust".to_string()),
             }],
         )
         .expect("queue ci");
@@ -190,7 +189,6 @@ async fn api_forge_branch_detail_exposes_waiting_lane_state() {
                     command: vec!["just".to_string(), "checks::wait-capacity".to_string()],
                     paths: vec![],
                     concurrency_group: None,
-                    staged_linux_target: None,
                 },
                 crate::ci_manifest::ForgeLane {
                     id: "apple-sanity".to_string(),
@@ -199,7 +197,6 @@ async fn api_forge_branch_detail_exposes_waiting_lane_state() {
                     command: vec!["just".to_string(), "checks::apple-sanity".to_string()],
                     paths: vec![],
                     concurrency_group: Some("apple-host".to_string()),
-                    staged_linux_target: Some("apple-host".to_string()),
                 },
             ],
         )
@@ -263,7 +260,6 @@ async fn api_forge_branch_logs_defaults_to_latest_failed_lane() {
                     command: vec!["just".to_string(), "checks::pre-merge-pika".to_string()],
                     paths: vec![],
                     concurrency_group: None,
-                    staged_linux_target: None,
                 },
                 crate::ci_manifest::ForgeLane {
                     id: "fixture".to_string(),
@@ -272,7 +268,6 @@ async fn api_forge_branch_logs_defaults_to_latest_failed_lane() {
                     command: vec!["just".to_string(), "checks::pre-merge-fixture".to_string()],
                     paths: vec![],
                     concurrency_group: None,
-                    staged_linux_target: None,
                 },
             ],
         )
@@ -358,7 +353,6 @@ async fn api_forge_branch_logs_includes_persisted_pikaci_run_metadata() {
                 ],
                 paths: vec![],
                 concurrency_group: None,
-                staged_linux_target: Some("pre-merge-pika-rust".to_string()),
             }],
         )
         .expect("queue ci");
@@ -445,7 +439,6 @@ async fn api_forge_branch_logs_keeps_run_metadata_when_prepared_outputs_are_inva
                 ],
                 paths: vec![],
                 concurrency_group: None,
-                staged_linux_target: Some("pre-merge-pika-rust".to_string()),
             }],
         )
         .expect("queue ci");
@@ -604,7 +597,6 @@ async fn rerun_branch_handler_rejects_lane_from_another_branch() {
                 command: vec!["just".to_string(), "checks::pre-merge-pika".to_string()],
                 paths: vec![],
                 concurrency_group: None,
-                staged_linux_target: None,
             }],
         )
         .expect("queue branch ci");
@@ -656,7 +648,6 @@ async fn rerun_nightly_handler_rejects_lane_from_another_run() {
         command: vec!["just".to_string(), "checks::nightly-pika-e2e".to_string()],
         paths: vec![],
         concurrency_group: None,
-        staged_linux_target: None,
     };
     store
         .queue_nightly_run(
@@ -729,7 +720,6 @@ async fn fail_branch_handler_requires_trusted_access() {
                 command: vec!["just".to_string(), "checks::pre-merge-pika".to_string()],
                 paths: vec![],
                 concurrency_group: None,
-                staged_linux_target: None,
             }],
         )
         .expect("queue branch ci");
@@ -774,7 +764,6 @@ async fn recover_branch_handler_rejects_run_from_another_branch() {
         command: vec!["just".to_string(), "checks::pre-merge-pika".to_string()],
         paths: vec![],
         concurrency_group: None,
-        staged_linux_target: None,
     };
     store
         .queue_branch_ci_run_for_head(first.branch_id, "head-1", std::slice::from_ref(&lane))
@@ -820,7 +809,6 @@ async fn fail_nightly_handler_rejects_lane_from_another_run() {
         command: vec!["just".to_string(), "checks::nightly-pika-e2e".to_string()],
         paths: vec![],
         concurrency_group: None,
-        staged_linux_target: None,
     };
     store
         .queue_nightly_run(

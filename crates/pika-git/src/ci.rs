@@ -18,6 +18,34 @@ pub const FORGE_LANE_DEFINITION_PATH: &str = ci_manifest::FORGE_LANE_DEFINITION_
 pub const CI_LANE_LEASE_SECS: u64 = 120;
 pub const CI_LANE_HEARTBEAT_INTERVAL_SECS: u64 = 30;
 
+#[cfg(test)]
+thread_local! {
+    static TEST_MANIFEST_OVERRIDE: std::cell::RefCell<Option<ForgeCiManifest>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) struct TestManifestOverrideGuard;
+
+#[cfg(test)]
+impl Drop for TestManifestOverrideGuard {
+    fn drop(&mut self) {
+        TEST_MANIFEST_OVERRIDE.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn install_test_manifest_override(
+    manifest: ForgeCiManifest,
+) -> TestManifestOverrideGuard {
+    TEST_MANIFEST_OVERRIDE.with(|slot| {
+        *slot.borrow_mut() = Some(manifest);
+    });
+    TestManifestOverrideGuard
+}
+
 #[derive(Debug, Default)]
 pub struct CiPassResult {
     pub claimed: usize,
@@ -42,6 +70,10 @@ struct LaneJobOutcome {
 pub fn load_manifest_from_default_branch(
     _forge_repo: &crate::config::ForgeRepoConfig,
 ) -> anyhow::Result<ForgeCiManifest> {
+    #[cfg(test)]
+    if let Some(manifest) = TEST_MANIFEST_OVERRIDE.with(|slot| slot.borrow().clone()) {
+        return Ok(manifest);
+    }
     Ok(ci_manifest::compiled_forge_ci_manifest())
 }
 
@@ -49,6 +81,10 @@ pub fn load_manifest_for_head(
     _forge_repo: &crate::config::ForgeRepoConfig,
     _head_sha: &str,
 ) -> anyhow::Result<ForgeCiManifest> {
+    #[cfg(test)]
+    if let Some(manifest) = TEST_MANIFEST_OVERRIDE.with(|slot| slot.borrow().clone()) {
+        return Ok(manifest);
+    }
     Ok(ci_manifest::compiled_forge_ci_manifest())
 }
 
@@ -620,10 +656,10 @@ mod tests {
     use chrono::TimeZone;
 
     use super::{
-        load_manifest_from_default_branch, run_ci_pass, run_ci_pass_with_timing,
-        run_ci_pass_with_timing_at, schedule_due_nightlies_at,
+        install_test_manifest_override, load_manifest_from_default_branch, run_ci_pass,
+        run_ci_pass_with_timing, run_ci_pass_with_timing_at, schedule_due_nightlies_at,
     };
-    use crate::ci_manifest::ForgeLane;
+    use crate::ci_manifest::{ForgeCiManifest, ForgeLane};
     use crate::ci_state::CiLaneStatus;
     use crate::config::{Config, ForgeRepoConfig};
     use crate::storage::Store;
@@ -699,6 +735,36 @@ mod tests {
         }
     }
 
+    fn test_lane(id: &str, title: &str, command: &[&str]) -> ForgeLane {
+        ForgeLane {
+            id: id.to_string(),
+            title: title.to_string(),
+            entrypoint: command.join(" "),
+            command: command.iter().map(|part| (*part).to_string()).collect(),
+            paths: vec![],
+            concurrency_group: None,
+        }
+    }
+
+    fn test_manifest(
+        branch_lanes: Vec<ForgeLane>,
+        nightly_lanes: Vec<ForgeLane>,
+    ) -> ForgeCiManifest {
+        ForgeCiManifest {
+            nightly_hour_utc: 8,
+            nightly_minute_utc: 0,
+            branch_lanes,
+            nightly_lanes,
+        }
+    }
+
+    fn write_lane_definition_file(seed: &std::path::Path, contents: &str) {
+        let path = seed.join(super::FORGE_LANE_DEFINITION_PATH);
+        let parent = path.parent().expect("lane definition parent");
+        fs::create_dir_all(parent).expect("create lane definition dir");
+        fs::write(path, contents).expect("write lane definition file");
+    }
+
     #[test]
     fn nightly_schedule_creates_durable_history_once_per_slot() {
         let repo = GitTestRepo::new();
@@ -718,8 +784,8 @@ mod tests {
             .permissions();
         perms.set_mode(0o755);
         fs::set_permissions(seed.join("nightly.sh"), perms).expect("chmod nightly script");
-        fs::write(
-            seed.join("crates/pikaci/src/forge_lanes.rs"),
+        write_lane_definition_file(
+            seed,
             r#"
 version = 1
 nightly_schedule_utc = "00:00"
@@ -730,15 +796,14 @@ title = "nightly smoke"
 entrypoint = "./nightly.sh"
 command = ["./nightly.sh"]
 "#,
-        )
-        .expect("write nightly manifest");
+        );
         git(
             seed,
             &[
                 "add",
                 "README.md",
                 "nightly.sh",
-                "crates/pikaci/src/forge_lanes.rs",
+                super::FORGE_LANE_DEFINITION_PATH,
             ],
         );
         git(seed, &["commit", "-m", "initial"]);
@@ -760,6 +825,14 @@ command = ["./nightly.sh"]
             ci_command: vec!["just".to_string(), "pre-merge".to_string()],
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
+        let _manifest_override = install_test_manifest_override(test_manifest(
+            vec![],
+            vec![test_lane(
+                "nightly_smoke",
+                "nightly smoke",
+                &["./nightly.sh"],
+            )],
+        ));
         let manifest = load_manifest_from_default_branch(&forge_repo).expect("load manifest");
         let store = Store::open(db_path).expect("open store");
         let now = chrono::Utc
@@ -813,14 +886,7 @@ command = ["./nightly.sh"]
             perms.set_mode(0o755);
             fs::set_permissions(seed.join(script), perms).expect("chmod ci script");
         }
-        fs::write(
-            seed.join("crates/pikaci/src/forge_lanes.rs"),
-            r#"
-version = 1
-nightly_schedule_utc = "08:00"
-"#,
-        )
-        .expect("write manifest");
+        write_lane_definition_file(seed, "version = 1\nnightly_schedule_utc = \"08:00\"\n");
         git(
             seed,
             &[
@@ -828,7 +894,7 @@ nightly_schedule_utc = "08:00"
                 "README.md",
                 "lane-a.sh",
                 "lane-b.sh",
-                "crates/pikaci/src/forge_lanes.rs",
+                super::FORGE_LANE_DEFINITION_PATH,
             ],
         );
         git(seed, &["commit", "-m", "initial"]);
@@ -851,6 +917,7 @@ nightly_schedule_utc = "08:00"
             ci_command: vec!["just".to_string(), "pre-merge".to_string()],
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
+        let _manifest_override = install_test_manifest_override(test_manifest(vec![], vec![]));
         let config = Config::test_with_forge_repo(forge_repo.clone());
         let store = Store::open(db_path).expect("open store");
         let repo_id = store
@@ -889,7 +956,6 @@ nightly_schedule_utc = "08:00"
                         command: vec!["./lane-a.sh".to_string()],
                         paths: vec![],
                         concurrency_group: None,
-                        staged_linux_target: None,
                     },
                     ForgeLane {
                         id: "lane_b".to_string(),
@@ -898,7 +964,6 @@ nightly_schedule_utc = "08:00"
                         command: vec!["./lane-b.sh".to_string()],
                         paths: vec![],
                         concurrency_group: None,
-                        staged_linux_target: None,
                     },
                 ],
             )
@@ -947,11 +1012,7 @@ nightly_schedule_utc = "08:00"
             perms.set_mode(0o755);
             fs::set_permissions(seed.join(script), perms).expect("chmod ci script");
         }
-        fs::write(
-            seed.join("crates/pikaci/src/forge_lanes.rs"),
-            "version = 1\nnightly_schedule_utc = \"08:00\"\n",
-        )
-        .expect("write manifest");
+        write_lane_definition_file(seed, "version = 1\nnightly_schedule_utc = \"08:00\"\n");
         git(
             seed,
             &[
@@ -960,7 +1021,7 @@ nightly_schedule_utc = "08:00"
                 "lane-a.sh",
                 "lane-b.sh",
                 "lane-c.sh",
-                "crates/pikaci/src/forge_lanes.rs",
+                super::FORGE_LANE_DEFINITION_PATH,
             ],
         );
         git(seed, &["commit", "-m", "initial"]);
@@ -983,6 +1044,7 @@ nightly_schedule_utc = "08:00"
             ci_command: vec!["just".to_string(), "pre-merge".to_string()],
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
+        let _manifest_override = install_test_manifest_override(test_manifest(vec![], vec![]));
         let config = Config::test_with_forge_repo(forge_repo.clone());
         let store = Store::open(db_path).expect("open store");
         let branch = store
@@ -1012,7 +1074,6 @@ nightly_schedule_utc = "08:00"
                         command: vec!["./lane-a.sh".to_string()],
                         paths: vec![],
                         concurrency_group: None,
-                        staged_linux_target: None,
                     },
                     ForgeLane {
                         id: "lane_b".to_string(),
@@ -1021,7 +1082,6 @@ nightly_schedule_utc = "08:00"
                         command: vec!["./lane-b.sh".to_string()],
                         paths: vec![],
                         concurrency_group: None,
-                        staged_linux_target: None,
                     },
                     ForgeLane {
                         id: "lane_c".to_string(),
@@ -1030,7 +1090,6 @@ nightly_schedule_utc = "08:00"
                         command: vec!["./lane-c.sh".to_string()],
                         paths: vec![],
                         concurrency_group: None,
-                        staged_linux_target: None,
                     },
                 ],
             )
@@ -1038,7 +1097,10 @@ nightly_schedule_utc = "08:00"
 
         let runner_store = store.clone();
         let runner_config = config.clone();
-        let handle = thread::spawn(move || run_ci_pass(&runner_store, &runner_config));
+        let handle = thread::spawn(move || {
+            let _manifest_override = install_test_manifest_override(test_manifest(vec![], vec![]));
+            run_ci_pass(&runner_store, &runner_config)
+        });
 
         let started = wait_for_log_line_count(&start_log, 2, Duration::from_secs(5));
         assert_eq!(started.lines().count(), 2);
@@ -1075,11 +1137,7 @@ nightly_schedule_utc = "08:00"
             perms.set_mode(0o755);
             fs::set_permissions(seed.join(script), perms).expect("chmod ci script");
         }
-        fs::write(
-            seed.join("crates/pikaci/src/forge_lanes.rs"),
-            "version = 1\nnightly_schedule_utc = \"08:00\"\n",
-        )
-        .expect("write manifest");
+        write_lane_definition_file(seed, "version = 1\nnightly_schedule_utc = \"08:00\"\n");
         git(
             seed,
             &[
@@ -1088,7 +1146,7 @@ nightly_schedule_utc = "08:00"
                 "lane-a.sh",
                 "lane-b.sh",
                 "lane-c.sh",
-                "crates/pikaci/src/forge_lanes.rs",
+                super::FORGE_LANE_DEFINITION_PATH,
             ],
         );
         git(seed, &["commit", "-m", "initial"]);
@@ -1111,6 +1169,7 @@ nightly_schedule_utc = "08:00"
             ci_command: vec!["just".to_string(), "pre-merge".to_string()],
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
+        let _manifest_override = install_test_manifest_override(test_manifest(vec![], vec![]));
         let config = Config::test_with_forge_repo(forge_repo.clone());
         let store = Store::open(db_path).expect("open store");
         let branch = store
@@ -1140,7 +1199,6 @@ nightly_schedule_utc = "08:00"
                         command: vec!["./lane-a.sh".to_string()],
                         paths: vec![],
                         concurrency_group: None,
-                        staged_linux_target: None,
                     },
                     ForgeLane {
                         id: "lane_b".to_string(),
@@ -1149,7 +1207,6 @@ nightly_schedule_utc = "08:00"
                         command: vec!["./lane-b.sh".to_string()],
                         paths: vec![],
                         concurrency_group: None,
-                        staged_linux_target: None,
                     },
                     ForgeLane {
                         id: "lane_c".to_string(),
@@ -1158,7 +1215,6 @@ nightly_schedule_utc = "08:00"
                         command: vec!["./lane-c.sh".to_string()],
                         paths: vec![],
                         concurrency_group: None,
-                        staged_linux_target: None,
                     },
                 ],
             )
@@ -1166,7 +1222,10 @@ nightly_schedule_utc = "08:00"
 
         let runner_store = store.clone();
         let runner_config = config.clone();
-        let handle = thread::spawn(move || run_ci_pass(&runner_store, &runner_config));
+        let handle = thread::spawn(move || {
+            let _manifest_override = install_test_manifest_override(test_manifest(vec![], vec![]));
+            run_ci_pass(&runner_store, &runner_config)
+        });
 
         let started = wait_for_log_line_count(&start_log, 3, Duration::from_secs(5));
         assert_eq!(started.lines().count(), 3);
@@ -1209,11 +1268,7 @@ nightly_schedule_utc = "08:00"
             perms.set_mode(0o755);
             fs::set_permissions(seed.join(script), perms).expect("chmod ci script");
         }
-        fs::write(
-            seed.join("crates/pikaci/src/forge_lanes.rs"),
-            "version = 1\nnightly_schedule_utc = \"08:00\"\n",
-        )
-        .expect("write manifest");
+        write_lane_definition_file(seed, "version = 1\nnightly_schedule_utc = \"08:00\"\n");
         git(
             seed,
             &[
@@ -1221,7 +1276,7 @@ nightly_schedule_utc = "08:00"
                 "README.md",
                 "slow.sh",
                 "fast.sh",
-                "crates/pikaci/src/forge_lanes.rs",
+                super::FORGE_LANE_DEFINITION_PATH,
             ],
         );
         git(seed, &["commit", "-m", "initial"]);
@@ -1244,6 +1299,7 @@ nightly_schedule_utc = "08:00"
             ci_command: vec!["just".to_string(), "pre-merge".to_string()],
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
+        let _manifest_override = install_test_manifest_override(test_manifest(vec![], vec![]));
         let config = Config::test_with_forge_repo(forge_repo.clone());
         let store = Store::open(db_path).expect("open store");
 
@@ -1273,7 +1329,6 @@ nightly_schedule_utc = "08:00"
                     command: vec!["./slow.sh".to_string()],
                     paths: vec![],
                     concurrency_group: None,
-                    staged_linux_target: None,
                 }],
             )
             .expect("queue slow suite");
@@ -1310,7 +1365,6 @@ nightly_schedule_utc = "08:00"
                     command: vec!["./fast.sh".to_string()],
                     paths: vec![],
                     concurrency_group: None,
-                    staged_linux_target: None,
                 }],
             )
             .expect("queue fast suite");
@@ -1384,11 +1438,7 @@ nightly_schedule_utc = "08:00"
             perms.set_mode(0o755);
             fs::set_permissions(seed.join(script), perms).expect("chmod script");
         }
-        fs::write(
-            seed.join("crates/pikaci/src/forge_lanes.rs"),
-            "version = 1\nnightly_schedule_utc = \"08:00\"\n",
-        )
-        .expect("write manifest");
+        write_lane_definition_file(seed, "version = 1\nnightly_schedule_utc = \"08:00\"\n");
         git(
             seed,
             &[
@@ -1397,7 +1447,7 @@ nightly_schedule_utc = "08:00"
                 "slow.sh",
                 "fast-fail.sh",
                 "fast-ok.sh",
-                "crates/pikaci/src/forge_lanes.rs",
+                super::FORGE_LANE_DEFINITION_PATH,
             ],
         );
         git(seed, &["commit", "-m", "initial"]);
@@ -1420,6 +1470,7 @@ nightly_schedule_utc = "08:00"
             ci_command: vec!["just".to_string(), "pre-merge".to_string()],
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
+        let _manifest_override = install_test_manifest_override(test_manifest(vec![], vec![]));
         let config = Config::test_with_forge_repo(forge_repo.clone());
         let store = Store::open(db_path).expect("open store");
         let branch = store
@@ -1449,7 +1500,6 @@ nightly_schedule_utc = "08:00"
                         command: vec!["./slow.sh".to_string()],
                         paths: vec![],
                         concurrency_group: None,
-                        staged_linux_target: None,
                     },
                     ForgeLane {
                         id: "fast_fail".to_string(),
@@ -1458,7 +1508,6 @@ nightly_schedule_utc = "08:00"
                         command: vec!["./fast-fail.sh".to_string()],
                         paths: vec![],
                         concurrency_group: None,
-                        staged_linux_target: None,
                     },
                     ForgeLane {
                         id: "fast_ok".to_string(),
@@ -1467,7 +1516,6 @@ nightly_schedule_utc = "08:00"
                         command: vec!["./fast-ok.sh".to_string()],
                         paths: vec![],
                         concurrency_group: None,
-                        staged_linux_target: None,
                     },
                 ],
             )
@@ -1475,7 +1523,10 @@ nightly_schedule_utc = "08:00"
 
         let runner_store = store.clone();
         let runner_config = config.clone();
-        let handle = thread::spawn(move || run_ci_pass(&runner_store, &runner_config));
+        let handle = thread::spawn(move || {
+            let _manifest_override = install_test_manifest_override(test_manifest(vec![], vec![]));
+            run_ci_pass(&runner_store, &runner_config)
+        });
 
         let started = wait_for_log_contains(&start_log, "fast-ok", Duration::from_secs(5));
         assert!(started.contains("slow"));
@@ -1515,21 +1566,14 @@ nightly_schedule_utc = "08:00"
             .permissions();
         perms.set_mode(0o755);
         fs::set_permissions(seed.join("slow-lane.sh"), perms).expect("chmod slow lane script");
-        fs::write(
-            seed.join("crates/pikaci/src/forge_lanes.rs"),
-            r#"
-version = 1
-nightly_schedule_utc = "08:00"
-"#,
-        )
-        .expect("write manifest");
+        write_lane_definition_file(seed, "version = 1\nnightly_schedule_utc = \"08:00\"\n");
         git(
             seed,
             &[
                 "add",
                 "README.md",
                 "slow-lane.sh",
-                "crates/pikaci/src/forge_lanes.rs",
+                super::FORGE_LANE_DEFINITION_PATH,
             ],
         );
         git(seed, &["commit", "-m", "initial"]);
@@ -1552,6 +1596,7 @@ nightly_schedule_utc = "08:00"
             ci_command: vec!["just".to_string(), "pre-merge".to_string()],
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
+        let _manifest_override = install_test_manifest_override(test_manifest(vec![], vec![]));
         let config = Config::test_with_forge_repo(forge_repo.clone());
         let store = Store::open(db_path).expect("open store");
         let branch = store
@@ -1580,7 +1625,6 @@ nightly_schedule_utc = "08:00"
                     command: vec!["./slow-lane.sh".to_string()],
                     paths: vec![],
                     concurrency_group: None,
-                    staged_linux_target: None,
                 }],
             )
             .expect("queue branch suite");
@@ -1639,8 +1683,8 @@ nightly_schedule_utc = "08:00"
             perms.set_mode(0o755);
             fs::set_permissions(seed.join(script), perms).expect("chmod script");
         }
-        fs::write(
-            seed.join("crates/pikaci/src/forge_lanes.rs"),
+        write_lane_definition_file(
+            seed,
             r#"
 version = 1
 nightly_schedule_utc = "08:00"
@@ -1651,8 +1695,7 @@ title = "nightly smoke"
 entrypoint = "./nightly.sh"
 command = ["./nightly.sh"]
 "#,
-        )
-        .expect("write manifest");
+        );
         git(
             seed,
             &[
@@ -1660,7 +1703,7 @@ command = ["./nightly.sh"]
                 "README.md",
                 "branch-lane.sh",
                 "nightly.sh",
-                "crates/pikaci/src/forge_lanes.rs",
+                super::FORGE_LANE_DEFINITION_PATH,
             ],
         );
         git(seed, &["commit", "-m", "initial"]);
@@ -1683,6 +1726,14 @@ command = ["./nightly.sh"]
             ci_command: vec!["just".to_string(), "pre-merge".to_string()],
             hook_url: Some("http://127.0.0.1:9999/git/webhook".to_string()),
         };
+        let _manifest_override = install_test_manifest_override(test_manifest(
+            vec![],
+            vec![test_lane(
+                "nightly_smoke",
+                "nightly smoke",
+                &["./nightly.sh"],
+            )],
+        ));
         let config = Config::test_with_forge_repo(forge_repo.clone());
         let store = Store::open(db_path).expect("open store");
         let branch = store
@@ -1711,7 +1762,6 @@ command = ["./nightly.sh"]
                     command: vec!["./branch-lane.sh".to_string()],
                     paths: vec![],
                     concurrency_group: None,
-                    staged_linux_target: None,
                 }],
             )
             .expect("queue branch suite");

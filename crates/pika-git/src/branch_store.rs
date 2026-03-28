@@ -872,7 +872,6 @@ mod tests {
             command: vec!["just".to_string(), format!("checks::{id}")],
             paths: vec![],
             concurrency_group: None,
-            staged_linux_target: None,
         }
     }
 
@@ -883,8 +882,8 @@ mod tests {
     }
 
     fn sample_lane_with_target(id: &str, target_id: &str) -> ForgeLane {
-        let mut lane = sample_lane(id);
-        lane.staged_linux_target = Some(target_id.to_string());
+        let mut lane = sample_lane(target_id);
+        lane.title = format!("{id} title");
         lane
     }
 

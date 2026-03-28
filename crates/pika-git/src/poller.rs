@@ -181,9 +181,9 @@ mod tests {
             .iter()
             .map(|lane| lane.lane_id.as_str())
             .collect::<Vec<_>>();
-        assert!(lane_ids.contains(&"pika_rust"));
-        assert!(lane_ids.contains(&"pika_followup"));
-        assert!(lane_ids.contains(&"pikachat"));
+        assert!(lane_ids.contains(&"pre-merge-pika-rust"));
+        assert!(lane_ids.contains(&"pre-merge-pika-followup"));
+        assert!(lane_ids.contains(&"pre-merge-pikachat-rust"));
         assert!(lane_ids.contains(&"apple_desktop_compile"));
         assert!(lane_ids.contains(&"apple_ios_compile"));
     }

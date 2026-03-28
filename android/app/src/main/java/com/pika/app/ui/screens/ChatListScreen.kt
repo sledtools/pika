@@ -211,7 +211,7 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
-                    text = "Choose which agent to create.",
+                    text = "Create an OpenClaw agent.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -223,15 +223,6 @@ fun ChatListScreen(manager: AppManager, padding: PaddingValues) {
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text("OpenClaw")
-                }
-                Button(
-                    onClick = {
-                        showAgentChooser = false
-                        manager.ensureAgent(AgentKind.PI)
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("Pi")
                 }
                 TextButton(
                     onClick = { showAgentChooser = false },

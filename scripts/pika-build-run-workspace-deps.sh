@@ -140,6 +140,7 @@ else
   echo "==> syncing helper snapshot"
   tar -C "$PWD" \
     --exclude=.git \
+    --exclude=.pikaci \
     --exclude=.jerichoci \
     --exclude=.direnv \
     --exclude=target \

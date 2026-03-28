@@ -511,6 +511,13 @@ build-deploy:
     {{REMOTE_SELF_DEPLOY}} "{{FLAKE_ROOT}}" "pika-build" "$IP"
 
     echo "==> pika-build deployed!"
+    echo "==> Jericho hard-cut follow-up:"
+    echo "    1. Import the new runner image:"
+    echo "       ./scripts/jericho-incus-image.sh build-import --remote-host pika-build --alias jericho/dev"
+    echo "    2. Migrate or remove old scratch state:"
+    echo "       ssh pika-build 'sudo rm -rf /var/tmp/pikaci-prepared-output'"
+    echo "    3. Run a low-risk validation lane:"
+    echo "       just pikaci-remote-fulfill-pre-merge-rmp"
 
 # SSH into pika-build
 build-ssh:

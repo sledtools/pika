@@ -1874,7 +1874,7 @@ pub struct PreparedOutputPayloadManifestRecord {
 }
 
 pub const PREPARED_OUTPUT_PAYLOAD_MANIFEST_RELATIVE_PATH: &str =
-    "share/pikaci/payload-manifest.json";
+    "share/jerichoci/payload-manifest.json";
 
 pub fn prepared_output_payload_manifest_path(output_root: &Path) -> PathBuf {
     output_root.join(PREPARED_OUTPUT_PAYLOAD_MANIFEST_RELATIVE_PATH)

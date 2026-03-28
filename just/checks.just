@@ -225,7 +225,7 @@ pre-merge-apple-deterministic:
         echo "error: pre-merge-apple-deterministic currently requires Apple Silicon macOS" >&2
         exit 1
     fi
-    PIKACI_TART_BASE_VM="${PIKACI_TART_BASE_VM:-pikaci-xcode16-base}" \
+    JERICHOCI_TART_BASE_VM="${JERICHOCI_TART_BASE_VM:-pikaci-xcode16-base}" \
       nix run .#pikaci -- run pre-merge-apple-deterministic
     echo "pre-merge-apple-deterministic complete"
 

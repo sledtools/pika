@@ -1289,10 +1289,10 @@ fn ensure_supported_host() -> anyhow::Result<()> {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
     if os != "macos" {
-        bail!("pikaci Wave 1 only supports macOS hosts; found {os}");
+        bail!("Jericho CI only supports macOS hosts; found {os}");
     }
     if arch != "aarch64" {
-        bail!("pikaci Wave 1 only supports Apple Silicon; found {arch}");
+        bail!("Jericho CI only supports Apple Silicon; found {arch}");
     }
     Ok(())
 }

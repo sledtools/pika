@@ -95,4 +95,5 @@ cmd/pika-relay/pika-relay
 .local-backend/
 .pika-fixture/
 .pikaci/
+.jerichoci/
 .pikahut-agent-platform-local/

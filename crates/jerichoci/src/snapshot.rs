@@ -43,7 +43,7 @@ pub fn create_snapshot_with_profile(
         created_at: created_at.to_string(),
         content_hash,
     };
-    write_json(snapshot_dir.join("pikaci-snapshot.json"), &metadata)?;
+    write_json(snapshot_dir.join("jerichoci-snapshot.json"), &metadata)?;
     Ok(metadata)
 }
 
@@ -241,7 +241,7 @@ fn copy_tree(
 }
 
 fn should_skip(name: &str, root: bool, profile: SnapshotProfile) -> bool {
-    matches!(name, ".git" | ".pikaci" | ".direnv")
+    matches!(name, ".git" | ".jerichoci" | ".direnv")
         || name == "target"
         || (root
             && matches!(
@@ -343,7 +343,7 @@ fn write_json(path: PathBuf, value: &impl Serialize) -> anyhow::Result<()> {
 }
 
 pub fn read_snapshot_metadata(snapshot_dir: &Path) -> anyhow::Result<SnapshotMetadata> {
-    let path = snapshot_dir.join("pikaci-snapshot.json");
+    let path = snapshot_dir.join("jerichoci-snapshot.json");
     let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_slice(&bytes).with_context(|| format!("decode {}", path.display()))
 }
@@ -429,7 +429,7 @@ fn hash_snapshot_tree(root: &Path, current: &Path, hasher: &mut Sha256) -> anyho
     for entry in entries {
         let path = entry.path();
         let name = entry.file_name();
-        if current == root && name == "pikaci-snapshot.json" {
+        if current == root && name == "jerichoci-snapshot.json" {
             continue;
         }
         let relative = path
@@ -488,7 +488,7 @@ mod tests {
     #[test]
     fn snapshot_skip_filters_ignore_expected_paths() {
         assert!(should_skip(".git", true, SnapshotProfile::Full));
-        assert!(should_skip(".pikaci", true, SnapshotProfile::Full));
+        assert!(should_skip(".jerichoci", true, SnapshotProfile::Full));
         assert!(should_skip(".direnv", true, SnapshotProfile::Full));
         assert!(should_skip("target", true, SnapshotProfile::Full));
         assert!(should_skip("node_modules", false, SnapshotProfile::Full));
@@ -544,14 +544,14 @@ mod tests {
         fs::create_dir_all(root.join("rust")).expect("create rust dir");
         fs::write(root.join("rust/Cargo.toml"), "name = \"pika\"\n").expect("write cargo file");
         fs::write(
-            root.join("pikaci-snapshot.json"),
+            root.join("jerichoci-snapshot.json"),
             "{\"content_hash\":\"old\"}\n",
         )
         .expect("write metadata");
 
         let before = compute_snapshot_content_hash(&root).expect("hash before");
         fs::write(
-            root.join("pikaci-snapshot.json"),
+            root.join("jerichoci-snapshot.json"),
             "{\"content_hash\":\"new\"}\n",
         )
         .expect("rewrite metadata");

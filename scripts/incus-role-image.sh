@@ -10,7 +10,7 @@ Usage:
 
 Roles:
   managed-openclaw
-  pikaci-runner
+  jericho-runner
 
 Defaults:
   HOST    pika-build
@@ -46,9 +46,9 @@ resolve_role() {
       alias_name="${alias_name:-pika-agent/dev}"
       package_attr="managed-openclaw-incus-image"
       ;;
-    pikaci-runner)
-      alias_name="${alias_name:-pikaci/dev}"
-      package_attr="pikaci-runner-incus-image"
+    jericho-runner)
+      alias_name="${alias_name:-jericho/dev}"
+      package_attr="jericho-runner-incus-image"
       ;;
     *)
       echo "unsupported role: ${role:-<unset>}" >&2

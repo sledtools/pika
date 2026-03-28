@@ -633,7 +633,7 @@ fn incus_guest_role_from_env(env_var: &str) -> anyhow::Result<Option<IncusGuestR
         return Ok(None);
     };
     IncusGuestRole::from_str(&raw).map(Some).map_err(|_| {
-        anyhow!("{env_var} must be one of `managed-openclaw` or `pikaci-runner`, got {raw:?}")
+        anyhow!("{env_var} must be one of `managed-openclaw` or `jericho-runner`, got {raw:?}")
     })
 }
 

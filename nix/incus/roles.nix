@@ -17,17 +17,17 @@
     };
   };
 
-  "pikaci-runner" = {
-    id = "pikaci-runner";
+  "jericho-runner" = {
+    id = "jericho-runner";
     system = "x86_64-linux";
-    packageAttr = "pikaci-runner-incus-image";
-    legacyPackageAttr = "pikaci-incus-dev-image";
-    defaultAlias = "pikaci/dev";
-    imageName = "pikaci-incus-dev";
-    variant = "pikaci-incus-dev";
+    packageAttr = "jericho-runner-incus-image";
+    legacyPackageAttr = "jericho-incus-dev-image";
+    defaultAlias = "jericho/dev";
+    imageName = "jericho-incus-dev";
+    variant = "jericho-incus-dev";
     diskSize = 12288;
-    description = "Pika CI Incus dev image";
-    modules = [ ./pikaci-image.nix ];
+    description = "Jericho Incus dev image";
+    modules = [ ./jerichoci-image.nix ];
     specialArgs = { };
   };
 }

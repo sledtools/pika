@@ -220,7 +220,7 @@ mod tests {
             incus: IncusRuntimeConfig {
                 project: "pika-managed-agents".to_string(),
                 profile: "default".to_string(),
-                image_alias: "pikaci/dev".to_string(),
+                image_alias: "jericho/dev".to_string(),
             },
             resources: RuntimeResources {
                 vcpu_count: Some(2),

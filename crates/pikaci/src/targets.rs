@@ -35,7 +35,7 @@ pub struct TargetSpec {
 
 const TART_HOST_SETUP_COMMAND: &str = concat!(
     "set -euo pipefail; ",
-    "export DEVELOPER_DIR=\"${PIKACI_TART_DEVELOPER_DIR:-${PIKACI_TART_XCODE_APP:-/Applications/Xcode-16.4.0.app}/Contents/Developer}\"; ",
+    "export DEVELOPER_DIR=\"${JERICHOCI_TART_DEVELOPER_DIR:-${JERICHOCI_TART_XCODE_APP:-/Applications/Xcode-16.4.0.app}/Contents/Developer}\"; ",
     "just ios-xcframework ios-xcodeproj",
 );
 
@@ -43,7 +43,7 @@ fn remote_incus_runtime(
     staged_linux_command: Option<StagedLinuxCommandConfig>,
 ) -> JobRuntimeConfig {
     JobRuntimeConfig::Incus(IncusRuntimeConfig {
-        guest_role: IncusGuestRole::PikaciRunner,
+        guest_role: IncusGuestRole::JerichoRunner,
         staged_linux_command,
     })
 }

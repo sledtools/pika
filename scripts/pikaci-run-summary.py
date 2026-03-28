@@ -15,14 +15,14 @@ from pathlib import Path
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Summarize the latest pikaci run and optionally stage a small "
+            "Summarize the latest Jericho CI run and optionally stage a small "
             "artifact bundle for GitHub."
         )
     )
     parser.add_argument(
         "--state-root",
-        default=".pikaci",
-        help="pikaci state root. Default: .pikaci",
+        default=".jerichoci",
+        help="Jericho CI state root. Default: .jerichoci",
     )
     parser.add_argument(
         "--target-id",

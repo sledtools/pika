@@ -2,7 +2,7 @@
 
 let
   pikaCloudLifecycle = import ./pika-cloud-lifecycle-helper.nix { inherit pkgs; };
-  pikaciIncusRun = pkgs.writeScriptBin "pikaci-incus-run" ''
+  jerichociIncusRun = pkgs.writeScriptBin "jerichoci-incus-run" ''
     #!${pkgs.python3}/bin/python3
     import json
     import os
@@ -12,7 +12,7 @@ let
     from datetime import datetime
 
 
-    PIKACI_UID = 1000
+    JERICHOCI_UID = 1000
     USERS_GID = 100
     SYSTEM_BIN = "/run/current-system/sw/bin"
     LIFECYCLE_HELPER = "/run/current-system/sw/bin/pika-cloud-lifecycle"
@@ -49,7 +49,7 @@ let
         except OSError:
             current_owner = f"{stat_result.st_uid}:{stat_result.st_gid}"
             print(
-                f"[pikaci] leaving {path} owned by {current_owner}; expected {uid}:{gid} but chown is unsupported on this mount",
+                f"[jerichoci] leaving {path} owned by {current_owner}; expected {uid}:{gid} but chown is unsupported on this mount",
                 file=log_file,
                 flush=True,
             )
@@ -131,7 +131,7 @@ let
 
     request_path = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "")
     if not request_path:
-        print("usage: pikaci-incus-run <request-path>", file=sys.stderr)
+        print("usage: jerichoci-incus-run <request-path>", file=sys.stderr)
         raise SystemExit(2)
 
     state_dir = pathlib.Path("/run/pika-cloud")
@@ -142,7 +142,7 @@ let
     target_dir = pathlib.Path("/cargo-target")
     xdg_state_home_dir = state_dir / "xdg-state"
     root_home_dir = pathlib.Path("/root")
-    non_root_home_dir = pathlib.Path("/home/pikaci")
+    non_root_home_dir = pathlib.Path("/home/jericho")
     state_dir.mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -152,7 +152,7 @@ let
     result_path = state_dir / "result.json"
     with guest_log_path.open("a", encoding="utf-8") as log_file:
         boot_line = (
-            f"[pikaci] incus guest booted at "
+            f"[jerichoci] incus guest booted at "
             f"{datetime.now().astimezone().isoformat(timespec='seconds')}"
         )
         print(boot_line, flush=True)
@@ -183,10 +183,10 @@ let
                     "Incus guest request is missing boolean field `run_as_root`"
                 )
 
-            ensure_owned_dir(pathlib.Path("/home/pikaci"), PIKACI_UID, USERS_GID, log_file)
-            ensure_owned_dir(cargo_home_dir, PIKACI_UID, USERS_GID, log_file)
-            ensure_owned_dir(target_dir, PIKACI_UID, USERS_GID, log_file)
-            ensure_owned_dir(xdg_state_home_dir, PIKACI_UID, USERS_GID, log_file)
+            ensure_owned_dir(pathlib.Path("/home/jericho"), JERICHOCI_UID, USERS_GID, log_file)
+            ensure_owned_dir(cargo_home_dir, JERICHOCI_UID, USERS_GID, log_file)
+            ensure_owned_dir(target_dir, JERICHOCI_UID, USERS_GID, log_file)
+            ensure_owned_dir(xdg_state_home_dir, JERICHOCI_UID, USERS_GID, log_file)
 
             child_env = os.environ.copy()
             current_path = child_env.get("PATH") or ""
@@ -218,7 +218,7 @@ let
                 child_command = command_prefix
             else:
                 child_env["HOME"] = str(non_root_home_dir)
-                child_command = ["runuser", "-u", "pikaci", "-m", "--", *command_prefix]
+                child_command = ["runuser", "-u", "jericho", "-m", "--", *command_prefix]
 
             write_status(
                 status_path,
@@ -265,12 +265,12 @@ let
             raise SystemExit(exit_code)
         except Exception as exc:
             print(
-                f"[pikaci] Incus guest bootstrap failed: {exc}",
+                f"[jerichoci] Incus guest bootstrap failed: {exc}",
                 file=sys.stderr,
                 flush=True,
             )
             print(
-                f"[pikaci] Incus guest bootstrap failed: {exc}",
+                f"[jerichoci] Incus guest bootstrap failed: {exc}",
                 file=log_file,
                 flush=True,
             )
@@ -285,7 +285,7 @@ in
     (modulesPath + "/profiles/qemu-guest.nix")
   ];
 
-  networking.hostName = "pikaci-incus-dev";
+  networking.hostName = "jericho-incus-dev";
   networking.useDHCP = lib.mkForce false;
   networking.useNetworkd = true;
   services.resolved.enable = true;
@@ -331,11 +331,11 @@ in
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
   environment.pathsToLink = [ "/share/postgresql" ];
 
-  users.users.pikaci = {
+  users.users.jericho = {
     isNormalUser = true;
     uid = 1000;
     extraGroups = [ "users" ];
-    home = "/home/pikaci";
+    home = "/home/jericho";
     createHome = true;
   };
 
@@ -376,16 +376,16 @@ in
     xorg.libXi
     xorg.libXinerama
     xorg.libXrandr
-    pikaciIncusRun
+    jerichociIncusRun
   ];
 
   systemd.tmpfiles.rules = [
     "d /workspace 0755 root root -"
     "d /workspace/snapshot 0755 root root -"
-    "d /run/pika-cloud 0755 pikaci users -"
-    "d /run/pika-cloud/logs 0755 pikaci users -"
-    "d /cargo-home 0755 pikaci users -"
-    "d /cargo-target 0755 pikaci users -"
+    "d /run/pika-cloud 0755 jericho users -"
+    "d /run/pika-cloud/logs 0755 jericho users -"
+    "d /cargo-home 0755 jericho users -"
+    "d /cargo-target 0755 jericho users -"
     "d /staged 0755 root root -"
     "d /staged/linux-rust 0755 root root -"
     "d /staged/linux-rust/workspace-deps 0755 root root -"
@@ -394,15 +394,15 @@ in
 
   services.openssh.enable = false;
 
-  environment.etc."pikaci-incus.README".text = ''
-    Pika CI Incus guest image
+  environment.etc."jerichoci-incus.README".text = ''
+    Jericho Incus guest image
 
-    - intended for ephemeral pikaci remote Linux VM runs
+    - intended for ephemeral Jericho remote Linux VM runs
     - workspace snapshots are mounted at /workspace/snapshot
     - staged Linux workspace outputs are mounted under /staged/linux-rust
     - lifecycle files are written under /run/pika-cloud
     - runtime tools and shared libraries come from the image at /run/current-system/sw
-    - /run/current-system/sw/bin/pikaci-incus-run owns guest job bootstrap
+    - /run/current-system/sw/bin/jerichoci-incus-run owns guest job bootstrap
   '';
 
   system.stateVersion = "24.11";

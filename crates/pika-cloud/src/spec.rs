@@ -271,7 +271,7 @@ mod tests {
             IncusRuntimeConfig {
                 project: "pika-managed-agents".to_string(),
                 profile: "default".to_string(),
-                image_alias: "pikaci/dev".to_string(),
+                image_alias: "jericho/dev".to_string(),
             },
             RuntimeResources {
                 vcpu_count: Some(2),
@@ -286,7 +286,7 @@ mod tests {
                 required: true,
             }],
         )
-        .with_entry_command("/run/current-system/sw/bin/pikaci-incus-run");
+        .with_entry_command("/run/current-system/sw/bin/jerichoci-incus-run");
         spec.policies = RuntimePolicies {
             restart_policy: RestartPolicy::OnFailure,
             retention_policy: RetentionPolicy::KeepUntilStopped,
@@ -315,7 +315,7 @@ mod tests {
             IncusRuntimeConfig {
                 project: "pika-managed-agents".to_string(),
                 profile: "default".to_string(),
-                image_alias: "pikaci/dev".to_string(),
+                image_alias: "jericho/dev".to_string(),
             },
             RuntimeResources::default(),
             Vec::new(),
@@ -339,7 +339,7 @@ mod tests {
             "incus": {
                 "project": "pika-managed-agents",
                 "profile": "default",
-                "image_alias": "pikaci/dev"
+                "image_alias": "jericho/dev"
             },
             "policies": {
                 "restart_policy": "never",

@@ -34,12 +34,12 @@ source "$script_dir/lib/pikaci-tools.sh"
 export_remote_defaults() {
   load_pikaci_staged_linux_remote_defaults "$repo_root"
   log_pikaci_tool_resolution "staged-linux-remote"
-  export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY:-$default_ssh_binary}"
-  export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY:-$default_ssh_nix_binary}"
-  export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-$default_ssh_host}"
-  export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR:-$default_remote_work_dir}"
-  export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_LAUNCHER_BINARY="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_LAUNCHER_BINARY:-$default_remote_launcher_binary}"
-  export PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_HELPER_BINARY="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_HELPER_BINARY:-$default_remote_helper_binary}"
+  export JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_BINARY="${JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_BINARY:-$default_ssh_binary}"
+  export JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY="${JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY:-$default_ssh_nix_binary}"
+  export JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_HOST="${JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-$default_ssh_host}"
+  export JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR="${JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR:-$default_remote_work_dir}"
+  export JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_LAUNCHER_BINARY="${JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_LAUNCHER_BINARY:-$default_remote_launcher_binary}"
+  export JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_HELPER_BINARY="${JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_HELPER_BINARY:-$default_remote_helper_binary}"
 }
 
 resolve_target() {
@@ -52,14 +52,14 @@ prepare_lane() {
 
   local helper_snapshot_id
   helper_snapshot_id="prepare-$(date -u +%Y%m%dT%H%M%SZ)-$$"
-  prepare_snapshot_root="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR}/helpers/${helper_snapshot_id}"
+  prepare_snapshot_root="${JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR}/helpers/${helper_snapshot_id}"
 
   cleanup_prepare_snapshot() {
     if [[ -z "$prepare_snapshot_root" ]]; then
       return
     fi
-    "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY:-/usr/bin/ssh}" \
-      "${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST}" \
+    "${JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_BINARY:-/usr/bin/ssh}" \
+      "${JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_HOST}" \
       "rm -rf '$prepare_snapshot_root'" >/dev/null 2>&1 || true
   }
 
@@ -82,13 +82,13 @@ run_lane() {
   resolve_target "$1"
   local output_mode="${2:-human}"
 
-  export PIKACI_PRE_MERGE_PIKA_RUST_SUBPROCESS_FULFILL=1
-  export PIKACI_PREPARED_OUTPUT_FULFILL_INVOCATION=external_wrapper_command_v1
-  export PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_TRANSPORT=ssh_launcher_transport_v1
+  export JERICHOCI_PRE_MERGE_PIKA_RUST_SUBPROCESS_FULFILL=1
+  export JERICHOCI_PREPARED_OUTPUT_FULFILL_INVOCATION=external_wrapper_command_v1
+  export JERICHOCI_PREPARED_OUTPUT_FULFILL_LAUNCHER_TRANSPORT=ssh_launcher_transport_v1
 
   cd "$repo_root"
-  export PIKACI_PREPARED_OUTPUT_FULFILL_BINARY
-  export PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY
+  export JERICHOCI_PREPARED_OUTPUT_FULFILL_BINARY
+  export JERICHOCI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY
   exec "$PIKACI_BIN" run "$target_id" --output "$output_mode"
 }
 

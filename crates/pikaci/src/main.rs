@@ -245,14 +245,14 @@ fn resolve_state_root(cwd: &std::path::Path, configured: Option<PathBuf>) -> Pat
 }
 
 fn fail_if_removed_backend_selector_is_set() -> anyhow::Result<()> {
-    let Ok(value) = std::env::var("PIKACI_REMOTE_LINUX_VM_INCUS_LANES") else {
+    let Ok(value) = std::env::var("JERICHOCI_REMOTE_LINUX_VM_INCUS_LANES") else {
         return Ok(());
     };
     if value.trim().is_empty() {
         return Ok(());
     }
     bail!(
-        "PIKACI_REMOTE_LINUX_VM_INCUS_LANES has been removed; use PIKACI_REMOTE_LINUX_VM_BACKEND=incus|auto"
+        "JERICHOCI_REMOTE_LINUX_VM_INCUS_LANES has been removed; use JERICHOCI_REMOTE_LINUX_VM_BACKEND=incus|auto"
     );
 }
 

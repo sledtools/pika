@@ -147,7 +147,7 @@ pub(super) fn build_remote_incus_process_command(
         runtime_plan.paths.guest_request_path.as_str(),
         &build_remote_incus_guest_request(job),
         log_path,
-        "[pikaci] write Incus guest request",
+        "[jerichoci] write Incus guest request",
     )?;
     Ok(build_remote_incus_launch_command(
         remote,
@@ -184,7 +184,7 @@ pub(super) fn ensure_remote_incus_image_available(
         append_line(
             log_path,
             &format!(
-                "[pikaci] remote Linux VM backend `incus` image `{}` already available in project `{}` on {}",
+                "[jerichoci] remote Linux VM backend `incus` image `{}` already available in project `{}` on {}",
                 image_alias, project, remote.shared.remote_host
             ),
         )?;
@@ -194,7 +194,7 @@ pub(super) fn ensure_remote_incus_image_available(
     append_line(log_path, &String::from_utf8_lossy(&output.stdout))?;
     append_line(log_path, &String::from_utf8_lossy(&output.stderr))?;
     bail!(
-        "Incus image `{}` is not available in project `{}` on {}; import it first (for example with `./scripts/pikaci-incus-image.sh build-import --remote-host {}`)",
+        "Incus image `{}` is not available in project `{}` on {}; import it first (for example with `./scripts/jericho-incus-image.sh build-import --remote-host {}`)",
         image_alias,
         project,
         remote.shared.remote_host,
@@ -255,7 +255,7 @@ pub(super) fn load_remote_incus_image_record(
     append_line(
         log_path,
         &format!(
-            "[pikaci] remote Linux VM backend `incus` image `{}` fingerprint={} on {}",
+            "[jerichoci] remote Linux VM backend `incus` image `{}` fingerprint={} on {}",
             image_alias, decoded.fingerprint, remote.shared.remote_host
         ),
     )?;
@@ -287,7 +287,7 @@ pub(super) fn ensure_remote_incus_runtime(
     append_line(
         log_path,
         &format!(
-            "[pikaci] configure remote Linux VM backend `incus` on {}",
+            "[jerichoci] configure remote Linux VM backend `incus` on {}",
             remote.shared.remote_host
         ),
     )?;
@@ -318,7 +318,7 @@ pub(super) fn ensure_remote_incus_runtime(
         &remote.shared.remote_host,
         &init_arg_refs,
         log_path,
-        "[pikaci] create remote Linux VM backend `incus` instance",
+        "[jerichoci] create remote Linux VM backend `incus` instance",
     )?;
     configure_remote_incus_devices(job, ctx, remote, &runtime_plan, log_path)?;
     run_remote_incus_to_log(
@@ -330,7 +330,7 @@ pub(super) fn ensure_remote_incus_runtime(
             remote.incus_instance_name.as_str(),
         ],
         log_path,
-        "[pikaci] start remote Linux VM backend `incus` instance",
+        "[jerichoci] start remote Linux VM backend `incus` instance",
     )?;
     wait_for_remote_incus_instance(remote, log_path)
 }
@@ -356,7 +356,7 @@ pub(super) fn delete_remote_incus_instance(
     run_command_to_log(
         &mut run_ssh_command(&remote.shared.remote_host, &command),
         log_path,
-        "[pikaci] delete stale remote Linux VM backend `incus` instance",
+        "[jerichoci] delete stale remote Linux VM backend `incus` instance",
     )
 }
 
@@ -651,7 +651,7 @@ pub(super) fn build_snapshot_mount_plan_for_test(
             execution: super::super::JobExecutionConfig::REMOTE_SSH_INCUS,
             runtime_config: super::super::JobRuntimeConfig::Incus(
                 super::super::IncusRuntimeConfig {
-                    guest_role: pika_incus_guest_role::IncusGuestRole::PikaciRunner,
+                    guest_role: pika_incus_guest_role::IncusGuestRole::JerichoRunner,
                     staged_linux_command: None,
                 },
             ),
@@ -718,7 +718,7 @@ fn wait_for_remote_incus_instance(
     run_command_to_log(
         &mut run_ssh_command(&remote.shared.remote_host, &command),
         log_path,
-        "[pikaci] wait for remote Linux VM backend `incus` instance readiness",
+        "[jerichoci] wait for remote Linux VM backend `incus` instance readiness",
     )
 }
 
@@ -766,7 +766,7 @@ fn add_remote_incus_disk_device(
         &remote.shared.remote_host,
         &arg_refs,
         log_path,
-        &format!("[pikaci] add Incus disk device `{device_name}`"),
+        &format!("[jerichoci] add Incus disk device `{device_name}`"),
     )
 }
 

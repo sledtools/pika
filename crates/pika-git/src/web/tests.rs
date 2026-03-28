@@ -137,7 +137,7 @@ fn write_pikaci_run_fixture(config: &Config, run_id: &str) {
         incus_image: Some(jerichoci::RemoteLinuxVmImageRecord {
             guest_role: None,
             project: "pika-managed-agents".to_string(),
-            alias: "pikaci/dev".to_string(),
+            alias: "jericho/dev".to_string(),
             fingerprint: Some("abc123".to_string()),
         }),
         phases: Vec::new(),

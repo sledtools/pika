@@ -520,7 +520,7 @@ async fn api_forge_ci_handlers_load_persisted_run_and_logs() {
     assert_eq!(run_json["run_id"], "pikaci-run-abc");
     assert_eq!(
         run_json["jobs"][0]["remote_linux_vm_execution"]["incus_image"]["alias"],
-        "pikaci/dev"
+        "jericho/dev"
     );
 
     let logs_response = api_forge_ci_logs_handler(

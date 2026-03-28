@@ -203,24 +203,24 @@ pub(crate) fn remote_linux_vm_execution_from_error(
     })
 }
 
-const TART_BASE_VM_ENV: &str = "PIKACI_TART_BASE_VM";
+const TART_BASE_VM_ENV: &str = "JERICHOCI_TART_BASE_VM";
 const TART_BASE_VM_DEFAULT: &str = "sequoia-base";
-const TART_USE_HOST_XCODE_ENV: &str = "PIKACI_TART_USE_HOST_XCODE";
-const TART_XCODE_APP_ENV: &str = "PIKACI_TART_XCODE_APP";
+const TART_USE_HOST_XCODE_ENV: &str = "JERICHOCI_TART_USE_HOST_XCODE";
+const TART_XCODE_APP_ENV: &str = "JERICHOCI_TART_XCODE_APP";
 const TART_XCODE_APP_DEFAULT: &str = "/Applications/Xcode-16.4.0.app";
-const TART_XCODE_TAG: &str = "pikaci-xcode";
-const TART_LIBRARY_DEVELOPER_TAG: &str = "pikaci-library-developer";
+const TART_XCODE_TAG: &str = "jerichoci-xcode";
+const TART_LIBRARY_DEVELOPER_TAG: &str = "jerichoci-library-developer";
 const TART_RUST_TOOLCHAIN_NAME: &str = "rust-toolchain";
-const TART_NIX_STORE_TAG: &str = "pikaci-nix-store";
+const TART_NIX_STORE_TAG: &str = "jerichoci-nix-store";
 const LOCAL_TERMINAL_RESULT_FRAGMENT_TEMPLATE: &str =
     include_str!("../../../nix/pikaci/local-terminal-result-fragment.sh.in");
 const PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV: &str =
-    "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY";
+    "JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_BINARY";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_ENV: &str =
-    "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY";
-const PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV: &str = "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST";
+    "JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY";
+const PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV: &str = "JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_HOST";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_ENV: &str =
-    "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR";
+    "JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_LAUNCHER_BINARY_DEFAULT: &str =
     "/run/current-system/sw/bin/pikaci-launch-fulfill-prepared-output";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_HELPER_BINARY_DEFAULT: &str =
@@ -229,15 +229,15 @@ const PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_DEFAULT: &str = "/usr/bin/ssh";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_DEFAULT: &str = "nix";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_DEFAULT: &str = "pika-build";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_DEFAULT: &str =
-    "/var/tmp/pikaci-prepared-output";
-const REMOTE_LINUX_VM_INCUS_GUEST_ROLE_ENV: &str = "PIKACI_REMOTE_LINUX_VM_INCUS_GUEST_ROLE";
-const REMOTE_LINUX_VM_INCUS_PROJECT_ENV: &str = "PIKACI_REMOTE_LINUX_VM_INCUS_PROJECT";
-const REMOTE_LINUX_VM_INCUS_PROFILE_ENV: &str = "PIKACI_REMOTE_LINUX_VM_INCUS_PROFILE";
-const REMOTE_LINUX_VM_INCUS_IMAGE_ALIAS_ENV: &str = "PIKACI_REMOTE_LINUX_VM_INCUS_IMAGE_ALIAS";
+    "/var/tmp/jerichoci-prepared-output";
+const REMOTE_LINUX_VM_INCUS_GUEST_ROLE_ENV: &str = "JERICHOCI_REMOTE_LINUX_VM_INCUS_GUEST_ROLE";
+const REMOTE_LINUX_VM_INCUS_PROJECT_ENV: &str = "JERICHOCI_REMOTE_LINUX_VM_INCUS_PROJECT";
+const REMOTE_LINUX_VM_INCUS_PROFILE_ENV: &str = "JERICHOCI_REMOTE_LINUX_VM_INCUS_PROFILE";
+const REMOTE_LINUX_VM_INCUS_IMAGE_ALIAS_ENV: &str = "JERICHOCI_REMOTE_LINUX_VM_INCUS_IMAGE_ALIAS";
 const REMOTE_LINUX_VM_INCUS_PROJECT_DEFAULT: &str = "pika-managed-agents";
 const REMOTE_LINUX_VM_INCUS_PROFILE_DEFAULT: &str = "pika-agent-dev";
 const REMOTE_LINUX_VM_INCUS_READ_ONLY_DISK_IO_BUS: &str = "virtiofs";
-const REMOTE_LINUX_VM_INCUS_RUN_BINARY: &str = "/run/current-system/sw/bin/pikaci-incus-run";
+const REMOTE_LINUX_VM_INCUS_RUN_BINARY: &str = "/run/current-system/sw/bin/jerichoci-incus-run";
 const REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH: &str = "/workspace/snapshot";
 
 struct TartRunProcess {
@@ -313,7 +313,7 @@ fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOut
     append_line(
         &ctx.host_log_path,
         &format!(
-            "[pikaci] host-local workspace {} in {:.3}s",
+            "[jerichoci] host-local workspace {} in {:.3}s",
             refresh_result,
             refresh_started.elapsed().as_secs_f64()
         ),
@@ -330,14 +330,14 @@ fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOut
     append_line(
         &ctx.host_log_path,
         &format!(
-            "[pikaci] starting host-local job `{}` at {}",
+            "[jerichoci] starting host-local job `{}` at {}",
             job.id,
             Utc::now().to_rfc3339()
         ),
     )?;
     append_line(
         &ctx.host_log_path,
-        &format!("[pikaci] host-local command: {command}"),
+        &format!("[jerichoci] host-local command: {command}"),
     )?;
 
     let env_started = Instant::now();
@@ -351,7 +351,7 @@ fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOut
     append_line(
         &ctx.host_log_path,
         &format!(
-            "[pikaci] host-local execution environment: {}",
+            "[jerichoci] host-local execution environment: {}",
             host_local_mode
         ),
     )?;
@@ -359,7 +359,7 @@ fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOut
         append_line(
             &ctx.host_log_path,
             &format!(
-                "[pikaci] host-local environment {} in {:.3}s",
+                "[jerichoci] host-local environment {} in {:.3}s",
                 refresh,
                 env_started.elapsed().as_secs_f64()
             ),
@@ -400,7 +400,7 @@ fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOut
             append_line(
                 &ctx.host_log_path,
                 &format!(
-                    "[pikaci] timeout after {}s, killing host-local command",
+                    "[jerichoci] timeout after {}s, killing host-local command",
                     job.timeout_secs
                 ),
             )?;
@@ -422,7 +422,7 @@ fn run_host_local_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOut
     append_line(
         &ctx.host_log_path,
         &format!(
-            "[pikaci] host-local job exited with {:?} at {}",
+            "[jerichoci] host-local job exited with {:?} at {}",
             exit_status.code(),
             Utc::now().to_rfc3339()
         ),
@@ -588,7 +588,7 @@ fn prepare_host_local_command_mode(
 }
 
 fn resolve_host_local_nix_shell() -> String {
-    std::env::var("PIKACI_HOST_LOCAL_NIX_SHELL").unwrap_or_else(|_| "default".to_string())
+    std::env::var("JERICHOCI_HOST_LOCAL_NIX_SHELL").unwrap_or_else(|_| "default".to_string())
 }
 
 fn host_local_dev_env_cache_dir(cache_dir: &Path) -> PathBuf {
@@ -834,7 +834,7 @@ fn acquire_host_local_cache_lock(
                 append_line(
                     &ctx.host_log_path,
                     &format!(
-                        "[pikaci] acquired host-local cache lock for `{}` at {}",
+                        "[jerichoci] acquired host-local cache lock for `{}` at {}",
                         job.id,
                         lock_path.display()
                     ),
@@ -853,7 +853,7 @@ fn acquire_host_local_cache_lock(
                     append_line(
                         &ctx.host_log_path,
                         &format!(
-                            "[pikaci] waiting for host-local cache lock {}",
+                            "[jerichoci] waiting for host-local cache lock {}",
                             lock_path.display()
                         ),
                     )?;
@@ -1008,7 +1008,7 @@ fn run_remote_linux_vm_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<J
         append_line(
             &ctx.host_log_path,
             &format!(
-                "[pikaci] starting remote Linux VM backend `{}` for `{}` on {} at {}: {}",
+                "[jerichoci] starting remote Linux VM backend `{}` for `{}` on {} at {}: {}",
                 remote_linux_vm_backend_label(backend),
                 workspace_output_system,
                 shared.remote_host,
@@ -1026,7 +1026,7 @@ fn run_remote_linux_vm_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<J
         append_line(
             &ctx.host_log_path,
             &format!(
-                "[pikaci] remote Linux VM backend `{}` exited with {:?} at {}",
+                "[jerichoci] remote Linux VM backend `{}` exited with {:?} at {}",
                 remote_linux_vm_backend_label(backend),
                 status.code(),
                 Utc::now().to_rfc3339()
@@ -1110,7 +1110,7 @@ fn run_tart_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> 
             .arg(&base_vm)
             .arg(&vm_name),
         &ctx.host_log_path,
-        "[pikaci] tart clone",
+        "[jerichoci] tart clone",
     )
     .with_context(|| {
         format!(
@@ -1172,7 +1172,7 @@ fn run_tart_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> 
     append_line(
         &ctx.host_log_path,
         &format!(
-            "[pikaci] starting Tart VM `{}` from `{}` at {}",
+            "[jerichoci] starting Tart VM `{}` from `{}` at {}",
             vm_name,
             base_vm,
             Utc::now().to_rfc3339()
@@ -1236,7 +1236,7 @@ fn run_tart_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> 
             append_line(
                 &ctx.host_log_path,
                 &format!(
-                    "[pikaci] timeout after {}s, killing Tart exec",
+                    "[jerichoci] timeout after {}s, killing Tart exec",
                     job.timeout_secs
                 ),
             )?;
@@ -1263,7 +1263,7 @@ fn run_tart_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<JobOutcome> 
     append_line(
         &ctx.host_log_path,
         &format!(
-            "[pikaci] tart exec exited with {:?} at {}",
+            "[jerichoci] tart exec exited with {:?} at {}",
             exec_status.code(),
             Utc::now().to_rfc3339()
         ),
@@ -1322,7 +1322,7 @@ fn wait_for_tart_guest(vm_name: &str, log_path: &Path, timeout: Duration) -> any
             append_line(
                 log_path,
                 &format!(
-                    "[pikaci] Tart guest `{vm_name}` is ready at {}",
+                    "[jerichoci] Tart guest `{vm_name}` is ready at {}",
                     Utc::now().to_rfc3339()
                 ),
             )?;
@@ -1361,7 +1361,7 @@ fn ensure_tart_nix_mountpoint(vm_name: &str, log_path: &Path) -> anyhow::Result<
 
     append_line(
         log_path,
-        "[pikaci] bootstrapping synthetic /nix mountpoint inside Tart guest",
+        "[jerichoci] bootstrapping synthetic /nix mountpoint inside Tart guest",
     )?;
     let bootstrap = r#"set -euo pipefail
 sudo mkdir -p /System/Volumes/Data/nix/store
@@ -1388,12 +1388,12 @@ fn cleanup_tart_vm(vm_name: &str, log_path: &Path) {
     let _ = run_command_to_log(
         Command::new("tart").arg("stop").arg(vm_name),
         log_path,
-        "[pikaci] tart stop",
+        "[jerichoci] tart stop",
     );
     let _ = run_command_to_log(
         Command::new("tart").arg("delete").arg(vm_name),
         log_path,
-        "[pikaci] tart delete",
+        "[jerichoci] tart delete",
     );
 }
 
@@ -1462,7 +1462,7 @@ fn stop_tart_run_process(vm_name: &str, log_path: &Path, process: TartRunProcess
     let _ = run_command_to_log(
         Command::new("tart").arg("stop").arg(vm_name),
         log_path,
-        "[pikaci] tart stop",
+        "[jerichoci] tart stop",
     );
     let _ = process.child.wait_with_output();
     let _ = process.stdout_handle.join();
@@ -1478,7 +1478,7 @@ fn tart_vm_name(job: &JobSpec, job_dir: &Path) -> String {
         .unwrap_or("run");
     let run_stub: String = run_id.chars().take(12).collect();
     format!(
-        "pikaci-{}-{}",
+        "jerichoci-{}-{}",
         sanitize_vm_component(&run_stub),
         sanitize_vm_component(job.id)
     )
@@ -1655,7 +1655,7 @@ fi
         r#"set -euo pipefail
 ARTIFACTS="{artifacts_mount}"
 exec > >(tee -a "$ARTIFACTS/guest.log") 2>&1
-echo "[pikaci] tart guest booted at $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+echo "[jerichoci] tart guest booted at $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 {xcode_setup}\
 {developer_dir_setup}\
 {nix_store_setup}\
@@ -1876,7 +1876,7 @@ fn remote_linux_vm_incus_guest_role(job: &JobSpec) -> anyhow::Result<IncusGuestR
     {
         return value.parse::<IncusGuestRole>().map_err(|_| {
             anyhow!(
-                "{REMOTE_LINUX_VM_INCUS_GUEST_ROLE_ENV} must be one of `managed-openclaw` or `pikaci-runner`, got {value:?}"
+                "{REMOTE_LINUX_VM_INCUS_GUEST_ROLE_ENV} must be one of `managed-openclaw` or `jericho-runner`, got {value:?}"
             )
         });
     }
@@ -1899,11 +1899,11 @@ fn remote_linux_vm_incus_image_alias(guest_role: IncusGuestRole) -> String {
 
 fn remote_linux_vm_incus_instance_name(run_id: &str, job_id: &str) -> String {
     let suffix = hex::encode(&Sha256::digest(format!("{run_id}:{job_id}").as_bytes())[..6]);
-    format!("pikaci-{suffix}")
+    format!("jerichoci-{suffix}")
 }
 
 pub(crate) fn prepared_output_remote_launcher_binary() -> String {
-    std::env::var("PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_LAUNCHER_BINARY").unwrap_or_else(
+    std::env::var("JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_LAUNCHER_BINARY").unwrap_or_else(
         |_| {
             staged_linux_remote_defaults()
                 .remote_launcher_binary
@@ -1913,11 +1913,13 @@ pub(crate) fn prepared_output_remote_launcher_binary() -> String {
 }
 
 pub(crate) fn prepared_output_remote_helper_binary() -> String {
-    std::env::var("PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_HELPER_BINARY").unwrap_or_else(|_| {
-        staged_linux_remote_defaults()
-            .remote_helper_binary
-            .to_string()
-    })
+    std::env::var("JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_HELPER_BINARY").unwrap_or_else(
+        |_| {
+            staged_linux_remote_defaults()
+                .remote_helper_binary
+                .to_string()
+        },
+    )
 }
 
 fn shell_single_quote(value: &str) -> String {
@@ -2002,7 +2004,7 @@ fn ensure_remote_linux_vm_directories(
     run_command_to_log(
         &mut run_ssh_command(&shared.remote_host, &command),
         log_path,
-        "[pikaci] ensure remote Linux VM execute dirs",
+        "[jerichoci] ensure remote Linux VM execute dirs",
     )
 }
 
@@ -2018,7 +2020,7 @@ fn reset_remote_linux_vm_artifacts(
     run_command_to_log(
         &mut run_ssh_command(&shared.remote_host, &command),
         log_path,
-        "[pikaci] reset remote Linux VM artifacts dir",
+        "[jerichoci] reset remote Linux VM artifacts dir",
     )
 }
 
@@ -2029,7 +2031,7 @@ pub(crate) fn sync_snapshot_to_remote(
     log_path: &Path,
 ) -> anyhow::Result<()> {
     let local_metadata = read_snapshot_metadata(local_snapshot_dir)?;
-    let ready_marker = remote_snapshot_dir.join("pikaci-snapshot.json");
+    let ready_marker = remote_snapshot_dir.join("jerichoci-snapshot.json");
     let remote_metadata = load_remote_snapshot_metadata(remote_host, &ready_marker)?;
     if remote_snapshot_ready_for_use(
         &local_metadata,
@@ -2119,7 +2121,7 @@ fn log_remote_snapshot_reuse(
     append_line(
         log_path,
         &format!(
-            "[pikaci] remote snapshot already available at {}{}",
+            "[jerichoci] remote snapshot already available at {}{}",
             remote_snapshot_dir.display(),
             suffix
         ),
@@ -2177,14 +2179,14 @@ fn sync_directory_to_remote(
             .as_nanos()
     );
     let remote_tmp_dir = remote_parent.join(format!(
-        ".pikaci-sync-{}-{}",
+        ".jerichoci-sync-{}-{}",
         label.replace(|c: char| !c.is_ascii_alphanumeric(), "-"),
         unique_suffix
     ));
     append_line(
         log_path,
         &format!(
-            "[pikaci] sync {label} {} -> {}:{}",
+            "[jerichoci] sync {label} {} -> {}:{}",
             local_dir.display(),
             remote_host,
             remote_dir.display()
@@ -2199,7 +2201,7 @@ fn sync_directory_to_remote(
     run_command_to_log(
         &mut run_ssh_command(remote_host, &prepare_command),
         log_path,
-        &format!("[pikaci] prepare remote {label} staging dir"),
+        &format!("[jerichoci] prepare remote {label} staging dir"),
     )?;
 
     let mut child = Command::new("tar")
@@ -2259,7 +2261,7 @@ fn sync_directory_to_remote(
     run_command_to_log(
         &mut run_ssh_command(remote_host, &finalize_command),
         log_path,
-        &format!("[pikaci] finalize remote {label} sync"),
+        &format!("[jerichoci] finalize remote {label} sync"),
     )?;
     Ok(())
 }
@@ -2357,7 +2359,7 @@ fn spawn_remote_linux_vm_process(
     append_line(
         log_path,
         &format!(
-            "[pikaci] launched remote Linux VM backend `{}` for job `{}` on {}",
+            "[jerichoci] launched remote Linux VM backend `{}` for job `{}` on {}",
             remote_linux_vm_backend_label(RemoteLinuxVmBackend::Incus),
             job.id,
             remote.shared().remote_host
@@ -2389,7 +2391,7 @@ fn wait_for_remote_linux_vm_process(
             append_line(
                 log_path,
                 &format!(
-                    "[pikaci] timeout after {}s, killing remote Linux VM backend process",
+                    "[jerichoci] timeout after {}s, killing remote Linux VM backend process",
                     timeout_secs
                 ),
             )?;
@@ -2529,7 +2531,7 @@ mod tests {
     }
 
     fn incus_guest_image_source() -> &'static str {
-        include_str!("../../../nix/incus/pikaci-image.nix")
+        include_str!("../../../nix/incus/jerichoci-image.nix")
     }
 
     fn incus_lifecycle_helper_source() -> &'static str {
@@ -2543,7 +2545,7 @@ mod tests {
     fn write_snapshot_metadata(snapshot_dir: &Path, content_hash: &str) {
         fs::create_dir_all(snapshot_dir).expect("create snapshot dir");
         fs::write(
-            snapshot_dir.join("pikaci-snapshot.json"),
+            snapshot_dir.join("jerichoci-snapshot.json"),
             format!(
                 r#"{{"source_root":"/tmp/source","snapshot_dir":"{}","git_head":"deadbeef","git_dirty":false,"created_at":"2026-03-15T00:00:00Z","content_hash":"{}"}}"#,
                 snapshot_dir.display(),
@@ -2555,7 +2557,7 @@ mod tests {
 
     fn remote_incus_runtime() -> JobRuntimeConfig {
         JobRuntimeConfig::Incus(IncusRuntimeConfig {
-            guest_role: IncusGuestRole::PikaciRunner,
+            guest_role: IncusGuestRole::JerichoRunner,
             staged_linux_command: None,
         })
     }
@@ -2610,10 +2612,10 @@ mod tests {
     fn sample_incus_context() -> RemoteIncusContext {
         RemoteIncusContext {
             shared: sample_remote_shared_context(),
-            incus_guest_role: IncusGuestRole::PikaciRunner,
+            incus_guest_role: IncusGuestRole::JerichoRunner,
             incus_project: "pika-managed-agents".to_string(),
             incus_profile: "pika-agent-dev".to_string(),
-            incus_image_alias: "pikaci/dev".to_string(),
+            incus_image_alias: "jericho/dev".to_string(),
             incus_instance_name: "pikaci-run-job".to_string(),
         }
     }
@@ -2623,7 +2625,7 @@ mod tests {
         let canonical = sample_incus_context();
         assert_eq!(
             canonical.recorded_guest_role(),
-            Some(IncusGuestRole::PikaciRunner)
+            Some(IncusGuestRole::JerichoRunner)
         );
 
         let custom = RemoteIncusContext {
@@ -2661,7 +2663,7 @@ mod tests {
         assert!(command.contains("'exec'"));
         assert!(command.contains("'--project' 'pika-managed-agents'"));
         assert!(command.contains("'pikaci-run-job'"));
-        assert!(command.contains("'/run/current-system/sw/bin/pikaci-incus-run'"));
+        assert!(command.contains("'/run/current-system/sw/bin/jerichoci-incus-run'"));
         assert!(command.contains(&format!("'{}'", GUEST_REQUEST_PATH)));
         assert!(!command.contains("PIKACI_INCUS_GUEST_COMMAND"));
         assert!(!command.contains("PIKACI_INCUS_TIMEOUT_SECS"));
@@ -2873,10 +2875,10 @@ mod tests {
             r#"
             [
               {"fingerprint":"wrong","aliases":[]},
-              {"fingerprint":"right","aliases":[{"name":"pikaci/dev"}]}
+              {"fingerprint":"right","aliases":[{"name":"jericho/dev"}]}
             ]
             "#,
-            "pikaci/dev",
+            "jericho/dev",
         )
         .expect("matching alias should be selected");
 
@@ -2891,7 +2893,7 @@ mod tests {
               {"fingerprint":"only","aliases":[]}
             ]
             "#,
-            "pikaci/dev",
+            "jericho/dev",
         )
         .expect_err("missing alias should fail");
 
@@ -2906,9 +2908,9 @@ mod tests {
         let record = RemoteLinuxVmExecutionRecord {
             backend: RemoteLinuxVmBackend::Incus,
             incus_image: Some(RemoteLinuxVmImageRecord {
-                guest_role: Some(IncusGuestRole::PikaciRunner),
+                guest_role: Some(IncusGuestRole::JerichoRunner),
                 project: "pika-managed-agents".to_string(),
-                alias: "pikaci/dev".to_string(),
+                alias: "jericho/dev".to_string(),
                 fingerprint: Some("abcdef".to_string()),
             }),
             phases: vec![RemoteLinuxVmPhaseRecord {
@@ -3056,21 +3058,21 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).expect("create snapshot dir");
         std::fs::write(
-            root.join("pikaci-snapshot.json"),
+            root.join("jerichoci-snapshot.json"),
             r#"{"source_root":"/tmp/src","snapshot_dir":"/tmp/snapshot","git_head":null,"git_dirty":false,"created_at":"2026-03-10T00:00:00Z","content_hash":"abc123"}"#,
         )
         .expect("write metadata");
 
         let remote = staged_linux_remote_snapshot_dir(
             &root,
-            Path::new("/var/tmp/pikaci-prepared-output"),
+            Path::new("/var/tmp/jerichoci-prepared-output"),
             "run-123",
         )
         .expect("remote snapshot dir");
 
         assert_eq!(
             remote,
-            Path::new("/var/tmp/pikaci-prepared-output/snapshots/abc123/snapshot")
+            Path::new("/var/tmp/jerichoci-prepared-output/snapshots/abc123/snapshot")
         );
 
         let _ = std::fs::remove_dir_all(root);
@@ -3161,7 +3163,10 @@ mod tests {
         assert_eq!(defaults.ssh_binary, "/usr/bin/ssh");
         assert_eq!(defaults.ssh_nix_binary, "nix");
         assert_eq!(defaults.ssh_host, "pika-build");
-        assert_eq!(defaults.remote_work_dir, "/var/tmp/pikaci-prepared-output");
+        assert_eq!(
+            defaults.remote_work_dir,
+            "/var/tmp/jerichoci-prepared-output"
+        );
         assert_eq!(
             defaults.remote_launcher_binary,
             "/run/current-system/sw/bin/pikaci-launch-fulfill-prepared-output"
@@ -3174,8 +3179,10 @@ mod tests {
 
     #[test]
     fn host_local_jobs_refresh_stable_workspace_before_running() {
-        let root =
-            std::env::temp_dir().join(format!("pikaci-host-local-test-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "jerichoci-host-local-test-{}",
+            uuid::Uuid::new_v4()
+        ));
         let workspace_source_dir = root.join("snapshot");
         let workspace_dir = root.join("cache").join("host-local").join("workspace");
         let job_dir = root.join("job");
@@ -3704,7 +3711,7 @@ mod tests {
     #[test]
     fn host_local_jobs_resolve_relative_openclaw_dir_from_source_root() {
         let root =
-            std::env::temp_dir().join(format!("pikaci-openclaw-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("jerichoci-openclaw-test-{}", uuid::Uuid::new_v4()));
         let source_root = root.join("source");
         let external_openclaw_dir = root.join("openclaw");
         let workspace_source_dir = root.join("snapshot");
@@ -3772,8 +3779,10 @@ mod tests {
 
     #[test]
     fn host_local_jobs_honor_timeout_secs() {
-        let root =
-            std::env::temp_dir().join(format!("pikaci-host-timeout-test-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "jerichoci-host-timeout-test-{}",
+            uuid::Uuid::new_v4()
+        ));
         let workspace_source_dir = root.join("snapshot");
         let workspace_dir = root.join("cache").join("host-local").join("workspace");
         let cache_dir = root.join("cache").join("host-local").join("scope");
@@ -4000,7 +4009,7 @@ mod tests {
         let source = incus::resolve_staged_payload_source_root_for_test(
             &local_mount,
             &local_job_dir,
-            Path::new("/var/tmp/pikaci-prepared-output/runs/run/jobs/job"),
+            Path::new("/var/tmp/jerichoci-prepared-output/runs/run/jobs/job"),
             "localhost",
         )
         .expect("resolve localhost source");
@@ -4015,9 +4024,9 @@ mod tests {
     fn remote_linux_incus_preserves_remote_staged_payload_root_for_non_localhost() {
         let local_job_dir = Path::new("/tmp/run/jobs/job");
         let local_mount = PathBuf::from("/tmp/run/jobs/job/staged-linux-rust/workspace-build");
-        let remote_job_dir = Path::new("/var/tmp/pikaci-prepared-output/runs/run/jobs/job");
+        let remote_job_dir = Path::new("/var/tmp/jerichoci-prepared-output/runs/run/jobs/job");
         let remote_root = PathBuf::from(
-            "/var/tmp/pikaci-prepared-output/runs/run/jobs/job/staged-linux-rust/workspace-build",
+            "/var/tmp/jerichoci-prepared-output/runs/run/jobs/job/staged-linux-rust/workspace-build",
         );
         let source = incus::resolve_staged_payload_source_root_for_test(
             &local_mount,

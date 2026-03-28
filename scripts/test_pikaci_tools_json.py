@@ -27,7 +27,7 @@ class PikaciToolsJsonTests(unittest.TestCase):
                             "ssh_binary": "/usr/bin/ssh",
                             "ssh_nix_binary": "nix",
                             "ssh_host": "pika-build",
-                            "remote_work_dir": "/var/tmp/pikaci-prepared-output",
+                            "remote_work_dir": "/var/tmp/jerichoci-prepared-output",
                             "remote_launcher_binary": "/run/current-system/sw/bin/pikaci-launch-fulfill-prepared-output",
                             "remote_helper_binary": "/run/current-system/sw/bin/pikaci-fulfill-prepared-output",
                             "store_uri": "ssh://pika-build",
@@ -56,8 +56,8 @@ class PikaciToolsJsonTests(unittest.TestCase):
                 f"""\
                 source "{ROOT / 'scripts/lib/pikaci-tools.sh'}"
                 export PIKACI_BIN="{fake_bin}"
-                export PIKACI_PREPARED_OUTPUT_FULFILL_BINARY="/tmp/pikaci-fulfill-prepared-output"
-                export PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY="/tmp/pikaci-launch-fulfill-prepared-output"
+                export JERICHOCI_PREPARED_OUTPUT_FULFILL_BINARY="/tmp/pikaci-fulfill-prepared-output"
+                export JERICHOCI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY="/tmp/pikaci-launch-fulfill-prepared-output"
                 load_pikaci_staged_linux_remote_defaults "{ROOT}"
                 printf '%s\\n' "$default_ssh_host|$default_store_uri|$default_remote_work_dir"
                 load_pikaci_staged_linux_target_info pre-merge-pika-rust
@@ -75,7 +75,7 @@ class PikaciToolsJsonTests(unittest.TestCase):
             lines = completed.stdout.strip().splitlines()
             self.assertEqual(
                 lines[0],
-                "pika-build|ssh://pika-build|/var/tmp/pikaci-prepared-output",
+                "pika-build|ssh://pika-build|/var/tmp/jerichoci-prepared-output",
             )
             self.assertEqual(
                 lines[1],
@@ -130,8 +130,8 @@ class PikaciToolsJsonTests(unittest.TestCase):
                 env={
                     **os.environ,
                     "PIKACI_BIN": str(fake_bin),
-                    "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY": "/tmp/pikaci-fulfill-prepared-output",
-                    "PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY": "/tmp/pikaci-launch-fulfill-prepared-output",
+                    "JERICHOCI_PREPARED_OUTPUT_FULFILL_BINARY": "/tmp/pikaci-fulfill-prepared-output",
+                    "JERICHOCI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY": "/tmp/pikaci-launch-fulfill-prepared-output",
                 },
             )
 
@@ -179,8 +179,8 @@ class PikaciToolsJsonTests(unittest.TestCase):
                 env={
                     **os.environ,
                     "PIKACI_BIN": str(fake_bin),
-                    "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY": "/tmp/pikaci-fulfill-prepared-output",
-                    "PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY": "/tmp/pikaci-launch-fulfill-prepared-output",
+                    "JERICHOCI_PREPARED_OUTPUT_FULFILL_BINARY": "/tmp/pikaci-fulfill-prepared-output",
+                    "JERICHOCI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY": "/tmp/pikaci-launch-fulfill-prepared-output",
                 },
             )
 

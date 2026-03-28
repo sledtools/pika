@@ -5,21 +5,21 @@ use std::str::FromStr;
 #[serde(rename_all = "kebab-case")]
 pub enum IncusGuestRole {
     ManagedOpenclaw,
-    PikaciRunner,
+    JerichoRunner,
 }
 
 impl IncusGuestRole {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ManagedOpenclaw => "managed-openclaw",
-            Self::PikaciRunner => "pikaci-runner",
+            Self::JerichoRunner => "jericho-runner",
         }
     }
 
     pub const fn default_image_alias(self) -> &'static str {
         match self {
             Self::ManagedOpenclaw => "pika-agent/dev",
-            Self::PikaciRunner => "pikaci/dev",
+            Self::JerichoRunner => "jericho/dev",
         }
     }
 
@@ -30,7 +30,7 @@ impl IncusGuestRole {
     pub const fn flake_package_attr(self) -> &'static str {
         match self {
             Self::ManagedOpenclaw => "managed-openclaw-incus-image",
-            Self::PikaciRunner => "pikaci-runner-incus-image",
+            Self::JerichoRunner => "jericho-runner-incus-image",
         }
     }
 }
@@ -41,9 +41,9 @@ impl FromStr for IncusGuestRole {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim() {
             "managed-openclaw" => Ok(Self::ManagedOpenclaw),
-            "pikaci-runner" => Ok(Self::PikaciRunner),
+            "jericho-runner" => Ok(Self::JerichoRunner),
             other => Err(format!(
-                "expected `managed-openclaw` or `pikaci-runner`, got {other:?}"
+                "expected `managed-openclaw` or `jericho-runner`, got {other:?}"
             )),
         }
     }
@@ -60,16 +60,16 @@ mod tests {
             "\"managed-openclaw\""
         );
         assert_eq!(
-            serde_json::to_string(&IncusGuestRole::PikaciRunner).unwrap(),
-            "\"pikaci-runner\""
+            serde_json::to_string(&IncusGuestRole::JerichoRunner).unwrap(),
+            "\"jericho-runner\""
         );
         assert_eq!(
             serde_json::from_str::<IncusGuestRole>("\"managed-openclaw\"").unwrap(),
             IncusGuestRole::ManagedOpenclaw
         );
         assert_eq!(
-            serde_json::from_str::<IncusGuestRole>("\"pikaci-runner\"").unwrap(),
-            IncusGuestRole::PikaciRunner
+            serde_json::from_str::<IncusGuestRole>("\"jericho-runner\"").unwrap(),
+            IncusGuestRole::JerichoRunner
         );
     }
 
@@ -84,18 +84,18 @@ mod tests {
             "managed-openclaw-incus-image"
         );
         assert_eq!(
-            IncusGuestRole::PikaciRunner.default_image_alias(),
-            "pikaci/dev"
+            IncusGuestRole::JerichoRunner.default_image_alias(),
+            "jericho/dev"
         );
         assert_eq!(
-            IncusGuestRole::PikaciRunner.flake_package_attr(),
-            "pikaci-runner-incus-image"
+            IncusGuestRole::JerichoRunner.flake_package_attr(),
+            "jericho-runner-incus-image"
         );
     }
 
     #[test]
     fn uses_default_image_alias_ignores_surrounding_whitespace() {
         assert!(IncusGuestRole::ManagedOpenclaw.uses_default_image_alias(" pika-agent/dev "));
-        assert!(!IncusGuestRole::ManagedOpenclaw.uses_default_image_alias("pikaci/dev"));
+        assert!(!IncusGuestRole::ManagedOpenclaw.uses_default_image_alias("jericho/dev"));
     }
 }

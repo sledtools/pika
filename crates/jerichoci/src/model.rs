@@ -205,8 +205,8 @@ pub enum RemoteLinuxVmBackend {
     Incus,
 }
 
-const REMOTE_LINUX_VM_BACKEND_ENV: &str = "PIKACI_REMOTE_LINUX_VM_BACKEND";
-const PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV: &str = "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST";
+const REMOTE_LINUX_VM_BACKEND_ENV: &str = "JERICHOCI_REMOTE_LINUX_VM_BACKEND";
+const PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV: &str = "JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_HOST";
 
 impl JobSpec {
     pub fn execution(&self) -> JobExecutionConfig {
@@ -776,7 +776,7 @@ mod tests {
         staged_linux_command: Option<StagedLinuxCommandConfig>,
     ) -> JobRuntimeConfig {
         JobRuntimeConfig::Incus(IncusRuntimeConfig {
-            guest_role: IncusGuestRole::PikaciRunner,
+            guest_role: IncusGuestRole::JerichoRunner,
             staged_linux_command,
         })
     }
@@ -1072,18 +1072,18 @@ mod tests {
         let record = RemoteLinuxVmExecutionRecord {
             backend: RemoteLinuxVmBackend::Incus,
             incus_image: Some(RemoteLinuxVmImageRecord {
-                guest_role: Some(IncusGuestRole::PikaciRunner),
+                guest_role: Some(IncusGuestRole::JerichoRunner),
                 project: "pika-managed-agents".to_string(),
-                alias: "pikaci/dev".to_string(),
+                alias: "jericho/dev".to_string(),
                 fingerprint: Some("abc123".to_string()),
             }),
             phases: vec![],
         };
 
         let json = serde_json::to_value(&record).expect("encode metadata");
-        assert_eq!(json["incus_image"]["guest_role"], "pikaci-runner");
+        assert_eq!(json["incus_image"]["guest_role"], "jericho-runner");
         assert_eq!(json["incus_image"]["project"], "pika-managed-agents");
-        assert_eq!(json["incus_image"]["alias"], "pikaci/dev");
+        assert_eq!(json["incus_image"]["alias"], "jericho/dev");
         assert_eq!(json["incus_image"]["fingerprint"], "abc123");
 
         let decoded: RemoteLinuxVmExecutionRecord =
@@ -1097,7 +1097,7 @@ mod tests {
             "backend": "incus",
             "incus_image": {
                 "project": "pika-managed-agents",
-                "alias": "pikaci/dev",
+                "alias": "jericho/dev",
                 "fingerprint": "abc123"
             },
             "phases": []
@@ -1109,7 +1109,7 @@ mod tests {
             Some(RemoteLinuxVmImageRecord {
                 guest_role: None,
                 project: "pika-managed-agents".to_string(),
-                alias: "pikaci/dev".to_string(),
+                alias: "jericho/dev".to_string(),
                 fingerprint: Some("abc123".to_string()),
             })
         );
@@ -1120,9 +1120,9 @@ mod tests {
         let decoded: RemoteLinuxVmExecutionRecord = serde_json::from_value(serde_json::json!({
             "backend": "incus",
             "incus_image": {
-                "role": "pikaci-runner",
+                "role": "jericho-runner",
                 "project": "pika-managed-agents",
-                "alias": "pikaci/dev",
+                "alias": "jericho/dev",
                 "fingerprint": "abc123"
             },
             "phases": []
@@ -1132,9 +1132,9 @@ mod tests {
         assert_eq!(
             decoded.incus_image,
             Some(RemoteLinuxVmImageRecord {
-                guest_role: Some(IncusGuestRole::PikaciRunner),
+                guest_role: Some(IncusGuestRole::JerichoRunner),
                 project: "pika-managed-agents".to_string(),
-                alias: "pikaci/dev".to_string(),
+                alias: "jericho/dev".to_string(),
                 fingerprint: Some("abc123".to_string()),
             })
         );

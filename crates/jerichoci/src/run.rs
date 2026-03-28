@@ -82,36 +82,37 @@ pub struct RunMetadata {
 
 type RunLifecycleReporter<'a> = dyn FnMut(RunLifecycleEvent) -> anyhow::Result<()> + 'a;
 
-const STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV: &str = "PIKACI_PRE_MERGE_PIKA_RUST_SUBPROCESS_FULFILL";
+const STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV: &str =
+    "JERICHOCI_PRE_MERGE_PIKA_RUST_SUBPROCESS_FULFILL";
 const STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME: &str =
     "pre_merge_pika_rust_subprocess_fulfillment_v1";
 const PREPARED_OUTPUT_FULFILLMENT_HELPER_BASENAME: &str = "pikaci-fulfill-prepared-output";
 const PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_BASENAME: &str = "pikaci-launch-fulfill-prepared-output";
 const PREPARED_OUTPUT_FULFILLMENT_INVOCATION_ENV: &str =
-    "PIKACI_PREPARED_OUTPUT_FULFILL_INVOCATION";
+    "JERICHOCI_PREPARED_OUTPUT_FULFILL_INVOCATION";
 const PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_TRANSPORT_ENV: &str =
-    "PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_TRANSPORT";
+    "JERICHOCI_PREPARED_OUTPUT_FULFILL_LAUNCHER_TRANSPORT";
 const PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_BINARY_ENV: &str =
-    "PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY";
+    "JERICHOCI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY";
 const PREPARED_OUTPUT_FULFILLMENT_TRANSPORT_BINARY_ENV: &str =
-    "PIKACI_PREPARED_OUTPUT_FULFILL_TRANSPORT_BINARY";
+    "JERICHOCI_PREPARED_OUTPUT_FULFILL_TRANSPORT_BINARY";
 const PREPARED_OUTPUT_FULFILLMENT_WRAPPER_BINARY_ENV: &str =
-    "PIKACI_PREPARED_OUTPUT_FULFILL_WRAPPER_BINARY";
+    "JERICHOCI_PREPARED_OUTPUT_FULFILL_WRAPPER_BINARY";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV: &str =
-    "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY";
+    "JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_BINARY";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_ENV: &str =
-    "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY";
+    "JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY";
 #[allow(dead_code)]
-const PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV: &str = "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST";
+const PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV: &str = "JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_HOST";
 #[allow(dead_code)]
 const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_LAUNCHER_BINARY_ENV: &str =
-    "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_LAUNCHER_BINARY";
+    "JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_LAUNCHER_BINARY";
 #[allow(dead_code)]
 const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_HELPER_BINARY_ENV: &str =
-    "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_HELPER_BINARY";
+    "JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_HELPER_BINARY";
 #[allow(dead_code)]
 const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_ENV: &str =
-    "PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR";
+    "JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR";
 
 pub fn run_job(job: &JobSpec, options: &RunOptions) -> anyhow::Result<RunRecord> {
     run_jobs(std::slice::from_ref(job), options)
@@ -1055,7 +1056,7 @@ fn load_prepared_output_payload_manifest_best_effort(
             let _ = append_log_line_many(
                 log_paths,
                 &format!(
-                    "[pikaci] warning: failed to load payload metadata for {}: {err:#}",
+                    "[jerichoci] warning: failed to load payload metadata for {}: {err:#}",
                     realized_path.display()
                 ),
             );
@@ -2012,13 +2013,13 @@ fn resolve_prepared_output_fulfillment_program(
         );
     }
     Err(anyhow!(
-        "PIKACI_PREPARED_OUTPUT_CONSUMER=fulfill_request_cli_v1 requires PIKACI_PREPARED_OUTPUT_FULFILL_BINARY when the host executable is neither `pikaci` nor `{PREPARED_OUTPUT_FULFILLMENT_HELPER_BASENAME}`; current executable is {}",
+        "JERICHOCI_PREPARED_OUTPUT_CONSUMER=fulfill_request_cli_v1 requires JERICHOCI_PREPARED_OUTPUT_FULFILL_BINARY when the host executable is neither `pikaci` nor `{PREPARED_OUTPUT_FULFILLMENT_HELPER_BASENAME}`; current executable is {}",
         current_exe.display()
     ))
 }
 
 fn prepared_output_fulfillment_program() -> anyhow::Result<PathBuf> {
-    let explicit_program = std::env::var("PIKACI_PREPARED_OUTPUT_FULFILL_BINARY")
+    let explicit_program = std::env::var("JERICHOCI_PREPARED_OUTPUT_FULFILL_BINARY")
         .ok()
         .map(PathBuf::from);
     let current_exe = std::env::current_exe()
@@ -3098,7 +3099,7 @@ fn fulfill_prepared_output_request_via_subprocess(
         append_log_line_many(
             log_paths,
             &format!(
-                "[pikaci] prepared output fulfillment launcher_transport_mode={} transport={} transport_host={} remote_launcher={} remote_helper={} remote_work_dir={} remote_launch_request={} remote_helper_request={} remote_helper_result={} transport_request={}",
+                "[jerichoci] prepared output fulfillment launcher_transport_mode={} transport={} transport_host={} remote_launcher={} remote_helper={} remote_work_dir={} remote_launch_request={} remote_helper_request={} remote_helper_result={} transport_request={}",
                 prepared_output_launcher_transport_mode_text(launcher_transport_mode),
                 subprocess
                     .launcher_transport_program
@@ -3127,7 +3128,7 @@ fn fulfill_prepared_output_request_via_subprocess(
     append_log_line_many(
         log_paths,
         &format!(
-            "[pikaci] prepared output fulfillment invocation_mode={} launcher={} launcher_transport_mode={} launcher_transport={} launcher_transport_host={} remote_launcher={} remote_helper={} remote_work_dir={} launch_request={} transport_request={} helper={} request={} result={}",
+            "[jerichoci] prepared output fulfillment invocation_mode={} launcher={} launcher_transport_mode={} launcher_transport={} launcher_transport_host={} remote_launcher={} remote_helper={} remote_work_dir={} launch_request={} transport_request={} helper={} request={} result={}",
             prepared_output_invocation_mode_text(invoker.mode()),
             subprocess
                 .launcher_program
@@ -3196,7 +3197,7 @@ fn fulfill_prepared_output_request_via_subprocess(
     append_log_line_many(
         log_paths,
         &format!(
-            "[pikaci] prepared output fulfillment result status={:?} exposures={} result={}",
+            "[jerichoci] prepared output fulfillment result status={:?} exposures={} result={}",
             result.status,
             result.fulfilled_exposures_count,
             result_path.display()
@@ -3307,7 +3308,7 @@ impl PreparedOutputConsumer for HostLocalSymlinkPreparedOutputConsumer {
                     append_log_line_many(
                         log_paths,
                         &format!(
-                            "[pikaci] prepared output consumer={} exposed {} -> {}",
+                            "[jerichoci] prepared output consumer={} exposed {} -> {}",
                             prepared_output_consumer_kind_text(
                                 PreparedOutputConsumerKind::HostLocalSymlinkMountsV1
                             ),
@@ -3371,7 +3372,7 @@ impl PreparedOutputConsumer for RemoteExposureRequestPreparedOutputConsumer {
         append_log_line_many(
             log_paths,
             &format!(
-                "[pikaci] prepared output consumer={} wrote remote exposure request {}",
+                "[jerichoci] prepared output consumer={} wrote remote exposure request {}",
                 prepared_output_consumer_kind_text(
                     PreparedOutputConsumerKind::RemoteExposureRequestV1
                 ),
@@ -3462,7 +3463,7 @@ impl PreparedOutputConsumer for FulfillRequestCliPreparedOutputConsumer {
         append_log_line_many(
             log_paths,
             &format!(
-                "[pikaci] prepared output consumer={} wrote fulfillment request {}",
+                "[jerichoci] prepared output consumer={} wrote fulfillment request {}",
                 prepared_output_consumer_kind_text(PreparedOutputConsumerKind::FulfillRequestCliV1),
                 request_path.display()
             ),
@@ -3578,7 +3579,7 @@ impl PreparedOutputConsumer for FulfillRequestCliPreparedOutputConsumer {
         append_log_line_many(
             log_paths,
             &format!(
-                "[pikaci] prepared output consumer={} fulfilled request {} via {} exposure(s)",
+                "[jerichoci] prepared output consumer={} fulfilled request {} via {} exposure(s)",
                 prepared_output_consumer_kind_text(PreparedOutputConsumerKind::FulfillRequestCliV1),
                 request_path.display(),
                 fulfillment_result.fulfilled_exposures_count
@@ -3758,7 +3759,7 @@ fn realize_nix_build_output(
         append_log_line_many(
             log_paths,
             &format!(
-                "[pikaci] prepare {output_name}: ssh {} {} build --accept-flake-config --no-link --print-out-paths {}",
+                "[jerichoci] prepare {output_name}: ssh {} {} build --accept-flake-config --no-link --print-out-paths {}",
                 remote.remote_host,
                 ssh_nix_binary(),
                 remote.remote_installable
@@ -3803,7 +3804,7 @@ fn realize_nix_build_output(
     append_log_line_many(
         log_paths,
         &format!(
-            "[pikaci] prepare {output_name}: nix build --accept-flake-config --no-link --print-out-paths {installable}"
+            "[jerichoci] prepare {output_name}: nix build --accept-flake-config --no-link --print-out-paths {installable}"
         ),
     )?;
     let output = Command::new("nix")
@@ -3912,7 +3913,7 @@ fn resolve_run_prepared_output_consumer_kind_for_mode(
     }
     if configured_kind != PreparedOutputConsumerKind::HostLocalSymlinkMountsV1 {
         return Err(anyhow!(
-            "{STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV} cannot be combined with PIKACI_PREPARED_OUTPUT_CONSUMER"
+            "{STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV} cannot be combined with JERICHOCI_PREPARED_OUTPUT_CONSUMER"
         ));
     }
     if jobs.is_empty()
@@ -3934,7 +3935,7 @@ fn resolve_run_prepared_output_consumer_kind_for_mode(
 }
 
 fn configured_prepared_output_consumer_kind() -> anyhow::Result<PreparedOutputConsumerKind> {
-    match std::env::var("PIKACI_PREPARED_OUTPUT_CONSUMER")
+    match std::env::var("JERICHOCI_PREPARED_OUTPUT_CONSUMER")
         .ok()
         .as_deref()
     {
@@ -3942,7 +3943,7 @@ fn configured_prepared_output_consumer_kind() -> anyhow::Result<PreparedOutputCo
         Some("remote_request_v1") => Ok(PreparedOutputConsumerKind::RemoteExposureRequestV1),
         Some("fulfill_request_cli_v1") => Ok(PreparedOutputConsumerKind::FulfillRequestCliV1),
         Some(value) => Err(anyhow!(
-            "unsupported PIKACI_PREPARED_OUTPUT_CONSUMER `{value}`; expected `remote_request_v1` or `fulfill_request_cli_v1`"
+            "unsupported JERICHOCI_PREPARED_OUTPUT_CONSUMER `{value}`; expected `remote_request_v1` or `fulfill_request_cli_v1`"
         )),
     }
 }
@@ -3986,7 +3987,7 @@ fn validate_prepared_output_consumer_for_jobs(
             .any(|planned_job| planned_job.job.staged_linux_command().is_some())
     {
         return Err(anyhow!(
-            "PIKACI_PREPARED_OUTPUT_CONSUMER=remote_request_v1 is prototype-only; staged Linux Rust jobs still require fulfilled prepared-output mounts"
+            "JERICHOCI_PREPARED_OUTPUT_CONSUMER=remote_request_v1 is prototype-only; staged Linux Rust jobs still require fulfilled prepared-output mounts"
         ));
     }
     Ok(())
@@ -4040,7 +4041,7 @@ fn run_prepare_nodes(
                 append_log_line_many(
                     log_paths,
                     &format!(
-                        "[pikaci] staged Linux Rust output ready: {} -> {}",
+                        "[jerichoci] staged Linux Rust output ready: {} -> {}",
                         output_name,
                         output_path.display()
                     ),
@@ -4114,7 +4115,7 @@ fn run_prepare_nodes(
                     append_log_line_many(
                         log_paths,
                         &format!(
-                            "[pikaci] prepared output handoff recorded via {}: {} ({})",
+                            "[jerichoci] prepared output handoff recorded via {}: {} ({})",
                             prepared_output_consumer_kind_text(consumer_result.kind),
                             output_name,
                             prepared_outputs_path.display()
@@ -4212,7 +4213,7 @@ fn mark_prepare_failure(
         };
         append_log_line(
             &planned_job.ctx.host_log_path,
-            &format!("[pikaci] {status_message}"),
+            &format!("[jerichoci] {status_message}"),
         )?;
         write_job_record(&planned_job.ctx.job_dir, &record)?;
         upsert_run_job_record(run_record, record);
@@ -4229,7 +4230,7 @@ fn upsert_run_job_record(run_record: &mut RunRecord, record: JobRecord) {
 }
 
 fn max_parallel_execute_jobs(jobs: &[PlannedJob]) -> usize {
-    let configured_cap = std::env::var("PIKACI_MAX_CONCURRENT_EXECUTES")
+    let configured_cap = std::env::var("JERICHOCI_MAX_CONCURRENT_EXECUTES")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
@@ -4377,7 +4378,7 @@ fn run_host_setup_commands(
             .open(&log_path)
             .with_context(|| format!("open {}", log_path.display()))?;
         log_file
-            .write_all(format!("[pikaci] host setup: {command}\n").as_bytes())
+            .write_all(format!("[jerichoci] host setup: {command}\n").as_bytes())
             .with_context(|| format!("write {}", log_path.display()))?;
         log_file
             .write_all(&output.stdout)
@@ -4466,7 +4467,7 @@ mod tests {
     use crate::snapshot::{SnapshotProfile, compute_source_fingerprint_with_profile};
 
     fn with_remote_linux_vm_backend_env<T>(value: Option<&str>, action: impl FnOnce() -> T) -> T {
-        let _backend_guard = EnvVarGuard::set("PIKACI_REMOTE_LINUX_VM_BACKEND", value);
+        let _backend_guard = EnvVarGuard::set("JERICHOCI_REMOTE_LINUX_VM_BACKEND", value);
         let _ssh_host_guard = EnvVarGuard::set(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV, None);
         action()
     }
@@ -4558,7 +4559,7 @@ mod tests {
         staged_linux_command: Option<StagedLinuxCommandConfig>,
     ) -> JobRuntimeConfig {
         JobRuntimeConfig::Incus(IncusRuntimeConfig {
-            guest_role: pika_incus_guest_role::IncusGuestRole::PikaciRunner,
+            guest_role: pika_incus_guest_role::IncusGuestRole::JerichoRunner,
             staged_linux_command,
         })
     }
@@ -5120,7 +5121,7 @@ mod tests {
     fn build_run_plan_records_incus_backend_prepare_without_fake_nix_build() {
         let _host_guard =
             EnvVarGuard::set(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV, Some("pika-build"));
-        let _backend_guard = EnvVarGuard::set("PIKACI_REMOTE_LINUX_VM_BACKEND", None);
+        let _backend_guard = EnvVarGuard::set("JERICHOCI_REMOTE_LINUX_VM_BACKEND", None);
         let root = std::env::temp_dir().join(format!("pikaci-plan-test-{}", uuid::Uuid::new_v4()));
         let prepared = sample_prepared_run(&root);
         let metadata = RunMetadata {
@@ -5619,7 +5620,7 @@ mod tests {
                 .expect("fingerprint source");
         let source_hash = "cached-content-hash";
         fs::write(
-            snapshot_dir.join("pikaci-snapshot.json"),
+            snapshot_dir.join("jerichoci-snapshot.json"),
             format!(
                 r#"{{"source_root":"{}","snapshot_dir":"{}","git_head":null,"git_dirty":false,"created_at":"2026-03-15T00:00:00Z","content_hash":"{}"}}"#,
                 source_root.display(),
@@ -5690,7 +5691,7 @@ mod tests {
         )
         .expect("write stale cache state");
         fs::write(
-            snapshot_dir.join("pikaci-snapshot.json"),
+            snapshot_dir.join("jerichoci-snapshot.json"),
             format!(
                 r#"{{"source_root":"{}","snapshot_dir":"{}","git_head":null,"git_dirty":false,"created_at":"2026-03-15T00:00:00Z","content_hash":"old-hash"}}"#,
                 source_root.display(),
@@ -6105,14 +6106,17 @@ mod tests {
 
     #[test]
     fn selected_prepared_output_consumer_defaults_local_and_can_switch_to_remote_request() {
-        let _guard = EnvVarGuard::set("PIKACI_PREPARED_OUTPUT_CONSUMER", None);
+        let _guard = EnvVarGuard::set("JERICHOCI_PREPARED_OUTPUT_CONSUMER", None);
         let kind = configured_prepared_output_consumer_kind().expect("default consumer kind");
         assert_eq!(
             selected_prepared_output_consumer(kind).kind(),
             PreparedOutputConsumerKind::HostLocalSymlinkMountsV1
         );
 
-        let _guard = EnvVarGuard::set("PIKACI_PREPARED_OUTPUT_CONSUMER", Some("remote_request_v1"));
+        let _guard = EnvVarGuard::set(
+            "JERICHOCI_PREPARED_OUTPUT_CONSUMER",
+            Some("remote_request_v1"),
+        );
         let kind = configured_prepared_output_consumer_kind().expect("remote consumer kind");
         assert_eq!(
             selected_prepared_output_consumer(kind).kind(),
@@ -6120,7 +6124,7 @@ mod tests {
         );
 
         let _guard = EnvVarGuard::set(
-            "PIKACI_PREPARED_OUTPUT_CONSUMER",
+            "JERICHOCI_PREPARED_OUTPUT_CONSUMER",
             Some("fulfill_request_cli_v1"),
         );
         let kind = configured_prepared_output_consumer_kind().expect("cli fulfill consumer kind");
@@ -6132,11 +6136,11 @@ mod tests {
 
     #[test]
     fn configured_prepared_output_consumer_kind_rejects_invalid_values() {
-        let _guard = EnvVarGuard::set("PIKACI_PREPARED_OUTPUT_CONSUMER", Some("typo"));
+        let _guard = EnvVarGuard::set("JERICHOCI_PREPARED_OUTPUT_CONSUMER", Some("typo"));
         let err = configured_prepared_output_consumer_kind().expect_err("invalid consumer");
         assert!(
             err.to_string()
-                .contains("unsupported PIKACI_PREPARED_OUTPUT_CONSUMER `typo`")
+                .contains("unsupported JERICHOCI_PREPARED_OUTPUT_CONSUMER `typo`")
         );
     }
 
@@ -6234,7 +6238,7 @@ mod tests {
         let err = prepared_output_fulfillment_launcher_program()
             .expect_err("launcher binary should be required");
         assert!(err.to_string().contains(
-            "PIKACI_PREPARED_OUTPUT_FULFILL_INVOCATION=external_wrapper_command_v1 requires PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY"
+            "JERICHOCI_PREPARED_OUTPUT_FULFILL_INVOCATION=external_wrapper_command_v1 requires JERICHOCI_PREPARED_OUTPUT_FULFILL_LAUNCHER_BINARY"
         ));
     }
 
@@ -6275,7 +6279,7 @@ mod tests {
         )
         .expect_err("transport binary should be required");
         assert!(err.to_string().contains(
-            "PIKACI_PREPARED_OUTPUT_FULFILL_LAUNCHER_TRANSPORT=command_transport_v1 requires PIKACI_PREPARED_OUTPUT_FULFILL_TRANSPORT_BINARY"
+            "JERICHOCI_PREPARED_OUTPUT_FULFILL_LAUNCHER_TRANSPORT=command_transport_v1 requires JERICHOCI_PREPARED_OUTPUT_FULFILL_TRANSPORT_BINARY"
         ));
     }
 
@@ -6395,7 +6399,7 @@ mod tests {
                 None,
             )
             .expect("ssh remote work dir"),
-            Some("/var/tmp/pikaci-prepared-output".to_string())
+            Some("/var/tmp/jerichoci-prepared-output".to_string())
         );
     }
 
@@ -6415,7 +6419,7 @@ mod tests {
     #[test]
     fn staged_linux_rust_remote_realization_translates_run_snapshot_installable() {
         let run_dir = Path::new("/tmp/pikaci/runs/run-123");
-        let remote_work_dir = Path::new("/var/tmp/pikaci-prepared-output");
+        let remote_work_dir = Path::new("/var/tmp/jerichoci-prepared-output");
         let remote = staged_linux_rust_remote_realization(
             run_dir,
             "path:/tmp/pikaci/runs/run-123/snapshot#ci.x86_64-linux.workspaceBuild",
@@ -6435,11 +6439,11 @@ mod tests {
         assert_eq!(remote.remote_host, "pika-build");
         assert_eq!(
             remote.remote_snapshot_dir,
-            Path::new("/var/tmp/pikaci-prepared-output/runs/run-123/snapshot")
+            Path::new("/var/tmp/jerichoci-prepared-output/runs/run-123/snapshot")
         );
         assert_eq!(
             remote.remote_installable,
-            "path:/var/tmp/pikaci-prepared-output/runs/run-123/snapshot#ci.x86_64-linux.workspaceBuild"
+            "path:/var/tmp/jerichoci-prepared-output/runs/run-123/snapshot#ci.x86_64-linux.workspaceBuild"
         );
     }
 
@@ -6452,7 +6456,7 @@ mod tests {
         let snapshot_dir = root.join("snapshot");
         std::fs::create_dir_all(&snapshot_dir).expect("create snapshot dir");
         std::fs::write(
-            snapshot_dir.join("pikaci-snapshot.json"),
+            snapshot_dir.join("jerichoci-snapshot.json"),
             format!(
                 "{{\"source_root\":\"{}\",\"snapshot_dir\":\"{}\",\"git_head\":null,\"git_dirty\":false,\"created_at\":\"2026-03-10T00:00:00Z\",\"content_hash\":\"deadbeef\"}}",
                 root.display(),
@@ -6475,7 +6479,7 @@ mod tests {
                 ),
                 launcher_transport_host: Some("pika-build"),
                 launcher_transport_remote_work_dir: Some(Path::new(
-                    "/var/tmp/pikaci-prepared-output",
+                    "/var/tmp/jerichoci-prepared-output",
                 )),
                 ..PreparedOutputInvocationConfig::default()
             },
@@ -6485,11 +6489,11 @@ mod tests {
 
         assert_eq!(
             remote.remote_snapshot_dir,
-            Path::new("/var/tmp/pikaci-prepared-output/snapshots/deadbeef/snapshot")
+            Path::new("/var/tmp/jerichoci-prepared-output/snapshots/deadbeef/snapshot")
         );
         assert_eq!(
             remote.remote_installable,
-            "path:/var/tmp/pikaci-prepared-output/snapshots/deadbeef/snapshot#ci.x86_64-linux.workspaceBuild"
+            "path:/var/tmp/jerichoci-prepared-output/snapshots/deadbeef/snapshot#ci.x86_64-linux.workspaceBuild"
         );
 
         let _ = std::fs::remove_dir_all(root);
@@ -6507,7 +6511,7 @@ mod tests {
                 ),
                 launcher_transport_host: Some("pika-build"),
                 launcher_transport_remote_work_dir: Some(Path::new(
-                    "/var/tmp/pikaci-prepared-output",
+                    "/var/tmp/jerichoci-prepared-output",
                 )),
                 ..PreparedOutputInvocationConfig::default()
             },
@@ -6614,7 +6618,7 @@ mod tests {
 
         assert!(
             err.to_string()
-                .contains("cannot be combined with PIKACI_PREPARED_OUTPUT_CONSUMER")
+                .contains("cannot be combined with JERICHOCI_PREPARED_OUTPUT_CONSUMER")
         );
     }
 
@@ -6704,7 +6708,7 @@ mod tests {
         )
         .expect_err("reject embedding binary");
         assert!(err.to_string().contains(
-            "requires PIKACI_PREPARED_OUTPUT_FULFILL_BINARY when the host executable is neither `pikaci` nor `pikaci-fulfill-prepared-output`"
+            "requires JERICHOCI_PREPARED_OUTPUT_FULFILL_BINARY when the host executable is neither `pikaci` nor `pikaci-fulfill-prepared-output`"
         ));
     }
 
@@ -6739,7 +6743,7 @@ mod tests {
         .expect_err("remote request guard");
         assert!(
             err.to_string()
-                .contains("PIKACI_PREPARED_OUTPUT_CONSUMER=remote_request_v1 is prototype-only")
+                .contains("JERICHOCI_PREPARED_OUTPUT_CONSUMER=remote_request_v1 is prototype-only")
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -6800,7 +6804,7 @@ printf '{"schema_version":1,"request_path":"%s","node_id":"prepare-pika-core-lin
             realized_path: &realized_path,
         };
         let _helper_guard = EnvVarGuard::set(
-            "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY",
+            "JERICHOCI_PREPARED_OUTPUT_FULFILL_BINARY",
             Some(helper_path.to_str().expect("helper path utf8")),
         );
         let consumer = FulfillRequestCliPreparedOutputConsumer;
@@ -6923,7 +6927,7 @@ EOF
             realized_path: &realized_path,
         };
         let _helper_guard = EnvVarGuard::set(
-            "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY",
+            "JERICHOCI_PREPARED_OUTPUT_FULFILL_BINARY",
             Some(helper_path.to_str().expect("helper path utf8")),
         );
         let _launcher_guard = EnvVarGuard::set(
@@ -7050,7 +7054,7 @@ EOF
             realized_path: &realized_path,
         };
         let _helper_guard = EnvVarGuard::set(
-            "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY",
+            "JERICHOCI_PREPARED_OUTPUT_FULFILL_BINARY",
             Some(helper_path.to_str().expect("helper path utf8")),
         );
         let _launcher_guard = EnvVarGuard::set(
@@ -7216,7 +7220,7 @@ EOF
             realized_path: &realized_path,
         };
         let _helper_guard = EnvVarGuard::set(
-            "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY",
+            "JERICHOCI_PREPARED_OUTPUT_FULFILL_BINARY",
             Some(helper_path.to_str().expect("helper path utf8")),
         );
         let _launcher_guard = EnvVarGuard::set(
@@ -7429,7 +7433,7 @@ EOF
             realized_path: &realized_path,
         };
         let _helper_guard = EnvVarGuard::set(
-            "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY",
+            "JERICHOCI_PREPARED_OUTPUT_FULFILL_BINARY",
             Some(helper_path.to_str().expect("helper path utf8")),
         );
         let _launcher_guard = EnvVarGuard::set(
@@ -7587,7 +7591,7 @@ EOF
             realized_path: &realized_path,
         };
         let _helper_guard = EnvVarGuard::set(
-            "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY",
+            "JERICHOCI_PREPARED_OUTPUT_FULFILL_BINARY",
             Some(helper_path.to_str().expect("helper path utf8")),
         );
         let _launcher_guard = EnvVarGuard::set(
@@ -7700,7 +7704,7 @@ EOF
             realized_path: &realized_path,
         };
         let _helper_guard = EnvVarGuard::set(
-            "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY",
+            "JERICHOCI_PREPARED_OUTPUT_FULFILL_BINARY",
             Some(helper_path.to_str().expect("helper path utf8")),
         );
         let _launcher_guard = EnvVarGuard::set(
@@ -7802,7 +7806,7 @@ EOF
             realized_path: &realized_path,
         };
         let _helper_guard = EnvVarGuard::set(
-            "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY",
+            "JERICHOCI_PREPARED_OUTPUT_FULFILL_BINARY",
             Some(helper_path.to_str().expect("helper path utf8")),
         );
         let _ssh_guard = EnvVarGuard::set(
@@ -7932,7 +7936,7 @@ EOF
             realized_path: &realized_path,
         };
         let _helper_guard = EnvVarGuard::set(
-            "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY",
+            "JERICHOCI_PREPARED_OUTPUT_FULFILL_BINARY",
             Some(helper_path.to_str().expect("helper path utf8")),
         );
         let consumer = FulfillRequestCliPreparedOutputConsumer;
@@ -8022,7 +8026,7 @@ EOF
             realized_path: &realized_path,
         };
         let _helper_guard = EnvVarGuard::set(
-            "PIKACI_PREPARED_OUTPUT_FULFILL_BINARY",
+            "JERICHOCI_PREPARED_OUTPUT_FULFILL_BINARY",
             Some(helper_path.to_str().expect("helper path utf8")),
         );
         let consumer = FulfillRequestCliPreparedOutputConsumer;

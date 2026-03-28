@@ -151,7 +151,7 @@
         cp -R ${ciPikaCoreRustSrc}/rust "$out/rust"
         cp -R ${./tests/support} "$out/tests/support"
         chmod -R u+w "$out/rust"
-        rm -f "$out/rust/.pikaci-review-trigger"
+        rm -f "$out/rust/.jerichoci-review-trigger"
         cp -R ${./crates/hypernote-protocol} "$out/crates/hypernote-protocol"
         cp -R ${./crates/pika-agent-protocol} "$out/crates/pika-agent-protocol"
         cp -R ${./crates/pika-cloud} "$out/crates/pika-cloud"
@@ -343,7 +343,7 @@
         mkIncusGuestRoleImagePkg incusGuestImageRoles."managed-openclaw";
 
       pikaciRunnerIncusImagePkg =
-        mkIncusGuestRoleImagePkg incusGuestImageRoles."pikaci-runner";
+        mkIncusGuestRoleImagePkg incusGuestImageRoles."jericho-runner";
 
       pikaRelayPkg = serverPkgs.buildGoModule {
         pname = "pika-relay";
@@ -1129,9 +1129,9 @@ EOF
         pikachat = pikachatPkg;
         pikaci = pikaciServerPkg;
         managed-openclaw-incus-image = managedOpenclawIncusImagePkg;
-        pikaci-runner-incus-image = pikaciRunnerIncusImagePkg;
+        jericho-runner-incus-image = pikaciRunnerIncusImagePkg;
         pika-agent-incus-dev-image = managedOpenclawIncusImagePkg;
-        pikaci-incus-dev-image = pikaciRunnerIncusImagePkg;
+        jericho-incus-dev-image = pikaciRunnerIncusImagePkg;
       };
 
       nixosConfigurations = {

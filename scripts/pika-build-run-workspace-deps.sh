@@ -20,10 +20,10 @@ Mac, and it cleans up its own remote helper snapshot on exit.
 
 Options:
   --installable TARGET   Installable to realize remotely. Default: .#ci.x86_64-linux.workspaceDeps
-  --remote-host HOST     Remote host. Default: ${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-pika-build}
-  --remote-work-dir DIR  Remote work dir root. Default: ${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR:-/var/tmp/pikaci-prepared-output}
-  --ssh-binary PATH      SSH binary. Default: ${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY:-/usr/bin/ssh}
-  --remote-nix-binary    Remote nix binary. Default: ${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY:-nix}
+  --remote-host HOST     Remote host. Default: ${JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-pika-build}
+  --remote-work-dir DIR  Remote work dir root. Default: ${JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR:-/var/tmp/jerichoci-prepared-output}
+  --ssh-binary PATH      SSH binary. Default: ${JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_BINARY:-/usr/bin/ssh}
+  --remote-nix-binary    Remote nix binary. Default: ${JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY:-nix}
   --snapshot-id ID       Remote helper snapshot id. Default: helper-<timestamp>-<pid>
   --keep-remote-snapshot Leave this invocation's helper snapshot in place on exit.
   --reuse-existing-snapshot  Reuse the remote helper snapshot when its ready marker already exists.
@@ -32,10 +32,10 @@ EOF
 }
 
 installable="${PIKACI_X86_64_REMOTE_INSTALLABLE:-.#ci.x86_64-linux.workspaceDeps}"
-remote_host="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}"
-remote_work_dir="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR:-}"
-ssh_binary="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_BINARY:-}"
-remote_nix_binary="${PIKACI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY:-}"
+remote_host="${JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_HOST:-}"
+remote_work_dir="${JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_REMOTE_WORK_DIR:-}"
+ssh_binary="${JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_BINARY:-}"
+remote_nix_binary="${JERICHOCI_PREPARED_OUTPUT_FULFILL_SSH_NIX_BINARY:-}"
 snapshot_id="helper-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 keep_remote_snapshot=0
 reuse_existing_snapshot=0
@@ -109,7 +109,7 @@ attr="${installable#.#}"
 remote_snapshot_root="${remote_work_dir}/helpers/${snapshot_id}"
 remote_snapshot_dir="${remote_snapshot_root}/snapshot"
 remote_installable="path:${remote_snapshot_dir}#${attr}"
-remote_marker="${remote_snapshot_dir}/pikaci-snapshot.json"
+remote_marker="${remote_snapshot_dir}/jerichoci-snapshot.json"
 
 remote_q() {
   printf "'%s'" "${1//\'/\'\"\'\"\'}"
@@ -140,7 +140,7 @@ else
   echo "==> syncing helper snapshot"
   tar -C "$PWD" \
     --exclude=.git \
-    --exclude=.pikaci \
+    --exclude=.jerichoci \
     --exclude=.direnv \
     --exclude=target \
     --exclude='*/node_modules' \

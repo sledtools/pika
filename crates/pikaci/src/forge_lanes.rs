@@ -1,9 +1,9 @@
-use crate::targets::{CiTrigger, ConcurrencyGroupSpec, TargetSpec, all_target_specs};
-use anyhow::Context;
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use crate::ci_catalog::{
+    CiCatalog, CiTarget, LEGACY_FORGE_LANE_DEFINITION_PATH, compiled_ci_catalog,
+    select_branch_targets,
+};
 
-pub const FORGE_LANE_DEFINITION_PATH: &str = "crates/pikaci/src/forge_lanes.rs";
-pub const TARGET_CATALOG_DEFINITION_PATH: &str = "crates/pikaci/src/targets.rs";
+pub const FORGE_LANE_DEFINITION_PATH: &str = LEGACY_FORGE_LANE_DEFINITION_PATH;
 
 #[derive(Debug, Clone)]
 pub struct ForgeCiManifest {
@@ -24,27 +24,20 @@ pub struct ForgeLane {
 }
 
 pub fn compiled_forge_ci_manifest() -> ForgeCiManifest {
-    let targets = all_target_specs().expect("compile pikaci target catalog");
-    let mut branch_lanes = Vec::new();
-    let mut nightly_lanes = Vec::new();
-    for target in targets {
-        match target.ci_trigger {
-            CiTrigger::None => {}
-            CiTrigger::Branch { concurrency_group } => {
-                branch_lanes.push(project_lane(
-                    &target,
-                    source_of_truth_paths(&target.filters),
-                    concurrency_group,
-                ));
-            }
-            CiTrigger::Nightly { concurrency_group } => {
-                nightly_lanes.push(project_lane(&target, Vec::new(), concurrency_group));
-            }
-        }
-    }
+    let catalog = compiled_ci_catalog();
+    let branch_lanes = catalog
+        .branch_targets
+        .into_iter()
+        .map(project_target_to_lane)
+        .collect();
+    let nightly_lanes = catalog
+        .nightly_targets
+        .into_iter()
+        .map(project_target_to_lane)
+        .collect();
     ForgeCiManifest {
-        nightly_hour_utc: 8,
-        nightly_minute_utc: 0,
+        nightly_hour_utc: catalog.nightly_hour_utc,
+        nightly_minute_utc: catalog.nightly_minute_utc,
         branch_lanes,
         nightly_lanes,
     }
@@ -54,65 +47,48 @@ pub fn select_branch_lanes(
     manifest: &ForgeCiManifest,
     changed_paths: &[String],
 ) -> anyhow::Result<Vec<ForgeLane>> {
-    if changed_paths.is_empty() {
-        return Ok(manifest.branch_lanes.clone());
-    }
-    let mut selected = Vec::new();
-    for lane in &manifest.branch_lanes {
-        if lane.paths.is_empty() || matches_any_path(changed_paths, &lane.paths)? {
-            selected.push(lane.clone());
-        }
-    }
-    Ok(selected)
+    let catalog = project_manifest_to_catalog(manifest);
+    select_branch_targets(&catalog, changed_paths)
+        .map(|targets| targets.into_iter().map(project_target_to_lane).collect())
 }
 
-fn project_lane(
-    target: &TargetSpec,
-    paths: Vec<String>,
-    concurrency_group: Option<ConcurrencyGroupSpec>,
-) -> ForgeLane {
+fn project_target_to_lane(target: CiTarget) -> ForgeLane {
     ForgeLane {
-        id: target.id.to_string(),
-        title: target.title.to_string(),
-        entrypoint: format!("nix run .#pikaci -- run {}", target.id),
-        command: vec![
-            "nix".to_string(),
-            "run".to_string(),
-            ".#pikaci".to_string(),
-            "--".to_string(),
-            "run".to_string(),
-            target.id.to_string(),
-        ],
-        paths,
-        concurrency_group: resolve_concurrency_group(target.id, concurrency_group),
+        id: target.id,
+        title: target.title,
+        entrypoint: target.entrypoint,
+        command: target.command,
+        paths: target.paths,
+        concurrency_group: target.concurrency_group,
     }
 }
 
-fn resolve_concurrency_group(
-    target_id: &str,
-    configured: Option<ConcurrencyGroupSpec>,
-) -> Option<String> {
-    match configured {
-        None => None,
-        Some(ConcurrencyGroupSpec::Literal(group)) => Some(group.to_string()),
-        Some(ConcurrencyGroupSpec::StagedLinuxTarget) => Some(format!("staged-linux:{target_id}")),
+fn project_lane_to_target(lane: &ForgeLane) -> CiTarget {
+    CiTarget {
+        id: lane.id.clone(),
+        title: lane.title.clone(),
+        entrypoint: lane.entrypoint.clone(),
+        command: lane.command.clone(),
+        paths: lane.paths.clone(),
+        concurrency_group: lane.concurrency_group.clone(),
     }
 }
 
-fn source_of_truth_paths(paths: &[String]) -> Vec<String> {
-    std::iter::once(FORGE_LANE_DEFINITION_PATH.to_string())
-        .chain(std::iter::once(TARGET_CATALOG_DEFINITION_PATH.to_string()))
-        .chain(paths.iter().cloned())
-        .collect()
-}
-
-fn matches_any_path(changed_paths: &[String], patterns: &[String]) -> anyhow::Result<bool> {
-    let mut builder = GlobSetBuilder::new();
-    for pattern in patterns {
-        builder.add(Glob::new(pattern).with_context(|| format!("compile glob `{pattern}`"))?);
+fn project_manifest_to_catalog(manifest: &ForgeCiManifest) -> CiCatalog {
+    CiCatalog {
+        nightly_hour_utc: manifest.nightly_hour_utc,
+        nightly_minute_utc: manifest.nightly_minute_utc,
+        branch_targets: manifest
+            .branch_lanes
+            .iter()
+            .map(project_lane_to_target)
+            .collect(),
+        nightly_targets: manifest
+            .nightly_lanes
+            .iter()
+            .map(project_lane_to_target)
+            .collect(),
     }
-    let globset: GlobSet = builder.build().context("build lane globset")?;
-    Ok(changed_paths.iter().any(|path| globset.is_match(path)))
 }
 
 #[cfg(test)]

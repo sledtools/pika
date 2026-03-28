@@ -11,7 +11,32 @@ already decided. The goal here is to keep the next code slices coherent and smal
 Related context:
 
 - [`todos/agents-platform.md`](./agents-platform.md)
-- [`todos/pika-cloud-arbitrary-guest-config-spike.md`](./pika-cloud-arbitrary-guest-config-spike.md)
+
+## Current Migration Decision
+
+For the current migration program:
+
+- `pika-cloud` should not live in `pika` long-term
+- the steady-state target is a separate `pika-cloud` repo consumed by both
+  `Jericho` and `pika`
+- it is acceptable to tolerate one short-lived intermediate state if carrying
+  `pika-cloud` with `Jericho` briefly keeps the extraction materially simpler
+- we should avoid inventing any extra deployment-config repo just to host
+  `pika-build` wiring
+
+## `pika-build` Host Ownership
+
+To avoid repo proliferation while keeping boundaries honest:
+
+- `pika-cloud` should own shared runtime/image definitions and reusable Nix
+  modules for Incus guest roles
+- `Jericho` should own forge/CI-specific Nix modules, worker wiring, and helper
+  packaging
+- `infra` should remain the owner of the actual `pika-build` host composition,
+  imports, secrets, and deployment choices
+
+That means the host stays composed in one place even after the code moves out of
+`pika`.
 
 ## Core Direction
 

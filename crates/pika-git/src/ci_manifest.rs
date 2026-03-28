@@ -1,7 +1,86 @@
-pub use pikaci::forge_lanes::{
-    compiled_forge_ci_manifest, select_branch_lanes, ForgeCiManifest, ForgeLane,
-    FORGE_LANE_DEFINITION_PATH,
-};
+pub use pikaci::ci_catalog::LEGACY_FORGE_LANE_DEFINITION_PATH as FORGE_LANE_DEFINITION_PATH;
+
+use pikaci::ci_catalog::{compiled_ci_catalog, select_branch_targets, CiCatalog, CiTarget};
+
+#[derive(Debug, Clone)]
+pub struct ForgeCiManifest {
+    pub nightly_hour_utc: u32,
+    pub nightly_minute_utc: u32,
+    pub branch_lanes: Vec<ForgeLane>,
+    pub nightly_lanes: Vec<ForgeLane>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForgeLane {
+    pub id: String,
+    pub title: String,
+    pub entrypoint: String,
+    pub command: Vec<String>,
+    pub paths: Vec<String>,
+    pub concurrency_group: Option<String>,
+}
+
+pub fn compiled_forge_ci_manifest() -> ForgeCiManifest {
+    let catalog = compiled_ci_catalog();
+    ForgeCiManifest {
+        nightly_hour_utc: catalog.nightly_hour_utc,
+        nightly_minute_utc: catalog.nightly_minute_utc,
+        branch_lanes: catalog
+            .branch_targets
+            .into_iter()
+            .map(project_target_to_lane)
+            .collect(),
+        nightly_lanes: catalog
+            .nightly_targets
+            .into_iter()
+            .map(project_target_to_lane)
+            .collect(),
+    }
+}
+
+pub fn select_branch_lanes(
+    manifest: &ForgeCiManifest,
+    changed_paths: &[String],
+) -> anyhow::Result<Vec<ForgeLane>> {
+    let catalog = CiCatalog {
+        nightly_hour_utc: manifest.nightly_hour_utc,
+        nightly_minute_utc: manifest.nightly_minute_utc,
+        branch_targets: manifest
+            .branch_lanes
+            .iter()
+            .map(project_lane_to_target)
+            .collect(),
+        nightly_targets: manifest
+            .nightly_lanes
+            .iter()
+            .map(project_lane_to_target)
+            .collect(),
+    };
+    select_branch_targets(&catalog, changed_paths)
+        .map(|targets| targets.into_iter().map(project_target_to_lane).collect())
+}
+
+fn project_target_to_lane(target: CiTarget) -> ForgeLane {
+    ForgeLane {
+        id: target.id,
+        title: target.title,
+        entrypoint: target.entrypoint,
+        command: target.command,
+        paths: target.paths,
+        concurrency_group: target.concurrency_group,
+    }
+}
+
+fn project_lane_to_target(lane: &ForgeLane) -> CiTarget {
+    CiTarget {
+        id: lane.id.clone(),
+        title: lane.title.clone(),
+        entrypoint: lane.entrypoint.clone(),
+        command: lane.command.clone(),
+        paths: lane.paths.clone(),
+        concurrency_group: lane.concurrency_group.clone(),
+    }
+}
 
 #[cfg(test)]
 mod tests {

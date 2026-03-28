@@ -1,12 +1,11 @@
 import {
-  DEFAULT_ACCOUNT_ID,
-  formatPairingApproveHint,
   type AnyAgentTool,
   type ChannelMessageActionContext,
   type ChannelMessageActionName,
   type ChannelPlugin,
-  type ChannelThreadingToolContext,
 } from "openclaw/plugin-sdk";
+import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/account-id";
+import type { ChannelThreadingToolContext } from "openclaw/plugin-sdk/channel-contract";
 import { getPikachatRuntime } from "./runtime.js";
 import {
   listPikachatAccountIds,
@@ -117,6 +116,10 @@ const groupNames = new Map<string, string>();
 // Cache group member counts from daemon events (group_joined, group_created, list_groups).
 // Used to auto-detect 1:1 DM groups without relying on the group name.
 const groupMemberCounts = new Map<string, number>();
+
+function formatPairingApproveHint(channelId: string): string {
+  return `Approve via: \`openclaw pairing list ${channelId}\` / \`openclaw pairing approve ${channelId} <code>\``;
+}
 
 function recordPendingHistory(historyKey: string, entry: PendingHistoryEntry): void {
   const history = groupHistories.get(historyKey) ?? [];
@@ -740,7 +743,9 @@ export const pikachatPlugin: ChannelPlugin<ResolvedPikachatAccount> = {
   },
 
   actions: {
-    listActions: (): ChannelMessageActionName[] => ["react"],
+    describeMessageTool: () => ({
+      actions: ["react"] as const,
+    }),
     supportsAction: ({ action }: { action: ChannelMessageActionName }) => action === "react",
     handleAction: async ({
       action,

@@ -520,6 +520,11 @@
         linuxMesaDriversPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/lib/dri" else "";
         linuxEglVendorPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/share/glvnd/egl_vendor.d" else "";
         linuxVulkanIcdPath = if pkgs.stdenv.isLinux then "${pkgs.mesa.drivers}/share/vulkan/icd.d" else "";
+        linuxBindgenIncludeArgs =
+          if pkgs.stdenv.isLinux then
+            "-I${pkgs.linuxHeaders}/include -I${pkgs.stdenv.cc.libc.dev}/include"
+          else
+            "";
         pikaciPkg = mkPikaciPkg pkgs (mkPikaciSrc pkgs.lib);
         phSrc = mkPhSrc pkgs.lib;
         phCargoCommonArgs = {
@@ -738,6 +743,7 @@
             pkgs.xvfb-run
             pkgs.alsa-lib
             pkgs.llvmPackages.libclang
+            pkgs.linuxHeaders
           ] ++ linuxGuiRuntimeLibraries
           ++ pkgs.lib.optionals withAndroid [
             androidSdk
@@ -759,6 +765,17 @@
             export ANDROID_USER_HOME="''${ANDROID_USER_HOME:-''${XDG_STATE_HOME:-$HOME/.local/state}/android}"
             export JAVA_HOME=${pkgs.jdk17_headless}
             export PATH=$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
+            unset PIKACI_ANDROID_AAPT2_OVERRIDE
+            for candidate in \
+              "$ANDROID_HOME/build-tools/35.0.0/aapt2" \
+              "$ANDROID_HOME/build-tools/34.0.0/aapt2"
+            do
+              if [ -x "$candidate" ]; then
+                export PIKACI_ANDROID_AAPT2_OVERRIDE="$candidate"
+                export GRADLE_OPTS="''${GRADLE_OPTS:+$GRADLE_OPTS }-Dorg.gradle.project.android.aapt2FromMavenOverride=$PIKACI_ANDROID_AAPT2_OVERRIDE"
+                break
+              fi
+            done
             '' else ''
             unset ANDROID_HOME
             unset ANDROID_SDK_ROOT
@@ -770,6 +787,7 @@
 
             if [ "$(uname -s)" = "Linux" ] && [ -n "${linuxGuiRuntimeLibraryPath}" ]; then
               export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
+              export BINDGEN_EXTRA_CLANG_ARGS="${linuxBindgenIncludeArgs}''${BINDGEN_EXTRA_CLANG_ARGS:+ $BINDGEN_EXTRA_CLANG_ARGS}"
               export LD_LIBRARY_PATH="${linuxGuiRuntimeLibraryPath}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               export WINIT_UNIX_BACKEND="x11"
               export LIBGL_DRIVERS_PATH="${linuxMesaDriversPath}''${LIBGL_DRIVERS_PATH:+:$LIBGL_DRIVERS_PATH}"

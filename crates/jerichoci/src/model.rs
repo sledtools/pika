@@ -1546,6 +1546,34 @@ mod tests {
     }
 
     #[test]
+    fn default_linux_dev_shell_provisions_bindgen_for_nightly_camera_dependencies() {
+        let flake = fs::read_to_string(workspace_root().join("flake.nix")).expect("read flake.nix");
+        let desktop_manifest =
+            fs::read_to_string(workspace_root().join("crates/pika-desktop/Cargo.toml"))
+                .expect("read pika-desktop Cargo.toml");
+
+        if desktop_manifest.contains("nokhwa") {
+            assert!(
+                flake.contains("pkgs.llvmPackages.libclang")
+                    && flake.contains("pkgs.linuxHeaders")
+                    && flake.contains("export BINDGEN_EXTRA_CLANG_ARGS="),
+                "default Linux dev shell must provision libclang, linuxHeaders, and bindgen include args while nightly lanes still run through nix develop .#default"
+            );
+        }
+    }
+
+    #[test]
+    fn default_linux_dev_shell_exports_android_aapt2_override_for_nightly() {
+        let flake = fs::read_to_string(workspace_root().join("flake.nix")).expect("read flake.nix");
+
+        assert!(
+            flake.contains("PIKACI_ANDROID_AAPT2_OVERRIDE")
+                && flake.contains("android.aapt2FromMavenOverride"),
+            "default Android-capable dev shell must export the AAPT2 override while nightly Linux lanes still run through nix develop .#default"
+        );
+    }
+
+    #[test]
     fn linux_fixture_lane_does_not_stage_unused_package_tests() {
         let linux_rust = fs::read_to_string(workspace_root().join("nix/ci/linux-rust.nix"))
             .expect("read linux-rust.nix");

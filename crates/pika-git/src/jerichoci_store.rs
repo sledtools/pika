@@ -309,6 +309,33 @@ fn state_root_for_repo(repo: &ForgeRepoConfig) -> PathBuf {
     Path::new(&repo.canonical_git_dir)
         .parent()
         .unwrap_or_else(|| Path::new("."))
-        .join("pikaci-state")
+        .join("jerichoci-state")
         .join(repo_slug)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::state_root_for_repo;
+    use crate::config::ForgeRepoConfig;
+
+    fn forge_repo(path: &std::path::Path) -> ForgeRepoConfig {
+        ForgeRepoConfig {
+            repo: "sledtools/pika".to_string(),
+            canonical_git_dir: path.join("pika.git").display().to_string(),
+            default_branch: "master".to_string(),
+            ci_concurrency: Some(2),
+            mirror_remote: None,
+            mirror_poll_interval_secs: None,
+            mirror_timeout_secs: None,
+            ci_command: vec!["just".to_string(), "pre-merge".to_string()],
+            hook_url: None,
+        }
+    }
+
+    #[test]
+    fn state_root_uses_jerichoci_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = forge_repo(tmp.path());
+        assert!(state_root_for_repo(&repo).ends_with("jerichoci-state/sledtools-pika"));
+    }
 }

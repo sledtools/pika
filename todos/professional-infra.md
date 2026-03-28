@@ -72,6 +72,9 @@ The first concrete target is:
   source of truth instead of `forge_lanes.rs`.
 - The forge web surface is being neutralized next so shared `Jericho` APIs and
   UI stop advertising `pikaci` as the product-facing CI name.
+- The forge/runtime boundary is now being hard-cut too: new state goes under
+  `jerichoci-state` / `.jerichoci`, and migration of existing hosted data will
+  happen operationally at deploy time rather than through compatibility code.
 - Next up is more forge-neutralization in `pika-git`, then the repo extraction
   and shared-infra move.
 

@@ -247,9 +247,7 @@ mod tests {
     #[test]
     fn failure_classifier_distinguishes_timeout_infra_and_test_failures() {
         assert_eq!(
-            classify_ci_failure(
-                "[pikaci] job finished: test · status=failed · timed out after 60s"
-            ),
+            classify_ci_failure("[ci] job finished: test · status=failed · timed out after 60s"),
             CiLaneFailureKind::Timeout
         );
         assert_eq!(

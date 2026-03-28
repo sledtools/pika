@@ -51,13 +51,13 @@ pub struct CloseOutcome {
 pub struct CiExecutionResult {
     pub success: bool,
     pub log: String,
-    pub pikaci_run_id: Option<String>,
-    pub pikaci_target_id: Option<String>,
+    pub ci_run_id: Option<String>,
+    pub ci_target_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub enum CiExecutionEvent {
-    PikaciRunStarted {
+    CiRunStarted {
         run_id: String,
         target_id: Option<String>,
     },
@@ -304,7 +304,7 @@ pub fn run_ci_command_for_head_with_heartbeat<F, G>(
     repo: &ForgeRepoConfig,
     head_sha: &str,
     command: &[String],
-    structured_pikaci_target_id: Option<&str>,
+    structured_ci_target_id: Option<&str>,
     heartbeat_interval: Duration,
     mut heartbeat: F,
     mut on_event: G,
@@ -316,16 +316,16 @@ where
     if command.is_empty() {
         bail!("ci command is empty");
     }
-    let structured_pikaci_target = structured_pikaci_target_id
+    let structured_ci_target = structured_ci_target_id
         .map(ToOwned::to_owned)
-        .or_else(|| staged_pikaci_target_from_command(command));
-    let structured_pikaci_state_root = structured_pikaci_target.as_ref().map(|_| {
+        .or_else(|| staged_ci_target_from_command(command));
+    let structured_ci_state_root = structured_ci_target.as_ref().map(|_| {
         JerichociRunStore::from_forge_repo(repo)
             .state_root()
             .to_path_buf()
     });
-    let effective_command = if structured_pikaci_target.is_some() {
-        ensure_structured_pikaci_output(command)?
+    let effective_command = if structured_ci_target.is_some() {
+        ensure_structured_ci_output(command)?
     } else {
         command.to_vec()
     };
@@ -336,10 +336,10 @@ where
             .current_dir(worktree.path())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if let Some(state_root) = structured_pikaci_state_root.as_ref() {
+        if let Some(state_root) = structured_ci_state_root.as_ref() {
             fs::create_dir_all(state_root)
-                .with_context(|| format!("create pikaci state root {}", state_root.display()))?;
-            cmd.env("PIKACI_STATE_ROOT", state_root);
+                .with_context(|| format!("create ci state root {}", state_root.display()))?;
+            cmd.env("JERICHOCI_STATE_ROOT", state_root);
         }
         let mut child = cmd
             .spawn()
@@ -356,16 +356,14 @@ where
         let stderr_log = Arc::new(Mutex::new(String::new()));
         let (event_tx, event_rx) = mpsc::channel::<CiExecutionEvent>();
         let stdout_log_for_thread = Arc::clone(&stdout_log);
-        let structured_pikaci_target_for_stdout = structured_pikaci_target.clone();
+        let structured_ci_target_for_stdout = structured_ci_target.clone();
         let stdout_reader = thread::spawn(move || -> anyhow::Result<()> {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
                 let line = line.context("read ci stdout line")?;
-                let rendered = render_pikaci_stdout_line(
-                    &line,
-                    structured_pikaci_target_for_stdout.as_deref(),
-                );
-                if let Some(event) = parse_pikaci_execution_event(&line) {
+                let rendered =
+                    render_ci_stdout_line(&line, structured_ci_target_for_stdout.as_deref());
+                if let Some(event) = parse_ci_execution_event(&line) {
                     let _ = event_tx.send(event);
                 }
                 let mut log = stdout_log_for_thread
@@ -389,21 +387,21 @@ where
             Ok(())
         });
 
-        let mut pikaci_run_id = None;
-        let mut pikaci_target_id = structured_pikaci_target;
+        let mut ci_run_id = None;
+        let mut ci_target_id = structured_ci_target;
         heartbeat()?;
         let poll_interval = Duration::from_millis(250);
         let mut next_heartbeat = Instant::now() + heartbeat_interval;
         let status = loop {
             while let Ok(event) = event_rx.try_recv() {
                 match event {
-                    CiExecutionEvent::PikaciRunStarted { run_id, target_id } => {
-                        pikaci_run_id = Some(run_id.clone());
+                    CiExecutionEvent::CiRunStarted { run_id, target_id } => {
+                        ci_run_id = Some(run_id.clone());
                         if target_id.is_some() {
-                            pikaci_target_id = target_id.clone();
+                            ci_target_id = target_id.clone();
                         }
                         if let Err(err) =
-                            on_event(CiExecutionEvent::PikaciRunStarted { run_id, target_id })
+                            on_event(CiExecutionEvent::CiRunStarted { run_id, target_id })
                         {
                             let _ = child.kill();
                             let _ = child.wait();
@@ -436,12 +434,12 @@ where
         };
         while let Ok(event) = event_rx.try_recv() {
             match event {
-                CiExecutionEvent::PikaciRunStarted { run_id, target_id } => {
-                    pikaci_run_id = Some(run_id.clone());
+                CiExecutionEvent::CiRunStarted { run_id, target_id } => {
+                    ci_run_id = Some(run_id.clone());
                     if target_id.is_some() {
-                        pikaci_target_id = target_id.clone();
+                        ci_target_id = target_id.clone();
                     }
-                    on_event(CiExecutionEvent::PikaciRunStarted { run_id, target_id })?;
+                    on_event(CiExecutionEvent::CiRunStarted { run_id, target_id })?;
                 }
             }
         }
@@ -468,8 +466,8 @@ where
         Ok(CiExecutionResult {
             success: status.success(),
             log,
-            pikaci_run_id,
-            pikaci_target_id,
+            ci_run_id,
+            ci_target_id,
         })
     })();
     let cleanup_result = remove_temp_worktree(repo, worktree);
@@ -1103,7 +1101,7 @@ fn some_if_non_empty(input: &str) -> Option<String> {
     }
 }
 
-fn staged_pikaci_target_from_command(command: &[String]) -> Option<String> {
+fn staged_ci_target_from_command(command: &[String]) -> Option<String> {
     let executable = command.first()?;
     let file_name = Path::new(executable).file_name()?.to_str()?;
     if file_name != "pikaci-staged-linux-remote.sh" {
@@ -1115,15 +1113,13 @@ fn staged_pikaci_target_from_command(command: &[String]) -> Option<String> {
     command.get(2).cloned()
 }
 
-fn ensure_structured_pikaci_output(command: &[String]) -> anyhow::Result<Vec<String>> {
+fn ensure_structured_ci_output(command: &[String]) -> anyhow::Result<Vec<String>> {
     if let Some(output_index) = command.iter().position(|arg| arg == "--output") {
         let Some(output_value) = command.get(output_index + 1) else {
-            bail!("structured pikaci command passed `--output` without a value");
+            bail!("structured ci command passed `--output` without a value");
         };
         if output_value != "jsonl" {
-            bail!(
-                "structured pikaci command must use `--output jsonl`, got `--output {output_value}`"
-            );
+            bail!("structured ci command must use `--output jsonl`, got `--output {output_value}`");
         }
         return Ok(command.to_vec());
     }
@@ -1133,16 +1129,16 @@ fn ensure_structured_pikaci_output(command: &[String]) -> anyhow::Result<Vec<Str
     Ok(structured)
 }
 
-fn parse_pikaci_execution_event(line: &str) -> Option<CiExecutionEvent> {
+fn parse_ci_execution_event(line: &str) -> Option<CiExecutionEvent> {
     match serde_json::from_str::<RunLifecycleEvent>(line).ok()? {
         RunLifecycleEvent::RunStarted {
             run_id, target_id, ..
-        } => Some(CiExecutionEvent::PikaciRunStarted { run_id, target_id }),
+        } => Some(CiExecutionEvent::CiRunStarted { run_id, target_id }),
         _ => None,
     }
 }
 
-fn render_pikaci_stdout_line(line: &str, default_target_id: Option<&str>) -> String {
+fn render_ci_stdout_line(line: &str, default_target_id: Option<&str>) -> String {
     let Ok(event) = serde_json::from_str::<RunLifecycleEvent>(line) else {
         return line.to_string();
     };
@@ -1158,17 +1154,17 @@ fn render_pikaci_stdout_line(line: &str, default_target_id: Option<&str>) -> Str
                 .unwrap_or_else(|| "unknown-target".to_string());
             match target_description {
                 Some(description) => {
-                    format!("[pikaci] run started: {run_id} · {target} · {description}")
+                    format!("[ci] run started: {run_id} · {target} · {description}")
                 }
-                None => format!("[pikaci] run started: {run_id} · {target}"),
+                None => format!("[ci] run started: {run_id} · {target}"),
             }
         }
         RunLifecycleEvent::JobStarted { job, .. } => {
-            format!("[pikaci] job started: {} · {}", job.id, job.description)
+            format!("[ci] job started: {} · {}", job.id, job.description)
         }
         RunLifecycleEvent::JobFinished { job, .. } => {
             let mut line = format!(
-                "[pikaci] job finished: {} · status={}",
+                "[ci] job finished: {} · status={}",
                 job.id,
                 render_run_status(job.status)
             );
@@ -1184,7 +1180,7 @@ fn render_pikaci_stdout_line(line: &str, default_target_id: Option<&str>) -> Str
         }
         RunLifecycleEvent::RunFinished { run } => {
             let mut line = format!(
-                "[pikaci] run finished: {} · status={}",
+                "[ci] run finished: {} · status={}",
                 run.run_id,
                 render_run_status(run.status)
             );
@@ -1224,7 +1220,7 @@ mod tests {
     use super::{
         acquire_mirror_lock, close_branch, create_merge_commit, current_branch_head,
         current_mirror_lock_status, github_http_auth_header, inspect_mirror, install_hooks,
-        merge_branch, mirror_lock_path, publish_merge_refs, render_pikaci_stdout_line,
+        merge_branch, mirror_lock_path, publish_merge_refs, render_ci_stdout_line,
         resolve_hook_tool, run_ci_command_for_head_with_heartbeat, run_command_output_bounded,
         write_merge_tree, write_mirror_lock_metadata, MirrorLockMetadata,
     };
@@ -1593,7 +1589,7 @@ EOF\n"
             || Ok(()),
             |event| {
                 match event {
-                    super::CiExecutionEvent::PikaciRunStarted { run_id, .. } => {
+                    super::CiExecutionEvent::CiRunStarted { run_id, .. } => {
                         started_run_ids.push(run_id);
                     }
                 }
@@ -1603,16 +1599,13 @@ EOF\n"
         .expect("run structured staged lane");
 
         assert!(result.success);
-        assert_eq!(result.pikaci_run_id.as_deref(), Some("pikaci-run-123"));
-        assert_eq!(
-            result.pikaci_target_id.as_deref(),
-            Some("pre-merge-pika-rust")
-        );
+        assert_eq!(result.ci_run_id.as_deref(), Some("pikaci-run-123"));
+        assert_eq!(result.ci_target_id.as_deref(), Some("pre-merge-pika-rust"));
         assert_eq!(started_run_ids, vec!["pikaci-run-123".to_string()]);
-        assert!(result.log.contains("[pikaci] run started: pikaci-run-123"));
+        assert!(result.log.contains("[ci] run started: pikaci-run-123"));
         assert!(result
             .log
-            .contains("[pikaci] job finished: job-one · status=passed"));
+            .contains("[ci] job finished: job-one · status=passed"));
         assert!(run_store.run_record_path("pikaci-run-123").is_file());
         assert!(run_store
             .host_log_path("pikaci-run-123", "job-one")
@@ -1680,11 +1673,8 @@ EOF\n"
         .expect("run structured lane with explicit metadata");
 
         assert!(result.success);
-        assert_eq!(result.pikaci_run_id.as_deref(), Some("pikaci-run-456"));
-        assert_eq!(
-            result.pikaci_target_id.as_deref(),
-            Some("pre-merge-pika-rust")
-        );
+        assert_eq!(result.ci_run_id.as_deref(), Some("pikaci-run-456"));
+        assert_eq!(result.ci_target_id.as_deref(), Some("pre-merge-pika-rust"));
         assert!(run_store.run_record_path("pikaci-run-456").is_file());
     }
 
@@ -1714,12 +1704,12 @@ EOF\n"
 
         assert!(err
             .to_string()
-            .contains("structured pikaci command must use `--output jsonl`"));
+            .contains("structured ci command must use `--output jsonl`"));
     }
 
     #[test]
     fn structured_pikaci_failure_log_keeps_job_and_run_messages() {
-        let job_line = render_pikaci_stdout_line(
+        let job_line = render_ci_stdout_line(
             &event_line(
                 TestJerichociJobFixture {
                     status: RunStatus::Failed,
@@ -1734,7 +1724,7 @@ EOF\n"
         assert!(job_line.contains("status=failed"));
         assert!(job_line.contains("cargo test failed in crate pika_core"));
 
-        let run_line = render_pikaci_stdout_line(
+        let run_line = render_ci_stdout_line(
             &event_line(
                 TestJerichociRunFixture {
                     status: RunStatus::Failed,

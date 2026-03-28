@@ -430,7 +430,7 @@ fn execute_branch_job(
         || store.heartbeat_branch_ci_lane_run(job.lane_run_id, job.claim_token, lease_secs),
         |event| {
             match event {
-                forge::CiExecutionEvent::PikaciRunStarted { run_id, target_id } => {
+                forge::CiExecutionEvent::CiRunStarted { run_id, target_id } => {
                     store.record_branch_ci_lane_pikaci_run(
                         job.lane_run_id,
                         job.claim_token,
@@ -438,7 +438,7 @@ fn execute_branch_job(
                         target_id.as_deref(),
                     )?;
                     if let Some(live_updates) = live_updates.as_ref() {
-                        live_updates.branch_changed(job.branch_id, "pikaci_run_started");
+                        live_updates.branch_changed(job.branch_id, "ci_run_started");
                     }
                 }
             }
@@ -524,7 +524,7 @@ fn execute_nightly_job(
         || store.heartbeat_nightly_lane_run(job.lane_run_id, job.claim_token, lease_secs),
         |event| {
             match event {
-                forge::CiExecutionEvent::PikaciRunStarted { run_id, target_id } => {
+                forge::CiExecutionEvent::CiRunStarted { run_id, target_id } => {
                     store.record_nightly_lane_pikaci_run(
                         job.lane_run_id,
                         job.claim_token,
@@ -532,7 +532,7 @@ fn execute_nightly_job(
                         target_id.as_deref(),
                     )?;
                     if let Some(live_updates) = live_updates.as_ref() {
-                        live_updates.nightly_changed(job.nightly_run_id, "pikaci_run_started");
+                        live_updates.nightly_changed(job.nightly_run_id, "ci_run_started");
                     }
                 }
             }

@@ -240,8 +240,8 @@ fn main() -> anyhow::Result<()> {
 
 fn resolve_state_root(cwd: &std::path::Path, configured: Option<PathBuf>) -> PathBuf {
     configured
-        .or_else(|| std::env::var_os("PIKACI_STATE_ROOT").map(PathBuf::from))
-        .unwrap_or_else(|| cwd.join(".pikaci"))
+        .or_else(|| std::env::var_os("JERICHOCI_STATE_ROOT").map(PathBuf::from))
+        .unwrap_or_else(|| cwd.join(".jerichoci"))
 }
 
 fn fail_if_removed_backend_selector_is_set() -> anyhow::Result<()> {
@@ -563,9 +563,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_state_root_defaults_to_dot_pikaci_under_cwd() {
+    fn resolve_state_root_defaults_to_dot_jerichoci_under_cwd() {
         let cwd = std::path::Path::new("/tmp/pika");
-        assert_eq!(resolve_state_root(cwd, None), cwd.join(".pikaci"));
+        assert_eq!(resolve_state_root(cwd, None), cwd.join(".jerichoci"));
     }
 
     #[test]

@@ -92,11 +92,11 @@ let
   '';
 
   emitPikaciPayloadManifest = ''
-    had_share_pikaci=0
+    had_share_jerichoci=0
     had_target=0
     had_lib=0
-    if [ -d "$out/share/pikaci" ]; then
-      had_share_pikaci=1
+    if [ -d "$out/share/jerichoci" ]; then
+      had_share_jerichoci=1
     fi
     if [ -d "$out/target" ]; then
       had_target=1
@@ -104,9 +104,9 @@ let
     if [ -d "$out/lib" ]; then
       had_lib=1
     fi
-    mkdir -p "$out/share/pikaci"
+    mkdir -p "$out/share/jerichoci"
     export PIKACI_PAYLOAD_MANIFEST_OUT="$out"
-    export PIKACI_PAYLOAD_MANIFEST_HAS_SHARE_PIKACI="$had_share_pikaci"
+    export JERICHOCI_PAYLOAD_MANIFEST_HAS_SHARE="$had_share_jerichoci"
     export PIKACI_PAYLOAD_MANIFEST_HAS_TARGET="$had_target"
     export PIKACI_PAYLOAD_MANIFEST_HAS_LIB="$had_lib"
     export PIKACI_PAYLOAD_MANIFEST_KIND
@@ -129,8 +129,8 @@ if bin_dir.is_dir():
             entrypoints.append({"name": child.name, "relative_path": f"bin/{child.name}"})
 
 asset_roots = []
-if os.environ.get("PIKACI_PAYLOAD_MANIFEST_HAS_SHARE_PIKACI") == "1":
-    asset_roots.append({"name": "pikaci_share", "relative_path": "share/pikaci"})
+if os.environ.get("JERICHOCI_PAYLOAD_MANIFEST_HAS_SHARE") == "1":
+    asset_roots.append({"name": "jerichoci_share", "relative_path": "share/jerichoci"})
 if os.environ.get("PIKACI_PAYLOAD_MANIFEST_HAS_TARGET") == "1":
     asset_roots.append({"name": "target", "relative_path": "target"})
 if os.environ.get("PIKACI_PAYLOAD_MANIFEST_HAS_LIB") == "1":
@@ -152,7 +152,7 @@ manifest = {
     "asset_roots": asset_roots,
     "mounts": mounts,
 }
-(out / "share" / "pikaci" / "payload-manifest.json").write_text(
+(out / "share" / "jerichoci" / "payload-manifest.json").write_text(
     json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
 )
 PY
@@ -623,19 +623,19 @@ PY
             printf '%s\n' "ok: pika Android instrumentation test compile validated during staged workspace build" \
               >"$PIKACI_FOLLOWUP_PIKA_ANDROID_TEST_COMPILE_OK"
 
-            mkdir -p "$out/bin" "$out/share/pikaci"
+            mkdir -p "$out/bin" "$out/share/jerichoci"
             cp "$PIKACI_FOLLOWUP_PIKA_ANDROID_TEST_COMPILE_OK" \
-              "$out/share/pikaci/pika-followup-pika-android-test-compile.ok"
+              "$out/share/jerichoci/pika-followup-pika-android-test-compile.ok"
             cp "$PIKACI_FOLLOWUP_PIKACHAT_BUILD_OK" \
-              "$out/share/pikaci/pika-followup-pikachat-build.ok"
+              "$out/share/jerichoci/pika-followup-pikachat-build.ok"
             cp "$PIKACI_FOLLOWUP_PIKA_DESKTOP_CHECK_OK" \
-              "$out/share/pikaci/pika-followup-pika-desktop-check.ok"
+              "$out/share/jerichoci/pika-followup-pika-desktop-check.ok"
             cp "$PIKACI_FOLLOWUP_ACTIONLINT_OK" \
-              "$out/share/pikaci/pika-followup-actionlint.ok"
+              "$out/share/jerichoci/pika-followup-actionlint.ok"
             cp "$PIKACI_FOLLOWUP_DOC_CONTRACTS_OK" \
-              "$out/share/pikaci/pika-followup-doc-contracts.ok"
+              "$out/share/jerichoci/pika-followup-doc-contracts.ok"
             cp "$PIKACI_FOLLOWUP_RUST_DEPS_HYGIENE_OK" \
-              "$out/share/pikaci/pika-followup-rust-deps-hygiene.ok"
+              "$out/share/jerichoci/pika-followup-rust-deps-hygiene.ok"
 
             write_wrapper() {
               local path="$1"
@@ -647,27 +647,27 @@ PY
             write_wrapper "$out/bin/run-pika-android-test-compile" \
               "${guestBashShebang}" \
               "set -euo pipefail" \
-              "cat \"\$(cd \"\$(dirname \"\$0\")/..\" && pwd)/share/pikaci/pika-followup-pika-android-test-compile.ok\""
+              "cat \"\$(cd \"\$(dirname \"\$0\")/..\" && pwd)/share/jerichoci/pika-followup-pika-android-test-compile.ok\""
             write_wrapper "$out/bin/run-pika-followup-pikachat-build" \
               "${guestBashShebang}" \
               "set -euo pipefail" \
-              "cat \"\$(cd \"\$(dirname \"\$0\")/..\" && pwd)/share/pikaci/pika-followup-pikachat-build.ok\""
+              "cat \"\$(cd \"\$(dirname \"\$0\")/..\" && pwd)/share/jerichoci/pika-followup-pikachat-build.ok\""
             write_wrapper "$out/bin/run-pika-desktop-check" \
               "${guestBashShebang}" \
               "set -euo pipefail" \
-              "cat \"\$(cd \"\$(dirname \"\$0\")/..\" && pwd)/share/pikaci/pika-followup-pika-desktop-check.ok\""
+              "cat \"\$(cd \"\$(dirname \"\$0\")/..\" && pwd)/share/jerichoci/pika-followup-pika-desktop-check.ok\""
             write_wrapper "$out/bin/run-pika-actionlint" \
               "${guestBashShebang}" \
               "set -euo pipefail" \
-              "cat \"\$(cd \"\$(dirname \"\$0\")/..\" && pwd)/share/pikaci/pika-followup-actionlint.ok\""
+              "cat \"\$(cd \"\$(dirname \"\$0\")/..\" && pwd)/share/jerichoci/pika-followup-actionlint.ok\""
             write_wrapper "$out/bin/run-pika-doc-contracts" \
               "${guestBashShebang}" \
               "set -euo pipefail" \
-              "cat \"\$(cd \"\$(dirname \"\$0\")/..\" && pwd)/share/pikaci/pika-followup-doc-contracts.ok\""
+              "cat \"\$(cd \"\$(dirname \"\$0\")/..\" && pwd)/share/jerichoci/pika-followup-doc-contracts.ok\""
             write_wrapper "$out/bin/run-pika-rust-deps-hygiene" \
               "${guestBashShebang}" \
               "set -euo pipefail" \
-              "cat \"\$(cd \"\$(dirname \"\$0\")/..\" && pwd)/share/pikaci/pika-followup-rust-deps-hygiene.ok\""
+              "cat \"\$(cd \"\$(dirname \"\$0\")/..\" && pwd)/share/jerichoci/pika-followup-rust-deps-hygiene.ok\""
           fi
         ''
       else if lane == "rmp" then
@@ -927,10 +927,10 @@ PY
       ''
         target_root="''${CARGO_TARGET_DIR:-target}"
         target_root_abs="$(pwd)/$target_root/"
-        mkdir -p "$out/bin" "$out/share/pikaci" "$out/target"
-        cp "$PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST" "$out/share/pikaci/pika-core-lib-tests.manifest"
-        cp "$PIKACI_PIKA_CORE_LIB_APP_FLOWS_MANIFEST" "$out/share/pikaci/pika-core-lib-app-flows.manifest"
-        cp "$PIKACI_PIKA_CORE_MESSAGING_E2E_MANIFEST" "$out/share/pikaci/pika-core-messaging-e2e.manifest"
+        mkdir -p "$out/bin" "$out/share/jerichoci" "$out/target"
+        cp "$PIKACI_PIKA_CORE_LIB_TESTS_MANIFEST" "$out/share/jerichoci/pika-core-lib-tests.manifest"
+        cp "$PIKACI_PIKA_CORE_LIB_APP_FLOWS_MANIFEST" "$out/share/jerichoci/pika-core-lib-app-flows.manifest"
+        cp "$PIKACI_PIKA_CORE_MESSAGING_E2E_MANIFEST" "$out/share/jerichoci/pika-core-messaging-e2e.manifest"
 
         copy_target_relative() {
           local relative="$1"
@@ -997,7 +997,7 @@ PY
         fi
 
         root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
-        manifest="$root/share/pikaci/$1"
+        manifest="$root/share/jerichoci/$1"
         if [ ! -s "$manifest" ]; then
           echo "missing staged pika_core test manifest at $manifest" >&2
           exit 1
@@ -1045,9 +1045,9 @@ PY
         ''
           target_root="''${CARGO_TARGET_DIR:-target}"
           target_root_abs="$(pwd)/$target_root/"
-          mkdir -p "$out/bin" "$out/share/pikaci" "$out/target"
+          mkdir -p "$out/bin" "$out/share/jerichoci" "$out/target"
           cp "$PIKACI_PIKA_SERVER_PACKAGE_TESTS_MANIFEST" \
-            "$out/share/pikaci/pika-server-package-tests.manifest"
+            "$out/share/jerichoci/pika-server-package-tests.manifest"
 
           copy_target_relative() {
             local relative="$1"
@@ -1106,7 +1106,7 @@ PY
           set -euo pipefail
 
           root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
-          manifest="$root/share/pikaci/pika-server-package-tests.manifest"
+          manifest="$root/share/jerichoci/pika-server-package-tests.manifest"
           if [ ! -s "$manifest" ]; then
             echo "missing staged pika-server package test manifest at $manifest" >&2
             exit 1
@@ -1136,7 +1136,7 @@ PY
         ''
           target_root="''${CARGO_TARGET_DIR:-target}"
           target_root_abs="$(pwd)/$target_root/"
-          mkdir -p "$out/bin" "$out/share/pikaci" "$out/target"
+          mkdir -p "$out/bin" "$out/share/jerichoci" "$out/target"
 
           copy_target_relative() {
             local relative="$1"
@@ -1170,7 +1170,7 @@ PY
             echo "missing staged pikahut clippy marker" >&2
             exit 1
           fi
-          cp "$PIKACI_PIKAHUT_CLIPPY_OK" "$out/share/pikaci/pikahut-clippy.ok"
+          cp "$PIKACI_PIKAHUT_CLIPPY_OK" "$out/share/jerichoci/pikahut-clippy.ok"
 
           if [ -d "$target_root/debug/deps" ]; then
             while IFS= read -r shared_object; do
@@ -1192,7 +1192,7 @@ PY
           set -euo pipefail
 
           root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
-          marker="$root/share/pikaci/pikahut-clippy.ok"
+          marker="$root/share/jerichoci/pikahut-clippy.ok"
           if [ ! -s "$marker" ]; then
             echo "missing staged pikahut clippy marker at $marker" >&2
             exit 1
@@ -1232,27 +1232,27 @@ PY
             echo "missing staged pika follow-up wrapper directory at $out/bin" >&2
             exit 1
           fi
-          if [ ! -s "$out/share/pikaci/pika-followup-pika-android-test-compile.ok" ]; then
+          if [ ! -s "$out/share/jerichoci/pika-followup-pika-android-test-compile.ok" ]; then
             echo "missing staged pika follow-up Android test compile marker in output" >&2
             exit 1
           fi
-          if [ ! -s "$out/share/pikaci/pika-followup-pikachat-build.ok" ]; then
+          if [ ! -s "$out/share/jerichoci/pika-followup-pikachat-build.ok" ]; then
             echo "missing staged pika follow-up pikachat build marker in output" >&2
             exit 1
           fi
-          if [ ! -s "$out/share/pikaci/pika-followup-pika-desktop-check.ok" ]; then
+          if [ ! -s "$out/share/jerichoci/pika-followup-pika-desktop-check.ok" ]; then
             echo "missing staged pika follow-up desktop-check marker in output" >&2
             exit 1
           fi
-          if [ ! -s "$out/share/pikaci/pika-followup-actionlint.ok" ]; then
+          if [ ! -s "$out/share/jerichoci/pika-followup-actionlint.ok" ]; then
             echo "missing staged pika follow-up actionlint marker in output" >&2
             exit 1
           fi
-          if [ ! -s "$out/share/pikaci/pika-followup-doc-contracts.ok" ]; then
+          if [ ! -s "$out/share/jerichoci/pika-followup-doc-contracts.ok" ]; then
             echo "missing staged pika follow-up doc-contract marker in output" >&2
             exit 1
           fi
-          if [ ! -s "$out/share/pikaci/pika-followup-rust-deps-hygiene.ok" ]; then
+          if [ ! -s "$out/share/jerichoci/pika-followup-rust-deps-hygiene.ok" ]; then
             echo "missing staged pika follow-up rust deps hygiene marker in output" >&2
             exit 1
           fi
@@ -1261,7 +1261,7 @@ PY
         ''
           target_root="''${CARGO_TARGET_DIR:-target}"
           target_root_abs="$(pwd)/$target_root/"
-          mkdir -p "$out/bin" "$out/share/pikaci" "$out/target"
+          mkdir -p "$out/bin" "$out/share/jerichoci" "$out/target"
           
           copy_target_relative() {
             local relative="$1"
@@ -1291,15 +1291,15 @@ PY
           copy_target_relative "$rmp_relative"
           ln -s "../target/$rmp_relative" "$out/bin/rmp"
 
-          mkdir -p "$out/share/pikaci/rmp-vendor"
+          mkdir -p "$out/share/jerichoci/rmp-vendor"
           vendor_store_dir="$(${pkgs.gawk}/bin/awk -F'\"' '/^directory = \"/ { print $2; exit }' "$cargoVendorDir/config.toml")"
           if [ -z "$vendor_store_dir" ]; then
             echo "failed to resolve staged rmp vendor store dir from $cargoVendorDir/config.toml" >&2
             cat "$cargoVendorDir/config.toml" >&2
             exit 1
           fi
-          cp "$cargoVendorDir/config.toml" "$out/share/pikaci/rmp-vendor/upstream-config.toml"
-          cp -RL "$vendor_store_dir" "$out/share/pikaci/rmp-vendor/vendor"
+          cp "$cargoVendorDir/config.toml" "$out/share/jerichoci/rmp-vendor/upstream-config.toml"
+          cp -RL "$vendor_store_dir" "$out/share/jerichoci/rmp-vendor/vendor"
 
           install -Dm555 ${
             pkgs.writeTextFile {
@@ -1319,7 +1319,7 @@ PY
                 }
                 trap cleanup EXIT
 
-                vendor_dir="$root/share/pikaci/rmp-vendor/vendor"
+                vendor_dir="$root/share/jerichoci/rmp-vendor/vendor"
                 cat >"$cargo_home/config.toml" <<CFG
                 [source.crates-io]
                 replace-with = "pikaci-rmp-vendor"
@@ -1361,17 +1361,17 @@ PY
       else if lane == "pikachat" then
         ''
           target_root="''${CARGO_TARGET_DIR:-target}"
-          mkdir -p "$out/bin" "$out/share/pikaci" "$out/target"
+          mkdir -p "$out/bin" "$out/share/jerichoci" "$out/target"
           cp "$PIKACI_PIKACHAT_PACKAGE_TESTS_MANIFEST" \
-            "$out/share/pikaci/pikachat-package-tests.manifest"
+            "$out/share/jerichoci/pikachat-package-tests.manifest"
           cp "$PIKACI_PIKACHAT_SIDECAR_PACKAGE_TESTS_MANIFEST" \
-            "$out/share/pikaci/pikachat-sidecar-package-tests.manifest"
+            "$out/share/jerichoci/pikachat-sidecar-package-tests.manifest"
           cp "$PIKACI_PIKA_DESKTOP_PACKAGE_TESTS_MANIFEST" \
-            "$out/share/pikaci/pika-desktop-package-tests.manifest"
+            "$out/share/jerichoci/pika-desktop-package-tests.manifest"
           cp "$PIKACI_PIKAHUT_INTEGRATION_DETERMINISTIC_MANIFEST" \
-            "$out/share/pikaci/pikahut-integration-deterministic.manifest"
+            "$out/share/jerichoci/pikahut-integration-deterministic.manifest"
           cp "$PIKACI_PIKAHUT_INTEGRATION_OPENCLAW_MANIFEST" \
-            "$out/share/pikaci/pikahut-integration-openclaw.manifest"
+            "$out/share/jerichoci/pikahut-integration-openclaw.manifest"
           target_root_abs="$(pwd)/$target_root/"
 
           copy_target_relative() {
@@ -1417,7 +1417,7 @@ PY
             | sort -u >"$staged_runtime_manifest"
 
           cp -R "$src/pikachat-openclaw/openclaw/extensions/pikachat-openclaw" \
-            "$out/share/pikaci/pikachat-openclaw-extension"
+            "$out/share/jerichoci/pikachat-openclaw-extension"
 
           while IFS= read -r relative; do
             [ -n "$relative" ] || continue
@@ -1457,10 +1457,10 @@ PY
             done
           }
 
-          mkdir -p "$out/lib" "$out/share/pikaci"
+          mkdir -p "$out/lib" "$out/share/jerichoci"
           copy_packaged_openclaw_root "$out"
 
-          openclaw_e2e_root="$out/share/pikaci/openclaw-gateway-e2e"
+          openclaw_e2e_root="$out/share/jerichoci/openclaw-gateway-e2e"
           copy_packaged_openclaw_root "$openclaw_e2e_root"
           rm -rf "$openclaw_e2e_root/lib/openclaw/extensions"
           mkdir -p "$openclaw_e2e_root/lib/openclaw/extensions"
@@ -1492,7 +1492,7 @@ PY
           fi
 
           root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
-          manifest="$root/share/pikaci/$1"
+          manifest="$root/share/jerichoci/$1"
           shift
           if [ ! -s "$manifest" ]; then
             echo "missing staged test manifest at $manifest" >&2
@@ -1604,10 +1604,10 @@ PY
             export PIKAHUT_TEST_WORKSPACE_ROOT=/workspace/snapshot
             cd "$PIKAHUT_TEST_WORKSPACE_ROOT"
           fi
-          openclaw_stage_dir="$root/share/pikaci/openclaw-gateway-e2e"
+          openclaw_stage_dir="$root/share/jerichoci/openclaw-gateway-e2e"
           export PIKAHUT_TEST_PIKACHAT_BIN="$root/bin/pikachat"
           export PIKAHUT_OPENCLAW_E2E_GATEWAY_BIN="$openclaw_stage_dir/bin/openclaw"
-          export PIKAHUT_OPENCLAW_EXTENSION_SOURCE_ROOT="$root/share/pikaci/pikachat-openclaw-extension"
+          export PIKAHUT_OPENCLAW_EXTENSION_SOURCE_ROOT="$root/share/jerichoci/pikachat-openclaw-extension"
           if [ -x "$root/bin/pika-relay" ]; then
             export PIKA_FIXTURE_RELAY_CMD="$root/bin/pika-relay"
           fi
@@ -1638,10 +1638,10 @@ PY
       else
         ''
         target_root="''${CARGO_TARGET_DIR:-target}"
-        mkdir -p "$out/bin" "$out/share/pikaci" "$out/target"
-        cp "$PIKACI_AGENT_CLOUD_UNIT_MANIFEST" "$out/share/pikaci/pika-cloud-unit.manifest"
-        cp "$PIKACI_SERVER_AGENT_API_TESTS_MANIFEST" "$out/share/pikaci/server-agent-api-tests.manifest"
-        cp "$PIKACI_CORE_AGENT_NIP98_TEST_MANIFEST" "$out/share/pikaci/core-agent-nip98-test.manifest"
+        mkdir -p "$out/bin" "$out/share/jerichoci" "$out/target"
+        cp "$PIKACI_AGENT_CLOUD_UNIT_MANIFEST" "$out/share/jerichoci/pika-cloud-unit.manifest"
+        cp "$PIKACI_SERVER_AGENT_API_TESTS_MANIFEST" "$out/share/jerichoci/server-agent-api-tests.manifest"
+        cp "$PIKACI_CORE_AGENT_NIP98_TEST_MANIFEST" "$out/share/jerichoci/core-agent-nip98-test.manifest"
 
         copy_target_relative() {
           local relative="$1"
@@ -1710,7 +1710,7 @@ PY
         fi
 
         root="$(cd "$(dirname "''${BASH_SOURCE[0]}")/.." && pwd)"
-        manifest="$root/share/pikaci/$1"
+        manifest="$root/share/jerichoci/$1"
         shift
         if [ ! -s "$manifest" ]; then
           echo "missing staged test manifest at $manifest" >&2

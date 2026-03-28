@@ -857,7 +857,8 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
             "integration_deterministic must resolve workspace root from runtime config before falling back to compile-time paths"
         );
         assert!(
-            linux_rust.contains("openclaw_stage_dir=\"$root/share/pikaci/openclaw-gateway-e2e\""),
+            linux_rust
+                .contains("openclaw_stage_dir=\"$root/share/jerichoci/openclaw-gateway-e2e\""),
             "staged OpenClaw gateway wrapper must use the root-owned packaged OpenClaw e2e tree so plugin safety checks do not reject the staged plugin on Incus"
         );
         assert!(
@@ -867,7 +868,7 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
         );
         assert!(
             linux_rust.contains(
-                "export PIKAHUT_OPENCLAW_EXTENSION_SOURCE_ROOT=\"$root/share/pikaci/pikachat-openclaw-extension\""
+                "export PIKAHUT_OPENCLAW_EXTENSION_SOURCE_ROOT=\"$root/share/jerichoci/pikachat-openclaw-extension\""
             ),
             "staged OpenClaw gateway wrapper must source the packaged pikachat-openclaw plugin from the standalone share tree so the runtime-local copy is the only loaded plugin on Incus"
         );

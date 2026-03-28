@@ -289,7 +289,7 @@ impl Store {
                 params![
                     branch_id,
                     head_sha,
-                    "crates/pikaci/src/forge_lanes.rs",
+                    crate::ci::FORGE_LANE_DEFINITION_PATH,
                     selected_lane_ids,
                     suite_status.as_str(),
                     suite_log,
@@ -321,7 +321,7 @@ impl Store {
                         lane.title,
                         lane.entrypoint,
                         command_json,
-                        lane.staged_linux_target,
+                        Some(lane.id.clone()),
                         lane.concurrency_group,
                         ci_target_key,
                     ],
@@ -375,7 +375,7 @@ impl Store {
                 params![
                     branch_id,
                     head_sha,
-                    "crates/pikaci/src/forge_lanes.rs",
+                    crate::ci::FORGE_LANE_DEFINITION_PATH,
                     "[]",
                     log_text
                 ],
@@ -539,7 +539,7 @@ impl Store {
                         lane.title,
                         lane.entrypoint,
                         command_json,
-                        lane.staged_linux_target,
+                        Some(lane.id.clone()),
                         lane.concurrency_group,
                         ci_target_key,
                     ],

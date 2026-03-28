@@ -1,4 +1,4 @@
 pub mod forge_lanes;
+pub mod targets;
 
-#[allow(dead_code)]
-pub(crate) mod catalog;
+pub mod catalog;

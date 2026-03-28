@@ -51,7 +51,7 @@ impl Store {
             &input.repo,
             &input.canonical_git_dir,
             &input.default_branch,
-            "crates/pikaci/src/forge_lanes.rs",
+            crate::ci::FORGE_LANE_DEFINITION_PATH,
         )?;
         self.with_connection(|conn| {
             conn.execute(

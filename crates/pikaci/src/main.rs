@@ -1,11 +1,6 @@
-mod catalog;
-#[allow(dead_code)]
-mod forge_lanes;
 mod output;
-mod targets;
 
 use anyhow::{Context, anyhow, bail};
-use catalog::PikaStagedLinuxTargetInfoJson;
 use clap::{Parser, Subcommand, ValueEnum};
 use jerichoci::{
     LogKind, RunLifecycleEvent, RunMetadata, RunOptions, RunRecord, RunStatus,
@@ -18,8 +13,9 @@ use output::{
     format_status_lines, prepared_output_consumer_label, print_json, print_json_line,
     print_run_human_summary, status_text,
 };
+use pikaci::catalog::PikaStagedLinuxTargetInfoJson;
+use pikaci::targets::{TargetSpec, staged_linux_target, target_spec};
 use std::path::PathBuf;
-use targets::{TargetSpec, staged_linux_target, target_spec};
 
 #[derive(Parser, Debug)]
 #[command(name = "pikaci")]
@@ -546,13 +542,13 @@ mod tests {
         Cli, Command, format_status_lines, matches_any_filter, matches_filter, rerun_metadata,
         resolve_state_root, staged_linux_remote_defaults_json, target_spec, target_spec_for_rerun,
     };
-    use crate::catalog::{PikaStagedLinuxLane, PikaStagedLinuxTarget};
     use clap::Parser;
     use jerichoci::{
         JobPlacementKind, JobRecord, JobRuntimeKind, PreparedOutputConsumerKind,
         RemoteLinuxVmBackend, RunLifecycleEvent, RunRecord, RunStatus, RunnerKind,
         staged_linux_remote_defaults,
     };
+    use pikaci::catalog::{PikaStagedLinuxLane, PikaStagedLinuxTarget};
 
     #[test]
     fn path_filters_match_exact_and_prefix_patterns() {
@@ -739,16 +735,17 @@ mod tests {
     }
 
     #[test]
-    fn staged_pre_merge_target_filters_come_from_forge_manifest() {
+    fn staged_pre_merge_target_filters_live_in_target_catalog() {
         let target = target_spec("pre-merge-pika-rust").expect("pika rust target");
 
+        assert!(target.filters.iter().any(|pattern| pattern == "rust/**"));
+        assert!(target.filters.iter().any(|pattern| pattern == "scripts/**"));
         assert!(
-            target
+            !target
                 .filters
                 .iter()
                 .any(|pattern| pattern == "crates/pikaci/src/forge_lanes.rs")
         );
-        assert!(target.filters.iter().any(|pattern| pattern == "scripts/**"));
     }
 
     #[test]

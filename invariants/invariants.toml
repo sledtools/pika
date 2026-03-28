@@ -27,13 +27,13 @@ hint = "Focus on whether production jerichoci modules define Pika-specific targe
 id = "PIKACI-003"
 area = "pikaci"
 kind = "must"
-statement = "For forge branch lanes, branch-lane path-filter policy has a single source of truth in crates/pikaci/src/forge_lanes.rs. pikaci may define local-only targets, but it must not duplicate forge branch-lane path filters in separate data files or parallel Rust tables."
 scope = [
   "crates/jerichoci/**",
   "crates/pikaci/**",
   "crates/pika-git/**",
 ]
-hint = "Look specifically for duplicated branch-lane path filters between crates/pikaci/src/forge_lanes.rs, pika-git lane selection, and pikaci target selection. Do not fail this invariant just because pikaci has local-only targets or tests."
+statement = "For forge branch lanes, branch-lane path-filter policy has a single source of truth in crates/pikaci/src/targets.rs. crates/pikaci/src/forge_lanes.rs may project derived lane rows for pika-git, but it must not re-author branch filters in a parallel table."
+hint = "Look specifically for duplicated branch-lane path filters between crates/pikaci/src/targets.rs, crates/pikaci/src/forge_lanes.rs, pika-git lane selection, and any other manifest-like tables. Do not fail this invariant just because pikaci has local-only targets or tests."
 
 [[invariant]]
 id = "PIKACI-004"
@@ -71,7 +71,7 @@ hint = "Look for generic CI engine modules being reintroduced under crates/pikac
 id = "PIKACI-007"
 area = "pikaci"
 kind = "must"
-statement = "pikaci owns all forge CI lanes. Forge branch/nightly lane definitions must reference pikaci-owned targets instead of directly shelling out to repo scripts or just recipes. Temporary exception: GitHub Actions release lanes outside the forge may remain outside pikaci for now."
+statement = "pikaci owns all forge CI lanes. Forge branch/nightly lanes are derived from pikaci-owned target definitions instead of directly shelling out to repo scripts or just recipes. Temporary exception: GitHub Actions release lanes outside the forge may remain outside pikaci for now."
 scope = [
   "crates/pikaci/**",
   "crates/pika-git/**",

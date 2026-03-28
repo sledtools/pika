@@ -6,7 +6,7 @@ use jerichoci::{
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PikaStagedLinuxTarget {
+pub enum PikaStagedLinuxTarget {
     PreMergePikaRust,
     PreMergePikaFollowup,
     PreMergeAgentContracts,
@@ -19,7 +19,7 @@ pub(crate) enum PikaStagedLinuxTarget {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-pub(crate) struct PikaStagedLinuxTargetConfig {
+pub struct PikaStagedLinuxTargetConfig {
     pub target_id: &'static str,
     pub target_description: &'static str,
     pub snapshot_profile: StagedLinuxSnapshotProfile,
@@ -50,7 +50,7 @@ impl PikaStagedLinuxTargetConfig {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PikaStagedLinuxLane {
+pub enum PikaStagedLinuxLane {
     PikaFollowupAndroidTestCompile,
     PikaFollowupPikachatBuild,
     PikaFollowupDesktopCheck,
@@ -115,7 +115,7 @@ impl PikaStagedLinuxLane {
         }
     }
 
-    pub(crate) fn command_config(self) -> StagedLinuxCommandConfig {
+    pub fn command_config(self) -> StagedLinuxCommandConfig {
         let target = self.target().config();
         StagedLinuxCommandConfig {
             snapshot_profile: target.snapshot_profile,
@@ -226,7 +226,7 @@ impl PikaStagedLinuxTarget {
         }
     }
 
-    pub(crate) fn config(self) -> PikaStagedLinuxTargetConfig {
+    pub fn config(self) -> PikaStagedLinuxTargetConfig {
         match self {
             Self::PreMergePikaRust => PikaStagedLinuxTargetConfig {
                 target_id: "pre-merge-pika-rust",
@@ -359,7 +359,7 @@ impl PikaStagedLinuxTarget {
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
-pub(crate) struct PikaStagedLinuxTargetInfoJson {
+pub struct PikaStagedLinuxTargetInfoJson {
     pub target_id: &'static str,
     pub target_description: &'static str,
     pub shared_prepare_node_prefix: &'static str,

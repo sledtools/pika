@@ -192,7 +192,7 @@ pub fn classify_ci_failure(log_text: &str) -> CiLaneFailureKind {
 
 pub fn configured_target_key_for_lane(lane: &ForgeLane) -> Option<String> {
     effective_target_key(
-        lane.staged_linux_target.as_deref(),
+        Some(lane.id.as_str()),
         None,
         lane.concurrency_group.as_deref(),
     )

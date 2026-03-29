@@ -2,6 +2,7 @@ package com.pika.app.ui.screens
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -82,9 +83,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -149,7 +152,6 @@ import com.pika.app.rust.VoiceRecordingPhase
 import com.pika.app.ui.Avatar
 import com.pika.app.ui.TestTags
 import dev.jeziellago.compose.markdowntext.MarkdownText
-import androidx.compose.ui.graphics.asImageBitmap
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
@@ -172,36 +174,94 @@ private enum class GroupedBubblePosition {
 
 private val QUICK_REACTIONS = listOf("❤️", "👍", "👎", "😂", "😮", "😢")
 
+/** Maximum number of attachments that can be staged in the composer at once. */
+internal const val MAX_STAGED_MEDIA_ITEMS = 32
+
+/** Encoded media payload ready to hand off to the Rust send actions. */
 private data class MediaUploadPayload(
-    val bytes: ByteArray,
+    val dataBase64: String,
     val mimeType: String,
     val filename: String,
 )
 
-private data class StagedMedia(
-    val id: String = java.util.UUID.randomUUID().toString(),
-    val payload: MediaUploadPayload,
-    val thumbnailBitmap: android.graphics.Bitmap? = null,
+/** Encoded result for a staged send without retaining extra wrapper objects per item. */
+private data class EncodedBatchSend(
+    val singlePayload: MediaUploadPayload?,
+    val batchItems: List<com.pika.app.rust.MediaBatchItem>,
+    val sentIds: Set<String>,
+    val sentUris: List<Uri>,
 )
 
-private fun readMediaUploadPayload(ctx: Context, uri: Uri): MediaUploadPayload? {
-    val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
-    if (bytes.isEmpty()) return null
-    val mimeType = ctx.contentResolver.getType(uri).orEmpty()
-    val filename =
-        ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-            ?.use { cursor ->
-                val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx) else null
-            }
-            ?.trim()
-            .takeUnless { it.isNullOrEmpty() }
-            ?: "attachment.bin"
-    return MediaUploadPayload(bytes = bytes, mimeType = mimeType, filename = filename)
+/** Lightweight staged attachment state kept in Compose before send time. */
+private data class StagedMedia(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val uri: Uri,
+    val mimeType: String,
+    val filename: String,
+)
+
+/** Returns only the URIs that still fit within the cumulative staging cap. */
+internal fun selectUrisForStaging(
+    existingCount: Int,
+    uris: List<Uri>,
+    maxCount: Int = MAX_STAGED_MEDIA_ITEMS,
+): List<Uri> {
+    val remainingCapacity = (maxCount - existingCount).coerceAtLeast(0)
+    return uris.take(remainingCapacity)
+}
+
+/** Reads stable attachment metadata without loading the file contents into memory. */
+private fun readMediaMetadata(ctx: Context, uri: Uri): StagedMedia? =
+    runCatching {
+        val mimeType = ctx.contentResolver.getType(uri).orEmpty()
+        val filename =
+            ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { cursor ->
+                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx) else null
+                }
+                ?.trim()
+                .takeUnless { it.isNullOrEmpty() }
+                ?: "attachment.bin"
+        StagedMedia(uri = uri, mimeType = mimeType, filename = filename)
+    }.getOrNull()
+
+/** Loads and Base64-encodes a staged attachment immediately before upload.
+ *
+ * This is the send-time byte-loading half of the old combined media payload reader,
+ * split out from metadata extraction to keep raw bytes out of Compose state.
+ */
+private fun encodeMediaUploadPayload(ctx: Context, staged: StagedMedia): MediaUploadPayload? =
+    runCatching {
+        ctx.contentResolver.openInputStream(staged.uri)?.use { it.readBytes() }
+    }.getOrNull()
+        ?.takeIf { it.isNotEmpty() }
+        ?.let { bytes ->
+            MediaUploadPayload(
+                dataBase64 = Base64.encodeToString(bytes, Base64.NO_WRAP),
+                mimeType = staged.mimeType,
+                filename = staged.filename,
+            )
+        }
+
+/** Best-effort read grant retention for document URIs that may outlive the picker callback. */
+private fun takePersistableReadPermission(ctx: Context, uri: Uri) {
+    runCatching {
+        ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+}
+
+/** Releases a retained document read grant once no staged item still references that URI. */
+private fun releasePersistableReadPermission(ctx: Context, uri: Uri, remainingItems: List<StagedMedia>) {
+    if (remainingItems.any { it.uri == uri }) return
+    runCatching {
+        ctx.contentResolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
 }
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
+/** Renders the active chat timeline, composer, attachment staging, and call controls. */
 fun ChatScreen(
     manager: AppManager,
     chatId: String,
@@ -221,6 +281,9 @@ fun ChatScreen(
     var replyDraft by remember(chat.chatId) { mutableStateOf<ChatMessage?>(null) }
     var showAttachmentSheet by remember(chat.chatId) { mutableStateOf(false) }
     var stagedMedia by remember(chat.chatId) { mutableStateOf<List<StagedMedia>>(emptyList()) }
+    var stagingReservationCount by remember(chat.chatId) { mutableIntStateOf(0) }
+    var mediaSendInFlight by remember(chat.chatId) { mutableStateOf(false) }
+    val cleanupUris = remember(chat.chatId) { mutableStateListOf<Uri>() }
     var fullscreenImageAttachment by remember(chat.chatId) { mutableStateOf<ChatMediaAttachment?>(null) }
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
@@ -288,93 +351,196 @@ fun ChatScreen(
     val bubblePositionByMessageId = remember(chat.messages, firstUnreadMessageId) {
         buildBubblePositions(chat.messages, firstUnreadMessageId)
     }
+    val isStagingMedia = stagingReservationCount > 0
+    val isComposerBusy = isStagingMedia || mediaSendInFlight
+    SideEffect {
+        cleanupUris.clear()
+        cleanupUris.addAll(stagedMedia.map { it.uri })
+    }
 
+    /** Reads and sends a single attachment immediately without adding it to staged state. */
     fun sendMediaFromUri(uri: Uri?) {
-        if (uri == null) return
+        if (uri == null || isComposerBusy) return
+        val captionSnapshot = draft.trim()
+        val replySnapshotId = replyDraft?.id
+        mediaSendInFlight = true
         coroutineScope.launch {
-            val payload = withContext(Dispatchers.IO) { readMediaUploadPayload(ctx, uri) }
-            if (payload == null) {
-                Toast.makeText(ctx, "Unable to read selected file", Toast.LENGTH_SHORT).show()
-                return@launch
-            }
-            val base64 = Base64.encodeToString(payload.bytes, Base64.NO_WRAP)
-            val caption = draft.trim()
-            manager.dispatch(
-                AppAction.SendChatMedia(
-                    chatId = chat.chatId,
-                    dataBase64 = base64,
-                    mimeType = payload.mimeType,
-                    filename = payload.filename,
-                    caption = caption,
-                ),
-            )
-            if (caption.isNotEmpty()) {
-                draft = ""
-            }
-            replyDraft = null
-        }
-    }
-
-    fun stageMediaFromUris(uris: List<Uri>) {
-        coroutineScope.launch {
-            val items = withContext(Dispatchers.IO) {
-                uris.take(32).mapNotNull { uri ->
-                    val payload = readMediaUploadPayload(ctx, uri) ?: return@mapNotNull null
-                    val thumbnail = if (payload.mimeType.startsWith("image/")) {
-                        try {
-                            android.graphics.BitmapFactory.decodeByteArray(payload.bytes, 0, payload.bytes.size)?.let { bmp ->
-                                android.graphics.Bitmap.createScaledBitmap(bmp, 128, 128, true)
-                            }
-                        } catch (_: Exception) { null }
-                    } else null
-                    StagedMedia(payload = payload, thumbnailBitmap = thumbnail)
+            try {
+                val payload =
+                    withContext(Dispatchers.IO) {
+                        val staged = readMediaMetadata(ctx, uri) ?: return@withContext null
+                        encodeMediaUploadPayload(ctx, staged)
+                    }
+                if (payload == null) {
+                    Toast.makeText(ctx, "Unable to read selected file", Toast.LENGTH_SHORT).show()
+                    return@launch
                 }
-            }
-            stagedMedia = stagedMedia + items
-        }
-    }
-
-    fun sendStagedMedia() {
-        if (stagedMedia.isEmpty()) return
-        coroutineScope.launch {
-            val caption = draft.trim()
-            if (stagedMedia.size == 1) {
-                val p = stagedMedia.first().payload
-                val base64 = Base64.encodeToString(p.bytes, Base64.NO_WRAP)
                 manager.dispatch(
                     AppAction.SendChatMedia(
                         chatId = chat.chatId,
-                        dataBase64 = base64,
-                        mimeType = p.mimeType,
-                        filename = p.filename,
-                        caption = caption,
+                        dataBase64 = payload.dataBase64,
+                        mimeType = payload.mimeType,
+                        filename = payload.filename,
+                        caption = captionSnapshot,
                     ),
                 )
-            } else {
-                val batchItems = stagedMedia.map { staged ->
-                    com.pika.app.rust.MediaBatchItem(
-                        dataBase64 = Base64.encodeToString(staged.payload.bytes, Base64.NO_WRAP),
-                        mimeType = staged.payload.mimeType,
-                        filename = staged.payload.filename,
-                    )
+                if (captionSnapshot.isNotEmpty() && draft.trim() == captionSnapshot) {
+                    draft = ""
                 }
-                manager.dispatch(
-                    AppAction.SendChatMediaBatch(
-                        chatId = chat.chatId,
-                        items = batchItems,
-                        caption = caption,
-                    ),
-                )
+                if (replyDraft?.id == replySnapshotId) {
+                    replyDraft = null
+                }
+            } finally {
+                mediaSendInFlight = false
             }
-            stagedMedia = emptyList()
-            if (caption.isNotEmpty()) {
-                draft = ""
-            }
-            replyDraft = null
         }
     }
 
+    /** Adds picked URIs to the staged attachment strip while respecting the global item cap. */
+    fun stageMediaFromUris(uris: List<Uri>) {
+        if (isComposerBusy) return
+        val existingCount = stagedMedia.size + stagingReservationCount
+        val reservationCount = selectUrisForStaging(existingCount, uris).size
+        if (reservationCount == 0) {
+            Toast.makeText(ctx, "Attachment limit reached", Toast.LENGTH_SHORT).show()
+            return
+        }
+        stagingReservationCount += reservationCount
+        coroutineScope.launch {
+            val retainedUris = mutableSetOf<Uri>()
+            val grantedUris = mutableListOf<Uri>()
+            try {
+                val (items, rejectedUris, overflowed) =
+                    withContext(Dispatchers.IO) {
+                        val stagedItems = mutableListOf<StagedMedia>()
+                        val failedUris = mutableListOf<Uri>()
+                        var hitCapacity = false
+                        for (uri in uris) {
+                            if (stagedItems.size >= reservationCount) {
+                                hitCapacity = true
+                                break
+                            }
+                            takePersistableReadPermission(ctx, uri)
+                            grantedUris += uri
+                            val staged = readMediaMetadata(ctx, uri)
+                            if (staged != null) {
+                                stagedItems += staged
+                            } else {
+                                failedUris += uri
+                            }
+                        }
+                        Triple(stagedItems, failedUris, hitCapacity)
+                    }
+                val updatedStagedMedia = stagedMedia + items
+                rejectedUris.forEach { uri ->
+                    releasePersistableReadPermission(ctx, uri, remainingItems = updatedStagedMedia)
+                }
+                stagedMedia = updatedStagedMedia
+                retainedUris += items.map { it.uri }
+                if (overflowed) {
+                    Toast.makeText(
+                        ctx,
+                        "Only $MAX_STAGED_MEDIA_ITEMS attachments can be staged",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+                if (rejectedUris.isNotEmpty()) {
+                    Toast.makeText(ctx, "Some selected files could not be staged", Toast.LENGTH_SHORT).show()
+                }
+            } finally {
+                stagingReservationCount =
+                    (stagingReservationCount - reservationCount).coerceAtLeast(0)
+                grantedUris
+                    .asSequence()
+                    .filterNot { it in retainedUris }
+                    .distinct()
+                    .forEach { uri ->
+                        releasePersistableReadPermission(ctx, uri, remainingItems = stagedMedia)
+                    }
+            }
+        }
+    }
+
+    /** Encodes the currently staged attachments and dispatches them as one send operation. */
+    fun sendStagedMedia() {
+        if (stagedMedia.isEmpty() || isComposerBusy) return
+        val captionSnapshot = draft.trim()
+        val replySnapshotId = replyDraft?.id
+        mediaSendInFlight = true
+        coroutineScope.launch {
+            try {
+                val stagedSnapshot = stagedMedia
+                val encoded =
+                    withContext(Dispatchers.IO) {
+                        var singlePayload: MediaUploadPayload? = null
+                        val batchItems = mutableListOf<com.pika.app.rust.MediaBatchItem>()
+                        val sentIds = mutableSetOf<String>()
+                        val sentUris = mutableListOf<Uri>()
+                        stagedSnapshot.forEach { staged ->
+                            val payload = encodeMediaUploadPayload(ctx, staged) ?: return@forEach
+                            if (singlePayload == null) {
+                                singlePayload = payload
+                            }
+                            batchItems +=
+                                com.pika.app.rust.MediaBatchItem(
+                                    dataBase64 = payload.dataBase64,
+                                    mimeType = payload.mimeType,
+                                    filename = payload.filename,
+                                )
+                            sentIds += staged.id
+                            sentUris += staged.uri
+                        }
+                        EncodedBatchSend(singlePayload, batchItems, sentIds, sentUris)
+                    }
+                if (encoded.sentIds.isEmpty()) {
+                    Toast.makeText(ctx, "Unable to read selected attachments", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+
+                if (encoded.batchItems.size == 1) {
+                    val p = requireNotNull(encoded.singlePayload)
+                    manager.dispatch(
+                        AppAction.SendChatMedia(
+                            chatId = chat.chatId,
+                            dataBase64 = p.dataBase64,
+                            mimeType = p.mimeType,
+                            filename = p.filename,
+                            caption = captionSnapshot,
+                        ),
+                    )
+                } else {
+                    manager.dispatch(
+                        AppAction.SendChatMediaBatch(
+                            chatId = chat.chatId,
+                            items = encoded.batchItems,
+                            caption = captionSnapshot,
+                        ),
+                    )
+                }
+                val remainingItems = stagedMedia.filterNot { it.id in encoded.sentIds }
+                encoded.sentUris
+                    .distinct()
+                    .forEach { uri -> releasePersistableReadPermission(ctx, uri, remainingItems) }
+                stagedMedia = remainingItems
+                val failedCount = stagedSnapshot.size - encoded.sentIds.size
+                if (failedCount > 0) {
+                    Toast.makeText(ctx, "Some attachments could not be read", Toast.LENGTH_SHORT).show()
+                }
+                if (captionSnapshot.isNotEmpty() && draft.trim() == captionSnapshot) {
+                    draft = ""
+                }
+                if (replyDraft?.id == replySnapshotId) {
+                    replyDraft = null
+                }
+            } finally {
+                mediaSendInFlight = false
+            }
+        }
+    }
+
+    /** Sends the current composer content, routing through staged-media send when needed. */
     fun sendDraftMessage() {
+        if (isComposerBusy) return
         if (stagedMedia.isNotEmpty()) {
             sendStagedMedia()
             return
@@ -390,7 +556,7 @@ fun ChatScreen(
 
     val pickPhotoOrVideoLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-            if (uris.size == 1) {
+            if (uris.size == 1 && stagedMedia.isEmpty() && !isComposerBusy) {
                 sendMediaFromUri(uris.first())
             } else if (uris.isNotEmpty()) {
                 stageMediaFromUris(uris)
@@ -399,7 +565,13 @@ fun ChatScreen(
 
     val pickFileLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-            sendMediaFromUri(uri)
+            uri?.let {
+                if (stagedMedia.isEmpty() && !isComposerBusy) {
+                    sendMediaFromUri(it)
+                } else {
+                    stageMediaFromUris(listOf(it))
+                }
+            }
         }
 
     val voiceRecorder = remember(chat.chatId) { AndroidVoiceRecorder(ctx.applicationContext) }
@@ -411,6 +583,11 @@ fun ChatScreen(
     }
     DisposableEffect(chat.chatId) {
         onDispose {
+            cleanupUris
+                .distinct()
+                .forEach { uri ->
+                    releasePersistableReadPermission(ctx, uri, remainingItems = emptyList())
+                }
             if (manager.state.voiceRecording != null) {
                 manager.dispatch(AppAction.VoiceRecordingCancel)
             }
@@ -887,10 +1064,10 @@ fun ChatScreen(
                             ) {
                                 items(stagedMedia, key = { it.id }) { item ->
                                     Box(modifier = Modifier.size(64.dp)) {
-                                        if (item.thumbnailBitmap != null) {
-                                            androidx.compose.foundation.Image(
-                                                bitmap = item.thumbnailBitmap.asImageBitmap(),
-                                                contentDescription = item.payload.filename,
+                                        if (item.mimeType.startsWith("image/")) {
+                                            AsyncImage(
+                                                model = item.uri,
+                                                contentDescription = item.filename,
                                                 modifier = Modifier
                                                     .fillMaxSize()
                                                     .clip(RoundedCornerShape(8.dp)),
@@ -902,17 +1079,33 @@ fun ChatScreen(
                                                     .fillMaxSize()
                                                     .clip(RoundedCornerShape(8.dp))
                                                     .background(MaterialTheme.colorScheme.surfaceVariant),
-                                                contentAlignment = Alignment.Center,
                                             ) {
                                                 Icon(
                                                     imageVector = Icons.Default.InsertDriveFile,
-                                                    contentDescription = item.payload.filename,
+                                                    contentDescription = item.filename,
+                                                    modifier = Modifier.align(Alignment.Center),
                                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                )
+                                                Text(
+                                                    text = item.filename,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    modifier =
+                                                        Modifier
+                                                            .align(Alignment.BottomCenter)
+                                                            .padding(horizontal = 4.dp, vertical = 4.dp),
                                                 )
                                             }
                                         }
                                         IconButton(
-                                            onClick = { stagedMedia = stagedMedia.filter { it.id != item.id } },
+                                            onClick = {
+                                                val remainingItems = stagedMedia.filter { it.id != item.id }
+                                                releasePersistableReadPermission(ctx, item.uri, remainingItems)
+                                                stagedMedia = remainingItems
+                                            },
+                                            enabled = !isComposerBusy,
                                             modifier = Modifier
                                                 .align(Alignment.TopEnd)
                                                 .size(20.dp),
@@ -946,6 +1139,7 @@ fun ChatScreen(
                             Box {
                                 IconButton(
                                     onClick = { showAttachmentSheet = true },
+                                    enabled = !isComposerBusy,
                                     modifier = Modifier.size(40.dp),
                                 ) {
                                     Icon(
@@ -981,6 +1175,7 @@ fun ChatScreen(
                                     ),
                                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                                 singleLine = true,
+                                readOnly = isComposerBusy,
                                 keyboardOptions =
                                     KeyboardOptions(
                                         keyboardType = KeyboardType.Text,
@@ -1005,7 +1200,7 @@ fun ChatScreen(
                             if (draft.trim().isNotBlank() || stagedMedia.isNotEmpty()) {
                                 FilledIconButton(
                                     onClick = { sendDraftMessage() },
-                                    enabled = draft.isNotBlank() || stagedMedia.isNotEmpty(),
+                                    enabled = (draft.isNotBlank() || stagedMedia.isNotEmpty()) && !isComposerBusy,
                                     modifier = Modifier.size(40.dp).testTag(TestTags.CHAT_SEND),
                                 ) {
                                     Icon(
@@ -1016,6 +1211,7 @@ fun ChatScreen(
                             } else {
                                 IconButton(
                                     onClick = { startVoiceRecording() },
+                                    enabled = !isComposerBusy,
                                     modifier = Modifier.size(40.dp),
                                 ) {
                                     Icon(

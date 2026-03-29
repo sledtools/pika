@@ -230,6 +230,11 @@ const PREPARED_OUTPUT_FULFILLMENT_SSH_NIX_BINARY_DEFAULT: &str = "nix";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_DEFAULT: &str = "pika-build";
 const PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_DEFAULT: &str =
     "/var/tmp/jerichoci-prepared-output";
+const SSH_CONNECT_TIMEOUT_SECS: &str = "5";
+const SSH_SERVER_ALIVE_INTERVAL_SECS: &str = "15";
+const SSH_SERVER_ALIVE_COUNT_MAX: &str = "4";
+const REMOTE_SYNC_MAX_ATTEMPTS: usize = 3;
+const REMOTE_SYNC_RETRY_DELAY: Duration = Duration::from_secs(2);
 const REMOTE_LINUX_VM_INCUS_GUEST_ROLE_ENV: &str = "JERICHOCI_REMOTE_LINUX_VM_INCUS_GUEST_ROLE";
 const REMOTE_LINUX_VM_INCUS_PROJECT_ENV: &str = "JERICHOCI_REMOTE_LINUX_VM_INCUS_PROJECT";
 const REMOTE_LINUX_VM_INCUS_PROFILE_ENV: &str = "JERICHOCI_REMOTE_LINUX_VM_INCUS_PROFILE";
@@ -1955,7 +1960,13 @@ fn run_ssh_command(remote_host: &str, command: &str) -> Command {
     cmd.arg("-o")
         .arg("BatchMode=yes")
         .arg("-o")
-        .arg("ConnectTimeout=5")
+        .arg(format!("ConnectTimeout={SSH_CONNECT_TIMEOUT_SECS}"))
+        .arg("-o")
+        .arg(format!(
+            "ServerAliveInterval={SSH_SERVER_ALIVE_INTERVAL_SECS}"
+        ))
+        .arg("-o")
+        .arg(format!("ServerAliveCountMax={SSH_SERVER_ALIVE_COUNT_MAX}"))
         .arg(remote_host)
         .arg(command)
         .stdin(Stdio::null());
@@ -2178,6 +2189,47 @@ fn load_remote_snapshot_metadata(
 }
 
 fn sync_directory_to_remote(
+    local_dir: &Path,
+    remote_dir: &Path,
+    remote_host: &str,
+    log_path: &Path,
+    label: &str,
+    replace_existing: bool,
+) -> anyhow::Result<()> {
+    let mut last_err = None;
+    for attempt in 1..=REMOTE_SYNC_MAX_ATTEMPTS {
+        match sync_directory_to_remote_once(
+            local_dir,
+            remote_dir,
+            remote_host,
+            log_path,
+            label,
+            replace_existing,
+        ) {
+            Ok(()) => return Ok(()),
+            Err(err) if attempt < REMOTE_SYNC_MAX_ATTEMPTS => {
+                append_line(
+                    log_path,
+                    &format!(
+                        "[jerichoci] sync {label} attempt {attempt}/{REMOTE_SYNC_MAX_ATTEMPTS} failed for {}: {err:#}; retrying after {}s",
+                        remote_host,
+                        REMOTE_SYNC_RETRY_DELAY.as_secs()
+                    ),
+                )?;
+                thread::sleep(REMOTE_SYNC_RETRY_DELAY);
+                last_err = Some(err);
+            }
+            Err(err) => {
+                last_err = Some(err);
+                break;
+            }
+        }
+    }
+
+    Err(last_err.expect("remote sync should record the last failure"))
+}
+
+fn sync_directory_to_remote_once(
     local_dir: &Path,
     remote_dir: &Path,
     remote_host: &str,
@@ -2520,15 +2572,16 @@ mod tests {
     use super::{
         HostContext, HostLocalCommandMode, HostLocalDevEnvState, HostLocalEnvironmentRefresh,
         REMOTE_LINUX_VM_INCUS_GUEST_ROLE_ENV, REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH,
-        RemoteIncusContext, RemoteLinuxVmSharedContext, StagedPreparedPayload,
+        RemoteIncusContext, RemoteLinuxVmSharedContext, SSH_CONNECT_TIMEOUT_SECS,
+        SSH_SERVER_ALIVE_COUNT_MAX, SSH_SERVER_ALIVE_INTERVAL_SECS, StagedPreparedPayload,
         attach_remote_linux_vm_execution, build_sync_directory_finalize_command,
         cached_host_local_dev_env_is_usable, finalize_remote_linux_vm_execution,
         host_local_command_mode, host_local_dev_env_script_path, host_local_dev_env_shell_program,
         incus, prepare_host_local_cached_dev_env_with, read_host_local_dev_env_state,
         remote_linux_vm_execution_from_error, remote_linux_vm_incus_guest_role,
         remote_snapshot_ready_for_use, render_tart_guest_script, run_job_on_runner,
-        run_status_from_terminal_result, shell_single_quote, staged_linux_remote_defaults,
-        staged_linux_remote_snapshot_dir, staged_payload_remote_dirs,
+        run_ssh_command, run_status_from_terminal_result, shell_single_quote,
+        staged_linux_remote_defaults, staged_linux_remote_snapshot_dir, staged_payload_remote_dirs,
         write_host_local_dev_env_script, write_host_local_dev_env_state,
     };
     use crate::model::{
@@ -3225,6 +3278,31 @@ mod tests {
         assert_eq!(
             defaults.remote_helper_binary,
             "/run/current-system/sw/bin/pikaci-fulfill-prepared-output"
+        );
+    }
+
+    #[test]
+    fn remote_ssh_commands_set_keepalive_options() {
+        let command = run_ssh_command("pika-build", "echo ok");
+        let args = command
+            .get_args()
+            .map(|arg: &std::ffi::OsStr| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            args,
+            vec![
+                "-o".to_string(),
+                "BatchMode=yes".to_string(),
+                "-o".to_string(),
+                format!("ConnectTimeout={SSH_CONNECT_TIMEOUT_SECS}"),
+                "-o".to_string(),
+                format!("ServerAliveInterval={SSH_SERVER_ALIVE_INTERVAL_SECS}"),
+                "-o".to_string(),
+                format!("ServerAliveCountMax={SSH_SERVER_ALIVE_COUNT_MAX}"),
+                "pika-build".to_string(),
+                "echo ok".to_string(),
+            ]
         );
     }
 

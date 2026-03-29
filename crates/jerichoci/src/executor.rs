@@ -1057,15 +1057,7 @@ fn run_remote_linux_vm_job(job: &JobSpec, ctx: &HostContext) -> anyhow::Result<J
 
     let cleanup_result = cleanup_remote_linux_vm_runtime(&remote, &ctx.host_log_path)
         .map_err(|err| attach_remote_linux_vm_execution(err, Some(execution_record.clone())));
-    match (execution, cleanup_result) {
-        (Ok(outcome), Ok(())) => Ok(outcome),
-        (Err(err), Ok(())) => Err(err),
-        (Ok(_), Err(cleanup_err)) => Err(cleanup_err),
-        (Err(err), Err(cleanup_err)) => Err(err.context(format!(
-            "also failed to clean up remote Linux VM backend `{}`: {cleanup_err:#}",
-            remote_linux_vm_backend_label(backend)
-        ))),
-    }
+    finalize_remote_linux_vm_execution(execution, cleanup_result, backend, &ctx.host_log_path)
 }
 
 pub(crate) fn prepare_remote_linux_vm_backend(
@@ -1755,6 +1747,32 @@ fn run_status_from_terminal_result(result: &RuntimeTerminalResult) -> RunStatus 
     match result.status {
         RuntimeResultStatus::Completed => RunStatus::Passed,
         RuntimeResultStatus::Failed => RunStatus::Failed,
+    }
+}
+
+fn finalize_remote_linux_vm_execution(
+    execution: anyhow::Result<JobOutcome>,
+    cleanup_result: anyhow::Result<()>,
+    backend: RemoteLinuxVmBackend,
+    host_log_path: &Path,
+) -> anyhow::Result<JobOutcome> {
+    match (execution, cleanup_result) {
+        (Ok(outcome), Ok(())) => Ok(outcome),
+        (Err(err), Ok(())) => Err(err),
+        (Ok(outcome), Err(cleanup_err)) => {
+            let _ = append_line(
+                host_log_path,
+                &format!(
+                    "[jerichoci] ignoring remote Linux VM backend `{}` cleanup failure after successful guest execution: {cleanup_err:#}",
+                    remote_linux_vm_backend_label(backend)
+                ),
+            );
+            Ok(outcome)
+        }
+        (Err(err), Err(cleanup_err)) => Err(err.context(format!(
+            "also failed to clean up remote Linux VM backend `{}`: {cleanup_err:#}",
+            remote_linux_vm_backend_label(backend)
+        ))),
     }
 }
 
@@ -2483,6 +2501,7 @@ fn shell_escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::anyhow;
     use chrono::Utc;
     use pika_incus_guest_role::IncusGuestRole;
     use std::fs;
@@ -2503,9 +2522,9 @@ mod tests {
         REMOTE_LINUX_VM_INCUS_GUEST_ROLE_ENV, REMOTE_LINUX_VM_INCUS_SNAPSHOT_MOUNT_PATH,
         RemoteIncusContext, RemoteLinuxVmSharedContext, StagedPreparedPayload,
         attach_remote_linux_vm_execution, build_sync_directory_finalize_command,
-        cached_host_local_dev_env_is_usable, host_local_command_mode,
-        host_local_dev_env_script_path, host_local_dev_env_shell_program, incus,
-        prepare_host_local_cached_dev_env_with, read_host_local_dev_env_state,
+        cached_host_local_dev_env_is_usable, finalize_remote_linux_vm_execution,
+        host_local_command_mode, host_local_dev_env_script_path, host_local_dev_env_shell_program,
+        incus, prepare_host_local_cached_dev_env_with, read_host_local_dev_env_state,
         remote_linux_vm_execution_from_error, remote_linux_vm_incus_guest_role,
         remote_snapshot_ready_for_use, render_tart_guest_script, run_job_on_runner,
         run_status_from_terminal_result, shell_single_quote, staged_linux_remote_defaults,
@@ -2513,7 +2532,7 @@ mod tests {
         write_host_local_dev_env_script, write_host_local_dev_env_state,
     };
     use crate::model::{
-        GuestCommand, HostProcessRuntimeConfig, IncusRuntimeConfig, JobExecutionConfig,
+        GuestCommand, HostProcessRuntimeConfig, IncusRuntimeConfig, JobExecutionConfig, JobOutcome,
         JobRuntimeConfig, JobSpec, PreparedOutputPayloadManifestRecord,
         PreparedOutputPayloadMountRecord, RemoteLinuxVmBackend, RemoteLinuxVmExecutionRecord,
         RemoteLinuxVmImageRecord, RemoteLinuxVmPhase, RemoteLinuxVmPhaseRecord, RunStatus,
@@ -2924,6 +2943,38 @@ mod tests {
             .context("outer failure");
 
         assert_eq!(remote_linux_vm_execution_from_error(&err), Some(record));
+    }
+
+    #[test]
+    fn successful_remote_linux_vm_execution_ignores_cleanup_failure() {
+        let host_log_path = std::env::temp_dir().join(format!(
+            "jerichoci-cleanup-success-{}.log",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&host_log_path);
+        let outcome = JobOutcome {
+            status: RunStatus::Passed,
+            exit_code: Some(0),
+            message: "ok".to_string(),
+            remote_linux_vm_execution: None,
+        };
+
+        let finalized = finalize_remote_linux_vm_execution(
+            Ok(outcome),
+            Err(anyhow!("cleanup timed out")),
+            RemoteLinuxVmBackend::Incus,
+            &host_log_path,
+        )
+        .expect("cleanup failure should be tolerated after success");
+
+        assert_eq!(finalized.status, RunStatus::Passed);
+        assert_eq!(finalized.exit_code, Some(0));
+        assert_eq!(finalized.message, "ok");
+
+        let host_log = fs::read_to_string(&host_log_path).expect("read host log");
+        assert!(host_log.contains("ignoring remote Linux VM backend `incus` cleanup failure"));
+        assert!(host_log.contains("cleanup timed out"));
+        let _ = fs::remove_file(&host_log_path);
     }
 
     #[test]

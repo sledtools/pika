@@ -545,8 +545,8 @@ mod tests {
     use clap::Parser;
     use jerichoci::{
         JobPlacementKind, JobRecord, JobRuntimeKind, PreparedOutputConsumerKind,
-        RemoteLinuxVmBackend, RunLifecycleEvent, RunRecord, RunStatus, RunnerKind,
-        staged_linux_remote_defaults,
+        PreparedOutputLauncherTransportMode, RemoteLinuxVmBackend, RunLifecycleEvent, RunRecord,
+        RunStatus, RunnerKind, staged_linux_remote_defaults,
     };
     use pikaci::catalog::{PikaStagedLinuxLane, PikaStagedLinuxTarget};
 
@@ -918,18 +918,18 @@ mod tests {
             &"prepared_output_mode=pre_merge_pika_rust_subprocess_fulfillment_v1".to_string()
         ));
         assert!(
-            lines.contains(&"prepared_output_invocation_mode=direct_helper_exec_v1".to_string())
+            lines.contains(
+                &"prepared_output_invocation_mode=external_wrapper_command_v1".to_string()
+            )
         );
         assert!(
-            !lines
+            lines
                 .iter()
-                .any(|line| { line.starts_with("prepared_output_invocation_wrapper_program=") })
+                .any(|line| { line.starts_with("prepared_output_invocation_launcher_program=") })
         );
-        assert!(
-            !lines
-                .iter()
-                .any(|line| { line.starts_with("prepared_output_launcher_transport_mode=") })
-        );
+        assert!(lines.contains(
+            &"prepared_output_launcher_transport_mode=ssh_launcher_transport_v1".to_string()
+        ));
     }
 
     #[test]
@@ -947,11 +947,24 @@ mod tests {
         );
         assert_eq!(
             metadata.prepared_output_invocation_mode,
-            Some(jerichoci::PreparedOutputInvocationMode::DirectHelperExecV1)
+            Some(jerichoci::PreparedOutputInvocationMode::ExternalWrapperCommandV1)
         );
-        assert_eq!(metadata.prepared_output_invocation_wrapper_program, None);
-        assert_eq!(metadata.prepared_output_launcher_transport_mode, None);
-        assert_eq!(metadata.prepared_output_launcher_transport_program, None);
+        assert_eq!(
+            metadata
+                .prepared_output_invocation_wrapper_program
+                .as_deref(),
+            Some("/run/current-system/sw/bin/pikaci-launch-fulfill-prepared-output")
+        );
+        assert_eq!(
+            metadata.prepared_output_launcher_transport_mode,
+            Some(jerichoci::PreparedOutputLauncherTransportMode::SshLauncherTransportV1)
+        );
+        assert_eq!(
+            metadata
+                .prepared_output_launcher_transport_program
+                .as_deref(),
+            Some("/usr/bin/ssh")
+        );
     }
 
     #[test]
@@ -976,7 +989,10 @@ mod tests {
                 .as_deref(),
             Some("/tmp/bin/pikaci-wrapper")
         );
-        assert_eq!(metadata.prepared_output_launcher_transport_mode, None);
+        assert_eq!(
+            metadata.prepared_output_launcher_transport_mode,
+            Some(jerichoci::PreparedOutputLauncherTransportMode::SshLauncherTransportV1)
+        );
     }
 
     #[test]
@@ -1184,15 +1200,25 @@ mod tests {
             prepared_output_consumer: Some(PreparedOutputConsumerKind::FulfillRequestCliV1),
             prepared_output_mode: Some("pre_merge_pika_rust_subprocess_fulfillment_v1".to_string()),
             prepared_output_invocation_mode: Some(
-                jerichoci::PreparedOutputInvocationMode::DirectHelperExecV1,
+                jerichoci::PreparedOutputInvocationMode::ExternalWrapperCommandV1,
             ),
-            prepared_output_invocation_wrapper_program: None,
-            prepared_output_launcher_transport_mode: None,
-            prepared_output_launcher_transport_program: None,
-            prepared_output_launcher_transport_host: None,
-            prepared_output_launcher_transport_remote_launcher_program: None,
-            prepared_output_launcher_transport_remote_helper_program: None,
-            prepared_output_launcher_transport_remote_work_dir: None,
+            prepared_output_invocation_wrapper_program: Some(
+                "/run/current-system/sw/bin/pikaci-launch-fulfill-prepared-output".to_string(),
+            ),
+            prepared_output_launcher_transport_mode: Some(
+                PreparedOutputLauncherTransportMode::SshLauncherTransportV1,
+            ),
+            prepared_output_launcher_transport_program: Some("/usr/bin/ssh".to_string()),
+            prepared_output_launcher_transport_host: Some("pika-build".to_string()),
+            prepared_output_launcher_transport_remote_launcher_program: Some(
+                "/run/current-system/sw/bin/pikaci-launch-fulfill-prepared-output".to_string(),
+            ),
+            prepared_output_launcher_transport_remote_helper_program: Some(
+                "/run/current-system/sw/bin/pikaci-fulfill-prepared-output".to_string(),
+            ),
+            prepared_output_launcher_transport_remote_work_dir: Some(
+                "/var/tmp/jerichoci-prepared-output".to_string(),
+            ),
             changed_files: vec![],
             filters: vec![],
             message: None,

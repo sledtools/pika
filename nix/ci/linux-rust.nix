@@ -1746,13 +1746,27 @@ PY
           "$out/bin/run-server-agent-api-tests" \
           "$out/bin/run-core-agent-nip98-test"
       '';
+  laneDepsCommand =
+    if lane == "rmp" then
+      ''
+        cargoJobs="''${CARGO_BUILD_JOBS:-''${NIX_BUILD_CORES:-}}"
+        case "$cargoJobs" in
+          ""|0)
+            cargoJobs="$(${pkgs.coreutils}/bin/nproc)"
+            ;;
+        esac
+        echo "[pikaci] preparing rmp lane deps with cargo jobs=$cargoJobs" >&2
+        cargo check --locked -j "$cargoJobs" -p rmp-cli --bin rmp >/dev/null
+      ''
+    else
+      laneCompileCommand;
 in
 rec {
   workspaceDeps = craneLib.buildDepsOnly (commonArgs // {
     pname = "${commonArgs.pname}-deps";
     dummySrc = workspaceDummySrc;
     doCheck = false;
-    buildPhaseCargoCommand = laneCompileCommand;
+    buildPhaseCargoCommand = laneDepsCommand;
     PIKACI_PAYLOAD_MANIFEST_KIND = "staged_linux_workspace_deps_v1";
     PIKACI_PAYLOAD_MANIFEST_MOUNT_NAME = "workspace_deps_root";
     PIKACI_PAYLOAD_MANIFEST_GUEST_PATH = "/staged/linux-rust/workspace-deps";

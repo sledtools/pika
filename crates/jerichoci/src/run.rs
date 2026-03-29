@@ -295,11 +295,13 @@ fn run_jobs_against_snapshot(
     let (prepared_output_consumer_kind, prepared_output_mode) =
         resolve_run_prepared_output_consumer_kind(jobs, &metadata, prepared_output_consumer_kind)?;
     let prepared_output_invocation_mode = resolve_run_prepared_output_invocation_mode(
+        jobs,
         prepared_output_consumer_kind,
         metadata.prepared_output_invocation_mode,
     )?;
     let prepared_output_invocation_wrapper_program =
         resolve_run_prepared_output_invocation_wrapper_program(
+            jobs,
             prepared_output_invocation_mode,
             metadata
                 .prepared_output_invocation_wrapper_program
@@ -307,11 +309,13 @@ fn run_jobs_against_snapshot(
         )?;
     let prepared_output_launcher_transport_mode =
         resolve_run_prepared_output_launcher_transport_mode(
+            jobs,
             prepared_output_invocation_mode,
             metadata.prepared_output_launcher_transport_mode,
         )?;
     let prepared_output_launcher_transport_program =
         resolve_run_prepared_output_launcher_transport_program(
+            jobs,
             prepared_output_launcher_transport_mode,
             metadata
                 .prepared_output_launcher_transport_program
@@ -319,11 +323,13 @@ fn run_jobs_against_snapshot(
         )?;
     let prepared_output_launcher_transport_host =
         resolve_run_prepared_output_launcher_transport_host(
+            jobs,
             prepared_output_launcher_transport_mode,
             metadata.prepared_output_launcher_transport_host.as_deref(),
         )?;
     let prepared_output_launcher_transport_remote_launcher_program =
         resolve_run_prepared_output_launcher_transport_remote_launcher_program(
+            jobs,
             prepared_output_launcher_transport_mode,
             metadata
                 .prepared_output_launcher_transport_remote_launcher_program
@@ -331,6 +337,7 @@ fn run_jobs_against_snapshot(
         )?;
     let prepared_output_launcher_transport_remote_helper_program =
         resolve_run_prepared_output_launcher_transport_remote_helper_program(
+            jobs,
             prepared_output_launcher_transport_mode,
             metadata
                 .prepared_output_launcher_transport_remote_helper_program
@@ -338,6 +345,7 @@ fn run_jobs_against_snapshot(
         )?;
     let prepared_output_launcher_transport_remote_work_dir =
         resolve_run_prepared_output_launcher_transport_remote_work_dir(
+            jobs,
             prepared_output_launcher_transport_mode,
             metadata
                 .prepared_output_launcher_transport_remote_work_dir
@@ -2102,11 +2110,19 @@ fn configured_prepared_output_launcher_transport_mode()
 }
 
 fn resolve_run_prepared_output_invocation_wrapper_program(
+    jobs: &[JobSpec],
     invocation_mode: Option<PreparedOutputInvocationMode>,
     recorded_wrapper_program: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
     match invocation_mode {
         Some(PreparedOutputInvocationMode::ExternalWrapperCommandV1) => {
+            if jobs_require_remote_staged_linux_fulfillment(jobs) {
+                return Ok(Some(
+                    prepared_output_fulfillment_launcher_program()?
+                        .display()
+                        .to_string(),
+                ));
+            }
             if let Some(recorded_wrapper_program) = recorded_wrapper_program {
                 return Ok(Some(recorded_wrapper_program.to_string()));
             }
@@ -2121,11 +2137,17 @@ fn resolve_run_prepared_output_invocation_wrapper_program(
 }
 
 fn resolve_run_prepared_output_launcher_transport_mode(
+    jobs: &[JobSpec],
     invocation_mode: Option<PreparedOutputInvocationMode>,
     recorded_transport_mode: Option<PreparedOutputLauncherTransportMode>,
 ) -> anyhow::Result<Option<PreparedOutputLauncherTransportMode>> {
     if invocation_mode != Some(PreparedOutputInvocationMode::ExternalWrapperCommandV1) {
         return Ok(None);
+    }
+    if jobs_require_remote_staged_linux_fulfillment(jobs) {
+        return Ok(Some(
+            PreparedOutputLauncherTransportMode::SshLauncherTransportV1,
+        ));
     }
     if let Some(recorded_transport_mode) = recorded_transport_mode {
         return Ok(Some(recorded_transport_mode));
@@ -2134,6 +2156,7 @@ fn resolve_run_prepared_output_launcher_transport_mode(
 }
 
 fn resolve_run_prepared_output_launcher_transport_program(
+    jobs: &[JobSpec],
     transport_mode: Option<PreparedOutputLauncherTransportMode>,
     recorded_transport_program: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
@@ -2152,37 +2175,52 @@ fn resolve_run_prepared_output_launcher_transport_program(
             ))
         }
         Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1) => Ok(Some(
-            recorded_transport_program
-                .map(str::to_string)
-                .unwrap_or_else(|| {
-                    std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV)
-                        .unwrap_or_else(|_| staged_linux_remote_defaults().ssh_binary.to_string())
-                }),
+            if jobs_require_remote_staged_linux_fulfillment(jobs) {
+                std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV)
+                    .unwrap_or_else(|_| staged_linux_remote_defaults().ssh_binary.to_string())
+            } else {
+                recorded_transport_program
+                    .map(str::to_string)
+                    .unwrap_or_else(|| {
+                        std::env::var(PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV).unwrap_or_else(
+                            |_| staged_linux_remote_defaults().ssh_binary.to_string(),
+                        )
+                    })
+            },
         )),
         _ => Ok(None),
     }
 }
 
 fn resolve_run_prepared_output_launcher_transport_host(
+    jobs: &[JobSpec],
     transport_mode: Option<PreparedOutputLauncherTransportMode>,
     recorded_transport_host: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
     match transport_mode {
         Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1) => Ok(Some(
-            recorded_transport_host
-                .map(str::to_string)
-                .unwrap_or_else(prepared_output_ssh_host),
+            if jobs_require_remote_staged_linux_fulfillment(jobs) {
+                prepared_output_ssh_host()
+            } else {
+                recorded_transport_host
+                    .map(str::to_string)
+                    .unwrap_or_else(prepared_output_ssh_host)
+            },
         )),
         _ => Ok(None),
     }
 }
 
 fn resolve_run_prepared_output_launcher_transport_remote_launcher_program(
+    jobs: &[JobSpec],
     transport_mode: Option<PreparedOutputLauncherTransportMode>,
     recorded_remote_launcher_program: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
     match transport_mode {
         Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1) => {
+            if jobs_require_remote_staged_linux_fulfillment(jobs) {
+                return Ok(Some(prepared_output_remote_launcher_binary()));
+            }
             if let Some(recorded_remote_launcher_program) = recorded_remote_launcher_program {
                 return Ok(Some(recorded_remote_launcher_program.to_string()));
             }
@@ -2193,11 +2231,15 @@ fn resolve_run_prepared_output_launcher_transport_remote_launcher_program(
 }
 
 fn resolve_run_prepared_output_launcher_transport_remote_helper_program(
+    jobs: &[JobSpec],
     transport_mode: Option<PreparedOutputLauncherTransportMode>,
     recorded_remote_helper_program: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
     match transport_mode {
         Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1) => {
+            if jobs_require_remote_staged_linux_fulfillment(jobs) {
+                return Ok(Some(prepared_output_remote_helper_binary()));
+            }
             if let Some(recorded_remote_helper_program) = recorded_remote_helper_program {
                 return Ok(Some(recorded_remote_helper_program.to_string()));
             }
@@ -2208,14 +2250,19 @@ fn resolve_run_prepared_output_launcher_transport_remote_helper_program(
 }
 
 fn resolve_run_prepared_output_launcher_transport_remote_work_dir(
+    jobs: &[JobSpec],
     transport_mode: Option<PreparedOutputLauncherTransportMode>,
     recorded_remote_work_dir: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
     match transport_mode {
         Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1) => Ok(Some(
-            recorded_remote_work_dir
-                .map(str::to_string)
-                .unwrap_or_else(|| prepared_output_remote_work_dir().display().to_string()),
+            if jobs_require_remote_staged_linux_fulfillment(jobs) {
+                prepared_output_remote_work_dir().display().to_string()
+            } else {
+                recorded_remote_work_dir
+                    .map(str::to_string)
+                    .unwrap_or_else(|| prepared_output_remote_work_dir().display().to_string())
+            },
         )),
         _ => Ok(None),
     }
@@ -3759,7 +3806,7 @@ fn realize_nix_build_output(
         append_log_line_many(
             log_paths,
             &format!(
-                "[jerichoci] prepare {output_name}: ssh {} {} build --accept-flake-config --no-link --print-out-paths {}",
+                "[jerichoci] prepare {output_name}: ssh {} {} build -L --accept-flake-config --no-link --print-out-paths {}",
                 remote.remote_host,
                 ssh_nix_binary(),
                 remote.remote_installable
@@ -3773,6 +3820,7 @@ fn realize_nix_build_output(
         .arg(&remote.remote_host)
         .arg(&remote_nix_program)
         .arg("build")
+        .arg("-L")
         .arg("--accept-flake-config")
         .arg("--no-link")
         .arg("--print-out-paths")
@@ -3804,11 +3852,12 @@ fn realize_nix_build_output(
     append_log_line_many(
         log_paths,
         &format!(
-            "[jerichoci] prepare {output_name}: nix build --accept-flake-config --no-link --print-out-paths {installable}"
+            "[jerichoci] prepare {output_name}: nix build -L --accept-flake-config --no-link --print-out-paths {installable}"
         ),
     )?;
     let output = Command::new("nix")
         .arg("build")
+        .arg("-L")
         .arg("--accept-flake-config")
         .arg("--no-link")
         .arg("--print-out-paths")
@@ -3889,6 +3938,12 @@ fn resolve_run_prepared_output_consumer_kind(
     )
 }
 
+fn jobs_require_remote_staged_linux_fulfillment(jobs: &[JobSpec]) -> bool {
+    jobs.iter().any(|job| {
+        job.staged_linux_command().is_some() && job.placement_kind() == JobPlacementKind::RemoteSsh
+    })
+}
+
 fn resolve_run_prepared_output_consumer_kind_for_mode(
     recorded_mode: Option<&str>,
     subprocess_mode_enabled: bool,
@@ -3896,6 +3951,13 @@ fn resolve_run_prepared_output_consumer_kind_for_mode(
     _metadata: &RunMetadata,
     configured_kind: PreparedOutputConsumerKind,
 ) -> anyhow::Result<(PreparedOutputConsumerKind, Option<&'static str>)> {
+    let staged_linux_jobs_require_fulfilled_mounts = !jobs.is_empty()
+        && jobs.iter().any(|job| job.staged_linux_command().is_some())
+        && !jobs.iter().any(|job| {
+            job.staged_linux_command().is_none()
+                && !(job.placement_kind() == JobPlacementKind::Local
+                    && job.runtime_kind() == JobRuntimeKind::HostProcess)
+        });
     let requested_mode = match recorded_mode {
         Some(STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME) => {
             Some(STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME)
@@ -3908,6 +3970,17 @@ fn resolve_run_prepared_output_consumer_kind_for_mode(
         None if subprocess_mode_enabled => Some(STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME),
         None => None,
     };
+    if staged_linux_jobs_require_fulfilled_mounts {
+        if configured_kind == PreparedOutputConsumerKind::RemoteExposureRequestV1 {
+            return Err(anyhow!(
+                "staged Linux Rust jobs require fulfilled prepared-output mounts; remote_request_v1 is prototype-only"
+            ));
+        }
+        return Ok((
+            PreparedOutputConsumerKind::FulfillRequestCliV1,
+            requested_mode.or(Some(STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME)),
+        ));
+    }
     if requested_mode.is_none() {
         return Ok((configured_kind, None));
     }
@@ -3916,14 +3989,7 @@ fn resolve_run_prepared_output_consumer_kind_for_mode(
             "{STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV} cannot be combined with JERICHOCI_PREPARED_OUTPUT_CONSUMER"
         ));
     }
-    if jobs.is_empty()
-        || !jobs.iter().any(|job| job.staged_linux_command().is_some())
-        || jobs.iter().any(|job| {
-            job.staged_linux_command().is_none()
-                && !(job.placement_kind() == JobPlacementKind::Local
-                    && job.runtime_kind() == JobRuntimeKind::HostProcess)
-        })
-    {
+    if !staged_linux_jobs_require_fulfilled_mounts {
         return Err(anyhow!(
             "{STAGED_LINUX_RUST_SUBPROCESS_MODE_ENV} requires staged Linux Rust jobs, optionally mixed with host-local follow-up jobs"
         ));
@@ -3949,11 +4015,15 @@ fn configured_prepared_output_consumer_kind() -> anyhow::Result<PreparedOutputCo
 }
 
 fn resolve_run_prepared_output_invocation_mode(
+    jobs: &[JobSpec],
     consumer_kind: PreparedOutputConsumerKind,
     recorded_mode: Option<PreparedOutputInvocationMode>,
 ) -> anyhow::Result<Option<PreparedOutputInvocationMode>> {
     if consumer_kind != PreparedOutputConsumerKind::FulfillRequestCliV1 {
         return Ok(None);
+    }
+    if jobs_require_remote_staged_linux_fulfillment(jobs) {
+        return Ok(Some(PreparedOutputInvocationMode::ExternalWrapperCommandV1));
     }
     if let Some(recorded_mode) = recorded_mode {
         return Ok(Some(recorded_mode));
@@ -6194,6 +6264,7 @@ mod tests {
     fn resolve_run_prepared_output_invocation_mode_uses_recorded_mode_for_reruns() {
         assert_eq!(
             resolve_run_prepared_output_invocation_mode(
+                &[],
                 PreparedOutputConsumerKind::FulfillRequestCliV1,
                 Some(PreparedOutputInvocationMode::ExternalWrapperCommandV1)
             )
@@ -6202,6 +6273,7 @@ mod tests {
         );
         assert_eq!(
             resolve_run_prepared_output_invocation_mode(
+                &[],
                 PreparedOutputConsumerKind::HostLocalSymlinkMountsV1,
                 Some(PreparedOutputInvocationMode::ExternalWrapperCommandV1)
             )
@@ -6211,9 +6283,37 @@ mod tests {
     }
 
     #[test]
+    fn resolve_run_prepared_output_invocation_mode_hard_cuts_remote_staged_jobs_to_wrapper() {
+        let jobs = vec![JobSpec {
+            id: "pika-core-lib-app-flows-tests",
+            description: "Run pika_core lib tests and app_flows integration tests in a remote Linux VM",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
+            },
+            runtime_config: remote_incus_runtime(Some(
+                StagedLinuxRustLane::PikaCoreLibAppFlows.command_config(),
+            )),
+            ..remote_incus_job_base()
+        }];
+
+        assert_eq!(
+            resolve_run_prepared_output_invocation_mode(
+                &jobs,
+                PreparedOutputConsumerKind::FulfillRequestCliV1,
+                Some(PreparedOutputInvocationMode::DirectHelperExecV1)
+            )
+            .expect("force wrapper invocation for staged remote jobs"),
+            Some(PreparedOutputInvocationMode::ExternalWrapperCommandV1)
+        );
+    }
+
+    #[test]
     fn resolve_run_prepared_output_launcher_transport_mode_uses_recorded_mode_for_reruns() {
         assert_eq!(
             resolve_run_prepared_output_launcher_transport_mode(
+                &[],
                 Some(PreparedOutputInvocationMode::ExternalWrapperCommandV1),
                 Some(PreparedOutputLauncherTransportMode::CommandTransportV1),
             )
@@ -6222,11 +6322,39 @@ mod tests {
         );
         assert_eq!(
             resolve_run_prepared_output_launcher_transport_mode(
+                &[],
                 Some(PreparedOutputInvocationMode::DirectHelperExecV1),
                 Some(PreparedOutputLauncherTransportMode::CommandTransportV1),
             )
             .expect("ignore transport mode for direct helper exec"),
             None
+        );
+    }
+
+    #[test]
+    fn resolve_run_prepared_output_launcher_transport_mode_hard_cuts_remote_staged_jobs_to_ssh() {
+        let jobs = vec![JobSpec {
+            id: "pika-core-lib-app-flows-tests",
+            description: "Run pika_core lib tests and app_flows integration tests in a remote Linux VM",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
+            },
+            runtime_config: remote_incus_runtime(Some(
+                StagedLinuxRustLane::PikaCoreLibAppFlows.command_config(),
+            )),
+            ..remote_incus_job_base()
+        }];
+
+        assert_eq!(
+            resolve_run_prepared_output_launcher_transport_mode(
+                &jobs,
+                Some(PreparedOutputInvocationMode::ExternalWrapperCommandV1),
+                Some(PreparedOutputLauncherTransportMode::CommandTransportV1),
+            )
+            .expect("force ssh transport for staged remote jobs"),
+            Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1)
         );
     }
 
@@ -6246,6 +6374,7 @@ mod tests {
     fn resolve_run_prepared_output_launcher_transport_program_uses_recorded_path_for_reruns() {
         assert_eq!(
             resolve_run_prepared_output_launcher_transport_program(
+                &[],
                 Some(PreparedOutputLauncherTransportMode::CommandTransportV1),
                 Some("/tmp/bin/fake-ssh"),
             )
@@ -6254,6 +6383,7 @@ mod tests {
         );
         assert_eq!(
             resolve_run_prepared_output_launcher_transport_program(
+                &[],
                 Some(PreparedOutputLauncherTransportMode::DirectLauncherExecV1),
                 Some("/tmp/bin/fake-ssh"),
             )
@@ -6262,6 +6392,7 @@ mod tests {
         );
         assert_eq!(
             resolve_run_prepared_output_launcher_transport_program(
+                &[],
                 Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
                 Some("/usr/bin/ssh"),
             )
@@ -6274,6 +6405,7 @@ mod tests {
     fn resolve_run_prepared_output_launcher_transport_program_requires_explicit_binary() {
         let _guard = EnvVarGuard::set(PREPARED_OUTPUT_FULFILLMENT_TRANSPORT_BINARY_ENV, None);
         let err = resolve_run_prepared_output_launcher_transport_program(
+            &[],
             Some(PreparedOutputLauncherTransportMode::CommandTransportV1),
             None,
         )
@@ -6306,6 +6438,7 @@ mod tests {
 
         assert_eq!(
             resolve_run_prepared_output_launcher_transport_program(
+                &[],
                 Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
                 None,
             )
@@ -6314,6 +6447,7 @@ mod tests {
         );
         assert_eq!(
             resolve_run_prepared_output_launcher_transport_host(
+                &[],
                 Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
                 None,
             )
@@ -6322,6 +6456,7 @@ mod tests {
         );
         assert_eq!(
             resolve_run_prepared_output_launcher_transport_remote_launcher_program(
+                &[],
                 Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
                 None,
             )
@@ -6330,6 +6465,7 @@ mod tests {
         );
         assert_eq!(
             resolve_run_prepared_output_launcher_transport_remote_helper_program(
+                &[],
                 Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
                 None,
             )
@@ -6338,6 +6474,7 @@ mod tests {
         );
         assert_eq!(
             resolve_run_prepared_output_launcher_transport_remote_work_dir(
+                &[],
                 Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
                 None,
             )
@@ -6363,6 +6500,7 @@ mod tests {
 
         assert_eq!(
             resolve_run_prepared_output_launcher_transport_program(
+                &[],
                 Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
                 None,
             )
@@ -6371,6 +6509,7 @@ mod tests {
         );
         assert_eq!(
             resolve_run_prepared_output_launcher_transport_host(
+                &[],
                 Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
                 None,
             )
@@ -6379,6 +6518,7 @@ mod tests {
         );
         assert_eq!(
             resolve_run_prepared_output_launcher_transport_remote_launcher_program(
+                &[],
                 Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
                 None,
             )
@@ -6387,6 +6527,7 @@ mod tests {
         );
         assert_eq!(
             resolve_run_prepared_output_launcher_transport_remote_helper_program(
+                &[],
                 Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
                 None,
             )
@@ -6395,10 +6536,86 @@ mod tests {
         );
         assert_eq!(
             resolve_run_prepared_output_launcher_transport_remote_work_dir(
+                &[],
                 Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
                 None,
             )
             .expect("ssh remote work dir"),
+            Some("/var/tmp/jerichoci-prepared-output".to_string())
+        );
+    }
+
+    #[test]
+    fn remote_staged_jobs_ignore_recorded_ssh_transport_details() {
+        let jobs = vec![JobSpec {
+            id: "pika-core-lib-app-flows-tests",
+            description: "Run pika_core lib tests and app_flows integration tests in a remote Linux VM",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
+            },
+            runtime_config: remote_incus_runtime(Some(
+                StagedLinuxRustLane::PikaCoreLibAppFlows.command_config(),
+            )),
+            ..remote_incus_job_base()
+        }];
+        let _ssh_guard = EnvVarGuard::set(PREPARED_OUTPUT_FULFILLMENT_SSH_BINARY_ENV, None);
+        let _host_guard = EnvVarGuard::set(PREPARED_OUTPUT_FULFILLMENT_SSH_HOST_ENV, None);
+        let _launcher_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_LAUNCHER_BINARY_ENV,
+            None,
+        );
+        let _helper_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_HELPER_BINARY_ENV,
+            None,
+        );
+        let _work_dir_guard =
+            EnvVarGuard::set(PREPARED_OUTPUT_FULFILLMENT_SSH_REMOTE_WORK_DIR_ENV, None);
+
+        assert_eq!(
+            resolve_run_prepared_output_launcher_transport_program(
+                &jobs,
+                Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
+                Some("/tmp/bin/stale-ssh"),
+            )
+            .expect("force default ssh binary"),
+            Some("/usr/bin/ssh".to_string())
+        );
+        assert_eq!(
+            resolve_run_prepared_output_launcher_transport_host(
+                &jobs,
+                Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
+                Some("stale-host"),
+            )
+            .expect("force default ssh host"),
+            Some("pika-build".to_string())
+        );
+        assert_eq!(
+            resolve_run_prepared_output_launcher_transport_remote_launcher_program(
+                &jobs,
+                Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
+                Some("/tmp/bin/stale-launcher"),
+            )
+            .expect("force default remote launcher"),
+            Some("/run/current-system/sw/bin/pikaci-launch-fulfill-prepared-output".to_string())
+        );
+        assert_eq!(
+            resolve_run_prepared_output_launcher_transport_remote_helper_program(
+                &jobs,
+                Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
+                Some("/tmp/bin/stale-helper"),
+            )
+            .expect("force default remote helper"),
+            Some("/run/current-system/sw/bin/pikaci-fulfill-prepared-output".to_string())
+        );
+        assert_eq!(
+            resolve_run_prepared_output_launcher_transport_remote_work_dir(
+                &jobs,
+                Some(PreparedOutputLauncherTransportMode::SshLauncherTransportV1),
+                Some("/tmp/stale-work-dir"),
+            )
+            .expect("force default remote work dir"),
             Some("/var/tmp/jerichoci-prepared-output".to_string())
         );
     }
@@ -6522,7 +6739,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_run_prepared_output_consumer_kind_enables_staged_subprocess_mode() {
+    fn resolve_run_prepared_output_consumer_kind_defaults_staged_jobs_to_fulfill_request_cli() {
         let jobs = vec![JobSpec {
             id: "pika-core-lib-app-flows-tests",
             description: "Run pika_core lib tests and app_flows integration tests in a remote Linux VM",
@@ -6543,19 +6760,20 @@ mod tests {
 
         let (kind, mode) = resolve_run_prepared_output_consumer_kind_for_mode(
             None,
-            true,
+            false,
             &jobs,
             &metadata,
             PreparedOutputConsumerKind::HostLocalSymlinkMountsV1,
         )
-        .expect("resolve staged subprocess mode");
+        .expect("resolve staged prepared output consumer");
 
         assert_eq!(kind, PreparedOutputConsumerKind::FulfillRequestCliV1);
         assert_eq!(mode, Some(STAGED_LINUX_RUST_SUBPROCESS_MODE_NAME));
     }
 
     #[test]
-    fn resolve_run_prepared_output_consumer_kind_accepts_other_staged_linux_targets() {
+    fn resolve_run_prepared_output_consumer_kind_defaults_other_staged_linux_targets_to_fulfill_request_cli()
+     {
         let jobs = vec![JobSpec {
             id: "pika-cloud-unit",
             description: "Run all pika-cloud unit tests in a remote Linux VM",
@@ -6576,7 +6794,7 @@ mod tests {
 
         let (kind, mode) = resolve_run_prepared_output_consumer_kind_for_mode(
             None,
-            true,
+            false,
             &jobs,
             &metadata,
             PreparedOutputConsumerKind::HostLocalSymlinkMountsV1,
@@ -6588,7 +6806,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_run_prepared_output_consumer_kind_rejects_low_level_consumer_conflict() {
+    fn resolve_run_prepared_output_consumer_kind_rejects_remote_request_for_staged_jobs() {
         let jobs = vec![JobSpec {
             id: "pika-core-lib-app-flows-tests",
             description: "Run pika_core lib tests and app_flows integration tests in a remote Linux VM",
@@ -6609,16 +6827,16 @@ mod tests {
 
         let err = resolve_run_prepared_output_consumer_kind_for_mode(
             None,
-            true,
+            false,
             &jobs,
             &metadata,
-            PreparedOutputConsumerKind::FulfillRequestCliV1,
+            PreparedOutputConsumerKind::RemoteExposureRequestV1,
         )
-        .expect_err("reject low-level consumer conflict");
+        .expect_err("reject remote request consumer for staged jobs");
 
         assert!(
             err.to_string()
-                .contains("cannot be combined with JERICHOCI_PREPARED_OUTPUT_CONSUMER")
+                .contains("remote_request_v1 is prototype-only")
         );
     }
 
@@ -6660,6 +6878,7 @@ mod tests {
     fn resolve_run_prepared_output_invocation_wrapper_program_uses_recorded_path_for_reruns() {
         assert_eq!(
             resolve_run_prepared_output_invocation_wrapper_program(
+                &[],
                 Some(PreparedOutputInvocationMode::ExternalWrapperCommandV1),
                 Some("/tmp/bin/wrapper"),
             )
@@ -6668,11 +6887,43 @@ mod tests {
         );
         assert_eq!(
             resolve_run_prepared_output_invocation_wrapper_program(
+                &[],
                 Some(PreparedOutputInvocationMode::DirectHelperExecV1),
                 Some("/tmp/bin/wrapper"),
             )
             .expect("ignore wrapper path in direct mode"),
             None
+        );
+    }
+
+    #[test]
+    fn remote_staged_jobs_ignore_recorded_wrapper_program() {
+        let jobs = vec![JobSpec {
+            id: "pika-core-lib-app-flows-tests",
+            description: "Run pika_core lib tests and app_flows integration tests in a remote Linux VM",
+            timeout_secs: 1800,
+            writable_workspace: false,
+            guest_command: GuestCommand::ShellCommand {
+                command: "cargo test -p pika_core --lib --test app_flows -- --nocapture",
+            },
+            runtime_config: remote_incus_runtime(Some(
+                StagedLinuxRustLane::PikaCoreLibAppFlows.command_config(),
+            )),
+            ..remote_incus_job_base()
+        }];
+        let _launcher_guard = EnvVarGuard::set(
+            PREPARED_OUTPUT_FULFILLMENT_LAUNCHER_BINARY_ENV,
+            Some("/opt/jericho/bin/launch-fulfill"),
+        );
+
+        assert_eq!(
+            resolve_run_prepared_output_invocation_wrapper_program(
+                &jobs,
+                Some(PreparedOutputInvocationMode::ExternalWrapperCommandV1),
+                Some("/tmp/bin/stale-wrapper"),
+            )
+            .expect("force current wrapper program"),
+            Some("/opt/jericho/bin/launch-fulfill".to_string())
         );
     }
 

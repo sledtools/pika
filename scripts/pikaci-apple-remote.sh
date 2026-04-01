@@ -128,7 +128,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --ssh-binary)
       ssh_binary="${2:?missing value for --ssh-binary}"
-      ssh_binary_defaulted=0
       shift 2
       ;;
     --remote-root)
@@ -486,10 +485,6 @@ run_locked_body() {
     rm -f "$bundle_path"
   }
   trap cleanup EXIT
-
-  remote_q() {
-    printf "'%s'" "${1//\'/\'\"\'\"\'}"
-  }
 
   ensure_mirror() {
     if [[ ! -d "$mirror_dir" ]]; then

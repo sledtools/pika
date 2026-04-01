@@ -74,8 +74,8 @@ The checked-in wrapper is the forge/CI transport contract, not the general manua
 
 The Apple CI config/secret model now follows the repo's checked-in secret pattern:
 
-- Non-secret Apple CI config is checked into [.github/pikaci-apple.env](/Users/justin/code/pika/worktrees/pikaci-mac/.github/pikaci-apple.env).
-- Apple CI secrets are checked into `secrets/pikaci-apple.sops.yaml` (with legacy fallback to `secrets/pikaci-apple.env.age` during migration).
+- Non-secret Apple CI config is checked into [.github/pikaci-apple.env](../.github/pikaci-apple.env).
+- Apple CI secrets are checked into `secrets/pikaci-apple.sops.yaml`.
 - Runtime SSH auth is single-path for the wrapper: `./scripts/pikaci-apple-remote.sh` must receive an explicit identity file via `PIKACI_APPLE_SSH_KEY_FILE`, and it always forces `IdentitiesOnly=yes` with `IdentityAgent=none`. It does not fall back to ambient `ssh-agent` keys.
 
 The checked-in public config currently carries:

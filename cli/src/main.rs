@@ -122,6 +122,7 @@ enum Command {
     /// Print a QR code for your identity that deep-links into the Pika app
     #[command(after_help = "Example:
   pikachat qr
+  pikachat qr --server-url https://chat.example
   pikachat qr --channel test
   pikachat qr --channel dev --scheme customscheme
 
@@ -134,6 +135,10 @@ Prints a QR code to the terminal. When scanned, it opens Pika and starts a 1:1 c
         /// Explicit URL scheme override (bypasses channel mapping).
         #[arg(long)]
         scheme: Option<String>,
+
+        /// Explicit chat-server URL to advertise in the QR code.
+        #[arg(long, env = "PIKA_CHAT_SERVER_URL")]
+        server_url: Option<String>,
     },
 
     /// Publish a key package (kind 443) so peers can invite you
@@ -653,7 +658,11 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Init { nsec } => cmd_init(&cli, nsec.as_deref()).await,
         Command::Identity => cmd_identity(&cli),
-        Command::Qr { channel, scheme } => cmd_qr(&cli, *channel, scheme.as_deref()),
+        Command::Qr {
+            channel,
+            scheme,
+            server_url,
+        } => cmd_qr(&cli, *channel, scheme.as_deref(), server_url.as_deref()),
         Command::PublishKp => cmd_publish_kp(&cli).await,
         Command::Invite { peer, name } => cmd_invite(&cli, peer, name).await,
         Command::Welcomes => cmd_welcomes(&cli),
@@ -1015,17 +1024,54 @@ fn cmd_identity(cli: &Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_qr(cli: &Cli, channel: QrChannel, scheme_override: Option<&str>) -> anyhow::Result<()> {
+fn cmd_qr(
+    cli: &Cli,
+    channel: QrChannel,
+    scheme_override: Option<&str>,
+    server_url: Option<&str>,
+) -> anyhow::Result<()> {
     let keys = mdk_util::load_or_create_keys(&cli.state_dir.join("identity.json"))?;
     let npub = keys.public_key().to_bech32().context("encode npub")?;
     let scheme = resolve_qr_scheme(channel, scheme_override)?;
-    let deep_link = format!("{scheme}://chat/{npub}");
+    let deep_link = build_qr_profile_code(&scheme, &npub, server_url)?;
 
     qr2term::print_qr(&deep_link).context("render QR code")?;
     eprintln!();
     eprintln!("  npub: {npub}");
     eprintln!("  link: {deep_link}");
     Ok(())
+}
+
+fn build_qr_profile_code(
+    scheme: &str,
+    npub: &str,
+    server_url: Option<&str>,
+) -> anyhow::Result<String> {
+    let mut deep_link =
+        reqwest::Url::parse(&format!("{scheme}://chat/{npub}")).context("build deep link")?;
+    if let Some(server_url) = server_url {
+        let server_url = normalize_qr_server_url(server_url)?;
+        deep_link
+            .query_pairs_mut()
+            .append_pair("server", &server_url);
+    }
+    Ok(deep_link.to_string())
+}
+
+fn normalize_qr_server_url(server_url: &str) -> anyhow::Result<String> {
+    let trimmed = server_url.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("--server-url must not be empty");
+    }
+
+    let mut url = reqwest::Url::parse(trimmed).context("parse --server-url")?;
+    if !matches!(url.scheme(), "http" | "https") {
+        anyhow::bail!("--server-url must use http or https");
+    }
+    if url.path() == "/" {
+        url.set_path("");
+    }
+    Ok(url.to_string().trim_end_matches('/').to_string())
 }
 
 fn resolve_qr_scheme(channel: QrChannel, scheme_override: Option<&str>) -> anyhow::Result<String> {
@@ -2659,6 +2705,23 @@ mod tests {
             .tags(tags)
             .sign_with_keys(keys)
             .expect("sign key package")
+    }
+
+    #[test]
+    fn build_qr_profile_code_includes_server_query_when_configured() {
+        let code = build_qr_profile_code("pika", "npub1example", Some("https://chat.example/"))
+            .expect("profile code");
+        assert_eq!(
+            code,
+            "pika://chat/npub1example?server=https%3A%2F%2Fchat.example"
+        );
+    }
+
+    #[test]
+    fn build_qr_profile_code_uses_plain_deep_link_without_server() {
+        let code = build_qr_profile_code("pika", "npub1example", None)
+            .expect("profile code without server");
+        assert_eq!(code, "pika://chat/npub1example");
     }
 
     #[test]

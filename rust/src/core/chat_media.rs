@@ -1834,8 +1834,8 @@ impl AppCore {
             self.last_outgoing_ts
         };
 
-        let (client, prepared, relays) = {
-            let Some(sess) = self.session.as_mut() else {
+        let (client, prepared, relays, room_binding) = {
+            let Some(sess) = self.session.as_ref() else {
                 return;
             };
             let Some(group) = sess.groups.get(&chat_id).cloned() else {
@@ -1923,7 +1923,12 @@ impl AppCore {
                 vec![]
             };
 
-            (sess.client.clone(), prepared, relays)
+            (
+                sess.client.clone(),
+                prepared,
+                relays,
+                self.chat_server_rooms.get(&chat_id).cloned(),
+            )
         };
 
         self.prune_local_outbox(&chat_id);
@@ -1941,6 +1946,75 @@ impl AppCore {
             let _ = self.core_sender.send(CoreMsg::Internal(Box::new(
                 InternalEvent::OutboundPublishOperation { operation },
             )));
+            return;
+        }
+
+        if let Some(binding) = room_binding {
+            let tx = self.core_sender.clone();
+            let http_client = self.http_client.clone();
+            let chat_id_for_append = chat_id.clone();
+            let room_id = binding.room_id.clone();
+            let base_url = match Url::parse(&binding.server_url) {
+                Ok(url) => url,
+                Err(err) => {
+                    let operation =
+                        pika_marmot_runtime::runtime::RuntimeOperationEvent::complete_outbound_conversation_publish(
+                            prepared,
+                            pika_marmot_runtime::outbound::OutboundConversationPublishStatus::PublishFailed(
+                                format!("invalid chat server URL: {err}"),
+                            ),
+                        );
+                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                        InternalEvent::OutboundPublishOperation { operation },
+                    )));
+                    return;
+                }
+            };
+
+            self.runtime.spawn(async move {
+                let wrapper = prepared.wrapper.clone();
+                match chat_server::append_wrapped_room_event(
+                    &http_client,
+                    &client,
+                    &base_url,
+                    &room_id,
+                    RoomEventType::ApplicationMessage,
+                    &wrapper,
+                )
+                .await
+                {
+                    Ok(appended) => {
+                        let operation = pika_marmot_runtime::runtime::RuntimeOperationEvent::complete_outbound_conversation_publish(
+                            prepared,
+                            pika_marmot_runtime::outbound::OutboundConversationPublishStatus::Published {
+                                wrapper_event_id: wrapper.id,
+                            },
+                        );
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::OutboundPublishOperation { operation },
+                        )));
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::ChatServerRoomEventAppended {
+                                chat_id: chat_id_for_append,
+                                room_id,
+                                seq: appended.seq,
+                                wrapper,
+                            },
+                        )));
+                    }
+                    Err(err) => {
+                        let operation = pika_marmot_runtime::runtime::RuntimeOperationEvent::complete_outbound_conversation_publish(
+                            prepared,
+                            pika_marmot_runtime::outbound::OutboundConversationPublishStatus::PublishFailed(
+                                err.to_string(),
+                            ),
+                        );
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::OutboundPublishOperation { operation },
+                        )));
+                    }
+                }
+            });
             return;
         }
 

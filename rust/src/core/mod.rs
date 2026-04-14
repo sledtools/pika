@@ -51,6 +51,7 @@ use host_context::runtime_for_mdk;
 use mdk_core::encrypted_media::types::{EncryptedMediaUpload, MediaReference};
 use mdk_core::prelude::{message_types, GroupId, MessageProcessingResult, NostrGroupConfigData};
 use mdk_storage_traits::groups::Pagination;
+use pika_chat_server::protocol::{RoomEvent, RoomEventType};
 use pika_marmot_runtime::call::ParsedCallSignal;
 use pika_marmot_runtime::call_runtime::{
     GroupCallContext, InboundCallSignalOutcome, InboundSignalContext, PreparedAcceptedCall,
@@ -142,6 +143,8 @@ const DEFAULT_GROUP_DESCRIPTION: &str = "";
 const IOS_MIGRATION_SENTINEL: &str = ".migrated_to_app_group";
 
 const LOCAL_OUTBOX_MAX_PER_CHAT: usize = 8;
+const CHAT_SERVER_SYNC_LIMIT: usize = 100;
+const CHAT_SERVER_SYNC_POLL_SECS: u64 = 3;
 const NOSTR_CONNECT_LOGIN_TIMEOUT_SECS: u64 = 95;
 const NOSTR_CONNECT_RESPONSE_LOOKBACK_SECS: u64 = 5 * 60;
 const NOSTR_CONNECT_PAIRING_KEYRING_ACCOUNT: &str = "nostr_connect_pairing";
@@ -854,6 +857,7 @@ pub struct AppCore {
     profiles: HashMap<String, ProfileCache>, // hex pubkey -> cached global profile
     group_profiles: HashMap<String, HashMap<String, ProfileCache>>, // chat_id -> (pubkey -> profile)
     chat_server_rooms: HashMap<String, profile_db::ChatServerRoomBinding>, // local chat_id -> room binding
+    chat_server_sync_in_flight: HashSet<String>, // chat ids currently syncing from the chat server
     profile_db: Option<rusqlite::Connection>,
     chat_media_db: Option<rusqlite::Connection>,
 
@@ -1011,6 +1015,7 @@ impl AppCore {
             profiles,
             group_profiles: HashMap::new(),
             chat_server_rooms,
+            chat_server_sync_in_flight: HashSet::new(),
             profile_db,
             typing_state: HashMap::new(),
             last_typing_sent: HashMap::new(),
@@ -3269,6 +3274,7 @@ impl AppCore {
             self.local_outbox.clear();
             self.profiles.clear();
             self.chat_server_rooms.clear();
+            self.chat_server_sync_in_flight.clear();
             if let Some(conn) = self.profile_db.as_ref() {
                 profile_db::clear_all(conn);
                 profile_db::clear_app_settings(conn);
@@ -3294,6 +3300,7 @@ impl AppCore {
         // Drop SQLite handles before deleting files.
         self.profile_db = None;
         self.chat_server_rooms.clear();
+        self.chat_server_sync_in_flight.clear();
         self.archived_chats.clear();
         self.push_subscribed_chat_ids.clear();
         self.push_apns_token = None;
@@ -3588,6 +3595,20 @@ impl AppCore {
                 room_id,
                 error,
             } => self.handle_chat_server_room_bound(chat_id, server_url, room_id, error),
+            InternalEvent::ChatServerSyncPoll => self.begin_chat_server_room_sync(),
+            InternalEvent::ChatServerRoomSynced {
+                chat_id,
+                server_url,
+                room_id,
+                events,
+                error,
+            } => self.handle_chat_server_room_synced(chat_id, server_url, room_id, events, error),
+            InternalEvent::ChatServerRoomEventAppended {
+                chat_id,
+                room_id,
+                seq,
+                wrapper,
+            } => self.handle_chat_server_room_event_appended(chat_id, room_id, seq, wrapper),
             InternalEvent::FollowListFetched {
                 followed_pubkeys,
                 fetched_profiles,
@@ -4183,6 +4204,76 @@ impl AppCore {
         });
     }
 
+    fn begin_chat_server_room_sync(&mut self) {
+        if !self.network_enabled() || self.chat_server_rooms.is_empty() {
+            return;
+        }
+
+        let (session_client, http_client, tx) = {
+            let Some(sess) = self.session.as_ref() else {
+                return;
+            };
+            (
+                sess.client.clone(),
+                self.http_client.clone(),
+                self.core_sender.clone(),
+            )
+        };
+
+        let bindings: Vec<profile_db::ChatServerRoomBinding> =
+            self.chat_server_rooms.values().cloned().collect();
+        for binding in bindings {
+            if self.chat_server_sync_in_flight.contains(&binding.chat_id) {
+                continue;
+            }
+            let Ok(base_url) = Url::parse(&binding.server_url) else {
+                tracing::warn!(
+                    chat_id = %binding.chat_id,
+                    server_url = %binding.server_url,
+                    "invalid chat-server room binding URL"
+                );
+                continue;
+            };
+
+            let chat_id = binding.chat_id.clone();
+            let server_url = binding.server_url.clone();
+            let room_id = binding.room_id.clone();
+            let after_seq = binding.last_synced_seq;
+            let client = session_client.clone();
+            let http = http_client.clone();
+            let tx = tx.clone();
+            self.chat_server_sync_in_flight.insert(chat_id.clone());
+            self.runtime.spawn(async move {
+                let result = chat_server::sync_room_events(
+                    &http,
+                    &client,
+                    &base_url,
+                    &room_id,
+                    after_seq,
+                    CHAT_SERVER_SYNC_LIMIT,
+                )
+                .await;
+                let internal = match result {
+                    Ok(response) => InternalEvent::ChatServerRoomSynced {
+                        chat_id,
+                        server_url,
+                        room_id,
+                        events: response.events,
+                        error: None,
+                    },
+                    Err(err) => InternalEvent::ChatServerRoomSynced {
+                        chat_id,
+                        server_url,
+                        room_id,
+                        events: Vec::new(),
+                        error: Some(err.to_string()),
+                    },
+                };
+                let _ = tx.send(CoreMsg::Internal(Box::new(internal)));
+            });
+        }
+    }
+
     fn finish_planned_group_creation(
         &mut self,
         planned: PlannedGroupCreation,
@@ -4580,6 +4671,103 @@ impl AppCore {
             profile_db::save_chat_server_room(conn, &binding);
         }
         self.chat_server_rooms.insert(chat_id, binding);
+        self.begin_chat_server_room_sync();
+    }
+
+    fn handle_chat_server_room_synced(
+        &mut self,
+        chat_id: String,
+        server_url: String,
+        room_id: String,
+        events: Vec<RoomEvent>,
+        error: Option<String>,
+    ) {
+        self.chat_server_sync_in_flight.remove(&chat_id);
+
+        if let Some(err) = error {
+            tracing::warn!(
+                %chat_id,
+                %server_url,
+                %room_id,
+                %err,
+                "chat-server room sync failed"
+            );
+            return;
+        }
+
+        let Some(existing) = self.chat_server_rooms.get(&chat_id).cloned() else {
+            return;
+        };
+        let mut binding = existing;
+        let mut next_seq = binding.last_synced_seq;
+
+        for room_event in events {
+            if room_event.seq <= next_seq {
+                continue;
+            }
+
+            match room_event.event_type {
+                RoomEventType::ApplicationMessage | RoomEventType::Commit => {
+                    let wrapper: Event = match serde_json::from_str(&room_event.content) {
+                        Ok(wrapper) => wrapper,
+                        Err(err) => {
+                            tracing::warn!(
+                                %chat_id,
+                                %server_url,
+                                %room_id,
+                                seq = room_event.seq,
+                                event_id = %room_event.event_id,
+                                %err,
+                                "failed to decode synced chat-server wrapper"
+                            );
+                            break;
+                        }
+                    };
+                    self.handle_group_message(wrapper);
+                }
+                RoomEventType::Welcome => {
+                    tracing::debug!(
+                        %chat_id,
+                        %server_url,
+                        %room_id,
+                        seq = room_event.seq,
+                        "ignoring synced chat-server welcome event"
+                    );
+                }
+            }
+
+            next_seq = room_event.seq;
+        }
+
+        if next_seq > binding.last_synced_seq {
+            binding.last_synced_seq = next_seq;
+            if let Some(conn) = self.profile_db.as_ref() {
+                profile_db::save_chat_server_room(conn, &binding);
+            }
+            self.chat_server_rooms.insert(chat_id, binding);
+        }
+    }
+
+    fn handle_chat_server_room_event_appended(
+        &mut self,
+        chat_id: String,
+        room_id: String,
+        seq: u64,
+        wrapper: Event,
+    ) {
+        if let Some(existing) = self.chat_server_rooms.get(&chat_id).cloned() {
+            let mut binding = existing;
+            if binding.room_id == room_id && seq == binding.last_synced_seq.saturating_add(1) {
+                binding.last_synced_seq = seq;
+                if let Some(conn) = self.profile_db.as_ref() {
+                    profile_db::save_chat_server_room(conn, &binding);
+                }
+                self.chat_server_rooms.insert(chat_id.clone(), binding);
+            }
+        }
+
+        self.handle_group_message(wrapper);
+        self.begin_chat_server_room_sync();
     }
 
     fn handle_follow_list_fetched(
@@ -5660,6 +5848,7 @@ impl AppCore {
                 }
                 self.open_chat_screen(&chat_id);
                 self.refresh_current_chat(&chat_id);
+                self.begin_chat_server_room_sync();
                 self.unread_counts.insert(chat_id.clone(), 0);
                 self.refresh_chat_list_from_storage();
                 self.emit_router();

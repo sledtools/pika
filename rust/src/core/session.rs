@@ -230,6 +230,7 @@ impl AppCore {
         // Start notifications processing (async -> internal events).
         if self.network_enabled() {
             self.start_notifications_loop(initial_seen_inbound);
+            self.start_chat_server_sync_loop();
         }
 
         // Build the chat list. Profiles are already in memory, so names and
@@ -284,6 +285,7 @@ impl AppCore {
             .screen_stack
             .retain(|s| !matches!(s, Screen::AgentProvisioning));
         self.group_profiles.clear();
+        self.chat_server_sync_in_flight.clear();
 
         if let Some(sess) = self.session.take() {
             sess.alive.store(false, Ordering::SeqCst);
@@ -323,6 +325,25 @@ impl AppCore {
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
+            }
+        });
+    }
+
+    pub(super) fn start_chat_server_sync_loop(&mut self) {
+        let Some(sess) = self.session.as_ref() else {
+            return;
+        };
+        let alive = sess.alive.clone();
+        let tx = self.core_sender.clone();
+        self.runtime.spawn(async move {
+            loop {
+                if !alive.load(Ordering::SeqCst) {
+                    break;
+                }
+                let _ = tx.send(CoreMsg::Internal(Box::new(
+                    InternalEvent::ChatServerSyncPoll,
+                )));
+                tokio::time::sleep(Duration::from_secs(CHAT_SERVER_SYNC_POLL_SECS)).await;
             }
         });
     }

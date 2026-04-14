@@ -3,9 +3,10 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use nostr_sdk::prelude::{Client, Event, EventBuilder, Kind, Tag, TagKind, ToBech32};
 use pika_chat_server::protocol::{
-    ClaimKeyPackageRequest, ClaimKeyPackageResponse, CreateRoomRequest, CreateRoomResponse,
-    KeyPackageRecord, RegisterDeviceRequest, RegisterDeviceResponse, RoomSummary,
-    UploadKeyPackageRequest, UploadKeyPackageResponse,
+    AppendRoomEventRequest, AppendRoomEventResponse, ClaimKeyPackageRequest,
+    ClaimKeyPackageResponse, CreateRoomRequest, CreateRoomResponse, KeyPackageRecord,
+    RegisterDeviceRequest, RegisterDeviceResponse, RoomEvent, RoomEventType, RoomSummary,
+    SyncRoomEventsResponse, UploadKeyPackageRequest, UploadKeyPackageResponse,
 };
 use pika_chat_server::SessionTokenResponse;
 use reqwest::{Method, StatusCode};
@@ -133,6 +134,81 @@ pub async fn create_room(
     )
     .await
     .map(|response: CreateRoomResponse| response.room)
+}
+
+pub async fn append_room_event(
+    http_client: &reqwest::Client,
+    signer_client: &Client,
+    base_url: &Url,
+    room_id: &str,
+    request: AppendRoomEventRequest,
+) -> Result<RoomEvent> {
+    let access_token = login(http_client, signer_client, base_url).await?;
+    let url = endpoint(base_url, &format!("/v1/rooms/{room_id}/events"))?;
+    read_json(
+        http_client
+            .post(url)
+            .bearer_auth(access_token)
+            .header("Accept", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .context("send chat-server append-room-event request")?,
+        "chat-server append room event",
+    )
+    .await
+    .map(|response: AppendRoomEventResponse| response.event)
+}
+
+pub async fn append_wrapped_room_event(
+    http_client: &reqwest::Client,
+    signer_client: &Client,
+    base_url: &Url,
+    room_id: &str,
+    event_type: RoomEventType,
+    wrapper: &Event,
+) -> Result<RoomEvent> {
+    append_room_event(
+        http_client,
+        signer_client,
+        base_url,
+        room_id,
+        AppendRoomEventRequest {
+            event_type,
+            epoch: 0,
+            sender_device_id: None,
+            content: serde_json::to_string(wrapper).context("serialize wrapped room event")?,
+        },
+    )
+    .await
+}
+
+pub async fn sync_room_events(
+    http_client: &reqwest::Client,
+    signer_client: &Client,
+    base_url: &Url,
+    room_id: &str,
+    after_seq: u64,
+    limit: usize,
+) -> Result<SyncRoomEventsResponse> {
+    let access_token = login(http_client, signer_client, base_url).await?;
+    let mut url = endpoint(base_url, &format!("/v1/rooms/{room_id}/events"))?;
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("after_seq", &after_seq.to_string());
+        query.append_pair("limit", &limit.to_string());
+    }
+    read_json(
+        http_client
+            .get(url)
+            .bearer_auth(access_token)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .context("send chat-server sync-room-events request")?,
+        "chat-server sync room events",
+    )
+    .await
 }
 
 pub async fn upload_key_package_event(
@@ -293,18 +369,68 @@ mod tests {
         let http_client = reqwest::Client::new();
 
         let alice_keys = Keys::generate();
+        let alice_npub = alice_keys.public_key().to_bech32().unwrap().to_lowercase();
+        let bob_keys = Keys::generate();
+        let bob_npub = bob_keys.public_key().to_bech32().unwrap().to_lowercase();
         let alice_client = Client::builder().signer(alice_keys).build();
         let room = create_room(
             &http_client,
             &alice_client,
             &base_url,
-            vec!["npub1bob".to_string(), "npub1carol".to_string()],
+            vec![bob_npub.clone()],
         )
         .await
         .expect("create room");
 
-        assert_eq!(room.members.len(), 3);
+        assert_eq!(room.members.len(), 2);
         assert_eq!(room.last_seq, 0);
+        assert!(room.members.contains(&alice_npub));
+        assert!(room.members.contains(&bob_npub));
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn append_and_sync_wrapped_room_event_round_trip() {
+        let (addr, handle) = spawn_test_server().await;
+        let base_url = Url::parse(&format!("http://{addr}/")).expect("base url");
+        let http_client = reqwest::Client::new();
+
+        let alice_keys = Keys::generate();
+        let alice_client = Client::builder().signer(alice_keys.clone()).build();
+        let bob_keys = Keys::generate();
+        let bob_npub = bob_keys.public_key().to_bech32().unwrap().to_lowercase();
+        let bob_client = Client::builder().signer(bob_keys).build();
+
+        let room = create_room(&http_client, &alice_client, &base_url, vec![bob_npub])
+            .await
+            .expect("create room");
+        let wrapper = EventBuilder::new(Kind::MlsGroupMessage, "opaque-wrapper")
+            .sign_with_keys(&alice_keys)
+            .expect("sign wrapper");
+
+        let appended = append_wrapped_room_event(
+            &http_client,
+            &alice_client,
+            &base_url,
+            &room.room_id,
+            RoomEventType::ApplicationMessage,
+            &wrapper,
+        )
+        .await
+        .expect("append room event");
+        assert_eq!(appended.seq, 1);
+        assert_eq!(appended.event_type, RoomEventType::ApplicationMessage);
+
+        let synced = sync_room_events(&http_client, &bob_client, &base_url, &room.room_id, 0, 10)
+            .await
+            .expect("sync room events");
+        assert_eq!(synced.room.last_seq, 1);
+        assert_eq!(synced.events.len(), 1);
+
+        let decoded: Event =
+            serde_json::from_str(&synced.events[0].content).expect("decode synced wrapper");
+        assert_eq!(decoded.id, wrapper.id);
 
         handle.abort();
     }

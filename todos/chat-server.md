@@ -43,7 +43,6 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
 - [~] Implement client sync against the room log by sequence number instead of relay replay.
 - [ ] Implement the first server-authoritative membership flow:
   create room, upload/claim KeyPackages, submit Commit bundle, persist Commit, then deliver Welcome.
-- [ ] Implement client sync against the room log by sequence number instead of relay replay.
 - [ ] Build a new client runtime around OpenMLS and local durable storage.
 - [ ] Route push notifications from server-stored room events instead of relay listeners.
 - [ ] Migrate one narrow chat path end to end:
@@ -61,6 +60,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   keep it minimal for v1 with server-assigned device ids, signed bootstrap, and key package ownership checks.
 - Specify the Commit submission contract:
   what the client sends, what the server validates, and when the server rejects stale work.
+- Next seam:
+  move membership Commit publication onto the chat server so room membership stops being static.
 - Define invite payloads with explicit server URLs and no relay metadata.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
@@ -94,8 +95,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   after the app creates a group locally, it creates a chat-server room, persists the `chat_id -> room_id` binding in profile storage, and can reuse that room id for later membership work.
 - Add-members now uses room-scoped key-package claims when a room binding exists.
   That is the first point where the app stops treating the chat server as a global key-package bucket and starts using per-room authority.
+- Bound chats can now use the room log for normal message transport:
+  outbound MLS wrapper events append to `POST /v1/rooms/:room_id/events`, a simple polling loop syncs `GET /v1/rooms/:room_id/events`, and synced wrapper events feed back into the existing runtime.
 - This is intentionally partial:
-  welcome delivery, commit submission, ordered message sync, and the broader runtime still depend on the old relay/MDK path and need the next cuts.
+  welcome delivery, membership Commit authority, and the broader runtime still depend on the old relay/MDK path and need the next cuts.
 - The first durable transport model is file-backed:
   `PIKA_CHAT_SERVER_STATE_PATH` points at a JSON room/device log with persistent sequence numbers.
 - The inventory pass confirmed the biggest simplification wins:

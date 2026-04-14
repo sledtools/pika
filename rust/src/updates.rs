@@ -157,6 +157,20 @@ pub enum InternalEvent {
         room_id: Option<String>,
         error: Option<String>,
     },
+    ChatServerSyncPoll,
+    ChatServerRoomSynced {
+        chat_id: String,
+        server_url: String,
+        room_id: String,
+        events: Vec<pika_chat_server::protocol::RoomEvent>,
+        error: Option<String>,
+    },
+    ChatServerRoomEventAppended {
+        chat_id: String,
+        room_id: String,
+        seq: u64,
+        wrapper: nostr_sdk::prelude::Event,
+    },
 
     // Subscription recompute result.
     SubscriptionsRecomputed {

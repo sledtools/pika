@@ -271,6 +271,7 @@ async fn fetch_key_packages_for_peers_via_chat_server(
     signer_client: &Client,
     base_url: &Url,
     peer_pubkeys: &[PublicKey],
+    room_id: Option<&str>,
 ) -> FetchedKeyPackages {
     let mut key_package_events: Vec<Event> = Vec::new();
     let mut failed: Vec<(PublicKey, String)> = Vec::new();
@@ -289,7 +290,7 @@ async fn fetch_key_packages_for_peers_via_chat_server(
             signer_client,
             base_url,
             &peer_npub,
-            None,
+            room_id,
         )
         .await
         {
@@ -852,6 +853,7 @@ pub struct AppCore {
     // Nostr kind:0 profile cache (survives across session refreshes).
     profiles: HashMap<String, ProfileCache>, // hex pubkey -> cached global profile
     group_profiles: HashMap<String, HashMap<String, ProfileCache>>, // chat_id -> (pubkey -> profile)
+    chat_server_rooms: HashMap<String, profile_db::ChatServerRoomBinding>, // local chat_id -> room binding
     profile_db: Option<rusqlite::Connection>,
     chat_media_db: Option<rusqlite::Connection>,
 
@@ -958,6 +960,10 @@ impl AppCore {
             .as_ref()
             .map(profile_db::load_profiles)
             .unwrap_or_default();
+        let chat_server_rooms = profile_db
+            .as_ref()
+            .map(profile_db::load_chat_server_rooms)
+            .unwrap_or_default();
         // Load pending_sends first — it prunes corrupt entries from both tables.
         let pending_sends = PendingSends::load(profile_db.as_ref());
         let failed_sends = FailedSends::load(profile_db.as_ref());
@@ -1004,6 +1010,7 @@ impl AppCore {
             local_outbox: HashMap::new(),
             profiles,
             group_profiles: HashMap::new(),
+            chat_server_rooms,
             profile_db,
             typing_state: HashMap::new(),
             last_typing_sent: HashMap::new(),
@@ -3261,6 +3268,7 @@ impl AppCore {
             self.pending_media_downloads.clear();
             self.local_outbox.clear();
             self.profiles.clear();
+            self.chat_server_rooms.clear();
             if let Some(conn) = self.profile_db.as_ref() {
                 profile_db::clear_all(conn);
                 profile_db::clear_app_settings(conn);
@@ -3285,6 +3293,7 @@ impl AppCore {
     fn wipe_local_data(&mut self) {
         // Drop SQLite handles before deleting files.
         self.profile_db = None;
+        self.chat_server_rooms.clear();
         self.archived_chats.clear();
         self.push_subscribed_chat_ids.clear();
         self.push_apns_token = None;
@@ -3346,6 +3355,11 @@ impl AppCore {
                 None
             }
         };
+        self.chat_server_rooms = self
+            .profile_db
+            .as_ref()
+            .map(profile_db::load_chat_server_rooms)
+            .unwrap_or_default();
         self.push_device_id = Self::load_or_create_push_device_id(&self.data_dir);
     }
 
@@ -3568,6 +3582,12 @@ impl AppCore {
                 prepared,
                 publish_status,
             } => self.handle_group_evolution_published(prepared, publish_status),
+            InternalEvent::ChatServerRoomBound {
+                chat_id,
+                server_url,
+                room_id,
+                error,
+            } => self.handle_chat_server_room_bound(chat_id, server_url, room_id, error),
             InternalEvent::FollowListFetched {
                 followed_pubkeys,
                 fetched_profiles,
@@ -4092,6 +4112,77 @@ impl AppCore {
         }
     }
 
+    fn begin_chat_server_room_binding(&mut self, chat_id: &str) {
+        if !self.network_enabled() {
+            return;
+        }
+        let Some(base_url) = self.private_chat_server_url() else {
+            return;
+        };
+        if self.chat_server_rooms.contains_key(chat_id) {
+            return;
+        }
+
+        let (session_client, http_client, tx, member_npubs) = {
+            let Some(sess) = self.session.as_ref() else {
+                return;
+            };
+            let snapshot = match sess.host_context().lookup_joined_group_snapshot(chat_id) {
+                Ok(snapshot) => snapshot,
+                Err(err) => {
+                    tracing::warn!(%err, %chat_id, "failed to load joined group snapshot for chat-server room binding");
+                    return;
+                }
+            };
+            let member_npubs = snapshot
+                .other_member_snapshots(&sess.pubkey)
+                .into_iter()
+                .filter_map(|member| {
+                    member
+                        .pubkey
+                        .to_bech32()
+                        .ok()
+                        .map(|npub| npub.to_lowercase())
+                })
+                .collect::<Vec<_>>();
+            (
+                sess.client.clone(),
+                self.http_client.clone(),
+                self.core_sender.clone(),
+                member_npubs,
+            )
+        };
+
+        let chat_id = chat_id.to_string();
+        let server_url = base_url.as_str().trim_end_matches('/').to_string();
+        self.runtime.spawn(async move {
+            match chat_server::create_room(&http_client, &session_client, &base_url, member_npubs)
+                .await
+            {
+                Ok(room) => {
+                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                        InternalEvent::ChatServerRoomBound {
+                            chat_id,
+                            server_url,
+                            room_id: Some(room.room_id),
+                            error: None,
+                        },
+                    )));
+                }
+                Err(err) => {
+                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                        InternalEvent::ChatServerRoomBound {
+                            chat_id,
+                            server_url,
+                            room_id: None,
+                            error: Some(err.to_string()),
+                        },
+                    )));
+                }
+            }
+        });
+    }
+
     fn finish_planned_group_creation(
         &mut self,
         planned: PlannedGroupCreation,
@@ -4106,6 +4197,7 @@ impl AppCore {
 
         self.refresh_all_from_storage();
         let chat_id = hex::encode(planned.group.nostr_group_id);
+        self.begin_chat_server_room_binding(&chat_id);
         self.open_chat_screen(&chat_id);
         self.refresh_current_chat(&chat_id);
         self.emit_router();
@@ -4460,6 +4552,34 @@ impl AppCore {
         }
 
         self.refresh_all_from_storage();
+    }
+
+    fn handle_chat_server_room_bound(
+        &mut self,
+        chat_id: String,
+        server_url: String,
+        room_id: Option<String>,
+        error: Option<String>,
+    ) {
+        if let Some(err) = error {
+            tracing::warn!(%chat_id, %server_url, %err, "chat-server room binding failed");
+            return;
+        }
+        let Some(room_id) = room_id else {
+            tracing::warn!(%chat_id, %server_url, "chat-server room binding completed without room id");
+            return;
+        };
+
+        let binding = profile_db::ChatServerRoomBinding {
+            chat_id: chat_id.clone(),
+            server_url,
+            room_id,
+            last_synced_seq: 0,
+        };
+        if let Some(conn) = self.profile_db.as_ref() {
+            profile_db::save_chat_server_room(conn, &binding);
+        }
+        self.chat_server_rooms.insert(chat_id, binding);
     }
 
     fn handle_follow_list_fetched(
@@ -5820,6 +5940,7 @@ impl AppCore {
                             &client,
                             &base_url,
                             &peer_pubkeys,
+                            None,
                         )
                         .await
                     } else {
@@ -5874,6 +5995,10 @@ impl AppCore {
                     )
                 };
                 let private_chat_server_url = self.private_chat_server_url();
+                let room_id = self
+                    .chat_server_rooms
+                    .get(&chat_id)
+                    .map(|binding| binding.room_id.clone());
                 let relay_roles = self.relay_role_plan(Vec::new());
                 let chat_id_clone = chat_id.clone();
                 let peer_names: HashMap<PublicKey, String> = peer_pubkeys
@@ -5889,6 +6014,7 @@ impl AppCore {
                             &client,
                             &base_url,
                             &peer_pubkeys,
+                            room_id.as_deref(),
                         )
                         .await
                     } else {
@@ -9241,6 +9367,7 @@ mod tests {
                 &claimer_client,
                 &base_url,
                 &[owner_keys.public_key()],
+                None,
             )
             .await;
 
@@ -9377,6 +9504,35 @@ mod tests {
             );
             assert!(core.pending_direct_chat_creation.is_none());
             assert!(!core.state.busy.creating_chat);
+        }
+
+        #[test]
+        fn chat_server_room_binding_persists_to_profile_db() {
+            let (mut core, _tmp) = make_logged_in_core();
+
+            core.handle_internal(InternalEvent::ChatServerRoomBound {
+                chat_id: "chat1".into(),
+                server_url: "https://chat.example".into(),
+                room_id: Some("room_123".into()),
+                error: None,
+            });
+
+            let binding = core
+                .chat_server_rooms
+                .get("chat1")
+                .expect("room binding should exist");
+            assert_eq!(binding.server_url, "https://chat.example");
+            assert_eq!(binding.room_id, "room_123");
+
+            let persisted = super::super::profile_db::load_chat_server_rooms(
+                core.profile_db.as_ref().expect("profile db"),
+            );
+            assert_eq!(
+                persisted
+                    .get("chat1")
+                    .map(|binding| binding.room_id.as_str()),
+                Some("room_123")
+            );
         }
 
         #[test]

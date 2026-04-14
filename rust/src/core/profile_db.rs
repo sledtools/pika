@@ -33,7 +33,21 @@ const SCHEMA: &str = "
         chat_id TEXT NOT NULL,
         wrapper_event_json TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS chat_server_rooms (
+        chat_id TEXT PRIMARY KEY,
+        server_url TEXT NOT NULL,
+        room_id TEXT NOT NULL,
+        last_synced_seq INTEGER NOT NULL DEFAULT 0
+    );
 ";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChatServerRoomBinding {
+    pub chat_id: String,
+    pub server_url: String,
+    pub room_id: String,
+    pub last_synced_seq: u64,
+}
 
 pub fn open_profile_db(data_dir: &str) -> Result<Connection, rusqlite::Error> {
     let path = std::path::Path::new(data_dir).join("profiles.sqlite3");
@@ -226,8 +240,67 @@ pub fn delete_group_profiles(conn: &Connection, chat_id: &str) {
 
 /// Delete all cached profiles and follows (used on logout).
 pub fn clear_all(conn: &Connection) {
-    if let Err(e) = conn.execute_batch("DELETE FROM profiles; DELETE FROM follows;") {
+    if let Err(e) = conn
+        .execute_batch("DELETE FROM profiles; DELETE FROM follows; DELETE FROM chat_server_rooms;")
+    {
         tracing::warn!(%e, "failed to clear profile cache db");
+    }
+}
+
+pub fn load_chat_server_rooms(conn: &Connection) -> HashMap<String, ChatServerRoomBinding> {
+    let mut map = HashMap::new();
+    let mut stmt = match conn.prepare(
+        "SELECT chat_id, server_url, room_id, last_synced_seq
+         FROM chat_server_rooms",
+    ) {
+        Ok(stmt) => stmt,
+        Err(err) => {
+            tracing::warn!(%err, "failed to prepare chat server room query");
+            return map;
+        }
+    };
+    let rows = match stmt.query_map([], |row| {
+        Ok(ChatServerRoomBinding {
+            chat_id: row.get(0)?,
+            server_url: row.get(1)?,
+            room_id: row.get(2)?,
+            last_synced_seq: row.get(3)?,
+        })
+    }) {
+        Ok(rows) => rows,
+        Err(err) => {
+            tracing::warn!(%err, "failed to query chat server rooms");
+            return map;
+        }
+    };
+
+    for row in rows.flatten() {
+        map.insert(row.chat_id.clone(), row);
+    }
+    map
+}
+
+pub fn save_chat_server_room(conn: &Connection, binding: &ChatServerRoomBinding) {
+    if let Err(err) = conn.execute(
+        "INSERT INTO chat_server_rooms (chat_id, server_url, room_id, last_synced_seq)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(chat_id) DO UPDATE SET
+           server_url = excluded.server_url,
+           room_id = excluded.room_id,
+           last_synced_seq = excluded.last_synced_seq",
+        rusqlite::params![
+            &binding.chat_id,
+            &binding.server_url,
+            &binding.room_id,
+            binding.last_synced_seq,
+        ],
+    ) {
+        tracing::warn!(
+            %err,
+            chat_id = binding.chat_id,
+            room_id = binding.room_id,
+            "failed to save chat server room binding"
+        );
     }
 }
 
@@ -584,6 +657,31 @@ mod tests {
         assert!(load_profiles(&conn).is_empty());
         assert!(load_group_profiles(&conn, "chat1").is_empty());
         assert!(load_follows(&conn).is_empty());
+    }
+
+    #[test]
+    fn chat_server_room_round_trip() {
+        let conn = test_db();
+        save_chat_server_room(
+            &conn,
+            &ChatServerRoomBinding {
+                chat_id: "chat1".to_string(),
+                server_url: "https://chat.example".to_string(),
+                room_id: "room_123".to_string(),
+                last_synced_seq: 7,
+            },
+        );
+
+        let loaded = load_chat_server_rooms(&conn);
+        assert_eq!(
+            loaded.get("chat1"),
+            Some(&ChatServerRoomBinding {
+                chat_id: "chat1".to_string(),
+                server_url: "https://chat.example".to_string(),
+                room_id: "room_123".to_string(),
+                last_synced_seq: 7,
+            })
+        );
     }
 
     #[test]

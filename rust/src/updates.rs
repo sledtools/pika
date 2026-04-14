@@ -151,6 +151,12 @@ pub enum InternalEvent {
         prepared: pika_marmot_runtime::membership::PreparedMembershipEvolution,
         publish_status: pika_marmot_runtime::membership::EvolutionPublishStatus,
     },
+    ChatServerRoomBound {
+        chat_id: String,
+        server_url: String,
+        room_id: Option<String>,
+        error: Option<String>,
+    },
 
     // Subscription recompute result.
     SubscriptionsRecomputed {

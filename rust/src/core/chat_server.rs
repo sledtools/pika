@@ -3,8 +3,9 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use nostr_sdk::prelude::{Client, Event, EventBuilder, Kind, Tag, TagKind, ToBech32};
 use pika_chat_server::protocol::{
-    ClaimKeyPackageRequest, ClaimKeyPackageResponse, KeyPackageRecord, RegisterDeviceRequest,
-    RegisterDeviceResponse, UploadKeyPackageRequest, UploadKeyPackageResponse,
+    ClaimKeyPackageRequest, ClaimKeyPackageResponse, CreateRoomRequest, CreateRoomResponse,
+    KeyPackageRecord, RegisterDeviceRequest, RegisterDeviceResponse, RoomSummary,
+    UploadKeyPackageRequest, UploadKeyPackageResponse,
 };
 use pika_chat_server::SessionTokenResponse;
 use reqwest::{Method, StatusCode};
@@ -109,6 +110,29 @@ pub async fn register_device(
     )
     .await?;
     Ok(response.device.device_id)
+}
+
+pub async fn create_room(
+    http_client: &reqwest::Client,
+    signer_client: &Client,
+    base_url: &Url,
+    member_npubs: Vec<String>,
+) -> Result<RoomSummary> {
+    let access_token = login(http_client, signer_client, base_url).await?;
+    let url = endpoint(base_url, "/v1/rooms")?;
+    read_json(
+        http_client
+            .post(url)
+            .bearer_auth(access_token)
+            .header("Accept", "application/json")
+            .json(&CreateRoomRequest { member_npubs })
+            .send()
+            .await
+            .context("send chat-server create-room request")?,
+        "chat-server create room",
+    )
+    .await
+    .map(|response: CreateRoomResponse| response.room)
 }
 
 pub async fn upload_key_package_event(
@@ -257,6 +281,79 @@ mod tests {
         .await
         .expect("claim key package")
         .expect("claimed key package");
+        assert_eq!(claimed.id, key_package_event.id);
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn create_room_round_trip() {
+        let (addr, handle) = spawn_test_server().await;
+        let base_url = Url::parse(&format!("http://{addr}/")).expect("base url");
+        let http_client = reqwest::Client::new();
+
+        let alice_keys = Keys::generate();
+        let alice_client = Client::builder().signer(alice_keys).build();
+        let room = create_room(
+            &http_client,
+            &alice_client,
+            &base_url,
+            vec!["npub1bob".to_string(), "npub1carol".to_string()],
+        )
+        .await
+        .expect("create room");
+
+        assert_eq!(room.members.len(), 3);
+        assert_eq!(room.last_seq, 0);
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn claim_key_package_allows_room_scoped_member_claim() {
+        let (addr, handle) = spawn_test_server().await;
+        let base_url = Url::parse(&format!("http://{addr}/")).expect("base url");
+        let http_client = reqwest::Client::new();
+
+        let owner_keys = Keys::generate();
+        let owner_npub = owner_keys.public_key().to_bech32().unwrap().to_lowercase();
+        let owner_client = Client::builder().signer(owner_keys.clone()).build();
+        let claimer_keys = Keys::generate();
+        let claimer_client = Client::builder().signer(claimer_keys).build();
+
+        let key_package_event = EventBuilder::new(Kind::MlsKeyPackage, "opaque-key-package")
+            .sign_with_keys(&owner_keys)
+            .expect("sign key package event");
+        upload_key_package_event(
+            &http_client,
+            &owner_client,
+            &base_url,
+            Some("ios"),
+            None,
+            &key_package_event,
+        )
+        .await
+        .expect("upload key package");
+
+        let room = create_room(
+            &http_client,
+            &claimer_client,
+            &base_url,
+            vec![owner_npub.clone()],
+        )
+        .await
+        .expect("create room");
+
+        let claimed = claim_key_package_event(
+            &http_client,
+            &claimer_client,
+            &base_url,
+            &owner_npub,
+            Some(&room.room_id),
+        )
+        .await
+        .expect("claim room-scoped key package")
+        .expect("key package should exist");
         assert_eq!(claimed.id, key_package_event.id);
 
         handle.abort();

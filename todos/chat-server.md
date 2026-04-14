@@ -55,9 +55,9 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
 
 - [x] Audit the current Marmot/relay private-chat path and write down the first hard deletions we want after the new path lands.
 - [~] Sketch the wire protocol and room/event schema before writing server handlers.
-- Decide whether the first deployment model is:
-  one global server only, or explicit `room_server_url` values with the same server implementation.
-- Decide how device identity is modeled under one `npub`:
+- [x] Decide the first deployment model:
+  start with one explicit server config in the app; room-specific server URLs can come later with the same server implementation.
+- [x] Decide how device identity is modeled under one `npub`:
   keep it minimal for v1 with server-assigned device ids, signed bootstrap, and key package ownership checks.
 - Specify the Commit submission contract:
   what the client sends, what the server validates, and when the server rejects stale work.
@@ -90,6 +90,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   when `private_chat_server_url` is configured, key-package upload and peer key-package lookup use the chat server instead of relay fetch/publish.
 - That widened to the group bootstrap callers too:
   direct chat, new group chat, and add-members all pull peer key packages from the chat server when configured.
+- Local group creation now binds a chat to a server room:
+  after the app creates a group locally, it creates a chat-server room, persists the `chat_id -> room_id` binding in profile storage, and can reuse that room id for later membership work.
+- Add-members now uses room-scoped key-package claims when a room binding exists.
+  That is the first point where the app stops treating the chat server as a global key-package bucket and starts using per-room authority.
 - This is intentionally partial:
   welcome delivery, commit submission, ordered message sync, and the broader runtime still depend on the old relay/MDK path and need the next cuts.
 - The first durable transport model is file-backed:

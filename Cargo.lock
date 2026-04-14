@@ -5961,6 +5961,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "pika-chat-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "hex",
+ "hmac",
+ "nostr-sdk",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
 name = "pika-cloud"
 version = "0.1.0"
 dependencies = [

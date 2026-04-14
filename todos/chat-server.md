@@ -32,10 +32,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
 - [x] Decide discovery for v1: explicit server URLs in invites, no DNS dependency.
 - [x] Decide routing model for v1: not per-user home servers; start with one deployment or explicit room server URLs.
 - [x] Decide v1 priorities: favor simplicity and maintainability over early metadata optimization.
-- [ ] Inventory the relay/MDK/Marmot private-chat surface and mark what should be deleted, replaced, or kept.
-- [ ] Write the v1 protocol surface:
-  signed login, session auth, lightweight device registration, key package upload/claim, room create, commit submit, message send, sync, ack.
-- [ ] Add a new server crate for private chat transport, likely `crates/pika-chat-server`.
+- [x] Inventory the relay/MDK/Marmot private-chat surface and mark what should be deleted, replaced, or kept.
+- [~] Write the v1 protocol surface:
+  signed login and session auth are implemented; device registration, key package upload/claim, room create, commit submit, message send, sync, and ack remain.
+- [~] Add a new server crate for private chat transport, likely `crates/pika-chat-server`.
 - [ ] Reuse or extract shared server pieces from `pika-server`:
   Axum setup, Postgres patterns, push plumbing, NIP-98 auth helpers.
 - [ ] Build a minimal room log model with:
@@ -52,8 +52,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
 
 ## Near-Term Steps
 
-- Audit the current Marmot/relay private-chat path and write down the first hard deletions we want after the new path lands.
-- Sketch the wire protocol and room/event schema before writing server handlers.
+- [x] Audit the current Marmot/relay private-chat path and write down the first hard deletions we want after the new path lands.
+- [~] Sketch the wire protocol and room/event schema before writing server handlers.
 - Decide whether the first deployment model is:
   one global server only, or explicit `room_server_url` values with the same server implementation.
 - Decide how device identity is modeled under one `npub`:
@@ -77,6 +77,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   contact exchange and invites carry literal server URLs; there is no DNS lookup requirement.
 - Local study material is staged in `/tmp/pika-chat-architecture-study` with copied specs plus local checkouts of Marmot, MDK, and OpenMLS.
   Keep using that workspace for protocol and migration research instead of re-deriving the context from scratch.
+- First implementation slice is `crates/pika-chat-server` with:
+  `POST /v1/session/login`, `GET /v1/session/me`, stateless signed session tokens, and tests.
+- The inventory pass confirmed the biggest simplification wins:
+  cut `pika-marmot-runtime`, delete `pika-server`'s relay listener path, and replace relay-centric app config early.
 - The v1 routing model is intentionally less Matrix-like:
   identity stays with the `npub`, while routing is an explicit server URL carried by the app or invite, not a durable home-server abstraction.
 - The first version accepts that the chat server will see meaningful metadata.

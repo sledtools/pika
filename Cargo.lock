@@ -6245,6 +6245,7 @@ dependencies = [
  "tracing-oslog",
  "tracing-subscriber",
  "uniffi",
+ "url",
  "uuid",
 ]
 

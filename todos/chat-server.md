@@ -84,6 +84,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `POST /v1/devices/register`, `POST /v1/rooms`, `POST /v1/rooms/:room_id/events`, and `GET /v1/rooms/:room_id/events`.
 - Key-package inventory is now server-owned too:
   `POST /v1/key-packages` uploads opaque package blobs for a registered device, and `POST /v1/key-packages/claim` consumes one package at a time for room bootstrap or room-scoped membership work.
+- The app config now has an explicit private-chat server field:
+  `private_chat_server_url` is separate from relay settings, which keeps the next runtime cut honest about what transport it is actually using.
 - The first durable transport model is file-backed:
   `PIKA_CHAT_SERVER_STATE_PATH` points at a JSON room/device log with persistent sequence numbers.
 - The inventory pass confirmed the biggest simplification wins:

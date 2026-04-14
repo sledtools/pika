@@ -7,6 +7,7 @@ use pika_relay_profiles::{
     app_default_key_package_relays, app_default_message_relays, LEGACY_APP_DEFAULT_MESSAGE_RELAYS,
 };
 use serde::Deserialize;
+use url::Url;
 
 use super::AppCore;
 
@@ -19,6 +20,7 @@ pub(super) struct AppConfig {
     pub(super) disable_network: Option<bool>,
     pub(super) disable_agent_allowlist_probe: Option<bool>,
     pub(super) enable_external_signer: Option<bool>,
+    pub(super) private_chat_server_url: Option<String>,
     pub(super) relay_urls: Option<Vec<String>>,
     pub(super) key_package_relay_urls: Option<Vec<String>>,
     pub(super) blossom_servers: Option<Vec<String>>,
@@ -43,6 +45,7 @@ pub(super) fn default_app_config_json() -> String {
     let relay_urls = app_default_message_relays();
     let key_package_relay_urls = app_default_key_package_relays();
     serde_json::json!({
+        "private_chat_server_url": null,
         "relay_urls": relay_urls,
         "key_package_relay_urls": key_package_relay_urls,
         "call_moq_url": DEFAULT_CALL_MOQ_URL,
@@ -102,6 +105,16 @@ fn is_legacy_app_default_message_relays(values: &[String]) -> bool {
 }
 
 impl AppCore {
+    #[allow(dead_code)]
+    pub(super) fn private_chat_server_url(&self) -> Option<Url> {
+        self.config
+            .private_chat_server_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .and_then(|value| Url::parse(value).ok())
+    }
+
     pub(super) fn network_enabled(&self) -> bool {
         // Used to keep Rust tests deterministic and offline.
         if let Some(disable) = self.config.disable_network {
@@ -230,6 +243,7 @@ mod tests {
     fn default_app_config_json_uses_shared_profile_defaults() {
         let value: serde_json::Value =
             serde_json::from_str(&default_app_config_json()).expect("parse config json");
+        assert_eq!(value["private_chat_server_url"], serde_json::Value::Null);
         assert_eq!(
             value["relay_urls"],
             serde_json::json!(app_default_message_relays())
@@ -248,6 +262,7 @@ mod tests {
     #[test]
     fn relay_reset_replaces_relays_and_preserves_other_fields() {
         let existing = r#"{
+            "private_chat_server_url": "https://chat.example",
             "relay_urls": ["wss://invalid.example"],
             "key_package_relay_urls": ["wss://invalid-kp.example"],
             "disable_network": true
@@ -263,6 +278,7 @@ mod tests {
             value["key_package_relay_urls"],
             serde_json::json!(app_default_key_package_relays())
         );
+        assert_eq!(value["private_chat_server_url"], "https://chat.example");
         assert_eq!(value["disable_network"], serde_json::json!(true));
     }
 
@@ -291,6 +307,27 @@ mod tests {
 
         let config = load_app_config(dir.path().to_str().expect("utf8 path"));
         assert_eq!(config.disable_agent_allowlist_probe, Some(true));
+    }
+
+    #[test]
+    fn private_chat_server_url_reads_valid_config_value() {
+        let (core, _tempdir) = make_core_with_config(AppConfig {
+            private_chat_server_url: Some("https://chat.example".to_string()),
+            ..AppConfig::default()
+        });
+        let url = core
+            .private_chat_server_url()
+            .expect("private chat server url should parse");
+        assert_eq!(url.as_str(), "https://chat.example/");
+    }
+
+    #[test]
+    fn private_chat_server_url_ignores_invalid_value() {
+        let (core, _tempdir) = make_core_with_config(AppConfig {
+            private_chat_server_url: Some("not a url".to_string()),
+            ..AppConfig::default()
+        });
+        assert_eq!(core.private_chat_server_url(), None);
     }
 
     #[test]

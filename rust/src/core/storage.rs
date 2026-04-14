@@ -133,10 +133,12 @@ impl AppCore {
         let my_pubkey = sess.pubkey;
         let mut index: HashMap<String, GroupIndexEntry> = HashMap::new();
         let mut list: Vec<ChatSummary> = Vec::new();
+        let mut known_chat_ids: HashSet<String> = HashSet::new();
         let mut missing_profile_pubkeys: HashSet<PublicKey> = HashSet::new();
 
         for snapshot in group_snapshots {
             let chat_id = snapshot.nostr_group_id_hex.clone();
+            known_chat_ids.insert(chat_id.clone());
 
             if self.archived_chats.contains(&chat_id) {
                 continue;
@@ -315,6 +317,19 @@ impl AppCore {
         list.sort_by_key(|c| std::cmp::Reverse(c.last_message_at.unwrap_or(0)));
         if let Some(sess) = self.session.as_mut() {
             sess.groups = index;
+        }
+        let stale_chat_server_rooms: Vec<String> = self
+            .chat_server_rooms
+            .keys()
+            .filter(|chat_id| !known_chat_ids.contains(*chat_id))
+            .cloned()
+            .collect();
+        for chat_id in stale_chat_server_rooms {
+            self.chat_server_rooms.remove(&chat_id);
+            self.chat_server_sync_in_flight.remove(&chat_id);
+            if let Some(conn) = self.profile_db.as_ref() {
+                super::profile_db::remove_chat_server_room(conn, &chat_id);
+            }
         }
         self.state.chat_list = list;
         self.emit_chat_list();

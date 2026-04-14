@@ -3609,6 +3609,11 @@ impl AppCore {
                 seq,
                 wrapper,
             } => self.handle_chat_server_room_event_appended(chat_id, room_id, seq, wrapper),
+            InternalEvent::ChatServerRoomMembersReconciled {
+                chat_id,
+                room_id,
+                error,
+            } => self.handle_chat_server_room_members_reconciled(chat_id, room_id, error),
             InternalEvent::FollowListFetched {
                 followed_pubkeys,
                 fetched_profiles,
@@ -4274,6 +4279,86 @@ impl AppCore {
         }
     }
 
+    fn begin_chat_server_room_membership_reconcile(&mut self, chat_id: &str) {
+        if !self.network_enabled() {
+            return;
+        }
+        let Some(binding) = self.chat_server_rooms.get(chat_id).cloned() else {
+            return;
+        };
+
+        let (session_client, http_client, tx, member_npubs) = {
+            let Some(sess) = self.session.as_ref() else {
+                return;
+            };
+            let snapshot = match sess.host_context().lookup_joined_group_snapshot(chat_id) {
+                Ok(snapshot) => snapshot,
+                Err(err) => {
+                    tracing::info!(
+                        %chat_id,
+                        room_id = %binding.room_id,
+                        %err,
+                        "pruning local chat-server room binding for missing joined group"
+                    );
+                    self.chat_server_rooms.remove(chat_id);
+                    self.chat_server_sync_in_flight.remove(chat_id);
+                    if let Some(conn) = self.profile_db.as_ref() {
+                        profile_db::remove_chat_server_room(conn, chat_id);
+                    }
+                    return;
+                }
+            };
+            let member_npubs = snapshot
+                .member_snapshots
+                .into_iter()
+                .filter_map(|member| {
+                    member
+                        .pubkey
+                        .to_bech32()
+                        .ok()
+                        .map(|npub| npub.to_lowercase())
+                })
+                .collect::<Vec<_>>();
+            (
+                sess.client.clone(),
+                self.http_client.clone(),
+                self.core_sender.clone(),
+                member_npubs,
+            )
+        };
+
+        let Ok(base_url) = Url::parse(&binding.server_url) else {
+            tracing::warn!(
+                %chat_id,
+                server_url = %binding.server_url,
+                "invalid chat-server URL during room membership reconcile"
+            );
+            return;
+        };
+
+        let chat_id = chat_id.to_string();
+        let room_id = binding.room_id;
+        self.runtime.spawn(async move {
+            let error = chat_server::replace_room_members(
+                &http_client,
+                &session_client,
+                &base_url,
+                &room_id,
+                member_npubs,
+            )
+            .await
+            .err()
+            .map(|err| err.to_string());
+            let _ = tx.send(CoreMsg::Internal(Box::new(
+                InternalEvent::ChatServerRoomMembersReconciled {
+                    chat_id,
+                    room_id,
+                    error,
+                },
+            )));
+        });
+    }
+
     fn finish_planned_group_creation(
         &mut self,
         planned: PlannedGroupCreation,
@@ -4643,6 +4728,7 @@ impl AppCore {
         }
 
         self.refresh_all_from_storage();
+        self.begin_chat_server_room_membership_reconcile(&chat_id);
     }
 
     fn handle_chat_server_room_bound(
@@ -4768,6 +4854,22 @@ impl AppCore {
 
         self.handle_group_message(wrapper);
         self.begin_chat_server_room_sync();
+    }
+
+    fn handle_chat_server_room_members_reconciled(
+        &mut self,
+        chat_id: String,
+        room_id: String,
+        error: Option<String>,
+    ) {
+        if let Some(err) = error {
+            tracing::warn!(
+                %chat_id,
+                %room_id,
+                %err,
+                "chat-server room membership reconcile failed"
+            );
+        }
     }
 
     fn handle_follow_list_fetched(
@@ -9722,6 +9824,27 @@ mod tests {
                     .map(|binding| binding.room_id.as_str()),
                 Some("room_123")
             );
+        }
+
+        #[test]
+        fn refresh_chat_list_prunes_stale_chat_server_room_bindings() {
+            let (mut core, _tmp) = make_logged_in_core();
+
+            core.handle_internal(InternalEvent::ChatServerRoomBound {
+                chat_id: "missing-chat".into(),
+                server_url: "https://chat.example".into(),
+                room_id: Some("room_123".into()),
+                error: None,
+            });
+            assert!(core.chat_server_rooms.contains_key("missing-chat"));
+
+            core.refresh_chat_list_from_storage();
+
+            assert!(!core.chat_server_rooms.contains_key("missing-chat"));
+            let persisted = super::super::profile_db::load_chat_server_rooms(
+                core.profile_db.as_ref().expect("profile db"),
+            );
+            assert!(!persisted.contains_key("missing-chat"));
         }
 
         #[test]

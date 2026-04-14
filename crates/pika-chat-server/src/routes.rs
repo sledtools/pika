@@ -11,8 +11,8 @@ use crate::nostr_auth::{
 use crate::protocol::{
     AppendRoomEventRequest, AppendRoomEventResponse, ClaimKeyPackageRequest,
     ClaimKeyPackageResponse, CreateRoomRequest, CreateRoomResponse, RegisterDeviceRequest,
-    RegisterDeviceResponse, SyncRoomEventsQuery, SyncRoomEventsResponse, UploadKeyPackageRequest,
-    UploadKeyPackageResponse,
+    RegisterDeviceResponse, SyncRoomEventsQuery, SyncRoomEventsResponse, UpdateRoomMembersRequest,
+    UpdateRoomMembersResponse, UploadKeyPackageRequest, UploadKeyPackageResponse,
 };
 use crate::session::{SessionClaims, SessionManager, SessionTokenResponse};
 use crate::store::{StoreError, StoreHandle, StoreHandleError};
@@ -48,6 +48,7 @@ pub fn router(state: AppState) -> Router {
             "/v1/rooms/:room_id/events",
             post(append_room_event).get(sync_room_events),
         )
+        .route("/v1/rooms/:room_id/members", post(update_room_members))
         .with_state(state)
 }
 
@@ -182,6 +183,21 @@ async fn sync_room_events(
         .await
         .map_err(store_error)?;
     Ok(Json(SyncRoomEventsResponse { room, events }))
+}
+
+async fn update_room_members(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(room_id): Path<String>,
+    Json(request): Json<UpdateRoomMembersRequest>,
+) -> Result<Json<UpdateRoomMembersResponse>, (StatusCode, String)> {
+    let claims = session_claims(&state, &headers)?;
+    let room = state
+        .store
+        .replace_room_members(&claims.npub, &room_id, request)
+        .await
+        .map_err(store_handle_error)?;
+    Ok(Json(UpdateRoomMembersResponse { room }))
 }
 
 fn session_info(claims: SessionClaims) -> SessionInfoResponse {
@@ -578,6 +594,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn member_can_replace_room_members() {
+        let app = router(test_state());
+        let (app, alice_token, _) = login_token(app, "chat.test").await;
+        let (app, _bob_token, bob_npub) = login_token(app, "chat.test").await;
+        let (app, carol_token, carol_npub) = login_token(app, "chat.test").await;
+
+        let create_room_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/rooms")
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&CreateRoomRequest {
+                            member_npubs: vec![bob_npub.clone()],
+                        })
+                        .expect("serialize create room request"),
+                    ))
+                    .expect("build create room request"),
+            )
+            .await
+            .expect("create room response");
+        let create_room_body = to_bytes(create_room_response.into_body(), usize::MAX)
+            .await
+            .expect("read create room body");
+        let create_room: CreateRoomResponse =
+            serde_json::from_slice(&create_room_body).expect("decode create room body");
+
+        let replace_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/rooms/{}/members", create_room.room.room_id))
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&UpdateRoomMembersRequest {
+                            member_npubs: vec![bob_npub, carol_npub.clone()],
+                        })
+                        .expect("serialize replace room members request"),
+                    ))
+                    .expect("build replace room members request"),
+            )
+            .await
+            .expect("replace room members response");
+        assert_eq!(replace_response.status(), StatusCode::OK);
+        let replace_body = to_bytes(replace_response.into_body(), usize::MAX)
+            .await
+            .expect("read replace room members body");
+        let replaced: UpdateRoomMembersResponse =
+            serde_json::from_slice(&replace_body).expect("decode replace room members body");
+        assert!(replaced.room.members.contains(&carol_npub));
+
+        let sync_response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/v1/rooms/{}/events?after_seq=0&limit=10",
+                        create_room.room.room_id
+                    ))
+                    .method("GET")
+                    .header(header::AUTHORIZATION, format!("Bearer {carol_token}"))
+                    .body(Body::empty())
+                    .expect("build sync request"),
+            )
+            .await
+            .expect("sync response");
+        assert_eq!(sync_response.status(), StatusCode::OK);
+        let sync_body = to_bytes(sync_response.into_body(), usize::MAX)
+            .await
+            .expect("read sync body");
+        let sync: SyncRoomEventsResponse =
+            serde_json::from_slice(&sync_body).expect("decode sync body");
+        assert!(sync.room.members.contains(&carol_npub));
+    }
+
+    #[tokio::test]
     async fn outsider_cannot_append_to_room() {
         let app = router(test_state());
         let (app, alice_token, _) = login_token(app, "chat.test").await;
@@ -628,6 +724,57 @@ mod tests {
             .await
             .expect("append response");
         assert_eq!(append_response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn outsider_cannot_replace_room_members() {
+        let app = router(test_state());
+        let (app, alice_token, _) = login_token(app, "chat.test").await;
+        let (app, _bob_token, bob_npub) = login_token(app, "chat.test").await;
+        let (app, mallory_token, mallory_npub) = login_token(app, "chat.test").await;
+
+        let create_room_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/rooms")
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&CreateRoomRequest {
+                            member_npubs: vec![bob_npub],
+                        })
+                        .expect("serialize create room request"),
+                    ))
+                    .expect("build create room request"),
+            )
+            .await
+            .expect("create room response");
+        let create_room_body = to_bytes(create_room_response.into_body(), usize::MAX)
+            .await
+            .expect("read create room body");
+        let create_room: CreateRoomResponse =
+            serde_json::from_slice(&create_room_body).expect("decode create room body");
+
+        let replace_response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/rooms/{}/members", create_room.room.room_id))
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {mallory_token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&UpdateRoomMembersRequest {
+                            member_npubs: vec![mallory_npub],
+                        })
+                        .expect("serialize replace room members request"),
+                    ))
+                    .expect("build replace room members request"),
+            )
+            .await
+            .expect("replace room members response");
+        assert_eq!(replace_response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

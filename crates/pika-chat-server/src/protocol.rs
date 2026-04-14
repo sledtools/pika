@@ -76,6 +76,17 @@ pub struct CreateRoomResponse {
     pub room: RoomSummary,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateRoomMembersRequest {
+    #[serde(default)]
+    pub member_npubs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateRoomMembersResponse {
+    pub room: RoomSummary,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RoomEventType {

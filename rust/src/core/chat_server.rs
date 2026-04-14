@@ -6,7 +6,8 @@ use pika_chat_server::protocol::{
     AppendRoomEventRequest, AppendRoomEventResponse, ClaimKeyPackageRequest,
     ClaimKeyPackageResponse, CreateRoomRequest, CreateRoomResponse, KeyPackageRecord,
     RegisterDeviceRequest, RegisterDeviceResponse, RoomEvent, RoomEventType, RoomSummary,
-    SyncRoomEventsResponse, UploadKeyPackageRequest, UploadKeyPackageResponse,
+    SyncRoomEventsResponse, UpdateRoomMembersRequest, UpdateRoomMembersResponse,
+    UploadKeyPackageRequest, UploadKeyPackageResponse,
 };
 use pika_chat_server::SessionTokenResponse;
 use reqwest::{Method, StatusCode};
@@ -209,6 +210,30 @@ pub async fn sync_room_events(
         "chat-server sync room events",
     )
     .await
+}
+
+pub async fn replace_room_members(
+    http_client: &reqwest::Client,
+    signer_client: &Client,
+    base_url: &Url,
+    room_id: &str,
+    member_npubs: Vec<String>,
+) -> Result<RoomSummary> {
+    let access_token = login(http_client, signer_client, base_url).await?;
+    let url = endpoint(base_url, &format!("/v1/rooms/{room_id}/members"))?;
+    read_json(
+        http_client
+            .post(url)
+            .bearer_auth(access_token)
+            .header("Accept", "application/json")
+            .json(&UpdateRoomMembersRequest { member_npubs })
+            .send()
+            .await
+            .context("send chat-server replace-room-members request")?,
+        "chat-server replace room members",
+    )
+    .await
+    .map(|response: UpdateRoomMembersResponse| response.room)
 }
 
 pub async fn upload_key_package_event(
@@ -431,6 +456,42 @@ mod tests {
         let decoded: Event =
             serde_json::from_str(&synced.events[0].content).expect("decode synced wrapper");
         assert_eq!(decoded.id, wrapper.id);
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn replace_room_members_round_trip() {
+        let (addr, handle) = spawn_test_server().await;
+        let base_url = Url::parse(&format!("http://{addr}/")).expect("base url");
+        let http_client = reqwest::Client::new();
+
+        let alice_keys = Keys::generate();
+        let alice_client = Client::builder().signer(alice_keys).build();
+        let bob_keys = Keys::generate();
+        let bob_npub = bob_keys.public_key().to_bech32().unwrap().to_lowercase();
+        let carol_keys = Keys::generate();
+        let carol_npub = carol_keys.public_key().to_bech32().unwrap().to_lowercase();
+        let carol_client = Client::builder().signer(carol_keys).build();
+
+        let room = create_room(&http_client, &alice_client, &base_url, vec![bob_npub])
+            .await
+            .expect("create room");
+        let updated = replace_room_members(
+            &http_client,
+            &alice_client,
+            &base_url,
+            &room.room_id,
+            vec![carol_npub.clone()],
+        )
+        .await
+        .expect("replace room members");
+        assert_eq!(updated.members, vec![carol_npub.clone()]);
+
+        let synced = sync_room_events(&http_client, &carol_client, &base_url, &room.room_id, 0, 10)
+            .await
+            .expect("sync room events");
+        assert_eq!(synced.room.members, vec![carol_npub]);
 
         handle.abort();
     }

@@ -171,6 +171,11 @@ pub enum InternalEvent {
         seq: u64,
         wrapper: nostr_sdk::prelude::Event,
     },
+    ChatServerRoomMembersReconciled {
+        chat_id: String,
+        room_id: String,
+        error: Option<String>,
+    },
 
     // Subscription recompute result.
     SubscriptionsRecomputed {

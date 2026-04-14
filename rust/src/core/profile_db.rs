@@ -304,6 +304,15 @@ pub fn save_chat_server_room(conn: &Connection, binding: &ChatServerRoomBinding)
     }
 }
 
+pub fn remove_chat_server_room(conn: &Connection, chat_id: &str) {
+    if let Err(err) = conn.execute(
+        "DELETE FROM chat_server_rooms WHERE chat_id = ?1",
+        [chat_id],
+    ) {
+        tracing::warn!(%err, %chat_id, "failed to remove chat server room binding");
+    }
+}
+
 pub fn clear_app_settings(conn: &Connection) {
     if let Err(e) = conn.execute_batch("DELETE FROM app_settings;") {
         tracing::warn!(%e, "failed to clear app settings db");
@@ -682,6 +691,9 @@ mod tests {
                 last_synced_seq: 7,
             })
         );
+
+        remove_chat_server_room(&conn, "chat1");
+        assert!(load_chat_server_rooms(&conn).is_empty());
     }
 
     #[test]

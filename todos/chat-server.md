@@ -97,6 +97,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   That is the first point where the app stops treating the chat server as a global key-package bucket and starts using per-room authority.
 - Bound chats can now use the room log for normal message transport:
   outbound MLS wrapper events append to `POST /v1/rooms/:room_id/events`, a simple polling loop syncs `GET /v1/rooms/:room_id/events`, and synced wrapper events feed back into the existing runtime.
+- Room membership is now at least reconciled after successful local MLS membership changes:
+  the app can replace a room's member list via `POST /v1/rooms/:room_id/members`, which keeps add/remove flows from leaving the server room permanently stale while full server-authoritative Commit submission is still pending.
+- Local cleanup is tighter too:
+  stale `chat_id -> room_id` bindings are pruned from profile storage when the chat no longer exists locally, which stops dead room-sync polling after leave/remove flows.
 - This is intentionally partial:
   welcome delivery, membership Commit authority, and the broader runtime still depend on the old relay/MDK path and need the next cuts.
 - The first durable transport model is file-backed:

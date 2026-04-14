@@ -1,0 +1,19 @@
+flowchart TD
+    Start([Start on New Device])
+    Pair{Existing device available?}
+    Direct[Pair locally and receive server list]
+    Backup[Fetch encrypted Nostr server manifest]
+    Manual[Manual server entry]
+    Probe[Probe each server with signed login]
+    Rooms[Each server returns account-level room roster]
+    Done([Ready to enroll device])
+
+    Start --> Pair
+    Pair -->|Yes| Direct
+    Pair -->|No| Backup
+    Backup -->|Manifest found| Probe
+    Backup -->|Manifest missing or stale| Manual
+    Direct --> Probe
+    Manual --> Probe
+    Probe --> Rooms
+    Rooms --> Done

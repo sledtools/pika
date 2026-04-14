@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 798.5664999999999 455" width="798.5664999999999" height="455" style="--bg:#1a1b26;--fg:#a9b1d6;--line:#3d59a1;--accent:#7aa2f7;--muted:#565f89;background:var(--bg)">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap');
+  text { font-family: 'Inter', system-ui, sans-serif; }
+  svg {
+    /* Derived from --bg and --fg (overridable via --line, --accent, etc.) */
+    --_text:          var(--fg);
+    --_text-sec:      var(--muted, color-mix(in srgb, var(--fg) 60%, var(--bg)));
+    --_text-muted:    var(--muted, color-mix(in srgb, var(--fg) 40%, var(--bg)));
+    --_text-faint:    color-mix(in srgb, var(--fg) 25%, var(--bg));
+    --_line:          var(--line, color-mix(in srgb, var(--fg) 50%, var(--bg)));
+    --_arrow:         var(--accent, color-mix(in srgb, var(--fg) 85%, var(--bg)));
+    --_node-fill:     var(--surface, color-mix(in srgb, var(--fg) 3%, var(--bg)));
+    --_node-stroke:   var(--border, color-mix(in srgb, var(--fg) 20%, var(--bg)));
+    --_group-fill:    var(--bg);
+    --_group-hdr:     color-mix(in srgb, var(--fg) 5%, var(--bg));
+    --_inner-stroke:  color-mix(in srgb, var(--fg) 12%, var(--bg));
+    --_key-badge:     color-mix(in srgb, var(--fg) 10%, var(--bg));
+  }
+</style>
+<defs>
+  <marker id="seq-arrow" markerWidth="8" markerHeight="5" refX="8" refY="2.5" orient="auto-start-reverse">
+    <polygon points="0 0, 8 2.5, 0 5" fill="var(--_arrow)" />
+  </marker>
+  <marker id="seq-arrow-open" markerWidth="8" markerHeight="5" refX="8" refY="2.5" orient="auto-start-reverse">
+    <polyline points="0 0, 8 2.5, 0 5" fill="none" stroke="var(--_arrow)" stroke-width="1" />
+  </marker>
+</defs>
+<line class="lifeline" data-actor="User" x1="70" y1="70" x2="70" y2="425" stroke="var(--_line)" stroke-width="0.75" stroke-dasharray="6 4" />
+<line class="lifeline" data-actor="Fresh" x1="210" y1="70" x2="210" y2="425" stroke="var(--_line)" stroke-width="0.75" stroke-dasharray="6 4" />
+<line class="lifeline" data-actor="R" x1="362.496" y1="70" x2="362.496" y2="425" stroke="var(--_line)" stroke-width="0.75" stroke-dasharray="6 4" />
+<line class="lifeline" data-actor="S" x1="513.51" y1="70" x2="513.51" y2="425" stroke="var(--_line)" stroke-width="0.75" stroke-dasharray="6 4" />
+<line class="lifeline" data-actor="Peers" x1="688.977" y1="70" x2="688.977" y2="425" stroke="var(--_line)" stroke-width="0.75" stroke-dasharray="6 4" />
+<g class="message" data-from="User" data-to="Fresh" data-label="Restore account identity key" data-line-style="solid" data-arrow-head="filled" data-self="false">
+  <line x1="70" y1="90" x2="210" y2="90" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="140" y="80" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Restore account identity key</text>
+</g>
+<g class="message" data-from="Fresh" data-to="R" data-label="Fetch encrypted server manifest" data-line-style="solid" data-arrow-head="filled" data-self="false">
+  <line x1="210" y1="130" x2="362.496" y2="130" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="286.248" y="120" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Fetch encrypted server manifest</text>
+</g>
+<g class="message" data-from="R" data-to="Fresh" data-label="Candidate server URLs" data-line-style="dashed" data-arrow-head="filled" data-self="false">
+  <line x1="362.496" y1="170" x2="210" y2="170" stroke="var(--_line)" stroke-width="1" stroke-dasharray="6 4" marker-end="url(#seq-arrow)" />
+  <text x="286.248" y="160" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Candidate server URLs</text>
+</g>
+<g class="message" data-from="Fresh" data-to="S" data-label="Signed login and account lookup" data-line-style="solid" data-arrow-head="filled" data-self="false">
+  <line x1="210" y1="210" x2="513.51" y2="210" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="361.755" y="200" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Signed login and account lookup</text>
+</g>
+<g class="message" data-from="S" data-to="Fresh" data-label="Account known, but no active room state on this device" data-line-style="dashed" data-arrow-head="filled" data-self="false">
+  <line x1="513.51" y1="250" x2="210" y2="250" stroke="var(--_line)" stroke-width="1" stroke-dasharray="6 4" marker-end="url(#seq-arrow)" />
+  <text x="361.755" y="240" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Account known, but no active room state on this device</text>
+</g>
+<g class="message" data-from="Fresh" data-to="Peers" data-label="Ask to be re-added as a new device" data-line-style="solid" data-arrow-head="filled" data-self="false">
+  <line x1="210" y1="290" x2="688.977" y2="290" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="449.4885" y="280" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Ask to be re-added as a new device</text>
+</g>
+<g class="message" data-from="Peers" data-to="S" data-label="Submit add-member commits for recovered device" data-line-style="solid" data-arrow-head="filled" data-self="false">
+  <line x1="688.977" y1="330" x2="513.51" y2="330" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="601.2435" y="320" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Submit add-member commits for recovered device</text>
+</g>
+<g class="message" data-from="S" data-to="Fresh" data-label="New welcomes and room logs from rejoin point" data-line-style="dashed" data-arrow-head="filled" data-self="false">
+  <line x1="513.51" y1="370" x2="210" y2="370" stroke="var(--_line)" stroke-width="1" stroke-dasharray="6 4" marker-end="url(#seq-arrow)" />
+  <text x="361.755" y="360" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">New welcomes and room logs from rejoin point</text>
+</g>
+<g class="note" data-position="over" data-actors="Fresh">
+  <polygon points="94.11599999999997,378 319.884,378 325.884,384 325.884,401 94.11599999999997,401" fill="var(--bg)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <polygon points="319.884,378 325.884,384 319.884,384" fill="var(--_inner-stroke)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="210" y="389.5" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Old room state and unbacked history are lost</text>
+</g>
+<g class="actor" data-id="User" data-label="User" data-type="participant">
+  <rect x="30" y="30" width="80" height="40" rx="4" ry="4" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="70" y="50" font-size="13" text-anchor="middle" font-weight="500" fill="var(--_text)" dy="4.55">User</text>
+</g>
+<g class="actor" data-id="Fresh" data-label="Fresh Device" data-type="participant">
+  <rect x="152.6405" y="30" width="114.71900000000001" height="40" rx="4" ry="4" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="210" y="50" font-size="13" text-anchor="middle" font-weight="500" fill="var(--_text)" dy="4.55">Fresh Device</text>
+</g>
+<g class="actor" data-id="R" data-label="Nostr Relays" data-type="participant">
+  <rect x="307.35949999999997" y="30" width="110.273" height="40" rx="4" ry="4" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="362.496" y="50" font-size="13" text-anchor="middle" font-weight="500" fill="var(--_text)" dy="4.55">Nostr Relays</text>
+</g>
+<g class="actor" data-id="S" data-label="Room Server" data-type="participant">
+  <rect x="457.6325" y="30" width="111.755" height="40" rx="4" ry="4" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="513.51" y="50" font-size="13" text-anchor="middle" font-weight="500" fill="var(--_text)" dy="4.55">Room Server</text>
+</g>
+<g class="actor" data-id="Peers" data-label="Other Room Members" data-type="participant">
+  <rect x="609.3875" y="30" width="159.17899999999997" height="40" rx="4" ry="4" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="688.977" y="50" font-size="13" text-anchor="middle" font-weight="500" fill="var(--_text)" dy="4.55">Other Room Members</text>
+</g>
+</svg>

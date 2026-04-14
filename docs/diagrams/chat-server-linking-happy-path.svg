@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 609.711 728" width="609.711" height="728" style="--bg:#1a1b26;--fg:#a9b1d6;--line:#3d59a1;--accent:#7aa2f7;--muted:#565f89;background:var(--bg)">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap');
+  text { font-family: 'Inter', system-ui, sans-serif; }
+  svg {
+    /* Derived from --bg and --fg (overridable via --line, --accent, etc.) */
+    --_text:          var(--fg);
+    --_text-sec:      var(--muted, color-mix(in srgb, var(--fg) 60%, var(--bg)));
+    --_text-muted:    var(--muted, color-mix(in srgb, var(--fg) 40%, var(--bg)));
+    --_text-faint:    color-mix(in srgb, var(--fg) 25%, var(--bg));
+    --_line:          var(--line, color-mix(in srgb, var(--fg) 50%, var(--bg)));
+    --_arrow:         var(--accent, color-mix(in srgb, var(--fg) 85%, var(--bg)));
+    --_node-fill:     var(--surface, color-mix(in srgb, var(--fg) 3%, var(--bg)));
+    --_node-stroke:   var(--border, color-mix(in srgb, var(--fg) 20%, var(--bg)));
+    --_group-fill:    var(--bg);
+    --_group-hdr:     color-mix(in srgb, var(--fg) 5%, var(--bg));
+    --_inner-stroke:  color-mix(in srgb, var(--fg) 12%, var(--bg));
+    --_key-badge:     color-mix(in srgb, var(--fg) 10%, var(--bg));
+  }
+</style>
+<defs>
+  <marker id="seq-arrow" markerWidth="8" markerHeight="5" refX="8" refY="2.5" orient="auto-start-reverse">
+    <polygon points="0 0, 8 2.5, 0 5" fill="var(--_arrow)" />
+  </marker>
+  <marker id="seq-arrow-open" markerWidth="8" markerHeight="5" refX="8" refY="2.5" orient="auto-start-reverse">
+    <polyline points="0 0, 8 2.5, 0 5" fill="none" stroke="var(--_arrow)" stroke-width="1" />
+  </marker>
+</defs>
+<g class="block" data-type="loop" data-label="For each room hosted on this server">
+  <rect x="140" y="318" width="439.711" height="290" rx="0" ry="0" fill="none" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="140" y="318" width="237.42999999999998" height="18" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="146" y="327" font-size="11" font-weight="600" fill="var(--_text-sec)" dy="3.8499999999999996">loop [For each room hosted on this server]</text>
+</g>
+<line class="lifeline" data-actor="User" x1="70" y1="70" x2="70" y2="698" stroke="var(--_line)" stroke-width="0.75" stroke-dasharray="6 4" />
+<line class="lifeline" data-actor="Old" x1="212.5465" y1="70" x2="212.5465" y2="698" stroke="var(--_line)" stroke-width="0.75" stroke-dasharray="6 4" />
+<line class="lifeline" data-actor="New" x1="366.5245" y1="70" x2="366.5245" y2="698" stroke="var(--_line)" stroke-width="0.75" stroke-dasharray="6 4" />
+<line class="lifeline" data-actor="S" x1="513.8335" y1="70" x2="513.8335" y2="698" stroke="var(--_line)" stroke-width="0.75" stroke-dasharray="6 4" />
+<g class="message" data-from="User" data-to="New" data-label="Choose Add Existing Account" data-line-style="solid" data-arrow-head="filled" data-self="false">
+  <line x1="70" y1="90" x2="366.5245" y2="90" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="218.26225" y="80" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Choose Add Existing Account</text>
+</g>
+<g class="message" data-from="User" data-to="Old" data-label="Approve Link Device" data-line-style="solid" data-arrow-head="filled" data-self="false">
+  <line x1="70" y1="130" x2="212.5465" y2="130" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="141.27325000000002" y="120" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Approve Link Device</text>
+</g>
+<g class="message" data-from="Old" data-to="New" data-label="Pair locally and transfer server list" data-line-style="solid" data-arrow-head="filled" data-self="false">
+  <line x1="212.5465" y1="170" x2="366.5245" y2="170" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="289.5355" y="160" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Pair locally and transfer server list</text>
+</g>
+<g class="message" data-from="New" data-to="S" data-label="NIP-98 login and register device" data-line-style="solid" data-arrow-head="filled" data-self="false">
+  <line x1="366.5245" y1="210" x2="513.8335" y2="210" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="440.179" y="200" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">NIP-98 login and register device</text>
+</g>
+<g class="message" data-from="New" data-to="S" data-label="Upload fresh KeyPackages" data-line-style="solid" data-arrow-head="filled" data-self="false">
+  <line x1="366.5245" y1="250" x2="513.8335" y2="250" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="440.179" y="240" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Upload fresh KeyPackages</text>
+</g>
+<g class="message" data-from="Old" data-to="S" data-label="Fetch device package refs for new device" data-line-style="solid" data-arrow-head="filled" data-self="false">
+  <line x1="212.5465" y1="290" x2="513.8335" y2="290" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="363.19" y="280" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Fetch device package refs for new device</text>
+</g>
+<g class="message" data-from="Old" data-to="Old" data-label="Create MLS add-device commit" data-line-style="solid" data-arrow-head="filled" data-self="true">
+  <polyline points="212.5465,358 242.5465,358 242.5465,378 212.5465,378" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="250.5465" y="368" font-size="11" text-anchor="start" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Create MLS add-device commit</text>
+</g>
+<g class="message" data-from="Old" data-to="S" data-label="Submit ordered commit bundle" data-line-style="solid" data-arrow-head="filled" data-self="false">
+  <line x1="212.5465" y1="428" x2="513.8335" y2="428" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="363.19" y="418" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Submit ordered commit bundle</text>
+</g>
+<g class="message" data-from="S" data-to="Old" data-label="Commit accepted at canonical room sequence" data-line-style="dashed" data-arrow-head="filled" data-self="false">
+  <line x1="513.8335" y1="468" x2="212.5465" y2="468" stroke="var(--_line)" stroke-width="1" stroke-dasharray="6 4" marker-end="url(#seq-arrow)" />
+  <text x="363.19" y="458" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Commit accepted at canonical room sequence</text>
+</g>
+<g class="message" data-from="S" data-to="New" data-label="Store and expose Welcome plus room log" data-line-style="dashed" data-arrow-head="filled" data-self="false">
+  <line x1="513.8335" y1="508" x2="366.5245" y2="508" stroke="var(--_line)" stroke-width="1" stroke-dasharray="6 4" marker-end="url(#seq-arrow)" />
+  <text x="440.179" y="498" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Store and expose Welcome plus room log</text>
+</g>
+<g class="message" data-from="New" data-to="S" data-label="Sync pending welcomes and room events" data-line-style="solid" data-arrow-head="filled" data-self="false">
+  <line x1="366.5245" y1="548" x2="513.8335" y2="548" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="440.179" y="538" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Sync pending welcomes and room events</text>
+</g>
+<g class="message" data-from="New" data-to="New" data-label="Join room and persist state" data-line-style="solid" data-arrow-head="filled" data-self="true">
+  <polyline points="366.5245,588 396.5245,588 396.5245,608 366.5245,608" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="404.5245" y="598" font-size="11" text-anchor="start" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Join room and persist state</text>
+</g>
+<g class="message" data-from="User" data-to="New" data-label="Sees linking progress until all rooms are joined" data-line-style="solid" data-arrow-head="filled" data-self="false">
+  <line x1="70" y1="658" x2="366.5245" y2="658" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="218.26225" y="648" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Sees linking progress until all rooms are joined</text>
+</g>
+<g class="actor" data-id="User" data-label="User" data-type="participant">
+  <rect x="30" y="30" width="80" height="40" rx="4" ry="4" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="70" y="50" font-size="13" text-anchor="middle" font-weight="500" fill="var(--_text)" dy="4.55">User</text>
+</g>
+<g class="actor" data-id="Old" data-label="Existing Device" data-type="participant">
+  <rect x="150" y="30" width="125.093" height="40" rx="4" ry="4" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="212.5465" y="50" font-size="13" text-anchor="middle" font-weight="500" fill="var(--_text)" dy="4.55">Existing Device</text>
+</g>
+<g class="actor" data-id="New" data-label="New Device" data-type="participant">
+  <rect x="315.09299999999996" y="30" width="102.863" height="40" rx="4" ry="4" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="366.5245" y="50" font-size="13" text-anchor="middle" font-weight="500" fill="var(--_text)" dy="4.55">New Device</text>
+</g>
+<g class="actor" data-id="S" data-label="Room Server" data-type="participant">
+  <rect x="457.95599999999996" y="30" width="111.755" height="40" rx="4" ry="4" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="513.8335" y="50" font-size="13" text-anchor="middle" font-weight="500" fill="var(--_text)" dy="4.55">Room Server</text>
+</g>
+</svg>

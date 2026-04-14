@@ -1,0 +1,16 @@
+sequenceDiagram
+    participant User
+    participant Fresh as Fresh Device
+    participant R as Nostr Relays
+    participant S as Room Server
+    participant Peers as Other Room Members
+
+    User->>Fresh: Restore account identity key
+    Fresh->>R: Fetch encrypted server manifest
+    R-->>Fresh: Candidate server URLs
+    Fresh->>S: Signed login and account lookup
+    S-->>Fresh: Account known, but no active room state on this device
+    Fresh->>Peers: Ask to be re-added as a new device
+    Peers->>S: Submit add-member commits for recovered device
+    S-->>Fresh: New welcomes and room logs from rejoin point
+    Note over Fresh: Old room state and unbacked history are lost

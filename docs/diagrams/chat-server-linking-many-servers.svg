@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 821.0434999999998 571" width="821.0434999999998" height="571" style="--bg:#1a1b26;--fg:#a9b1d6;--line:#3d59a1;--accent:#7aa2f7;--muted:#565f89;background:var(--bg)">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap');
+  text { font-family: 'Inter', system-ui, sans-serif; }
+  svg {
+    /* Derived from --bg and --fg (overridable via --line, --accent, etc.) */
+    --_text:          var(--fg);
+    --_text-sec:      var(--muted, color-mix(in srgb, var(--fg) 60%, var(--bg)));
+    --_text-muted:    var(--muted, color-mix(in srgb, var(--fg) 40%, var(--bg)));
+    --_text-faint:    color-mix(in srgb, var(--fg) 25%, var(--bg));
+    --_line:          var(--line, color-mix(in srgb, var(--fg) 50%, var(--bg)));
+    --_arrow:         var(--accent, color-mix(in srgb, var(--fg) 85%, var(--bg)));
+    --_node-fill:     var(--surface, color-mix(in srgb, var(--fg) 3%, var(--bg)));
+    --_node-stroke:   var(--border, color-mix(in srgb, var(--fg) 20%, var(--bg)));
+    --_group-fill:    var(--bg);
+    --_group-hdr:     color-mix(in srgb, var(--fg) 5%, var(--bg));
+    --_inner-stroke:  color-mix(in srgb, var(--fg) 12%, var(--bg));
+    --_key-badge:     color-mix(in srgb, var(--fg) 10%, var(--bg));
+  }
+</style>
+<defs>
+  <marker id="seq-arrow" markerWidth="8" markerHeight="5" refX="8" refY="2.5" orient="auto-start-reverse">
+    <polygon points="0 0, 8 2.5, 0 5" fill="var(--_arrow)" />
+  </marker>
+  <marker id="seq-arrow-open" markerWidth="8" markerHeight="5" refX="8" refY="2.5" orient="auto-start-reverse">
+    <polyline points="0 0, 8 2.5, 0 5" fill="none" stroke="var(--_arrow)" stroke-width="1" />
+  </marker>
+</defs>
+<g class="block" data-type="par" data-label="Rooms on A">
+  <rect x="90.49749999999989" y="198" width="700.5459999999999" height="308" rx="0" ry="0" fill="none" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="90.49749999999989" y="198" width="105.43" height="18" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="96.49749999999989" y="207" font-size="11" font-weight="600" fill="var(--_text-sec)" dy="3.8499999999999996">par [Rooms on A]</text>
+  <line x1="90.49749999999989" y1="314" x2="791.0434999999998" y2="314" stroke="var(--_line)" stroke-width="0.75" stroke-dasharray="6 4" />
+  <text x="98.49749999999989" y="328" font-size="11" text-anchor="start" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">[Rooms on B]</text>
+  <line x1="90.49749999999989" y1="418" x2="791.0434999999998" y2="418" stroke="var(--_line)" stroke-width="0.75" stroke-dasharray="6 4" />
+  <text x="98.49749999999989" y="432" font-size="11" text-anchor="start" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">[Rooms on C]</text>
+</g>
+<line class="lifeline" data-actor="Old" x1="163.0439999999999" y1="70" x2="163.0439999999999" y2="541" stroke="var(--_line)" stroke-width="0.75" stroke-dasharray="6 4" />
+<line class="lifeline" data-actor="New" x1="317.02199999999993" y1="70" x2="317.02199999999993" y2="541" stroke="var(--_line)" stroke-width="0.75" stroke-dasharray="6 4" />
+<line class="lifeline" data-actor="A" x1="457.0219999999999" y1="70" x2="457.0219999999999" y2="541" stroke="var(--_line)" stroke-width="0.75" stroke-dasharray="6 4" />
+<line class="lifeline" data-actor="B" x1="597.0219999999999" y1="70" x2="597.0219999999999" y2="541" stroke="var(--_line)" stroke-width="0.75" stroke-dasharray="6 4" />
+<line class="lifeline" data-actor="C" x1="737.0219999999999" y1="70" x2="737.0219999999999" y2="541" stroke="var(--_line)" stroke-width="0.75" stroke-dasharray="6 4" />
+<g class="message" data-from="New" data-to="A" data-label="Login, register device, upload KeyPackages" data-line-style="solid" data-arrow-head="filled" data-self="false">
+  <line x1="317.02199999999993" y1="90" x2="457.0219999999999" y2="90" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="387.02199999999993" y="80" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Login, register device, upload KeyPackages</text>
+</g>
+<g class="message" data-from="New" data-to="B" data-label="Login, register device, upload KeyPackages" data-line-style="solid" data-arrow-head="filled" data-self="false">
+  <line x1="317.02199999999993" y1="130" x2="597.0219999999999" y2="130" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="457.02199999999993" y="120" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Login, register device, upload KeyPackages</text>
+</g>
+<g class="message" data-from="New" data-to="C" data-label="Login, register device, upload KeyPackages" data-line-style="solid" data-arrow-head="filled" data-self="false">
+  <line x1="317.02199999999993" y1="170" x2="737.0219999999999" y2="170" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="527.0219999999999" y="160" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Login, register device, upload KeyPackages</text>
+</g>
+<g class="message" data-from="Old" data-to="A" data-label="Add new device to every room on A" data-line-style="solid" data-arrow-head="filled" data-self="false">
+  <line x1="163.0439999999999" y1="238" x2="457.0219999999999" y2="238" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="310.0329999999999" y="228" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Add new device to every room on A</text>
+</g>
+<g class="message" data-from="A" data-to="New" data-label="Welcomes and ordered room logs for A" data-line-style="dashed" data-arrow-head="filled" data-self="false">
+  <line x1="457.0219999999999" y1="278" x2="317.02199999999993" y2="278" stroke="var(--_line)" stroke-width="1" stroke-dasharray="6 4" marker-end="url(#seq-arrow)" />
+  <text x="387.02199999999993" y="268" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Welcomes and ordered room logs for A</text>
+</g>
+<g class="message" data-from="Old" data-to="B" data-label="Add new device to every room on B" data-line-style="solid" data-arrow-head="filled" data-self="false">
+  <line x1="163.0439999999999" y1="342" x2="597.0219999999999" y2="342" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="380.0329999999999" y="332" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Add new device to every room on B</text>
+</g>
+<g class="message" data-from="B" data-to="New" data-label="Welcomes and ordered room logs for B" data-line-style="dashed" data-arrow-head="filled" data-self="false">
+  <line x1="597.0219999999999" y1="382" x2="317.02199999999993" y2="382" stroke="var(--_line)" stroke-width="1" stroke-dasharray="6 4" marker-end="url(#seq-arrow)" />
+  <text x="457.02199999999993" y="372" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Welcomes and ordered room logs for B</text>
+</g>
+<g class="message" data-from="Old" data-to="C" data-label="Add new device to every room on C" data-line-style="solid" data-arrow-head="filled" data-self="false">
+  <line x1="163.0439999999999" y1="446" x2="737.0219999999999" y2="446" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
+  <text x="450.0329999999999" y="436" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Add new device to every room on C</text>
+</g>
+<g class="message" data-from="C" data-to="New" data-label="Welcomes and ordered room logs for C" data-line-style="dashed" data-arrow-head="filled" data-self="false">
+  <line x1="737.0219999999999" y1="486" x2="317.02199999999993" y2="486" stroke="var(--_line)" stroke-width="1" stroke-dasharray="6 4" marker-end="url(#seq-arrow)" />
+  <text x="527.0219999999999" y="476" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Welcomes and ordered room logs for C</text>
+</g>
+<g class="note" data-position="over" data-actors="Old,New">
+  <polygon points="30,494 444.0659999999998,494 450.0659999999998,500 450.0659999999998,517 30,517" fill="var(--bg)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <polygon points="444.0659999999998,494 450.0659999999998,500 444.0659999999998,500" fill="var(--_inner-stroke)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="240.0329999999999" y="505.5" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">No cross-server consensus is needed. Each room is ordered only by its own server.</text>
+</g>
+<g class="actor" data-id="Old" data-label="Existing Device" data-type="participant">
+  <rect x="100.49749999999989" y="30" width="125.093" height="40" rx="4" ry="4" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="163.0439999999999" y="50" font-size="13" text-anchor="middle" font-weight="500" fill="var(--_text)" dy="4.55">Existing Device</text>
+</g>
+<g class="actor" data-id="New" data-label="New Device" data-type="participant">
+  <rect x="265.5904999999999" y="30" width="102.863" height="40" rx="4" ry="4" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="317.02199999999993" y="50" font-size="13" text-anchor="middle" font-weight="500" fill="var(--_text)" dy="4.55">New Device</text>
+</g>
+<g class="actor" data-id="A" data-label="Server A" data-type="participant">
+  <rect x="413.0004999999999" y="30" width="88.04299999999999" height="40" rx="4" ry="4" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="457.0219999999999" y="50" font-size="13" text-anchor="middle" font-weight="500" fill="var(--_text)" dy="4.55">Server A</text>
+</g>
+<g class="actor" data-id="B" data-label="Server B" data-type="participant">
+  <rect x="553.0005" y="30" width="88.04299999999999" height="40" rx="4" ry="4" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="597.0219999999999" y="50" font-size="13" text-anchor="middle" font-weight="500" fill="var(--_text)" dy="4.55">Server B</text>
+</g>
+<g class="actor" data-id="C" data-label="Server C" data-type="participant">
+  <rect x="693.0005" y="30" width="88.04299999999999" height="40" rx="4" ry="4" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="737.0219999999999" y="50" font-size="13" text-anchor="middle" font-weight="500" fill="var(--_text)" dy="4.55">Server C</text>
+</g>
+</svg>

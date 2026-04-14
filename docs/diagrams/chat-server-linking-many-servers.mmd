@@ -1,0 +1,22 @@
+sequenceDiagram
+    participant Old as Existing Device
+    participant New as New Device
+    participant A as Server A
+    participant B as Server B
+    participant C as Server C
+
+    Note over Old,New: Existing device knows account is active on A, B, and C
+    New->>A: Login, register device, upload KeyPackages
+    New->>B: Login, register device, upload KeyPackages
+    New->>C: Login, register device, upload KeyPackages
+    par Rooms on A
+        Old->>A: Add new device to every room on A
+        A-->>New: Welcomes and ordered room logs for A
+    and Rooms on B
+        Old->>B: Add new device to every room on B
+        B-->>New: Welcomes and ordered room logs for B
+    and Rooms on C
+        Old->>C: Add new device to every room on C
+        C-->>New: Welcomes and ordered room logs for C
+    end
+    Note over Old,New: No cross-server consensus is needed. Each room is ordered only by its own server.

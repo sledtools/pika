@@ -1,0 +1,21 @@
+sequenceDiagram
+    participant User
+    participant Old as Existing Device
+    participant New as New Device
+    participant S as Room Server
+
+    User->>New: Choose Add Existing Account
+    User->>Old: Approve Link Device
+    Old->>New: Pair locally and transfer server list
+    New->>S: NIP-98 login and register device
+    New->>S: Upload fresh KeyPackages
+    Old->>S: Fetch device package refs for new device
+    loop For each room hosted on this server
+        Old->>Old: Create MLS add-device commit
+        Old->>S: Submit ordered commit bundle
+        S-->>Old: Commit accepted at canonical room sequence
+        S-->>New: Store and expose Welcome plus room log
+        New->>S: Sync pending welcomes and room events
+        New->>New: Join room and persist state
+    end
+    User->>New: Sees linking progress until all rooms are joined

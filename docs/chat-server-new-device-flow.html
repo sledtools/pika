@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chat Server Multi-Device Linking</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1419;
+      --panel: #171d24;
+      --text: #e6edf3;
+      --muted: #9fb0c0;
+      --line: #2d3945;
+      --accent: #6dd3a0;
+      --warn: #f0c674;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+
+    main {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 40px 20px 72px;
+    }
+
+    h1, h2, h3 {
+      margin: 0 0 12px;
+      line-height: 1.15;
+    }
+
+    h1 { font-size: 2.25rem; }
+    h2 { font-size: 1.5rem; margin-top: 40px; }
+    h3 { font-size: 1.1rem; margin-top: 24px; }
+
+    p, li { color: var(--text); }
+    .lede { color: var(--muted); max-width: 72ch; }
+
+    .grid {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      margin-top: 24px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      background: var(--panel);
+    }
+
+    .card h3 {
+      margin-top: 0;
+      font-size: 1rem;
+    }
+
+    .diagram {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 12px;
+      margin: 16px 0 20px;
+    }
+
+    .diagram img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    .step-list {
+      padding-left: 20px;
+      max-width: 80ch;
+    }
+
+    .step-list li + li { margin-top: 8px; }
+
+    .note {
+      border-left: 3px solid var(--accent);
+      padding-left: 12px;
+      color: var(--muted);
+      margin: 14px 0;
+    }
+
+    .warn {
+      border-left-color: var(--warn);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 16px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+
+    th { color: var(--muted); font-weight: 600; }
+    tr:last-child td { border-bottom: 0; }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Chat Server Multi-Device Linking</h1>
+    <p class="lede">
+      This is the proposed UX and protocol shape for adding a new device in the server-ordered
+      MLS design. It assumes one room authority per server, per-device MLS leaves, and Nostr only
+      as the identity root plus a backup discovery channel.
+    </p>
+
+    <div class="grid">
+      <section class="card">
+        <h3>Core Model</h3>
+        <p>Each physical device is its own MLS leaf. A user with one <code>npub</code> may appear as multiple leaves in the same room.</p>
+      </section>
+      <section class="card">
+        <h3>Authority</h3>
+        <p>Each room has one chat server that orders commits and messages for that room. There is no cross-server ordering.</p>
+      </section>
+      <section class="card">
+        <h3>Discovery</h3>
+        <p>New devices learn the server list from an existing device first, then from an encrypted self-authored Nostr manifest, then manual entry.</p>
+      </section>
+      <section class="card">
+        <h3>Recovery</h3>
+        <p>If all devices are lost, identity can survive, but room state usually does not. Rejoin is a fresh device-add, not magical recovery.</p>
+      </section>
+    </div>
+
+    <h2>1. How The New Device Finds Servers</h2>
+    <div class="diagram">
+      <img src="diagrams/chat-server-linking-discovery.svg" alt="Discovery flow diagram">
+    </div>
+    <ol class="step-list">
+      <li>The best path is a local pair with an existing device. That device already knows which chat servers matter.</li>
+      <li>If no device is available, the fresh device reads an encrypted Nostr event that stores the account's current server list.</li>
+      <li>Each discovered server is probed with signed login. The server then tells the device which rooms this <code>npub</code> is known to belong to on that server.</li>
+      <li>The discovery artifact only needs to answer “which servers do I use?”, not “what is every room I am in?”.</li>
+    </ol>
+    <p class="note">Nostr is a backup directory here, not the coordination layer for private chat.</p>
+
+    <h2>2. Happy Path: Add A New Device</h2>
+    <div class="diagram">
+      <img src="diagrams/chat-server-linking-happy-path.svg" alt="Happy path sequence diagram">
+    </div>
+    <ol class="step-list">
+      <li>User opens <strong>Add Existing Account</strong> on the new device.</li>
+      <li>User approves the link on an existing device and transfers account access plus the current server list over a local authenticated channel.</li>
+      <li>The new device logs into each server, creates a fresh <code>device_id</code>, and uploads fresh KeyPackages.</li>
+      <li>The existing device still has valid MLS room state, so it creates the actual add-device commits room by room.</li>
+      <li>Each room server assigns canonical ordering, persists the commit, and exposes the resulting Welcome.</li>
+      <li>The new device syncs those Welcomes, joins each room, and starts normal ordered sync from the room server.</li>
+    </ol>
+    <p class="note">Linking can take a while. That is acceptable. The UI should show progress like “37 of 100 rooms ready”.</p>
+
+    <h2>3. What Happens With 100 Rooms On 10 Servers</h2>
+    <div class="diagram">
+      <img src="diagrams/chat-server-linking-many-servers.svg" alt="Many servers sequence diagram">
+    </div>
+    <p>
+      This does not create a distributed consensus problem. It creates a fanout job. Each server is
+      independent, and each room is still ordered only by its own authority server.
+    </p>
+    <ul class="step-list">
+      <li>The new device registers once per server, not once per room.</li>
+      <li>The existing device still has to create one MLS add-device commit per room.</li>
+      <li>Those operations can run in parallel by server, with retries and backoff.</li>
+      <li>The UX cost grows with the number of rooms and servers, but the protocol remains understandable.</li>
+    </ul>
+
+    <h2>4. Partial Failure And Resume</h2>
+    <div class="diagram">
+      <img src="diagrams/chat-server-linking-partial-failure.svg" alt="Partial failure sequence diagram">
+    </div>
+    <p>
+      If one server is down, rooms on the healthy servers can still finish linking. The user gets
+      partial readiness instead of global failure.
+    </p>
+    <ul class="step-list">
+      <li>Healthy servers complete and expose Welcomes immediately.</li>
+      <li>Broken servers stay pending and keep retrying.</li>
+      <li>The new device should surface a resumable queue, not an all-or-nothing spinner.</li>
+    </ul>
+
+    <h2>5. If All Devices Are Lost</h2>
+    <div class="diagram">
+      <img src="diagrams/chat-server-linking-total-loss.svg" alt="Total loss recovery sequence diagram">
+    </div>
+    <p>
+      This is a different problem from linking. In a per-device MLS model, a fresh device is a new
+      client. It can recover identity and server discovery, but it usually cannot recover old MLS room
+      state without a surviving device or a separate backup product.
+    </p>
+    <ol class="step-list">
+      <li>User restores the account identity key on a fresh device.</li>
+      <li>The fresh device discovers candidate servers from the encrypted Nostr manifest.</li>
+      <li>Servers can confirm that the account exists, but they cannot manufacture local MLS state for the lost devices.</li>
+      <li>Other members re-add the recovered device to rooms.</li>
+      <li>The recovered device gets new Welcomes and continues from the rejoin point forward.</li>
+    </ol>
+    <p class="note warn">This means total device loss can legitimately lose old room state and some history. That is the intended simplification if we avoid encrypted backups.</p>
+
+    <h2>6. UX The User Actually Sees</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Stage</th>
+          <th>User View</th>
+          <th>What Is Really Happening</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Start</td>
+          <td>“Add existing account”</td>
+          <td>New device prepares fresh local storage and waits for local pairing or identity restore.</td>
+        </tr>
+        <tr>
+          <td>Pair</td>
+          <td>Scan QR / approve from old device</td>
+          <td>Existing device transfers the server list and enough account material to let the new device authenticate.</td>
+        </tr>
+        <tr>
+          <td>Register</td>
+          <td>“Connecting to 10 servers”</td>
+          <td>New device logs in everywhere, registers a new <code>device_id</code>, and uploads KeyPackages.</td>
+        </tr>
+        <tr>
+          <td>Enroll</td>
+          <td>“Joining 100 rooms”</td>
+          <td>Existing device creates add-device commits per room and sends them to the correct authority server.</td>
+        </tr>
+        <tr>
+          <td>Ready</td>
+          <td>Rooms become available progressively</td>
+          <td>Each room becomes usable as soon as its Welcome has been accepted and ordered sync catches up.</td>
+        </tr>
+        <tr>
+          <td>Failure</td>
+          <td>“58 rooms ready, 42 still pending”</td>
+          <td>Some servers or rooms are still retrying. Healthy rooms should remain usable.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>7. Comparison</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>System</th>
+          <th>Multi-Device Shape</th>
+          <th>Main UX Cost</th>
+          <th>Main Benefit</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Signal</td>
+          <td>Account-centric linked devices</td>
+          <td>More server-central account machinery</td>
+          <td>Smoother one-account device management</td>
+        </tr>
+        <tr>
+          <td>Marmot</td>
+          <td>Per-device MLS leaves over relays</td>
+          <td>Relay discovery, welcome routing, and ordering complexity</td>
+          <td>More decentralized delivery path</td>
+        </tr>
+        <tr>
+          <td>This chat-server design</td>
+          <td>Per-device MLS leaves over ordered room servers</td>
+          <td>Device enrollment fans out across rooms and servers</td>
+          <td>Much simpler coordination and much clearer failure modes</td>
+        </tr>
+      </tbody>
+    </table>
+  </main>
+</body>
+</html>

@@ -1,0 +1,16 @@
+sequenceDiagram
+    participant Old as Existing Device
+    participant New as New Device
+    participant A as Server A
+    participant B as Server B
+
+    New->>A: Login, register, upload packages
+    New->>B: Login, register, upload packages
+    Old->>A: Submit add-device commits for rooms on A
+    A-->>New: Welcomes and room logs
+    Old-xB: Submit add-device commits for rooms on B
+    Note right of B: Timeout or outage
+    New->>New: Mark rooms on A ready
+    New->>New: Keep rooms on B pending
+    Old-->>New: Retry plan remains queued
+    Note over Old,New: Linking is resumable. Working servers do not block each other.

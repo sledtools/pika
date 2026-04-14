@@ -293,7 +293,7 @@ enum PreviewAppState {
         rev: UInt64,
         router: Router,
         auth: AuthState,
-        myProfile: MyProfileState = .init(name: "", about: "", pictureUrl: nil),
+        myProfile: MyProfileState = .init(name: "", about: "", pictureUrl: nil, profileCode: ""),
         busy: BusyState = BusyState(
             creatingAccount: false,
             loggingIn: false,
@@ -748,7 +748,8 @@ enum PreviewAppState {
     static let sampleProfile = MyProfileState(
         name: "Paul Miller",
         about: "Building Marmot over Nostr.",
-        pictureUrl: "https://blossom.nostr.pub/8dbc6f42ea8bf53f4af89af87eb0d9110fcaf4d263f7d2cb9f29d68f95f6f8ce"
+        pictureUrl: "https://blossom.nostr.pub/8dbc6f42ea8bf53f4af89af87eb0d9110fcaf4d263f7d2cb9f29d68f95f6f8ce",
+        profileCode: sampleNpub
     )
 }
 #endif

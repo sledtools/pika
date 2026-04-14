@@ -45,7 +45,6 @@ import com.pika.app.rust.AppAction
 import com.pika.app.rust.AuthState
 import com.pika.app.rust.FollowListEntry
 import com.pika.app.rust.isValidPeerKey
-import com.pika.app.rust.normalizePeerKey
 import com.pika.app.ui.Avatar
 import com.pika.app.ui.TestTags
 
@@ -56,7 +55,7 @@ fun NewChatScreen(manager: AppManager, padding: PaddingValues) {
     var npub by remember { mutableStateOf("") }
     var showScanner by remember { mutableStateOf(false) }
     var searchText by remember { mutableStateOf("") }
-    val peer = normalizePeerKey(npub)
+    val peer = npub.trim()
     val isValidPeer = isValidPeerKey(peer)
     val isLoading = manager.state.busy.creatingChat
     val isFetchingFollows = manager.state.busy.fetchingFollowList
@@ -110,7 +109,7 @@ fun NewChatScreen(manager: AppManager, padding: PaddingValues) {
                 OutlinedTextField(
                     value = npub,
                     onValueChange = { npub = it },
-                    label = { Text("Peer npub") },
+                    label = { Text("Profile code") },
                     singleLine = true,
                     enabled = !isLoading,
                     isError = peer.isNotEmpty() && !isValidPeer,
@@ -129,7 +128,7 @@ fun NewChatScreen(manager: AppManager, padding: PaddingValues) {
                     TextButton(
                         onClick = {
                             val raw = clipboard.getText()?.text.orEmpty()
-                            npub = normalizePeerKey(raw)
+                            npub = raw
                         },
                         enabled = !isLoading,
                         modifier = Modifier.testTag(TestTags.NEWCHAT_PASTE),
@@ -139,7 +138,7 @@ fun NewChatScreen(manager: AppManager, padding: PaddingValues) {
                 }
                 if (peer.isNotEmpty() && !isValidPeer) {
                     Text(
-                        "Enter a valid npub1… or 64-char hex pubkey.",
+                        "Enter a valid profile code.",
                         color = MaterialTheme.colorScheme.error,
                     )
                 }

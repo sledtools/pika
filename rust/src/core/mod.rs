@@ -6009,12 +6009,42 @@ impl AppCore {
                     return;
                 }
 
+                let invite = match crate::chat_invite::parse_chat_invite(&peer_npub) {
+                    Some(invite) => invite,
+                    None => {
+                        self.toast("Enter a valid profile code");
+                        return;
+                    }
+                };
+                if let Some(invite_server_url) = invite.server_url.as_deref() {
+                    let configured_server_url = self
+                        .private_chat_server_url()
+                        .as_ref()
+                        .and_then(|url| crate::chat_invite::normalize_server_url(url.as_str()));
+                    match configured_server_url.as_deref() {
+                        Some(configured_server_url)
+                            if configured_server_url == invite_server_url => {}
+                        Some(configured_server_url) => {
+                            self.toast(format!(
+                                "This profile code uses {invite_server_url}, but this app is configured for {configured_server_url}"
+                            ));
+                            return;
+                        }
+                        None => {
+                            self.toast(format!(
+                                "This profile code uses {invite_server_url}. Set private_chat_server_url to that server and try again."
+                            ));
+                            return;
+                        }
+                    }
+                }
+
                 let network_enabled = self.network_enabled();
                 let group_relays = self.default_relays();
 
-                let peer_npub = peer_npub.trim().to_string();
+                let peer_npub = invite.peer_key;
                 if peer_npub.is_empty() {
-                    self.toast("Enter a peer npub");
+                    self.toast("Enter a profile code");
                     return;
                 }
 
@@ -10106,6 +10136,68 @@ mod tests {
         }
 
         #[test]
+        fn create_chat_rejects_chat_server_profile_code_without_matching_config() {
+            let (mut core, _tmp) = make_logged_in_core();
+            let peer_keys = Keys::generate();
+            let peer_npub = peer_keys.public_key().to_bech32().unwrap();
+
+            core.handle_action(AppAction::CreateChat {
+                peer_npub: format!("pika://chat/{peer_npub}?server=https%3A%2F%2Fchat.example"),
+            });
+
+            assert_eq!(
+                core.state.toast.as_deref(),
+                Some(
+                    "This profile code uses https://chat.example. Set private_chat_server_url to that server and try again."
+                )
+            );
+            assert!(!core.state.busy.creating_chat);
+            assert!(core.pending_direct_chat_creation.is_none());
+        }
+
+        #[test]
+        fn create_chat_rejects_chat_server_profile_code_when_server_differs() {
+            let (mut core, _tmp) = make_logged_in_core();
+            let peer_keys = Keys::generate();
+            let peer_npub = peer_keys.public_key().to_bech32().unwrap();
+            core.config.private_chat_server_url = Some("https://chat.other.example".into());
+
+            core.handle_action(AppAction::CreateChat {
+                peer_npub: format!("pika://chat/{peer_npub}?server=https%3A%2F%2Fchat.example"),
+            });
+
+            assert_eq!(
+                core.state.toast.as_deref(),
+                Some(
+                    "This profile code uses https://chat.example, but this app is configured for https://chat.other.example"
+                )
+            );
+            assert!(!core.state.busy.creating_chat);
+            assert!(core.pending_direct_chat_creation.is_none());
+        }
+
+        #[test]
+        fn create_chat_accepts_chat_server_profile_code_when_server_matches() {
+            let (mut core, _tmp) = make_logged_in_core();
+            let peer_keys = Keys::generate();
+            let peer_pubkey = peer_keys.public_key();
+            let peer_npub = peer_pubkey.to_bech32().unwrap();
+            core.config.private_chat_server_url = Some("https://chat.example".into());
+
+            core.handle_action(AppAction::CreateChat {
+                peer_npub: format!("pika://chat/{peer_npub}?server=https%3A%2F%2Fchat.example%2F"),
+            });
+
+            assert!(core.state.busy.creating_chat);
+            assert_eq!(
+                core.pending_direct_chat_creation
+                    .as_ref()
+                    .map(|pending| pending.peer_pubkey),
+                Some(peer_pubkey)
+            );
+        }
+
+        #[test]
         fn missing_peer_key_package_uses_chat_server_message_when_configured() {
             let (mut core, _tmp) = make_logged_in_core();
             let peer_keys = Keys::generate();
@@ -11243,6 +11335,40 @@ mod tests {
         assert_eq!(core.state.my_profile.name, "Alice");
         assert_eq!(core.state.my_profile.about, "Hello");
         assert!(core.profiles.get(&pk).unwrap().name.as_deref() == Some("Alice"));
+    }
+
+    #[test]
+    fn my_profile_state_uses_chat_server_profile_code_when_configured() {
+        use nostr_sdk::prelude::ToBech32;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().to_string_lossy().into_owned();
+        let mut core = make_core(data_dir.clone());
+        let keys = nostr_sdk::prelude::Keys::generate();
+        let npub = keys.public_key().to_bech32().expect("npub");
+        let mdk = crate::mdk_support::open_mdk(&data_dir, &keys.public_key(), "").unwrap();
+        core.session = Some(super::Session {
+            pubkey: keys.public_key(),
+            local_keys: Some(keys),
+            mdk,
+            client: nostr_sdk::Client::default(),
+            alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            giftwrap_sub: None,
+            group_sub: None,
+            groups: std::collections::HashMap::new(),
+        });
+        core.state.auth = crate::state::AuthState::LoggedIn {
+            npub: npub.clone(),
+            pubkey: core.session.as_ref().unwrap().pubkey.to_hex(),
+            mode: crate::state::AuthMode::LocalNsec,
+        };
+        core.config.private_chat_server_url = Some("https://chat.example/".into());
+
+        let state = core.my_profile_state();
+        assert_eq!(
+            state.profile_code,
+            format!("pika://chat/{npub}?server=https%3A%2F%2Fchat.example")
+        );
     }
 
     mod batch_media_tests {

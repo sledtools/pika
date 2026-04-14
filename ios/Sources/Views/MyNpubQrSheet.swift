@@ -71,8 +71,12 @@ struct MyNpubQrSheet: View {
         self.onWipeProfileCache = onWipeProfileCache
         self.onWipeMediaCache = onWipeMediaCache
         self.onWipeLocalData = onWipeLocalData
-        self.cachedNpubQr = QRCodeImage.make(from: npub)
+        self.cachedNpubQr = QRCodeImage.make(from: profile.profileCode.isEmpty ? npub : profile.profileCode)
         self._showLogoutConfirm = State(initialValue: showLogoutConfirm)
+    }
+
+    private var profileCode: String {
+        profile.profileCode.isEmpty ? npub : profile.profileCode
     }
 
     private var hasProfileChanges: Bool {
@@ -132,7 +136,7 @@ struct MyNpubQrSheet: View {
                 testId: TestIds.chatListMyNpubCopy,
                 accessibilityLabel: didCopyNpub ? "Copied code" : "Copy code"
             ) {
-                copyToClipboard(npub, kind: .npub)
+                copyToClipboard(profileCode, kind: .npub)
             }
         } header: {
             Text("Profile Code")

@@ -89,48 +89,57 @@ class NostrConnectIntentTest {
     private val validHexPubkey = "a".repeat(64)
 
     @Test
-    fun extractChatDeepLinkNpub_returnsNpubForValidChatIntent() {
+    fun extractChatDeepLinkCode_returnsRawCodeForValidChatIntent() {
         val s = scheme()
         val intent = Intent(Intent.ACTION_VIEW).apply {
             data = Uri.parse("$s://chat/$validHexPubkey")
         }
-        assertEquals(validHexPubkey, AppManager.extractChatDeepLinkNpub(intent))
+        assertEquals(intent.data.toString(), AppManager.extractChatDeepLinkCode(intent))
     }
 
     @Test
-    fun extractChatDeepLinkNpub_returnsNullForWrongHost() {
+    fun extractChatDeepLinkCode_returnsNullForWrongHost() {
         val s = scheme()
         val intent = Intent(Intent.ACTION_VIEW).apply {
             data = Uri.parse("$s://nostrconnect-return/$validHexPubkey")
         }
-        assertNull(AppManager.extractChatDeepLinkNpub(intent))
+        assertNull(AppManager.extractChatDeepLinkCode(intent))
     }
 
     @Test
-    fun extractChatDeepLinkNpub_returnsNullForInvalidNpub() {
+    fun extractChatDeepLinkCode_returnsNullForInvalidCode() {
         val s = scheme()
         val intent = Intent(Intent.ACTION_VIEW).apply {
             data = Uri.parse("$s://chat/garbage")
         }
-        assertNull(AppManager.extractChatDeepLinkNpub(intent))
+        assertNull(AppManager.extractChatDeepLinkCode(intent))
     }
 
     @Test
-    fun extractChatDeepLinkNpub_returnsNullForMissingPath() {
+    fun extractChatDeepLinkCode_returnsNullForMissingPath() {
         val s = scheme()
         val intent = Intent(Intent.ACTION_VIEW).apply {
             data = Uri.parse("$s://chat")
         }
-        assertNull(AppManager.extractChatDeepLinkNpub(intent))
+        assertNull(AppManager.extractChatDeepLinkCode(intent))
     }
 
     @Test
-    fun extractChatDeepLinkNpub_returnsNullForWrongAction() {
+    fun extractChatDeepLinkCode_returnsNullForWrongAction() {
         val s = scheme()
         val intent = Intent(Intent.ACTION_MAIN).apply {
             data = Uri.parse("$s://chat/$validHexPubkey")
         }
-        assertNull(AppManager.extractChatDeepLinkNpub(intent))
+        assertNull(AppManager.extractChatDeepLinkCode(intent))
+    }
+
+    @Test
+    fun extractChatDeepLinkCode_preservesServerQuery() {
+        val s = scheme()
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            data = Uri.parse("$s://chat/$validHexPubkey?server=https%3A%2F%2Fchat.example")
+        }
+        assertEquals(intent.data.toString(), AppManager.extractChatDeepLinkCode(intent))
     }
 
     private fun String.countOccurrences(fragment: String): Int {

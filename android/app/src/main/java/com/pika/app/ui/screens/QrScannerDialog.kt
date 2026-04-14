@@ -37,7 +37,6 @@ import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import com.pika.app.rust.isValidPeerKey
-import com.pika.app.rust.normalizePeerKey
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -158,13 +157,12 @@ fun QrScannerDialog(
                     if (raw.isBlank()) return@addOnSuccessListener
                     if (!didEmit.compareAndSet(false, true)) return@addOnSuccessListener
 
-                    val normalized = normalizePeerKey(raw)
-                    if (isValidPeerKey(normalized)) {
-                        onScanned(normalized)
+                    if (isValidPeerKey(raw)) {
+                        onScanned(raw)
                     } else {
                         // Allow retry without closing the dialog.
                         didEmit.set(false)
-                        error = "Scanned QR is not a valid npub."
+                        error = "Scanned QR is not a valid profile code."
                     }
                 }
                 .addOnFailureListener {

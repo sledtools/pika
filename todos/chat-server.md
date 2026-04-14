@@ -68,9 +68,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   claimed chat-server Welcomes can now include `server_url` + `room_id`, and the accept path persists that binding locally before room-log sync starts.
 - [x] Reorder initial room bootstrap around room creation:
   in chat-server mode, the app now creates the room first and only then uploads the first Welcome, so the initial invite can carry room binding metadata too.
+- [~] Define explicit invite payloads with explicit server URLs and no relay metadata:
+  the app now builds `pika://chat/<npub>?server=...` profile codes when `private_chat_server_url` is configured, deep-link/manual-entry parsing preserves that payload, and CreateChat rejects mismatched or missing local chat-server config instead of silently discarding the server hint; peer profile surfaces and CLI QR emission still need the same contract.
 - Next seam:
-  define explicit invite/discovery payloads and keep cutting the remaining relay/MDK bootstrap assumptions out of the new chat path.
-- Define invite payloads with explicit server URLs and no relay metadata.
+  carry the same explicit invite/profile-code contract through peer share surfaces and CLI tooling, then keep cutting the remaining relay/MDK bootstrap assumptions out of the new chat path.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
 
@@ -123,8 +124,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   the welcome inbox protocol can carry `server_url` + `room_id`, membership-commit welcome uploads populate those fields, and eager welcome acceptance persists the local `chat_id -> room_id` binding so the recipient can start room-log sync immediately.
 - Initial room bootstrap now uses the same metadata path:
   when `private_chat_server_url` is configured, local group creation defers the first Welcome upload until after room creation succeeds, then uploads those Welcomes through the chat-server inbox with the newly assigned `room_id`.
-- This is intentionally partial:
-  explicit invite/discovery payloads and the broader runtime still depend on relay/MDK-era assumptions in a few seams, and those should be the next hard cuts.
+- Explicit profile codes now advertise chat-server routing too:
+  `MyProfileState` carries a generated profile code, mobile QR/copy/deep-link entry points preserve full `pika://chat/<npub>?server=...` payloads, and the core validates that the local app is configured for the advertised server before creating the chat.
+- This is still intentionally partial:
+  peer profile share surfaces and CLI QR generation still emit bare `npub`/deep links without chat-server metadata, and those should be the next hard cuts if we want one canonical invite contract everywhere.
 - The first durable transport model is file-backed:
   `PIKA_CHAT_SERVER_STATE_PATH` points at a JSON room/device log with persistent sequence numbers.
 - The inventory pass confirmed the biggest simplification wins:

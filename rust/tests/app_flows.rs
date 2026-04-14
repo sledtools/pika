@@ -741,7 +741,7 @@ fn create_chat_rejects_invalid_peer_key_without_navigation() {
         .toast
         .unwrap_or_default()
         .to_lowercase()
-        .contains("invalid npub"));
+        .contains("valid profile code"));
 }
 
 #[test]

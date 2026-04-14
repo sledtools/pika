@@ -6,7 +6,7 @@ private func makeTestState(rev: UInt64, toast: String? = nil) -> AppState {
         rev: rev,
         router: Router(defaultScreen: .chatList, screenStack: []),
         auth: .loggedOut,
-        myProfile: MyProfileState(name: "", about: "", pictureUrl: nil),
+        myProfile: MyProfileState(name: "", about: "", pictureUrl: nil, profileCode: ""),
         busy: BusyState(
             creatingAccount: false,
             loggingIn: false,
@@ -37,7 +37,7 @@ final class AppManagerTests: XCTestCase {
             rev: rev,
             router: Router(defaultScreen: .chatList, screenStack: []),
             auth: .loggedOut,
-            myProfile: MyProfileState(name: "", about: "", pictureUrl: nil),
+            myProfile: MyProfileState(name: "", about: "", pictureUrl: nil, profileCode: ""),
             busy: BusyState(
                 creatingAccount: false,
                 loggingIn: false,
@@ -209,12 +209,17 @@ final class ChatDeepLinkTests: XCTestCase {
 
     func testParseChatDeepLink_validNpub() {
         let url = URL(string: "pika://chat/\(validNpub)")!
-        XCTAssertEqual(AppManager.parseChatDeepLink(url), validNpub)
+        XCTAssertEqual(AppManager.parseChatDeepLink(url), url.absoluteString)
     }
 
     func testParseChatDeepLink_validNpubWithTrailingSlash() {
         let url = URL(string: "pika://chat/\(validNpub)/")!
-        XCTAssertEqual(AppManager.parseChatDeepLink(url), validNpub)
+        XCTAssertEqual(AppManager.parseChatDeepLink(url), url.absoluteString)
+    }
+
+    func testParseChatDeepLink_preservesServerQuery() {
+        let url = URL(string: "pika://chat/\(validNpub)?server=https%3A%2F%2Fchat.example")!
+        XCTAssertEqual(AppManager.parseChatDeepLink(url), url.absoluteString)
     }
 
     func testParseChatDeepLink_wrongHost() {
@@ -252,7 +257,7 @@ final class ChatDeepLinkTests: XCTestCase {
         let url = URL(string: "pika://chat/\(validNpub)")!
         await MainActor.run { manager.onOpenURL(url) }
 
-        XCTAssertEqual(core.dispatchedActions, [.createChat(peerNpub: validNpub)])
+        XCTAssertEqual(core.dispatchedActions, [.createChat(peerNpub: url.absoluteString)])
     }
 }
 

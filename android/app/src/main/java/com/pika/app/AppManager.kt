@@ -71,7 +71,7 @@ class AppManager private constructor(context: Context) : AppReconciler {
                 screenStack = emptyList(),
             ),
             auth = com.pika.app.rust.AuthState.LoggedOut,
-            myProfile = MyProfileState(name = "", about = "", pictureUrl = null),
+            myProfile = MyProfileState(name = "", about = "", pictureUrl = null, profileCode = ""),
             busy = com.pika.app.rust.BusyState(
                 creatingAccount = false,
                 loggingIn = false,
@@ -275,8 +275,8 @@ class AppManager private constructor(context: Context) : AppReconciler {
     }
 
     fun handleIncomingIntent(intent: Intent?) {
-        extractChatDeepLinkNpub(intent)?.let { npub ->
-            rust.dispatch(AppAction.CreateChat(peerNpub = npub))
+        extractChatDeepLinkCode(intent)?.let { code ->
+            rust.dispatch(AppAction.CreateChat(peerNpub = code))
             return
         }
 
@@ -838,14 +838,14 @@ class AppManager private constructor(context: Context) : AppReconciler {
             return "$trimmed${separator}callback=$encoded"
         }
 
-        internal fun extractChatDeepLinkNpub(intent: Intent?): String? {
+        internal fun extractChatDeepLinkCode(intent: Intent?): String? {
             if (intent?.action != Intent.ACTION_VIEW) return null
             val data = intent.data ?: return null
             if (!data.scheme.equals(NOSTR_CONNECT_CALLBACK_SCHEME, ignoreCase = true)) return null
             if (!data.host.equals("chat", ignoreCase = true)) return null
-            val npub = data.pathSegments?.firstOrNull() ?: return null
-            if (!isValidPeerKey(npub)) return null
-            return npub
+            val code = data.toString()
+            if (!isValidPeerKey(code)) return null
+            return code
         }
 
         internal fun extractNostrConnectCallback(intent: Intent?): String? {

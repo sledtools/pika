@@ -78,6 +78,7 @@ fun MyProfileSheet(
     val ctx = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val profile = manager.state.myProfile
+    val profileCode = profile.profileCode.ifBlank { npub }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     var nameDraft by remember { mutableStateOf(profile.name) }
@@ -204,23 +205,23 @@ fun MyProfileSheet(
                 }
             }
 
-            // Public key section
+            // Profile code section
             item {
-                ProfileSectionCard(title = "Public Key") {
+                ProfileSectionCard(title = "Profile Code") {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
-                            npub,
+                            profileCode,
                             style = MaterialTheme.typography.bodyMedium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f),
                         )
                         IconButton(onClick = {
-                            copyValue(npub, "npub")
+                            copyValue(profileCode, "profile code")
                         }, modifier = Modifier.testTag(TestTags.MYPROFILE_COPY_NPUB)) {
-                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy npub", modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy profile code", modifier = Modifier.size(18.dp))
                         }
                     }
                 }
@@ -228,7 +229,7 @@ fun MyProfileSheet(
 
             // QR code
             item {
-                val qr = remember(npub) { QrCode.encode(npub, 512).asImageBitmap() }
+                val qr = remember(profileCode) { QrCode.encode(profileCode, 512).asImageBitmap() }
                 ProfileSectionCard {
                     Column(
                         modifier = Modifier.fillMaxWidth(),

@@ -1,5 +1,6 @@
 mod actions;
 mod bunker_signer;
+mod chat_invite;
 mod core;
 mod external_signer;
 mod hypernote;
@@ -63,28 +64,12 @@ pub fn reset_relay_config_json(existing_json: Option<String>) -> String {
 
 #[uniffi::export]
 pub fn normalize_peer_key(input: &str) -> String {
-    let mut normalized = input.trim().to_ascii_lowercase();
-    if let Some(stripped) = normalized.strip_prefix("nostr:") {
-        normalized = stripped.to_string();
-    }
-    if let Some(idx) = normalized.find("://chat/") {
-        normalized = normalized[idx + "://chat/".len()..]
-            .trim_matches('/')
-            .to_string();
-    }
-    normalized
+    chat_invite::normalize_peer_key_input(input)
 }
 
 #[uniffi::export]
 pub fn is_valid_peer_key(input: &str) -> bool {
-    let normalized = normalize_peer_key(input);
-    if normalized.len() == 64 && normalized.chars().all(|ch| ch.is_ascii_hexdigit()) {
-        return true;
-    }
-    if !normalized.starts_with("npub1") {
-        return false;
-    }
-    nostr_sdk::prelude::PublicKey::parse(&normalized).is_ok()
+    chat_invite::is_valid_peer_key_input(input)
 }
 
 #[uniffi::export]
@@ -128,6 +113,10 @@ mod tests {
             ("pikatest://chat/npub1abc", "npub1abc"),
             ("pikadev://chat/npub1abc", "npub1abc"),
             ("pika://chat/npub1abc/", "npub1abc"),
+            (
+                "pika://chat/npub1abc?server=https%3A%2F%2Fchat.example",
+                "npub1abc",
+            ),
             ("  NPUB1ABC  ", "npub1abc"),
             ("npub1abc", "npub1abc"),
         ] {
@@ -148,6 +137,15 @@ mod tests {
         let keys = nostr_sdk::prelude::Keys::generate();
         let npub = keys.public_key().to_bech32().unwrap();
         let deep_link = format!("pika://chat/{npub}");
+        assert!(is_valid_peer_key(&deep_link));
+    }
+
+    #[test]
+    fn is_valid_peer_key_accepts_deep_link_with_server_query() {
+        use nostr_sdk::ToBech32;
+        let keys = nostr_sdk::prelude::Keys::generate();
+        let npub = keys.public_key().to_bech32().unwrap();
+        let deep_link = format!("pika://chat/{npub}?server=https%3A%2F%2Fchat.example");
         assert!(is_valid_peer_key(&deep_link));
     }
 

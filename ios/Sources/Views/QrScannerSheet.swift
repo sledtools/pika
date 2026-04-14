@@ -44,9 +44,8 @@ struct QrScannerSheet: View {
         switch authStatus {
         case .authorized:
             QrScannerView { raw in
-                let normalized = normalizePeerKey(input: raw)
-                if isValidPeerKey(input: normalized) {
-                    onScanned(normalized)
+                if isValidPeerKey(input: raw) {
+                    onScanned(raw)
                     dismiss()
                 } else {
                     errorMessage = "Scanned QR does not contain a valid code."

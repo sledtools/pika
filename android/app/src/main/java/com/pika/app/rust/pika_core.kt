@@ -3362,6 +3362,8 @@ data class MyProfileState (
     var `about`: kotlin.String
     , 
     var `pictureUrl`: kotlin.String?
+    , 
+    var `profileCode`: kotlin.String
     
 ){
     
@@ -3381,19 +3383,22 @@ public object FfiConverterTypeMyProfileState: FfiConverterRustBuffer<MyProfileSt
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
             FfiConverterOptionalString.read(buf),
+            FfiConverterString.read(buf),
         )
     }
 
     override fun allocationSize(value: MyProfileState) = (
             FfiConverterString.allocationSize(value.`name`) +
             FfiConverterString.allocationSize(value.`about`) +
-            FfiConverterOptionalString.allocationSize(value.`pictureUrl`)
+            FfiConverterOptionalString.allocationSize(value.`pictureUrl`) +
+            FfiConverterString.allocationSize(value.`profileCode`)
     )
 
     override fun write(value: MyProfileState, buf: ByteBuffer) {
             FfiConverterString.write(value.`name`, buf)
             FfiConverterString.write(value.`about`, buf)
             FfiConverterOptionalString.write(value.`pictureUrl`, buf)
+            FfiConverterString.write(value.`profileCode`, buf)
     }
 }
 
@@ -3627,8 +3632,7 @@ public object FfiConverterTypeVoiceRecordingState: FfiConverterRustBuffer<VoiceR
 
 enum class AgentKind {
     
-    OPENCLAW,
-    PI;
+    OPENCLAW;
 
     
 

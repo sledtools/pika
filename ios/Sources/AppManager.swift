@@ -321,9 +321,9 @@ final class AppManager: AppReconciler {
     }
 
     func onOpenURL(_ url: URL) {
-        if let npub = Self.parseChatDeepLink(url) {
-            NSLog("[PikaAppManager] onOpenURL dispatching CreateChat for: \(npub)")
-            dispatch(.createChat(peerNpub: npub))
+        if let code = Self.parseChatDeepLink(url) {
+            NSLog("[PikaAppManager] onOpenURL dispatching CreateChat for: \(code)")
+            dispatch(.createChat(peerNpub: code))
             return
         }
 
@@ -343,9 +343,9 @@ final class AppManager: AppReconciler {
 
     nonisolated static func parseChatDeepLink(_ url: URL) -> String? {
         guard url.host?.lowercased() == "chat" else { return nil }
-        let npub = url.pathComponents.dropFirst().first ?? ""
-        guard isValidPeerKey(input: npub) else { return nil }
-        return npub
+        let code = url.absoluteString
+        guard isValidPeerKey(input: code) else { return nil }
+        return code
     }
 
     nonisolated static func isShareDispatchDeepLink(_ url: URL) -> Bool {

@@ -291,6 +291,7 @@ pub struct MyProfileState {
     pub name: String,
     pub about: String,
     pub picture_url: Option<String>,
+    pub profile_code: String,
 }
 
 impl MyProfileState {
@@ -299,6 +300,7 @@ impl MyProfileState {
             name: String::new(),
             about: String::new(),
             picture_url: None,
+            profile_code: String::new(),
         }
     }
 }

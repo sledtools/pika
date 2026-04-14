@@ -681,6 +681,7 @@ impl AppCore {
                 name: p.name.clone().unwrap_or_default(),
                 about: p.about.clone().unwrap_or_default(),
                 picture_url: p.display_group_picture_url(&self.data_dir, chat_id, &my_pubkey_hex),
+                profile_code: String::new(),
             });
 
         self.state.current_chat = Some(ChatViewState {

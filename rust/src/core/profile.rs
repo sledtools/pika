@@ -285,6 +285,13 @@ impl AppCore {
     pub(super) fn my_profile_state(&self) -> MyProfileState {
         let pk = self.session.as_ref().map(|s| s.pubkey.to_hex());
         let cached = pk.as_ref().and_then(|pk| self.profiles.get(pk));
+        let configured_chat_server = self.private_chat_server_url().map(|url| url.to_string());
+        let profile_code = match &self.state.auth {
+            AuthState::LoggedIn { npub, .. } => {
+                crate::chat_invite::build_chat_invite_code(npub, configured_chat_server.as_deref())
+            }
+            AuthState::LoggedOut => String::new(),
+        };
 
         MyProfileState {
             name: cached.and_then(|p| p.name.clone()).unwrap_or_default(),
@@ -293,6 +300,7 @@ impl AppCore {
                 (Some(p), Some(pk)) => p.display_picture_url(&self.data_dir, pk),
                 _ => None,
             },
+            profile_code,
         }
     }
 

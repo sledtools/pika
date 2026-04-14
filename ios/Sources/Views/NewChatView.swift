@@ -205,9 +205,9 @@ struct NewChatView: View {
     }
 
     private func handleIncomingPeer(_ input: String) {
-        let peer = normalizePeerKey(input: input)
+        let peer = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard isValidPeerKey(input: peer) else {
-            invalidNpubMessage = "Enter, paste, or scan a valid code (npub1… or 64-character hex public key)."
+            invalidNpubMessage = "Enter, paste, or scan a valid profile code."
             showInvalidNpubAlert = true
             return
         }
@@ -218,7 +218,7 @@ struct NewChatView: View {
         NavigationStack {
             Form {
                 Section {
-                    Text("Enter a code (npub1… or 64-character hex public key).")
+                    Text("Enter a profile code.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
 
@@ -228,14 +228,14 @@ struct NewChatView: View {
                         .accessibilityIdentifier(TestIds.newChatPeerNpub)
 
                     Button("Start Chat") {
-                        let peer = normalizePeerKey(input: npubInput)
+                        let peer = npubInput.trimmingCharacters(in: .whitespacesAndNewlines)
                         handleIncomingPeer(peer)
                         if isValidPeerKey(input: peer) {
                             npubInput = ""
                             showManualEntrySheet = false
                         }
                     }
-                    .disabled(normalizePeerKey(input: npubInput).isEmpty || isLoading)
+                    .disabled(npubInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isLoading)
                     .accessibilityIdentifier(TestIds.newChatStart)
                 }
             }

@@ -115,6 +115,10 @@ impl AppCore {
             .and_then(|value| Url::parse(value).ok())
     }
 
+    pub(super) fn private_chat_uses_chat_server(&self) -> bool {
+        self.private_chat_server_url().is_some()
+    }
+
     pub(super) fn network_enabled(&self) -> bool {
         // Used to keep Rust tests deterministic and offline.
         if let Some(disable) = self.config.disable_network {
@@ -328,6 +332,22 @@ mod tests {
             ..AppConfig::default()
         });
         assert_eq!(core.private_chat_server_url(), None);
+        assert!(!core.private_chat_uses_chat_server());
+    }
+
+    #[test]
+    fn private_chat_uses_chat_server_is_true_only_for_valid_url() {
+        let (configured, _tempdir) = make_core_with_config(AppConfig {
+            private_chat_server_url: Some("https://chat.example".to_string()),
+            ..AppConfig::default()
+        });
+        assert!(configured.private_chat_uses_chat_server());
+
+        let (blank, _tempdir) = make_core_with_config(AppConfig {
+            private_chat_server_url: Some(" ".to_string()),
+            ..AppConfig::default()
+        });
+        assert!(!blank.private_chat_uses_chat_server());
     }
 
     #[test]

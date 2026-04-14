@@ -58,6 +58,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   start with one explicit server config in the app; room-specific server URLs can come later with the same server implementation.
 - [x] Decide how device identity is modeled under one `npub`:
   keep it minimal for v1 with server-assigned device ids, signed bootstrap, and key package ownership checks.
+- [x] Stop driving private-chat relay subscriptions in chat-server mode:
+  giftwrap/group relay subscriptions and the relay notification loop are now suppressed when `private_chat_server_url` is configured.
 - Specify the Commit submission contract:
   what the client sends, what the server validates, and when the server rejects stale work.
 - Next seam:
@@ -109,6 +111,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `POST /v1/rooms/:room_id/membership-commits` checks the caller's expected room epoch, persists the Commit, advances room epoch, replaces the member list, and enqueues the supplied Welcome giftwraps in one durable write.
 - The client now uses that authoritative path for add-members on bound rooms:
   it builds the Welcome giftwraps before submit, treats server acceptance as the publish boundary, skips the old follow-up member reconcile / duplicate welcome upload when the server already handled them, and clears the local pending commit if the server rejects the work as stale.
+- Chat-server mode now stops maintaining the relay private-chat ingress path:
+  startup skips the relay notification loop, subscription recompute tears down any giftwrap/group subscriptions and leaves them unset, and the room-log poller is the remaining private-chat ingress path when `private_chat_server_url` is configured.
 - This is intentionally partial:
   room bootstrap, rename/remove/leave commits, invite/discovery routing, and the broader runtime still depend on the old relay/MDK path and need the next cuts.
 - The first durable transport model is file-backed:

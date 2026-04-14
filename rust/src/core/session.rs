@@ -229,7 +229,9 @@ impl AppCore {
 
         // Start notifications processing (async -> internal events).
         if self.network_enabled() {
-            self.start_notifications_loop(initial_seen_inbound);
+            if !self.private_chat_uses_chat_server() {
+                self.start_notifications_loop(initial_seen_inbound);
+            }
             self.start_chat_server_sync_loop();
         }
 
@@ -581,6 +583,42 @@ impl AppCore {
         let Some(sess) = self.session.as_ref() else {
             return;
         };
+        if self.private_chat_uses_chat_server() {
+            self.subs_recompute_in_flight = true;
+            self.subs_recompute_dirty = false;
+            self.subs_recompute_token = self.subs_recompute_token.wrapping_add(1);
+            let token = self.subs_recompute_token;
+            let client = sess.client.clone();
+            let tx = self.core_sender.clone();
+            let prev_giftwrap_sub = sess.giftwrap_sub.clone();
+            let prev_group_sub = sess.group_sub.clone();
+            let alive = sess.alive.clone();
+
+            self.runtime.spawn(async move {
+                if !alive.load(Ordering::SeqCst) {
+                    return;
+                }
+
+                if let Some(id) = prev_giftwrap_sub {
+                    let _ = client.unsubscribe(&id).await;
+                }
+                if let Some(id) = prev_group_sub {
+                    let _ = client.unsubscribe(&id).await;
+                }
+                if !alive.load(Ordering::SeqCst) {
+                    return;
+                }
+
+                let _ = tx.send(CoreMsg::Internal(Box::new(
+                    InternalEvent::SubscriptionsRecomputed {
+                        token,
+                        giftwrap_sub: None,
+                        group_sub: None,
+                    },
+                )));
+            });
+            return;
+        }
         let refreshed = match refresh_runtime_for_app(self, sess) {
             Ok(refreshed) => refreshed,
             Err(err) => {

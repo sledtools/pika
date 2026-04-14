@@ -86,6 +86,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `POST /v1/key-packages` uploads opaque package blobs for a registered device, and `POST /v1/key-packages/claim` consumes one package at a time for room bootstrap or room-scoped membership work.
 - The app config now has an explicit private-chat server field:
   `private_chat_server_url` is separate from relay settings, which keeps the next runtime cut honest about what transport it is actually using.
+- `pika_core` now has a first chat-server client seam:
+  when `private_chat_server_url` is configured, key-package upload and peer key-package lookup use the chat server instead of relay fetch/publish.
+- This is intentionally partial:
+  welcome delivery, commit submission, ordered message sync, and the broader runtime still depend on the old relay/MDK path and need the next cuts.
 - The first durable transport model is file-backed:
   `PIKA_CHAT_SERVER_STATE_PATH` points at a JSON room/device log with persistent sequence numbers.
 - The inventory pass confirmed the biggest simplification wins:

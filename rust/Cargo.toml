@@ -27,6 +27,7 @@ nostr-sdk = { workspace = true, features = ["nip59"] }
 nostr-connect = { workspace = true }
 nostr-blossom = { workspace = true }
 pika-managed-agent-contract = { workspace = true }
+pika-chat-server = { path = "../crates/pika-chat-server" }
 pika-marmot-runtime = { path = "../crates/pika-marmot-runtime" }
 pika-relay-profiles = { path = "../crates/pika-relay-profiles" }
 pika-media = { path = "../crates/pika-media", features = ["network"] }
@@ -63,6 +64,7 @@ ndk-context = "0.1.1"
 paranoid-android = "0.2"
 
 [dev-dependencies]
+axum = { workspace = true }
 futures-util = "0.3"
 nostr-connect = { workspace = true }
 pikahut = { path = "../crates/pikahut" }

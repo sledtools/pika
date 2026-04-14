@@ -3,6 +3,7 @@ mod call_control;
 mod call_runtime;
 mod chat_media;
 mod chat_media_db;
+mod chat_server;
 mod config;
 mod group_profile;
 mod host_context;
@@ -3072,6 +3073,61 @@ impl AppCore {
     }
 
     fn begin_direct_chat_creation(&mut self, peer_pubkey: PublicKey, token: u64) {
+        if let Some(base_url) = self.private_chat_server_url() {
+            let (session_client, http_client, tx) = {
+                let Some(sess) = self.session.as_ref() else {
+                    self.fail_direct_chat_creation("Please log in first");
+                    return;
+                };
+                (
+                    sess.client.clone(),
+                    self.http_client.clone(),
+                    self.core_sender.clone(),
+                )
+            };
+            let peer_npub = match chat_server::peer_npub(&peer_pubkey) {
+                Ok(npub) => npub,
+                Err(err) => {
+                    self.fail_direct_chat_creation(err.to_string());
+                    return;
+                }
+            };
+            tracing::info!(peer = %peer_pubkey.to_hex(), "create_chat: claiming peer key package from chat server");
+            self.runtime.spawn(async move {
+                match chat_server::claim_key_package_event(
+                    &http_client,
+                    &session_client,
+                    &base_url,
+                    &peer_npub,
+                    None,
+                )
+                .await
+                {
+                    Ok(event) => {
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::PeerKeyPackageFetched {
+                                token,
+                                peer_pubkey,
+                                key_package_event: event,
+                                error: None,
+                            },
+                        )));
+                    }
+                    Err(err) => {
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::PeerKeyPackageFetched {
+                                token,
+                                peer_pubkey,
+                                key_package_event: None,
+                                error: Some(format!("Fetch peer key package failed: {err:#}")),
+                            },
+                        )));
+                    }
+                }
+            });
+            return;
+        }
+
         let (client, tx) = {
             let Some(sess) = self.session.as_ref() else {
                 self.fail_direct_chat_creation("Please log in first");
@@ -3828,7 +3884,9 @@ impl AppCore {
 
         if !ok {
             let msg = error.unwrap_or_else(|| "unknown error".into());
-            if msg.contains("no relays")
+            if self.private_chat_server_url().is_some() {
+                self.fail_direct_chat_creation(format!("Key package upload failed: {msg}"));
+            } else if msg.contains("no relays")
                 || msg.contains("not ready")
                 || msg.contains("not connected")
             {
@@ -3918,7 +3976,12 @@ impl AppCore {
             return;
         }
         let Some(kp_event) = key_package_event else {
-            self.fail_direct_chat_creation("Could not find peer key package (kind 443). The peer must run Pika/MDK once (publish a key package) and you must share at least one relay.".to_string());
+            let message = if self.private_chat_server_url().is_some() {
+                "Could not find peer key package on the chat server. The peer must sign in and publish a key package first.".to_string()
+            } else {
+                "Could not find peer key package (kind 443). The peer must run Pika/MDK once (publish a key package) and you must share at least one relay.".to_string()
+            };
+            self.fail_direct_chat_creation(message);
             return;
         };
         let kp_event = normalize_peer_key_package_event_for_mdk(&kp_event);
@@ -9098,6 +9161,30 @@ mod tests {
         }
 
         #[test]
+        fn missing_peer_key_package_uses_chat_server_message_when_configured() {
+            let (mut core, _tmp) = make_logged_in_core();
+            let peer_keys = Keys::generate();
+            core.config.private_chat_server_url = Some("https://chat.example".into());
+            core.direct_chat_creation_token = 12;
+            core.state.busy.creating_chat = true;
+
+            core.handle_internal(InternalEvent::PeerKeyPackageFetched {
+                token: 12,
+                peer_pubkey: peer_keys.public_key(),
+                key_package_event: None,
+                error: None,
+            });
+
+            assert_eq!(
+                core.state.toast.as_deref(),
+                Some(
+                    "Could not find peer key package on the chat server. The peer must sign in and publish a key package first."
+                )
+            );
+            assert!(!core.state.busy.creating_chat);
+        }
+
+        #[test]
         fn key_package_publish_failure_clears_pending_direct_chat() {
             let (mut core, _tmp) = make_logged_in_core();
             let peer_keys = Keys::generate();
@@ -9132,6 +9219,33 @@ mod tests {
             assert_eq!(prov.phase, crate::state::AgentProvisioningPhase::Error);
             assert_eq!(prov.status_message, "Key package publish failed: boom");
             assert!(core.state.toast.is_none());
+        }
+
+        #[test]
+        fn chat_server_key_package_upload_failure_uses_upload_message() {
+            let (mut core, _tmp) = make_logged_in_core();
+            let peer_keys = Keys::generate();
+            core.config.private_chat_server_url = Some("https://chat.example".into());
+            core.direct_chat_creation_token = 13;
+            core.pending_direct_chat_creation = Some(super::super::PendingDirectChatCreation {
+                token: 13,
+                peer_pubkey: peer_keys.public_key(),
+            });
+            core.state.busy.creating_chat = true;
+            core.key_package_publish_token = 21;
+
+            core.handle_internal(InternalEvent::KeyPackagePublished {
+                token: 21,
+                ok: false,
+                error: Some("boom".into()),
+            });
+
+            assert_eq!(
+                core.state.toast.as_deref(),
+                Some("Key package upload failed: boom")
+            );
+            assert!(core.pending_direct_chat_creation.is_none());
+            assert!(!core.state.busy.creating_chat);
         }
 
         #[test]

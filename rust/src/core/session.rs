@@ -328,6 +328,83 @@ impl AppCore {
     }
 
     pub(super) fn ensure_key_package_published_best_effort(&mut self) {
+        if let Some(base_url) = self.private_chat_server_url() {
+            let Some(sess) = self.session.as_ref() else {
+                return;
+            };
+            self.key_package_publish_token = self.key_package_publish_token.wrapping_add(1);
+            let token = self.key_package_publish_token;
+            self.local_key_package_published = false;
+
+            let (content, tags, _hash_ref) = match sess
+                .mdk
+                .create_key_package_for_event(&sess.pubkey, Vec::new())
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    self.fail_direct_chat_creation(format!("Key package create failed: {e}"));
+                    return;
+                }
+            };
+
+            let tags: Tags = tags
+                .into_iter()
+                .filter(|t: &Tag| !matches!(t.kind(), TagKind::Protected))
+                .collect();
+            let builder = EventBuilder::new(Kind::MlsKeyPackage, content).tags(tags);
+            let session_client = sess.client.clone();
+            let http_client = self.http_client.clone();
+            let tx = self.core_sender.clone();
+            let push_token = self.push_apns_token.clone();
+            self.runtime.spawn(async move {
+                let event = match session_client.sign_event_builder(builder).await {
+                    Ok(event) => event,
+                    Err(err) => {
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::KeyPackagePublished {
+                                token,
+                                ok: false,
+                                error: Some(format!("key package sign failed: {err}")),
+                            },
+                        )));
+                        return;
+                    }
+                };
+
+                let upload = chat_server::upload_key_package_event(
+                    &http_client,
+                    &session_client,
+                    &base_url,
+                    Some(chat_server::platform_label()),
+                    push_token.as_deref(),
+                    &event,
+                )
+                .await;
+
+                match upload {
+                    Ok(_) => {
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::KeyPackagePublished {
+                                token,
+                                ok: true,
+                                error: None,
+                            },
+                        )));
+                    }
+                    Err(err) => {
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::KeyPackagePublished {
+                                token,
+                                ok: false,
+                                error: Some(err.to_string()),
+                            },
+                        )));
+                    }
+                }
+            });
+            return;
+        }
+
         let relay_roles = self.relay_role_plan(Vec::new());
         let publish_relays = relay_roles.key_package_operation_relays;
         if publish_relays.is_empty() {
@@ -434,6 +511,9 @@ impl AppCore {
     }
 
     pub(super) fn publish_key_package_relays_best_effort(&mut self) {
+        if self.private_chat_server_url().is_some() {
+            return;
+        }
         let general_relays = self.long_lived_session_relays();
         let kp_relays = self.temporary_key_package_relays();
         let Some(sess) = self.session.as_ref() else {

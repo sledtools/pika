@@ -60,10 +60,12 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   keep it minimal for v1 with server-assigned device ids, signed bootstrap, and key package ownership checks.
 - [x] Stop driving private-chat relay subscriptions in chat-server mode:
   giftwrap/group relay subscriptions and the relay notification loop are now suppressed when `private_chat_server_url` is configured.
+- [x] Delete the post-hoc room-members reconcile fallback:
+  bound rooms already submit membership commits authoritatively, so the extra `/v1/rooms/:room_id/members` compatibility path has been removed from both client and server.
 - Specify the Commit submission contract:
   what the client sends, what the server validates, and when the server rejects stale work.
 - Next seam:
-  extend authoritative membership-commit publication beyond add-member on already-bound rooms.
+  carry room binding metadata with chat-server welcome delivery so new members can attach to the ordered room log as soon as they accept a Welcome.
 - Define invite payloads with explicit server URLs and no relay metadata.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
@@ -99,8 +101,6 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   That is the first point where the app stops treating the chat server as a global key-package bucket and starts using per-room authority.
 - Bound chats can now use the room log for normal message transport:
   outbound MLS wrapper events append to `POST /v1/rooms/:room_id/events`, a simple polling loop syncs `GET /v1/rooms/:room_id/events`, and synced wrapper events feed back into the existing runtime.
-- Room membership is now at least reconciled after successful local MLS membership changes:
-  the app can replace a room's member list via `POST /v1/rooms/:room_id/members`, which keeps add/remove flows from leaving the server room permanently stale while full server-authoritative Commit submission is still pending.
 - Local cleanup is tighter too:
   stale `chat_id -> room_id` bindings are pruned from profile storage when the chat no longer exists locally, which stops dead room-sync polling after leave/remove flows.
 - Bound chats now send membership Commits through the room log too:
@@ -113,8 +113,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   it builds the Welcome giftwraps before submit, treats server acceptance as the publish boundary, skips the old follow-up member reconcile / duplicate welcome upload when the server already handled them, and clears the local pending commit if the server rejects the work as stale.
 - Chat-server mode now stops maintaining the relay private-chat ingress path:
   startup skips the relay notification loop, subscription recompute tears down any giftwrap/group subscriptions and leaves them unset, and the room-log poller is the remaining private-chat ingress path when `private_chat_server_url` is configured.
+- The interim room-members overwrite API is gone again:
+  once membership commits became authoritative for bound rooms, `POST /v1/rooms/:room_id/members` was only dead compatibility scaffolding, so it was deleted instead of preserved.
 - This is intentionally partial:
-  room bootstrap, rename/remove/leave commits, invite/discovery routing, and the broader runtime still depend on the old relay/MDK path and need the next cuts.
+  room bootstrap and invite/discovery routing still need a way to carry chat-server room binding metadata to newly welcomed members, and the broader runtime still depends on the old relay/MDK path in those seams.
 - The first durable transport model is file-backed:
   `PIKA_CHAT_SERVER_STATE_PATH` points at a JSON room/device log with persistent sequence numbers.
 - The inventory pass confirmed the biggest simplification wins:

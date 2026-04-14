@@ -171,11 +171,6 @@ pub enum InternalEvent {
         seq: u64,
         wrapper: nostr_sdk::prelude::Event,
     },
-    ChatServerRoomMembersReconciled {
-        chat_id: String,
-        room_id: String,
-        error: Option<String>,
-    },
     ChatServerWelcomesClaimed {
         welcomes: Vec<(nostr_sdk::prelude::Event, nostr_sdk::prelude::UnsignedEvent)>,
         error: Option<String>,

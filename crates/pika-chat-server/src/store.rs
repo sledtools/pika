@@ -11,8 +11,7 @@ use uuid::Uuid;
 use crate::protocol::{
     AppendRoomEventRequest, ClaimKeyPackageRequest, CreateRoomRequest, DeviceRecord,
     KeyPackageRecord, RegisterDeviceRequest, RoomEvent, RoomEventType, RoomSummary,
-    SubmitMembershipCommitRequest, UpdateRoomMembersRequest, UploadKeyPackageRequest,
-    UploadWelcomeRequest, WelcomeRecord,
+    SubmitMembershipCommitRequest, UploadKeyPackageRequest, UploadWelcomeRequest, WelcomeRecord,
 };
 
 const MAX_SYNC_LIMIT: usize = 200;
@@ -110,18 +109,6 @@ impl StoreHandle {
     ) -> Result<RoomSummary, StoreHandleError> {
         let mut store = self.inner.write().await;
         let room = store.create_room(creator_npub, request, now);
-        self.persist_locked(&store)?;
-        Ok(room)
-    }
-
-    pub async fn replace_room_members(
-        &self,
-        actor_npub: &str,
-        room_id: &str,
-        request: UpdateRoomMembersRequest,
-    ) -> Result<RoomSummary, StoreHandleError> {
-        let mut store = self.inner.write().await;
-        let room = store.replace_room_members(actor_npub, room_id, request)?;
         self.persist_locked(&store)?;
         Ok(room)
     }
@@ -293,31 +280,6 @@ impl ChatStore {
             },
         );
         summary
-    }
-
-    pub fn replace_room_members(
-        &mut self,
-        actor_npub: &str,
-        room_id: &str,
-        request: UpdateRoomMembersRequest,
-    ) -> Result<RoomSummary, StoreError> {
-        let room = self
-            .rooms
-            .get_mut(room_id)
-            .ok_or(StoreError::RoomNotFound)?;
-        if !room
-            .summary
-            .members
-            .iter()
-            .any(|member| member == actor_npub)
-        {
-            return Err(StoreError::NotRoomMember);
-        }
-
-        room.summary.members = normalized_member_npubs(request.member_npubs)
-            .into_iter()
-            .collect();
-        Ok(room.summary.clone())
     }
 
     pub fn upload_key_package(

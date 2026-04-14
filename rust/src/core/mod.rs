@@ -3597,8 +3597,15 @@ impl AppCore {
                 chat_id,
                 server_url,
                 room_id,
+                initial_welcome_delivery,
                 error,
-            } => self.handle_chat_server_room_bound(chat_id, server_url, room_id, error),
+            } => self.handle_chat_server_room_bound(
+                chat_id,
+                server_url,
+                room_id,
+                initial_welcome_delivery,
+                error,
+            ),
             InternalEvent::ChatServerSyncPoll => self.handle_chat_server_sync_poll(),
             InternalEvent::ChatServerRoomSynced {
                 chat_id,
@@ -4136,11 +4143,15 @@ impl AppCore {
             return;
         }
         if let Some(plan) = welcome_delivery {
-            self.publish_welcomes_to_peers(plan.recipients, plan.welcome_rumors, relays);
+            self.publish_welcomes_to_peers(plan.recipients, plan.welcome_rumors, relays, None);
         }
     }
 
-    fn begin_chat_server_room_binding(&mut self, chat_id: &str) {
+    fn begin_chat_server_room_binding(
+        &mut self,
+        chat_id: &str,
+        initial_welcome_delivery: Option<GroupWelcomeDeliveryPlan>,
+    ) {
         if !self.network_enabled() {
             return;
         }
@@ -4211,6 +4222,7 @@ impl AppCore {
                             chat_id,
                             server_url,
                             room_id: Some(room.room_id),
+                            initial_welcome_delivery,
                             error: None,
                         },
                     )));
@@ -4221,6 +4233,7 @@ impl AppCore {
                             chat_id,
                             server_url,
                             room_id: None,
+                            initial_welcome_delivery,
                             error: Some(err.to_string()),
                         },
                     )));
@@ -4347,15 +4360,26 @@ impl AppCore {
         network_enabled: bool,
         welcome_relays: Vec<RelayUrl>,
     ) {
-        self.publish_group_welcome_delivery_if_enabled(
-            planned.welcome_delivery,
-            network_enabled,
-            welcome_relays,
-        );
-
+        let use_chat_server_bootstrap = self.private_chat_uses_chat_server();
+        let PlannedGroupCreation {
+            group,
+            welcome_delivery,
+        } = planned;
+        if !use_chat_server_bootstrap {
+            self.publish_group_welcome_delivery_if_enabled(
+                welcome_delivery.clone(),
+                network_enabled,
+                welcome_relays,
+            );
+        }
         self.refresh_all_from_storage();
-        let chat_id = hex::encode(planned.group.nostr_group_id);
-        self.begin_chat_server_room_binding(&chat_id);
+        let chat_id = hex::encode(group.nostr_group_id);
+        self.begin_chat_server_room_binding(
+            &chat_id,
+            use_chat_server_bootstrap
+                .then_some(welcome_delivery)
+                .flatten(),
+        );
         self.open_chat_screen(&chat_id);
         self.refresh_current_chat(&chat_id);
         self.emit_router();
@@ -4738,7 +4762,7 @@ impl AppCore {
                     .map(|s| s.into_iter().collect())
                     .filter(|v: &Vec<RelayUrl>| !v.is_empty())
                     .unwrap_or(fallback_relays);
-                self.publish_welcomes_to_peers(plan.recipients, plan.welcome_rumors, relays);
+                self.publish_welcomes_to_peers(plan.recipients, plan.welcome_rumors, relays, None);
             }
         }
 
@@ -4754,6 +4778,7 @@ impl AppCore {
         chat_id: String,
         server_url: String,
         room_id: Option<String>,
+        initial_welcome_delivery: Option<GroupWelcomeDeliveryPlan>,
         error: Option<String>,
     ) {
         if let Some(err) = error {
@@ -4765,6 +4790,17 @@ impl AppCore {
             return;
         };
         self.upsert_chat_server_room_binding(&chat_id, &server_url, &room_id);
+        if let Some(plan) = initial_welcome_delivery {
+            self.publish_welcomes_to_peers(
+                plan.recipients,
+                plan.welcome_rumors,
+                Vec::new(),
+                Some(chat_server::WelcomeRoomBinding {
+                    server_url: server_url.clone(),
+                    room_id: room_id.clone(),
+                }),
+            );
+        }
         self.begin_chat_server_room_sync();
     }
 
@@ -10165,6 +10201,7 @@ mod tests {
                 chat_id: "chat1".into(),
                 server_url: "https://chat.example".into(),
                 room_id: Some("room_123".into()),
+                initial_welcome_delivery: None,
                 error: None,
             });
 
@@ -10194,6 +10231,7 @@ mod tests {
                 chat_id: "missing-chat".into(),
                 server_url: "https://chat.example".into(),
                 room_id: Some("room_123".into()),
+                initial_welcome_delivery: None,
                 error: None,
             });
             assert!(core.chat_server_rooms.contains_key("missing-chat"));

@@ -42,7 +42,7 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `room_id`, `room_seq`, `epoch`, `event_type`, sender device, ciphertext/control payload, timestamps.
 - [~] Implement client sync against the room log by sequence number instead of relay replay.
 - [~] Implement the first server-authoritative membership flow:
-  already-bound add-member commits can now go through one server write that validates room epoch, persists the Commit, updates room membership, and enqueues Welcomes; room bootstrap and the non-add-member cases still need the same treatment.
+  bound-room membership commits now go through one server write that validates room epoch, persists the Commit, updates room membership, and enqueues Welcomes with room metadata; initial room bootstrap now creates the room before the first Welcome is uploaded so the first invite can carry the same binding context.
 - [ ] Build a new client runtime around OpenMLS and local durable storage.
 - [ ] Route push notifications from server-stored room events instead of relay listeners.
 - [ ] Migrate one narrow chat path end to end:
@@ -66,8 +66,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   what the client sends, what the server validates, and when the server rejects stale work.
 - [x] Carry room binding metadata with chat-server welcome delivery:
   claimed chat-server Welcomes can now include `server_url` + `room_id`, and the accept path persists that binding locally before room-log sync starts.
+- [x] Reorder initial room bootstrap around room creation:
+  in chat-server mode, the app now creates the room first and only then uploads the first Welcome, so the initial invite can carry room binding metadata too.
 - Next seam:
-  reorder initial room bootstrap so the very first Welcome for a new direct/group chat is emitted only after the room exists and can carry binding metadata too.
+  define explicit invite/discovery payloads and keep cutting the remaining relay/MDK bootstrap assumptions out of the new chat path.
 - Define invite payloads with explicit server URLs and no relay metadata.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
@@ -119,8 +121,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   once membership commits became authoritative for bound rooms, `POST /v1/rooms/:room_id/members` was only dead compatibility scaffolding, so it was deleted instead of preserved.
 - Claimed chat-server Welcomes now preserve room-routing context:
   the welcome inbox protocol can carry `server_url` + `room_id`, membership-commit welcome uploads populate those fields, and eager welcome acceptance persists the local `chat_id -> room_id` binding so the recipient can start room-log sync immediately.
+- Initial room bootstrap now uses the same metadata path:
+  when `private_chat_server_url` is configured, local group creation defers the first Welcome upload until after room creation succeeds, then uploads those Welcomes through the chat-server inbox with the newly assigned `room_id`.
 - This is intentionally partial:
-  initial room bootstrap still publishes the first Welcome before the creator has a room binding, so brand-new direct/group chats need one more cut to make the first invite use the same authoritative room metadata path.
+  explicit invite/discovery payloads and the broader runtime still depend on relay/MDK-era assumptions in a few seams, and those should be the next hard cuts.
 - The first durable transport model is file-backed:
   `PIKA_CHAT_SERVER_STATE_PATH` points at a JSON room/device log with persistent sequence numbers.
 - The inventory pass confirmed the biggest simplification wins:

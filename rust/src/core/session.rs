@@ -696,6 +696,7 @@ impl AppCore {
         peer_pubkeys: Vec<PublicKey>,
         welcome_rumors: Vec<UnsignedEvent>,
         relays: Vec<RelayUrl>,
+        room_binding: Option<chat_server::WelcomeRoomBinding>,
     ) {
         let Some(sess) = self.session.as_ref() else {
             return;
@@ -723,6 +724,7 @@ impl AppCore {
                         let client = client.clone();
                         let http_client = http_client.clone();
                         let base_url = base_url.clone();
+                        let room_binding = room_binding.clone();
                         async move {
                             let receiver_npub = match receiver.to_bech32() {
                                 Ok(npub) => npub.to_lowercase(),
@@ -738,7 +740,7 @@ impl AppCore {
                                 &base_url,
                                 &receiver_npub,
                                 &giftwrap,
-                                None,
+                                room_binding.as_ref(),
                             )
                             .await
                             {

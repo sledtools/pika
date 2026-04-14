@@ -858,6 +858,7 @@ pub struct AppCore {
     group_profiles: HashMap<String, HashMap<String, ProfileCache>>, // chat_id -> (pubkey -> profile)
     chat_server_rooms: HashMap<String, profile_db::ChatServerRoomBinding>, // local chat_id -> room binding
     chat_server_sync_in_flight: HashSet<String>, // chat ids currently syncing from the chat server
+    chat_server_welcome_claim_in_flight: bool,
     profile_db: Option<rusqlite::Connection>,
     chat_media_db: Option<rusqlite::Connection>,
 
@@ -1016,6 +1017,7 @@ impl AppCore {
             group_profiles: HashMap::new(),
             chat_server_rooms,
             chat_server_sync_in_flight: HashSet::new(),
+            chat_server_welcome_claim_in_flight: false,
             profile_db,
             typing_state: HashMap::new(),
             last_typing_sent: HashMap::new(),
@@ -3275,6 +3277,7 @@ impl AppCore {
             self.profiles.clear();
             self.chat_server_rooms.clear();
             self.chat_server_sync_in_flight.clear();
+            self.chat_server_welcome_claim_in_flight = false;
             if let Some(conn) = self.profile_db.as_ref() {
                 profile_db::clear_all(conn);
                 profile_db::clear_app_settings(conn);
@@ -3301,6 +3304,7 @@ impl AppCore {
         self.profile_db = None;
         self.chat_server_rooms.clear();
         self.chat_server_sync_in_flight.clear();
+        self.chat_server_welcome_claim_in_flight = false;
         self.archived_chats.clear();
         self.push_subscribed_chat_ids.clear();
         self.push_apns_token = None;
@@ -3595,7 +3599,7 @@ impl AppCore {
                 room_id,
                 error,
             } => self.handle_chat_server_room_bound(chat_id, server_url, room_id, error),
-            InternalEvent::ChatServerSyncPoll => self.begin_chat_server_room_sync(),
+            InternalEvent::ChatServerSyncPoll => self.handle_chat_server_sync_poll(),
             InternalEvent::ChatServerRoomSynced {
                 chat_id,
                 server_url,
@@ -3614,6 +3618,9 @@ impl AppCore {
                 room_id,
                 error,
             } => self.handle_chat_server_room_members_reconciled(chat_id, room_id, error),
+            InternalEvent::ChatServerWelcomesClaimed { welcomes, error } => {
+                self.handle_chat_server_welcomes_claimed(welcomes, error)
+            }
             InternalEvent::FollowListFetched {
                 followed_pubkeys,
                 fetched_profiles,
@@ -4279,6 +4286,48 @@ impl AppCore {
         }
     }
 
+    fn handle_chat_server_sync_poll(&mut self) {
+        self.begin_chat_server_welcome_claim();
+        self.begin_chat_server_room_sync();
+    }
+
+    fn begin_chat_server_welcome_claim(&mut self) {
+        if !self.network_enabled() || self.chat_server_welcome_claim_in_flight {
+            return;
+        }
+        let Some(base_url) = self.private_chat_server_url() else {
+            return;
+        };
+
+        let (session_client, http_client, tx) = {
+            let Some(sess) = self.session.as_ref() else {
+                return;
+            };
+            (
+                sess.client.clone(),
+                self.http_client.clone(),
+                self.core_sender.clone(),
+            )
+        };
+
+        self.chat_server_welcome_claim_in_flight = true;
+        self.runtime.spawn(async move {
+            let result =
+                chat_server::claim_welcome_events(&http_client, &session_client, &base_url).await;
+            let internal = match result {
+                Ok(welcomes) => InternalEvent::ChatServerWelcomesClaimed {
+                    welcomes,
+                    error: None,
+                },
+                Err(err) => InternalEvent::ChatServerWelcomesClaimed {
+                    welcomes: Vec::new(),
+                    error: Some(err.to_string()),
+                },
+            };
+            let _ = tx.send(CoreMsg::Internal(Box::new(internal)));
+        });
+    }
+
     fn begin_chat_server_room_membership_reconcile(&mut self, chat_id: &str) {
         if !self.network_enabled() {
             return;
@@ -4869,6 +4918,23 @@ impl AppCore {
                 %err,
                 "chat-server room membership reconcile failed"
             );
+        }
+    }
+
+    fn handle_chat_server_welcomes_claimed(
+        &mut self,
+        welcomes: Vec<(Event, UnsignedEvent)>,
+        error: Option<String>,
+    ) {
+        self.chat_server_welcome_claim_in_flight = false;
+
+        if let Some(err) = error {
+            tracing::warn!(%err, "chat-server welcome claim failed");
+            return;
+        }
+
+        for (wrapper, rumor) in welcomes {
+            self.handle_gift_wrap_received(wrapper, rumor);
         }
     }
 

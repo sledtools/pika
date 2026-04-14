@@ -10,9 +10,10 @@ use crate::nostr_auth::{
 };
 use crate::protocol::{
     AppendRoomEventRequest, AppendRoomEventResponse, ClaimKeyPackageRequest,
-    ClaimKeyPackageResponse, CreateRoomRequest, CreateRoomResponse, RegisterDeviceRequest,
-    RegisterDeviceResponse, SyncRoomEventsQuery, SyncRoomEventsResponse, UpdateRoomMembersRequest,
-    UpdateRoomMembersResponse, UploadKeyPackageRequest, UploadKeyPackageResponse,
+    ClaimKeyPackageResponse, ClaimWelcomesResponse, CreateRoomRequest, CreateRoomResponse,
+    RegisterDeviceRequest, RegisterDeviceResponse, SyncRoomEventsQuery, SyncRoomEventsResponse,
+    UpdateRoomMembersRequest, UpdateRoomMembersResponse, UploadKeyPackageRequest,
+    UploadKeyPackageResponse, UploadWelcomeRequest, UploadWelcomeResponse,
 };
 use crate::session::{SessionClaims, SessionManager, SessionTokenResponse};
 use crate::store::{StoreError, StoreHandle, StoreHandleError};
@@ -43,6 +44,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/devices/register", post(register_device))
         .route("/v1/key-packages", post(upload_key_package))
         .route("/v1/key-packages/claim", post(claim_key_package))
+        .route("/v1/welcomes", post(upload_welcome))
+        .route("/v1/welcomes/claim", post(claim_welcomes))
         .route("/v1/rooms", post(create_room))
         .route(
             "/v1/rooms/:room_id/events",
@@ -145,6 +148,34 @@ async fn claim_key_package(
     Ok(Json(ClaimKeyPackageResponse {
         key_package: key_package.map_err(store_handle_error)?,
     }))
+}
+
+async fn upload_welcome(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<UploadWelcomeRequest>,
+) -> Result<Json<UploadWelcomeResponse>, (StatusCode, String)> {
+    let claims = session_claims(&state, &headers)?;
+    let now = Timestamp::now().as_secs();
+    let welcome = state
+        .store
+        .enqueue_welcome(&claims.npub, request, now)
+        .await
+        .map_err(store_handle_error)?;
+    Ok(Json(UploadWelcomeResponse { welcome }))
+}
+
+async fn claim_welcomes(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<ClaimWelcomesResponse>, (StatusCode, String)> {
+    let claims = session_claims(&state, &headers)?;
+    let welcomes = state
+        .store
+        .claim_welcomes(&claims.npub)
+        .await
+        .map_err(store_handle_error)?;
+    Ok(Json(ClaimWelcomesResponse { welcomes }))
 }
 
 async fn append_room_event(
@@ -591,6 +622,74 @@ mod tests {
             serde_json::from_slice(&claim_body).expect("decode claim key package body");
         assert_eq!(claimed.key_package.payload, "opaque-key-package");
         assert!(claimed.key_package.claimed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn member_can_upload_and_claim_welcome() {
+        let app = router(test_state());
+        let (app, alice_token, _) = login_token(app, "chat.test").await;
+        let (app, bob_token, bob_npub) = login_token(app, "chat.test").await;
+
+        let upload_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/welcomes")
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&UploadWelcomeRequest {
+                            recipient_npub: bob_npub.clone(),
+                            wrapper_event_json: "{\"kind\":1059}".to_string(),
+                        })
+                        .expect("serialize upload welcome request"),
+                    ))
+                    .expect("build upload welcome request"),
+            )
+            .await
+            .expect("upload welcome response");
+        assert_eq!(upload_response.status(), StatusCode::OK);
+
+        let claim_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/welcomes/claim")
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
+                    .body(Body::empty())
+                    .expect("build claim welcomes request"),
+            )
+            .await
+            .expect("claim welcomes response");
+        assert_eq!(claim_response.status(), StatusCode::OK);
+        let claim_body = to_bytes(claim_response.into_body(), usize::MAX)
+            .await
+            .expect("read claim welcomes body");
+        let claimed: ClaimWelcomesResponse =
+            serde_json::from_slice(&claim_body).expect("decode claim welcomes body");
+        assert_eq!(claimed.welcomes.len(), 1);
+        assert_eq!(claimed.welcomes[0].recipient_npub, bob_npub);
+
+        let empty_claim_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/welcomes/claim")
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
+                    .body(Body::empty())
+                    .expect("build empty claim welcomes request"),
+            )
+            .await
+            .expect("empty claim welcomes response");
+        assert_eq!(empty_claim_response.status(), StatusCode::OK);
+        let empty_claim_body = to_bytes(empty_claim_response.into_body(), usize::MAX)
+            .await
+            .expect("read empty claim welcomes body");
+        let empty_claimed: ClaimWelcomesResponse =
+            serde_json::from_slice(&empty_claim_body).expect("decode empty claim welcomes body");
+        assert!(empty_claimed.welcomes.is_empty());
     }
 
     #[tokio::test]

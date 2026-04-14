@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::protocol::{
     AppendRoomEventRequest, ClaimKeyPackageRequest, CreateRoomRequest, DeviceRecord,
     KeyPackageRecord, RegisterDeviceRequest, RoomEvent, RoomSummary, UpdateRoomMembersRequest,
-    UploadKeyPackageRequest,
+    UploadKeyPackageRequest, UploadWelcomeRequest, WelcomeRecord,
 };
 
 const MAX_SYNC_LIMIT: usize = 200;
@@ -53,6 +53,7 @@ pub struct StoreHandle {
 pub struct ChatStore {
     devices_by_owner: BTreeMap<String, BTreeMap<String, DeviceRecord>>,
     key_packages_by_owner: BTreeMap<String, Vec<KeyPackageRecord>>,
+    welcomes_by_recipient: BTreeMap<String, Vec<WelcomeRecord>>,
     rooms: BTreeMap<String, StoredRoom>,
 }
 
@@ -132,6 +133,28 @@ impl StoreHandle {
         let key_package = store.upload_key_package(owner_npub, request, now)?;
         self.persist_locked(&store)?;
         Ok(key_package)
+    }
+
+    pub async fn enqueue_welcome(
+        &self,
+        sender_npub: &str,
+        request: UploadWelcomeRequest,
+        now: u64,
+    ) -> Result<WelcomeRecord, StoreHandleError> {
+        let mut store = self.inner.write().await;
+        let welcome = store.enqueue_welcome(sender_npub, request, now)?;
+        self.persist_locked(&store)?;
+        Ok(welcome)
+    }
+
+    pub async fn claim_welcomes(
+        &self,
+        recipient_npub: &str,
+    ) -> Result<Vec<WelcomeRecord>, StoreHandleError> {
+        let mut store = self.inner.write().await;
+        let welcomes = store.claim_welcomes(recipient_npub);
+        self.persist_locked(&store)?;
+        Ok(welcomes)
     }
 
     pub async fn claim_key_package(
@@ -328,6 +351,38 @@ impl ChatStore {
             .or_default()
             .push(key_package.clone());
         Ok(key_package)
+    }
+
+    pub fn enqueue_welcome(
+        &mut self,
+        sender_npub: &str,
+        request: UploadWelcomeRequest,
+        now: u64,
+    ) -> Result<WelcomeRecord, StoreError> {
+        let recipient_npub = request.recipient_npub.trim().to_ascii_lowercase();
+        let wrapper_event_json = request.wrapper_event_json.trim().to_string();
+        if wrapper_event_json.is_empty() {
+            return Err(StoreError::EmptyEventContent);
+        }
+
+        let welcome = WelcomeRecord {
+            welcome_id: new_prefixed_id("welcome"),
+            recipient_npub: recipient_npub.clone(),
+            sender_npub: sender_npub.to_string(),
+            wrapper_event_json,
+            created_at: now,
+        };
+        self.welcomes_by_recipient
+            .entry(recipient_npub)
+            .or_default()
+            .push(welcome.clone());
+        Ok(welcome)
+    }
+
+    pub fn claim_welcomes(&mut self, recipient_npub: &str) -> Vec<WelcomeRecord> {
+        self.welcomes_by_recipient
+            .remove(recipient_npub)
+            .unwrap_or_default()
     }
 
     pub fn claim_key_package(

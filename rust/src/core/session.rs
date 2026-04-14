@@ -286,6 +286,7 @@ impl AppCore {
             .retain(|s| !matches!(s, Screen::AgentProvisioning));
         self.group_profiles.clear();
         self.chat_server_sync_in_flight.clear();
+        self.chat_server_welcome_claim_in_flight = false;
 
         if let Some(sess) = self.session.take() {
             sess.alive.store(false, Ordering::SeqCst);
@@ -662,12 +663,9 @@ impl AppCore {
             return;
         };
         let client = sess.client.clone();
+        let http_client = self.http_client.clone();
+        let private_chat_server_url = self.private_chat_server_url();
         self.runtime.spawn(async move {
-            for r in relays.iter().cloned() {
-                let _ = client.add_relay(r).await;
-            }
-            client.connect().await;
-            client.wait_for_connection(Duration::from_secs(4)).await;
             let signer = match client.signer().await {
                 Ok(signer) => signer,
                 Err(err) => {
@@ -675,6 +673,53 @@ impl AppCore {
                     return;
                 }
             };
+
+            if let Some(base_url) = private_chat_server_url {
+                Self::publish_welcome_rumors_best_effort_with_publisher(
+                    &signer,
+                    &peer_pubkeys,
+                    &welcome_rumors,
+                    4,
+                    "welcome upload",
+                    |receiver, giftwrap| {
+                        let client = client.clone();
+                        let http_client = http_client.clone();
+                        let base_url = base_url.clone();
+                        async move {
+                            let receiver_npub = match receiver.to_bech32() {
+                                Ok(npub) => npub.to_lowercase(),
+                                Err(err) => {
+                                    return super::relay_publish::PublishOutcome::Err(format!(
+                                        "encode welcome recipient npub: {err}"
+                                    ));
+                                }
+                            };
+                            match chat_server::upload_welcome_event(
+                                &http_client,
+                                &client,
+                                &base_url,
+                                &receiver_npub,
+                                &giftwrap,
+                            )
+                            .await
+                            {
+                                Ok(()) => super::relay_publish::PublishOutcome::Ok,
+                                Err(err) => {
+                                    super::relay_publish::PublishOutcome::Err(err.to_string())
+                                }
+                            }
+                        }
+                    },
+                )
+                .await;
+                return;
+            }
+
+            for r in relays.iter().cloned() {
+                let _ = client.add_relay(r).await;
+            }
+            client.connect().await;
+            client.wait_for_connection(Duration::from_secs(4)).await;
             Self::publish_welcome_rumors_best_effort(
                 &client,
                 &signer,

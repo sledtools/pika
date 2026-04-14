@@ -4,10 +4,10 @@ use base64::Engine;
 use nostr_sdk::prelude::{Client, Event, EventBuilder, Kind, Tag, TagKind, ToBech32};
 use pika_chat_server::protocol::{
     AppendRoomEventRequest, AppendRoomEventResponse, ClaimKeyPackageRequest,
-    ClaimKeyPackageResponse, CreateRoomRequest, CreateRoomResponse, KeyPackageRecord,
-    RegisterDeviceRequest, RegisterDeviceResponse, RoomEvent, RoomEventType, RoomSummary,
-    SyncRoomEventsResponse, UpdateRoomMembersRequest, UpdateRoomMembersResponse,
-    UploadKeyPackageRequest, UploadKeyPackageResponse,
+    ClaimKeyPackageResponse, ClaimWelcomesResponse, CreateRoomRequest, CreateRoomResponse,
+    KeyPackageRecord, RegisterDeviceRequest, RegisterDeviceResponse, RoomEvent, RoomEventType,
+    RoomSummary, SyncRoomEventsResponse, UpdateRoomMembersRequest, UpdateRoomMembersResponse,
+    UploadKeyPackageRequest, UploadKeyPackageResponse, UploadWelcomeRequest, UploadWelcomeResponse,
 };
 use pika_chat_server::SessionTokenResponse;
 use reqwest::{Method, StatusCode};
@@ -234,6 +234,66 @@ pub async fn replace_room_members(
     )
     .await
     .map(|response: UpdateRoomMembersResponse| response.room)
+}
+
+pub async fn upload_welcome_event(
+    http_client: &reqwest::Client,
+    signer_client: &Client,
+    base_url: &Url,
+    recipient_npub: &str,
+    wrapper: &Event,
+) -> Result<()> {
+    let access_token = login(http_client, signer_client, base_url).await?;
+    let url = endpoint(base_url, "/v1/welcomes")?;
+    let _: UploadWelcomeResponse = read_json(
+        http_client
+            .post(url)
+            .bearer_auth(access_token)
+            .header("Accept", "application/json")
+            .json(&UploadWelcomeRequest {
+                recipient_npub: recipient_npub.trim().to_ascii_lowercase(),
+                wrapper_event_json: serde_json::to_string(wrapper)
+                    .context("serialize welcome wrapper")?,
+            })
+            .send()
+            .await
+            .context("send chat-server upload-welcome request")?,
+        "chat-server upload welcome",
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn claim_welcome_events(
+    http_client: &reqwest::Client,
+    signer_client: &Client,
+    base_url: &Url,
+) -> Result<Vec<(Event, nostr_sdk::prelude::UnsignedEvent)>> {
+    let access_token = login(http_client, signer_client, base_url).await?;
+    let url = endpoint(base_url, "/v1/welcomes/claim")?;
+    let claimed: ClaimWelcomesResponse = read_json(
+        http_client
+            .post(url)
+            .bearer_auth(access_token)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .context("send chat-server claim-welcomes request")?,
+        "chat-server claim welcomes",
+    )
+    .await?;
+
+    let mut welcomes = Vec::with_capacity(claimed.welcomes.len());
+    for record in claimed.welcomes {
+        let wrapper: Event = serde_json::from_str(&record.wrapper_event_json)
+            .context("decode claimed welcome wrapper")?;
+        let unwrapped = signer_client
+            .unwrap_gift_wrap(&wrapper)
+            .await
+            .context("unwrap claimed welcome giftwrap")?;
+        welcomes.push((wrapper, unwrapped.rumor));
+    }
+    Ok(welcomes)
 }
 
 pub async fn upload_key_package_event(
@@ -492,6 +552,58 @@ mod tests {
             .await
             .expect("sync room events");
         assert_eq!(synced.room.members, vec![carol_npub]);
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn upload_and_claim_welcome_round_trip() {
+        let (addr, handle) = spawn_test_server().await;
+        let base_url = Url::parse(&format!("http://{addr}/")).expect("base url");
+        let http_client = reqwest::Client::new();
+
+        let sender_keys = Keys::generate();
+        let sender_client = Client::builder().signer(sender_keys.clone()).build();
+        let receiver_keys = Keys::generate();
+        let receiver_npub = receiver_keys
+            .public_key()
+            .to_bech32()
+            .unwrap()
+            .to_lowercase();
+        let receiver_client = Client::builder().signer(receiver_keys.clone()).build();
+        let rumor = EventBuilder::new(Kind::MlsWelcome, "opaque-welcome-rumor")
+            .sign_with_keys(&sender_keys)
+            .expect("sign welcome rumor");
+        let wrapper = EventBuilder::gift_wrap(
+            &sender_keys,
+            &receiver_keys.public_key(),
+            rumor.clone().into(),
+            vec![],
+        )
+        .await
+        .expect("gift wrap welcome rumor");
+
+        upload_welcome_event(
+            &http_client,
+            &sender_client,
+            &base_url,
+            &receiver_npub,
+            &wrapper,
+        )
+        .await
+        .expect("upload welcome event");
+
+        let mut claimed = claim_welcome_events(&http_client, &receiver_client, &base_url)
+            .await
+            .expect("claim welcome events");
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].0.id, wrapper.id);
+        assert_eq!(claimed[0].1.id(), rumor.id);
+
+        let claimed_again = claim_welcome_events(&http_client, &receiver_client, &base_url)
+            .await
+            .expect("claim welcome events again");
+        assert!(claimed_again.is_empty());
 
         handle.abort();
     }

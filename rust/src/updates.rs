@@ -176,6 +176,10 @@ pub enum InternalEvent {
         room_id: String,
         error: Option<String>,
     },
+    ChatServerWelcomesClaimed {
+        welcomes: Vec<(nostr_sdk::prelude::Event, nostr_sdk::prelude::UnsignedEvent)>,
+        error: Option<String>,
+    },
 
     // Subscription recompute result.
     SubscriptionsRecomputed {

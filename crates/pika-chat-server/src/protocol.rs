@@ -88,6 +88,31 @@ pub struct UpdateRoomMembersResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WelcomeRecord {
+    pub welcome_id: String,
+    pub recipient_npub: String,
+    pub sender_npub: String,
+    pub wrapper_event_json: String,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UploadWelcomeRequest {
+    pub recipient_npub: String,
+    pub wrapper_event_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UploadWelcomeResponse {
+    pub welcome: WelcomeRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaimWelcomesResponse {
+    pub welcomes: Vec<WelcomeRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RoomEventType {
     Commit,

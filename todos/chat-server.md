@@ -34,12 +34,13 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
 - [x] Decide v1 priorities: favor simplicity and maintainability over early metadata optimization.
 - [x] Inventory the relay/MDK/Marmot private-chat surface and mark what should be deleted, replaced, or kept.
 - [~] Write the v1 protocol surface:
-  signed login and session auth are implemented; device registration, key package upload/claim, room create, commit submit, message send, sync, and ack remain.
+  signed login and session auth are implemented; device registration, room create, room event append, and room sync are implemented; key package upload/claim, commit submit validation, explicit ack, and invite payloads remain.
 - [~] Add a new server crate for private chat transport, likely `crates/pika-chat-server`.
 - [ ] Reuse or extract shared server pieces from `pika-server`:
   Axum setup, Postgres patterns, push plumbing, NIP-98 auth helpers.
-- [ ] Build a minimal room log model with:
+- [~] Build a minimal room log model with:
   `room_id`, `room_seq`, `epoch`, `event_type`, sender device, ciphertext/control payload, timestamps.
+- [~] Implement client sync against the room log by sequence number instead of relay replay.
 - [ ] Implement the first server-authoritative membership flow:
   create room, upload/claim KeyPackages, submit Commit bundle, persist Commit, then deliver Welcome.
 - [ ] Implement client sync against the room log by sequence number instead of relay replay.
@@ -79,6 +80,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   Keep using that workspace for protocol and migration research instead of re-deriving the context from scratch.
 - First implementation slice is `crates/pika-chat-server` with:
   `POST /v1/session/login`, `GET /v1/session/me`, stateless signed session tokens, and tests.
+- The next server slice now exists too:
+  `POST /v1/devices/register`, `POST /v1/rooms`, `POST /v1/rooms/:room_id/events`, and `GET /v1/rooms/:room_id/events`.
+- The first durable transport model is file-backed:
+  `PIKA_CHAT_SERVER_STATE_PATH` points at a JSON room/device log with persistent sequence numbers.
 - The inventory pass confirmed the biggest simplification wins:
   cut `pika-marmot-runtime`, delete `pika-server`'s relay listener path, and replace relay-centric app config early.
 - The v1 routing model is intentionally less Matrix-like:

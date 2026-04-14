@@ -1,4 +1,5 @@
 use anyhow::Context;
+use pika_chat_server::store::StoreHandle;
 use pika_chat_server::{router, AppState, ChatServerConfig, SessionManager};
 use tracing::{info, warn};
 
@@ -14,10 +15,13 @@ async fn main() -> anyhow::Result<()> {
     if config.ephemeral_session_secret {
         warn!("PIKA_CHAT_SERVER_SESSION_SECRET_HEX not set; using an ephemeral session secret");
     }
+    let store = StoreHandle::load_or_create(config.state_path.clone())
+        .with_context(|| format!("open chat store {}", config.state_path.display()))?;
 
     let state = AppState {
         sessions: SessionManager::new(config.session_secret, config.session_ttl_secs),
         trust_forwarded_host: config.trust_forwarded_host,
+        store,
     };
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr)

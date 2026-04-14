@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use rand::RngCore;
@@ -6,6 +7,7 @@ use rand::RngCore;
 #[derive(Clone)]
 pub struct ChatServerConfig {
     pub bind_addr: SocketAddr,
+    pub state_path: PathBuf,
     pub trust_forwarded_host: bool,
     pub session_secret: [u8; 32],
     pub session_ttl_secs: u64,
@@ -18,6 +20,12 @@ impl ChatServerConfig {
             .unwrap_or_else(|_| "127.0.0.1:9080".to_string())
             .parse::<SocketAddr>()
             .context("parse PIKA_CHAT_SERVER_BIND")?;
+        let state_path = std::env::var("PIKA_CHAT_SERVER_STATE_PATH")
+            .ok()
+            .map(|raw| raw.trim().to_string())
+            .filter(|raw| !raw.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("data/chat-server-state.json"));
         let trust_forwarded_host = env_truthy("PIKA_CHAT_SERVER_TRUST_X_FORWARDED_HOST");
         let session_ttl_secs = std::env::var("PIKA_CHAT_SERVER_SESSION_TTL_SECS")
             .ok()
@@ -29,6 +37,7 @@ impl ChatServerConfig {
 
         Ok(Self {
             bind_addr,
+            state_path,
             trust_forwarded_host,
             session_secret,
             session_ttl_secs,

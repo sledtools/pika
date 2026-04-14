@@ -6534,10 +6534,76 @@ impl AppCore {
             .unwrap_or_else(|| fallback_relays.clone());
 
         let client = sess.client.clone();
+        let http_client = self.http_client.clone();
+        let room_binding = self.chat_server_rooms.get(chat_id).cloned();
         let tx = self.core_sender.clone();
         let chat_id = chat_id.to_string();
 
         self.runtime.spawn(async move {
+            if let Some(binding) = room_binding {
+                let wrapper = prepared.evolution_event.clone();
+                let room_id = binding.room_id.clone();
+                let base_url = match Url::parse(&binding.server_url) {
+                    Ok(url) => url,
+                    Err(err) => {
+                        let publish_status = EvolutionPublishStatus::PublishFailed(format!(
+                            "invalid chat server URL: {err}"
+                        ));
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::GroupEvolutionPublished {
+                                prepared,
+                                publish_status,
+                            },
+                        )));
+                        return;
+                    }
+                };
+
+                match chat_server::append_wrapped_room_event(
+                    &http_client,
+                    &client,
+                    &base_url,
+                    &room_id,
+                    RoomEventType::Commit,
+                    &wrapper,
+                )
+                .await
+                {
+                    Ok(appended) => {
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::GroupEvolutionPublished {
+                                prepared,
+                                publish_status: EvolutionPublishStatus::Published,
+                            },
+                        )));
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::ChatServerRoomEventAppended {
+                                chat_id,
+                                room_id,
+                                seq: appended.seq,
+                                wrapper,
+                            },
+                        )));
+                    }
+                    Err(err) => {
+                        let publish_status = EvolutionPublishStatus::PublishFailed(err.to_string());
+                        tracing::warn!(
+                            error = err.to_string(),
+                            %chat_id,
+                            %room_id,
+                            "chat-server evolution append failed"
+                        );
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::GroupEvolutionPublished {
+                                prepared,
+                                publish_status,
+                            },
+                        )));
+                    }
+                }
+                return;
+            }
+
             let publish_status = prepared
                 .publish_with(|event| {
                     let client = client.clone();
@@ -6558,7 +6624,7 @@ impl AppCore {
             if let EvolutionPublishStatus::PublishFailed(ref err) = publish_status {
                 tracing::warn!(
                     error = err,
-                    chat_id,
+                    %chat_id,
                     "evolution event broadcast failed after retries"
                 );
             }

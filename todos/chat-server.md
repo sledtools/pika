@@ -101,8 +101,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   the app can replace a room's member list via `POST /v1/rooms/:room_id/members`, which keeps add/remove flows from leaving the server room permanently stale while full server-authoritative Commit submission is still pending.
 - Local cleanup is tighter too:
   stale `chat_id -> room_id` bindings are pruned from profile storage when the chat no longer exists locally, which stops dead room-sync polling after leave/remove flows.
+- Bound chats now send membership Commits through the room log too:
+  `publish_prepared_evolution` appends the MLS commit wrapper as a `commit` room event when a room binding exists, so existing room members can learn about membership changes from the same ordered server log as normal messages.
 - This is intentionally partial:
-  welcome delivery, membership Commit authority, and the broader runtime still depend on the old relay/MDK path and need the next cuts.
+  welcome delivery, server-side Commit validation/authority, and the broader runtime still depend on the old relay/MDK path and need the next cuts.
 - The first durable transport model is file-backed:
   `PIKA_CHAT_SERVER_STATE_PATH` points at a JSON room/device log with persistent sequence numbers.
 - The inventory pass confirmed the biggest simplification wins:

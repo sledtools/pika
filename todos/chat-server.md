@@ -34,15 +34,15 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
 - [x] Decide v1 priorities: favor simplicity and maintainability over early metadata optimization.
 - [x] Inventory the relay/MDK/Marmot private-chat surface and mark what should be deleted, replaced, or kept.
 - [~] Write the v1 protocol surface:
-  signed login and session auth are implemented; device registration, key package upload/claim, room create, room event append, and room sync are implemented; commit submit validation, explicit ack, and invite payloads remain.
+  signed login and session auth are implemented; device registration, key package upload/claim, room create, room event append, room sync, and the first authoritative membership-commit submit/ack path are implemented; invite payloads and broader room discovery remain.
 - [~] Add a new server crate for private chat transport, likely `crates/pika-chat-server`.
 - [ ] Reuse or extract shared server pieces from `pika-server`:
   Axum setup, Postgres patterns, push plumbing, NIP-98 auth helpers.
 - [~] Build a minimal room log model with:
   `room_id`, `room_seq`, `epoch`, `event_type`, sender device, ciphertext/control payload, timestamps.
 - [~] Implement client sync against the room log by sequence number instead of relay replay.
-- [ ] Implement the first server-authoritative membership flow:
-  create room, upload/claim KeyPackages, submit Commit bundle, persist Commit, then deliver Welcome.
+- [~] Implement the first server-authoritative membership flow:
+  already-bound add-member commits can now go through one server write that validates room epoch, persists the Commit, updates room membership, and enqueues Welcomes; room bootstrap and the non-add-member cases still need the same treatment.
 - [ ] Build a new client runtime around OpenMLS and local durable storage.
 - [ ] Route push notifications from server-stored room events instead of relay listeners.
 - [ ] Migrate one narrow chat path end to end:
@@ -61,7 +61,7 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
 - Specify the Commit submission contract:
   what the client sends, what the server validates, and when the server rejects stale work.
 - Next seam:
-  move membership Commit publication onto the chat server so room membership stops being static.
+  extend authoritative membership-commit publication beyond add-member on already-bound rooms.
 - Define invite payloads with explicit server URLs and no relay metadata.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
@@ -105,8 +105,12 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `publish_prepared_evolution` appends the MLS commit wrapper as a `commit` room event when a room binding exists, so existing room members can learn about membership changes from the same ordered server log as normal messages.
 - Welcome delivery can now bypass relays too:
   the chat server has a simple per-recipient welcome inbox, the app uploads giftwrapped MLS welcomes there when `private_chat_server_url` is configured, and the periodic chat-server poll loop claims and unwraps them locally.
+- Already-bound add-member commits now have a first server-authoritative path:
+  `POST /v1/rooms/:room_id/membership-commits` checks the caller's expected room epoch, persists the Commit, advances room epoch, replaces the member list, and enqueues the supplied Welcome giftwraps in one durable write.
+- The client now uses that authoritative path for add-members on bound rooms:
+  it builds the Welcome giftwraps before submit, treats server acceptance as the publish boundary, skips the old follow-up member reconcile / duplicate welcome upload when the server already handled them, and clears the local pending commit if the server rejects the work as stale.
 - This is intentionally partial:
-  server-side Commit validation/authority and the broader runtime still depend on the old relay/MDK path and need the next cuts.
+  room bootstrap, rename/remove/leave commits, invite/discovery routing, and the broader runtime still depend on the old relay/MDK path and need the next cuts.
 - The first durable transport model is file-backed:
   `PIKA_CHAT_SERVER_STATE_PATH` points at a JSON room/device log with persistent sequence numbers.
 - The inventory pass confirmed the biggest simplification wins:

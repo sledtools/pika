@@ -10,8 +10,9 @@ use uuid::Uuid;
 
 use crate::protocol::{
     AppendRoomEventRequest, ClaimKeyPackageRequest, CreateRoomRequest, DeviceRecord,
-    KeyPackageRecord, RegisterDeviceRequest, RoomEvent, RoomSummary, UpdateRoomMembersRequest,
-    UploadKeyPackageRequest, UploadWelcomeRequest, WelcomeRecord,
+    KeyPackageRecord, RegisterDeviceRequest, RoomEvent, RoomEventType, RoomSummary,
+    SubmitMembershipCommitRequest, UpdateRoomMembersRequest, UploadKeyPackageRequest,
+    UploadWelcomeRequest, WelcomeRecord,
 };
 
 const MAX_SYNC_LIMIT: usize = 200;
@@ -32,6 +33,8 @@ pub enum StoreError {
     EmptyKeyPackagePayload,
     #[error("key package not found")]
     KeyPackageNotFound,
+    #[error("room epoch mismatch: expected {expected}, actual {actual}")]
+    RoomEpochMismatch { expected: u64, actual: u64 },
 }
 
 #[derive(Debug, Error)]
@@ -182,6 +185,19 @@ impl StoreHandle {
         Ok(event)
     }
 
+    pub async fn submit_membership_commit(
+        &self,
+        sender_npub: &str,
+        room_id: &str,
+        request: SubmitMembershipCommitRequest,
+        now: u64,
+    ) -> Result<(RoomSummary, RoomEvent), StoreHandleError> {
+        let mut store = self.inner.write().await;
+        let result = store.submit_membership_commit(sender_npub, room_id, request, now)?;
+        self.persist_locked(&store)?;
+        Ok(result)
+    }
+
     pub async fn room_summary_for_member(
         &self,
         member_npub: &str,
@@ -258,20 +274,14 @@ impl ChatStore {
         request: CreateRoomRequest,
         now: u64,
     ) -> RoomSummary {
-        let mut members = BTreeSet::new();
+        let mut members = normalized_member_npubs(request.member_npubs);
         members.insert(creator_npub.to_string());
-        members.extend(
-            request
-                .member_npubs
-                .into_iter()
-                .map(|value| value.trim().to_ascii_lowercase())
-                .filter(|value| !value.is_empty()),
-        );
 
         let summary = RoomSummary {
             room_id: new_prefixed_id("room"),
             created_by: creator_npub.to_string(),
             members: members.into_iter().collect(),
+            epoch: 0,
             last_seq: 0,
             created_at: now,
         };
@@ -304,15 +314,9 @@ impl ChatStore {
             return Err(StoreError::NotRoomMember);
         }
 
-        let mut members = BTreeSet::new();
-        members.extend(
-            request
-                .member_npubs
-                .into_iter()
-                .map(|value| value.trim().to_ascii_lowercase())
-                .filter(|value| !value.is_empty()),
-        );
-        room.summary.members = members.into_iter().collect();
+        room.summary.members = normalized_member_npubs(request.member_npubs)
+            .into_iter()
+            .collect();
         Ok(room.summary.clone())
     }
 
@@ -353,27 +357,39 @@ impl ChatStore {
         Ok(key_package)
     }
 
+    fn ensure_device_owner(
+        &self,
+        owner_npub: &str,
+        device_id: Option<&str>,
+    ) -> Result<(), StoreError> {
+        let Some(device_id) = device_id else {
+            return Ok(());
+        };
+        let devices = self
+            .devices_by_owner
+            .get(owner_npub)
+            .ok_or(StoreError::DeviceNotFound)?;
+        if devices.contains_key(device_id) {
+            Ok(())
+        } else {
+            Err(StoreError::DeviceOwnerMismatch)
+        }
+    }
+
     pub fn enqueue_welcome(
         &mut self,
         sender_npub: &str,
         request: UploadWelcomeRequest,
         now: u64,
     ) -> Result<WelcomeRecord, StoreError> {
-        let recipient_npub = request.recipient_npub.trim().to_ascii_lowercase();
-        let wrapper_event_json = request.wrapper_event_json.trim().to_string();
-        if wrapper_event_json.is_empty() {
-            return Err(StoreError::EmptyEventContent);
-        }
-
-        let welcome = WelcomeRecord {
-            welcome_id: new_prefixed_id("welcome"),
-            recipient_npub: recipient_npub.clone(),
-            sender_npub: sender_npub.to_string(),
-            wrapper_event_json,
-            created_at: now,
-        };
+        let welcome = prepare_welcome_record(
+            sender_npub,
+            request.recipient_npub,
+            request.wrapper_event_json,
+            now,
+        )?;
         self.welcomes_by_recipient
-            .entry(recipient_npub)
+            .entry(welcome.recipient_npub.clone())
             .or_default()
             .push(welcome.clone());
         Ok(welcome)
@@ -432,28 +448,12 @@ impl ChatStore {
         request: AppendRoomEventRequest,
         now: u64,
     ) -> Result<RoomEvent, StoreError> {
+        self.ensure_device_owner(sender_npub, request.sender_device_id.as_deref())?;
         let room = self
             .rooms
             .get_mut(room_id)
             .ok_or(StoreError::RoomNotFound)?;
-        if !room
-            .summary
-            .members
-            .iter()
-            .any(|member| member == sender_npub)
-        {
-            return Err(StoreError::NotRoomMember);
-        }
-
-        if let Some(device_id) = request.sender_device_id.as_deref() {
-            let devices = self
-                .devices_by_owner
-                .get(sender_npub)
-                .ok_or(StoreError::DeviceNotFound)?;
-            if !devices.contains_key(device_id) {
-                return Err(StoreError::DeviceOwnerMismatch);
-            }
-        }
+        ensure_room_member(room, sender_npub)?;
 
         let content = request.content.trim().to_string();
         if content.is_empty() {
@@ -475,6 +475,83 @@ impl ChatStore {
         room.summary.last_seq = next_seq;
         room.events.push(event.clone());
         Ok(event)
+    }
+
+    pub fn submit_membership_commit(
+        &mut self,
+        sender_npub: &str,
+        room_id: &str,
+        request: SubmitMembershipCommitRequest,
+        now: u64,
+    ) -> Result<(RoomSummary, RoomEvent), StoreError> {
+        let SubmitMembershipCommitRequest {
+            expected_epoch,
+            sender_device_id,
+            member_npubs,
+            wrapper_event_json,
+            welcomes,
+        } = request;
+        self.ensure_device_owner(sender_npub, sender_device_id.as_deref())?;
+        let content = wrapper_event_json.trim().to_string();
+        if content.is_empty() {
+            return Err(StoreError::EmptyEventContent);
+        }
+
+        let welcomes = welcomes
+            .into_iter()
+            .map(|welcome| {
+                prepare_welcome_record(
+                    sender_npub,
+                    welcome.recipient_npub,
+                    welcome.wrapper_event_json,
+                    now,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let (summary, event) = {
+            let room = self
+                .rooms
+                .get_mut(room_id)
+                .ok_or(StoreError::RoomNotFound)?;
+            ensure_room_member(room, sender_npub)?;
+
+            if expected_epoch != room.summary.epoch {
+                return Err(StoreError::RoomEpochMismatch {
+                    expected: expected_epoch,
+                    actual: room.summary.epoch,
+                });
+            }
+
+            let next_seq = room.summary.last_seq.saturating_add(1);
+            let next_epoch = room.summary.epoch.saturating_add(1);
+            let event = RoomEvent {
+                event_id: new_prefixed_id("evt"),
+                room_id: room.summary.room_id.clone(),
+                seq: next_seq,
+                event_type: RoomEventType::Commit,
+                epoch: next_epoch,
+                sender_npub: sender_npub.to_string(),
+                sender_device_id,
+                content,
+                created_at: now,
+            };
+
+            room.summary.last_seq = next_seq;
+            room.summary.epoch = next_epoch;
+            room.summary.members = normalized_member_npubs(member_npubs).into_iter().collect();
+            room.events.push(event.clone());
+            (room.summary.clone(), event)
+        };
+
+        for welcome in welcomes {
+            self.welcomes_by_recipient
+                .entry(welcome.recipient_npub.clone())
+                .or_default()
+                .push(welcome);
+        }
+
+        Ok((summary, event))
     }
 
     pub fn room_summary_for_member(
@@ -527,6 +604,48 @@ fn clean_optional_field(value: Option<String>) -> Option<String> {
         .filter(|raw| !raw.is_empty())
 }
 
+fn prepare_welcome_record(
+    sender_npub: &str,
+    recipient_npub: String,
+    wrapper_event_json: String,
+    now: u64,
+) -> Result<WelcomeRecord, StoreError> {
+    let recipient_npub = recipient_npub.trim().to_ascii_lowercase();
+    let wrapper_event_json = wrapper_event_json.trim().to_string();
+    if wrapper_event_json.is_empty() {
+        return Err(StoreError::EmptyEventContent);
+    }
+
+    Ok(WelcomeRecord {
+        welcome_id: new_prefixed_id("welcome"),
+        recipient_npub,
+        sender_npub: sender_npub.to_string(),
+        wrapper_event_json,
+        created_at: now,
+    })
+}
+
+fn normalized_member_npubs(values: Vec<String>) -> BTreeSet<String> {
+    values
+        .into_iter()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn ensure_room_member(room: &StoredRoom, sender_npub: &str) -> Result<(), StoreError> {
+    if room
+        .summary
+        .members
+        .iter()
+        .any(|member| member == sender_npub)
+    {
+        Ok(())
+    } else {
+        Err(StoreError::NotRoomMember)
+    }
+}
+
 fn new_prefixed_id(prefix: &str) -> String {
     format!("{prefix}_{}", Uuid::new_v4().simple())
 }
@@ -551,7 +670,7 @@ mod tests {
     use super::*;
     use crate::protocol::{
         AppendRoomEventRequest, ClaimKeyPackageRequest, CreateRoomRequest, RegisterDeviceRequest,
-        RoomEventType, UploadKeyPackageRequest,
+        RoomEventType, SubmitMembershipCommitRequest, UploadKeyPackageRequest, WelcomeEnvelope,
     };
 
     #[test]
@@ -561,6 +680,7 @@ mod tests {
             "npub1alice",
             CreateRoomRequest {
                 member_npubs: vec!["npub1bob".to_string(), "npub1alice".to_string()],
+                epoch: None,
             },
             100,
         );
@@ -568,6 +688,7 @@ mod tests {
             room.members,
             vec!["npub1alice".to_string(), "npub1bob".to_string()]
         );
+        assert_eq!(room.epoch, 0);
     }
 
     #[test]
@@ -577,6 +698,7 @@ mod tests {
             "npub1alice",
             CreateRoomRequest {
                 member_npubs: vec![],
+                epoch: None,
             },
             100,
         );
@@ -647,6 +769,126 @@ mod tests {
     }
 
     #[test]
+    fn membership_commit_updates_room_epoch_members_and_welcomes() {
+        let mut store = ChatStore::default();
+        let device = store.register_device(
+            "npub1alice",
+            RegisterDeviceRequest {
+                platform: Some("ios".to_string()),
+                push_token: None,
+            },
+            100,
+        );
+        let room = store.create_room(
+            "npub1alice",
+            CreateRoomRequest {
+                member_npubs: vec!["npub1bob".to_string()],
+                epoch: None,
+            },
+            101,
+        );
+
+        let (summary, event) = store
+            .submit_membership_commit(
+                "npub1alice",
+                &room.room_id,
+                SubmitMembershipCommitRequest {
+                    expected_epoch: 0,
+                    sender_device_id: Some(device.device_id),
+                    member_npubs: vec![
+                        "npub1alice".to_string(),
+                        "npub1bob".to_string(),
+                        "npub1carol".to_string(),
+                    ],
+                    wrapper_event_json: "{\"kind\":1059,\"content\":\"commit\"}".to_string(),
+                    welcomes: vec![WelcomeEnvelope {
+                        recipient_npub: "npub1carol".to_string(),
+                        wrapper_event_json: "{\"kind\":1059,\"content\":\"welcome\"}".to_string(),
+                    }],
+                },
+                102,
+            )
+            .expect("submit membership commit");
+
+        assert_eq!(event.event_type, RoomEventType::Commit);
+        assert_eq!(event.seq, 1);
+        assert_eq!(event.epoch, 1);
+        assert_eq!(summary.epoch, 1);
+        assert_eq!(summary.last_seq, 1);
+        assert!(summary.members.contains(&"npub1carol".to_string()));
+
+        let claimed = store.claim_welcomes("npub1carol");
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].sender_npub, "npub1alice");
+
+        let synced_summary = store
+            .room_summary_for_member("npub1carol", &room.room_id)
+            .expect("new member should see room");
+        assert_eq!(synced_summary.epoch, 1);
+    }
+
+    #[test]
+    fn membership_commit_epoch_mismatch_is_atomic() {
+        let mut store = ChatStore::default();
+        let device = store.register_device(
+            "npub1alice",
+            RegisterDeviceRequest {
+                platform: Some("ios".to_string()),
+                push_token: None,
+            },
+            100,
+        );
+        let room = store.create_room(
+            "npub1alice",
+            CreateRoomRequest {
+                member_npubs: vec!["npub1bob".to_string()],
+                epoch: None,
+            },
+            101,
+        );
+
+        let err = store
+            .submit_membership_commit(
+                "npub1alice",
+                &room.room_id,
+                SubmitMembershipCommitRequest {
+                    expected_epoch: 1,
+                    sender_device_id: Some(device.device_id),
+                    member_npubs: vec!["npub1alice".to_string(), "npub1carol".to_string()],
+                    wrapper_event_json: "{\"kind\":1059,\"content\":\"commit\"}".to_string(),
+                    welcomes: vec![WelcomeEnvelope {
+                        recipient_npub: "npub1carol".to_string(),
+                        wrapper_event_json: "{\"kind\":1059,\"content\":\"welcome\"}".to_string(),
+                    }],
+                },
+                102,
+            )
+            .expect_err("stale epoch should fail");
+        assert!(matches!(
+            err,
+            StoreError::RoomEpochMismatch {
+                expected: 1,
+                actual: 0
+            }
+        ));
+
+        let summary = store
+            .room_summary_for_member("npub1alice", &room.room_id)
+            .expect("room should still exist");
+        assert_eq!(summary.epoch, 0);
+        assert_eq!(summary.last_seq, 0);
+        assert_eq!(
+            summary.members,
+            vec!["npub1alice".to_string(), "npub1bob".to_string()]
+        );
+        assert!(store.claim_welcomes("npub1carol").is_empty());
+        assert!(store
+            .sync_room_events("npub1alice", &room.room_id, 0, 10)
+            .expect("sync events")
+            .is_empty());
+    }
+
+    #[test]
     fn persistent_store_round_trip() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("chat-store.json");
@@ -658,6 +900,7 @@ mod tests {
                     "npub1alice",
                     CreateRoomRequest {
                         member_npubs: vec!["npub1bob".to_string()],
+                        epoch: None,
                     },
                     100,
                 )

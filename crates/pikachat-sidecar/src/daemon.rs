@@ -646,6 +646,7 @@ where
         added_pubkeys,
         merge_error,
         welcome_delivery,
+        ..
     } = result;
 
     if let Some(merge_error) = merge_error {
@@ -838,6 +839,7 @@ where
         added_pubkeys: _,
         merge_error,
         welcome_delivery: _,
+        ..
     } = result;
 
     if let Some(merge_error) = merge_error {

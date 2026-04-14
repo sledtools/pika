@@ -51,7 +51,7 @@ use host_context::runtime_for_mdk;
 use mdk_core::encrypted_media::types::{EncryptedMediaUpload, MediaReference};
 use mdk_core::prelude::{message_types, GroupId, MessageProcessingResult, NostrGroupConfigData};
 use mdk_storage_traits::groups::Pagination;
-use pika_chat_server::protocol::{RoomEvent, RoomEventType};
+use pika_chat_server::protocol::{RoomEvent, RoomEventType, WelcomeEnvelope};
 use pika_marmot_runtime::call::ParsedCallSignal;
 use pika_marmot_runtime::call_runtime::{
     GroupCallContext, InboundCallSignalOutcome, InboundSignalContext, PreparedAcceptedCall,
@@ -4156,7 +4156,7 @@ impl AppCore {
             return;
         }
 
-        let (session_client, http_client, tx, member_npubs) = {
+        let (session_client, http_client, tx, member_npubs, epoch) = {
             let Some(sess) = self.session.as_ref() else {
                 return;
             };
@@ -4178,19 +4178,37 @@ impl AppCore {
                         .map(|npub| npub.to_lowercase())
                 })
                 .collect::<Vec<_>>();
+            let epoch = match sess.mdk.get_group(&snapshot.mls_group_id) {
+                Ok(Some(group)) => group.epoch,
+                Ok(None) => {
+                    tracing::warn!(%chat_id, "joined group missing during chat-server room binding");
+                    return;
+                }
+                Err(err) => {
+                    tracing::warn!(%err, %chat_id, "failed to load group epoch for chat-server room binding");
+                    return;
+                }
+            };
             (
                 sess.client.clone(),
                 self.http_client.clone(),
                 self.core_sender.clone(),
                 member_npubs,
+                epoch,
             )
         };
 
         let chat_id = chat_id.to_string();
         let server_url = base_url.as_str().trim_end_matches('/').to_string();
         self.runtime.spawn(async move {
-            match chat_server::create_room(&http_client, &session_client, &base_url, member_npubs)
-                .await
+            match chat_server::create_room(
+                &http_client,
+                &session_client,
+                &base_url,
+                member_npubs,
+                epoch,
+            )
+            .await
             {
                 Ok(room) => {
                     let _ = tx.send(CoreMsg::Internal(Box::new(
@@ -4704,6 +4722,21 @@ impl AppCore {
         prepared: PreparedMembershipEvolution,
         publish_status: EvolutionPublishStatus,
     ) {
+        if let EvolutionPublishStatus::PublishFailed(ref error) = publish_status {
+            if prepared.stale_epoch_conflict || Self::is_chat_server_epoch_conflict(error) {
+                if let Some(sess) = self.session.as_ref() {
+                    if let Err(clear_err) = sess.mdk.clear_pending_commit(&prepared.mls_group_id) {
+                        tracing::warn!(
+                            error = %clear_err,
+                            chat_id = %prepared.nostr_group_id_hex,
+                            "failed to clear stale pending commit after chat-server conflict"
+                        );
+                    }
+                }
+                self.begin_chat_server_room_sync();
+            }
+        }
+
         let Some(sess) = self.session.as_ref() else {
             self.pending_group_ops.remove(&prepared.nostr_group_id_hex);
             if let EvolutionPublishStatus::PublishFailed(error) = publish_status {
@@ -4777,7 +4810,9 @@ impl AppCore {
         }
 
         self.refresh_all_from_storage();
-        self.begin_chat_server_room_membership_reconcile(&chat_id);
+        if !result.transport_applied_membership {
+            self.begin_chat_server_room_membership_reconcile(&chat_id);
+        }
     }
 
     fn handle_chat_server_room_bound(
@@ -4936,6 +4971,105 @@ impl AppCore {
         for (wrapper, rumor) in welcomes {
             self.handle_gift_wrap_received(wrapper, rumor);
         }
+    }
+
+    fn chat_server_members_after_commit(
+        &self,
+        chat_id: &str,
+        prepared: &PreparedMembershipEvolution,
+    ) -> Option<Vec<String>> {
+        let sess = self.session.as_ref()?;
+        let snapshot = sess
+            .host_context()
+            .lookup_joined_group_snapshot(chat_id)
+            .ok()?;
+        let mut members: BTreeSet<String> = snapshot
+            .member_snapshots
+            .into_iter()
+            .map(|member| {
+                member
+                    .pubkey
+                    .to_bech32()
+                    .expect("joined group member pubkey encodes to npub")
+                    .to_lowercase()
+            })
+            .collect();
+        for pubkey in &prepared.removed_pubkeys {
+            members.remove(
+                &pubkey
+                    .to_bech32()
+                    .expect("removed member pubkey encodes to npub")
+                    .to_lowercase(),
+            );
+        }
+        if prepared.self_removed {
+            members.remove(
+                &sess
+                    .pubkey
+                    .to_bech32()
+                    .expect("local member pubkey encodes to npub")
+                    .to_lowercase(),
+            );
+        }
+        for pubkey in &prepared.added_pubkeys {
+            members.insert(
+                pubkey
+                    .to_bech32()
+                    .expect("added member pubkey encodes to npub")
+                    .to_lowercase(),
+            );
+        }
+        Some(members.into_iter().collect())
+    }
+
+    async fn build_chat_server_welcome_envelopes(
+        client: &Client,
+        recipients: &[PublicKey],
+        welcome_rumors: &[UnsignedEvent],
+    ) -> anyhow::Result<Vec<WelcomeEnvelope>> {
+        let signer = client
+            .signer()
+            .await
+            .context("welcome delivery signer unavailable")?;
+        let expires = Timestamp::from_secs(Timestamp::now().as_secs() + 30 * 24 * 60 * 60);
+        let tags = vec![Tag::expiration(expires)];
+        let envelopes = Arc::new(Mutex::new(Vec::<WelcomeEnvelope>::new()));
+        let capture = Arc::clone(&envelopes);
+        pika_marmot_runtime::welcome::publish_welcome_rumors(
+            &signer,
+            welcome_rumors,
+            recipients,
+            tags,
+            move |receiver, giftwrap| {
+                let capture = Arc::clone(&capture);
+                async move {
+                    let recipient_npub = receiver
+                        .to_bech32()
+                        .context("encode welcome recipient npub")?
+                        .to_lowercase();
+                    let wrapper_event_json =
+                        serde_json::to_string(&giftwrap).context("serialize welcome giftwrap")?;
+                    capture
+                        .lock()
+                        .expect("welcome envelope lock")
+                        .push(WelcomeEnvelope {
+                            recipient_npub,
+                            wrapper_event_json,
+                        });
+                    Ok(())
+                }
+            },
+        )
+        .await?;
+        let envelopes = Arc::try_unwrap(envelopes)
+            .map_err(|_| anyhow::anyhow!("welcome envelope collection still shared"))?
+            .into_inner()
+            .expect("welcome envelope lock");
+        Ok(envelopes)
+    }
+
+    fn is_chat_server_epoch_conflict(error: &str) -> bool {
+        error.contains("status 409") || error.contains("room epoch mismatch")
     }
 
     fn handle_follow_list_fetched(
@@ -6454,7 +6588,10 @@ impl AppCore {
                     None,
                     vec![],
                 ) {
-                    Ok(prepared) => prepared,
+                    Ok(mut prepared) => {
+                        prepared.removed_pubkeys = pubkeys.clone();
+                        prepared
+                    }
                     Err(e) => {
                         self.toast(format!("Remove members failed: {e}"));
                         return;
@@ -6490,7 +6627,10 @@ impl AppCore {
                     None,
                     vec![],
                 ) {
-                    Ok(prepared) => prepared,
+                    Ok(mut prepared) => {
+                        prepared.self_removed = true;
+                        prepared
+                    }
                     Err(e) => {
                         self.toast(format!("Leave group failed: {e}"));
                         return;
@@ -6602,6 +6742,11 @@ impl AppCore {
         let client = sess.client.clone();
         let http_client = self.http_client.clone();
         let room_binding = self.chat_server_rooms.get(chat_id).cloned();
+        let authoritative_member_npubs = if !prepared.is_membership_change() {
+            None
+        } else {
+            self.chat_server_members_after_commit(chat_id, &prepared)
+        };
         let tx = self.core_sender.clone();
         let chat_id = chat_id.to_string();
 
@@ -6624,6 +6769,95 @@ impl AppCore {
                         return;
                     }
                 };
+
+                if prepared.is_membership_change() {
+                    let Some(member_npubs) = authoritative_member_npubs else {
+                        let publish_status = EvolutionPublishStatus::PublishFailed(
+                            "could not compute post-commit room members".to_string(),
+                        );
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::GroupEvolutionPublished {
+                                prepared,
+                                publish_status,
+                            },
+                        )));
+                        return;
+                    };
+
+                    let welcomes = match Self::build_chat_server_welcome_envelopes(
+                        &client,
+                        &prepared.added_pubkeys,
+                        &prepared.welcome_rumors,
+                    )
+                    .await
+                    {
+                        Ok(welcomes) => welcomes,
+                        Err(err) => {
+                            let publish_status =
+                                EvolutionPublishStatus::PublishFailed(err.to_string());
+                            let _ = tx.send(CoreMsg::Internal(Box::new(
+                                InternalEvent::GroupEvolutionPublished {
+                                    prepared,
+                                    publish_status,
+                                },
+                            )));
+                            return;
+                        }
+                    };
+
+                    let mut prepared = prepared;
+                    match chat_server::submit_membership_commit(
+                        &http_client,
+                        &client,
+                        &base_url,
+                        &room_id,
+                        prepared.expected_epoch,
+                        member_npubs,
+                        &wrapper,
+                        welcomes,
+                    )
+                    .await
+                    {
+                        Ok((_room, appended)) => {
+                            prepared.transport_applied_membership = true;
+                            prepared.transport_delivered_welcomes = true;
+                            let _ = tx.send(CoreMsg::Internal(Box::new(
+                                InternalEvent::GroupEvolutionPublished {
+                                    prepared,
+                                    publish_status: EvolutionPublishStatus::Published,
+                                },
+                            )));
+                            let _ = tx.send(CoreMsg::Internal(Box::new(
+                                InternalEvent::ChatServerRoomEventAppended {
+                                    chat_id,
+                                    room_id,
+                                    seq: appended.seq,
+                                    wrapper,
+                                },
+                            )));
+                        }
+                        Err(err) => {
+                            if err.is_stale_epoch_conflict() {
+                                prepared.mark_stale_epoch_conflict();
+                            }
+                            let publish_status =
+                                EvolutionPublishStatus::PublishFailed(err.to_string());
+                            tracing::warn!(
+                                error = err.to_string(),
+                                %chat_id,
+                                %room_id,
+                                "chat-server membership commit failed"
+                            );
+                            let _ = tx.send(CoreMsg::Internal(Box::new(
+                                InternalEvent::GroupEvolutionPublished {
+                                    prepared,
+                                    publish_status,
+                                },
+                            )));
+                        }
+                    }
+                    return;
+                }
 
                 match chat_server::append_wrapped_room_event(
                     &http_client,
@@ -9131,8 +9365,14 @@ mod tests {
                 evolution_event: nostr_sdk::EventBuilder::new(nostr_sdk::Kind::Custom(444), "ok")
                     .sign_with_keys(&keys)
                     .expect("dummy event"),
+                expected_epoch: 0,
                 added_pubkeys: vec![],
+                removed_pubkeys: vec![],
+                self_removed: false,
                 welcome_rumors: vec![],
+                transport_applied_membership: false,
+                transport_delivered_welcomes: false,
+                stale_epoch_conflict: false,
             };
 
             let operation = core
@@ -9234,8 +9474,14 @@ mod tests {
                 )
                 .sign_with_keys(&keys)
                 .expect("dummy event"),
+                expected_epoch: 0,
                 added_pubkeys: vec![],
+                removed_pubkeys: vec![],
+                self_removed: false,
                 welcome_rumors: vec![],
+                transport_applied_membership: false,
+                transport_delivered_welcomes: false,
+                stale_epoch_conflict: false,
             };
 
             let operation = core
@@ -9263,6 +9509,48 @@ mod tests {
             assert_eq!(
                 members_after_failure, initial_members,
                 "failed evolution publish should not merge the pending commit"
+            );
+        }
+
+        #[test]
+        fn stale_chat_server_membership_conflict_clears_pending_commit() {
+            let (mut core, chat_id, _keys, gid) = make_core_with_group();
+            let first_peer = Keys::generate();
+            let first_kp = make_peer_key_package(&first_peer);
+            let second_peer = Keys::generate();
+            let second_kp = make_peer_key_package(&second_peer);
+
+            let mut prepared = core
+                .prepare_membership_evolution_for_chat(&chat_id, &[first_kp])
+                .expect("prepare first membership evolution");
+            prepared.mark_stale_epoch_conflict();
+
+            core.pending_group_ops.insert(chat_id.clone());
+            core.handle_group_evolution_published(
+                prepared,
+                pika_marmot_runtime::membership::EvolutionPublishStatus::PublishFailed(
+                    "chat-server submit membership commit: request failed with status 409: room epoch mismatch: expected 1, actual 0"
+                        .to_string(),
+                ),
+            );
+
+            let retried = core.prepare_membership_evolution_for_chat(&chat_id, &[second_kp]);
+            assert!(
+                retried.is_ok(),
+                "stale epoch conflicts should clear the pending commit so the next membership change can be prepared"
+            );
+
+            let members = core
+                .session
+                .as_ref()
+                .expect("session")
+                .mdk
+                .get_members(&gid)
+                .expect("get members after stale conflict");
+            assert_eq!(
+                members.len(),
+                1,
+                "stale conflict should not merge the first commit"
             );
         }
     }
@@ -10305,8 +10593,14 @@ mod tests {
                 mls_group_id: group_id,
                 nostr_group_id_hex: "chat1".to_string(),
                 evolution_event: dummy_event,
+                expected_epoch: 0,
                 added_pubkeys: vec![],
+                removed_pubkeys: vec![],
+                self_removed: false,
                 welcome_rumors: vec![],
+                transport_applied_membership: false,
+                transport_delivered_welcomes: false,
+                stale_epoch_conflict: false,
             };
 
             // A second publish_prepared_evolution on the same chat should be rejected.
@@ -10333,8 +10627,14 @@ mod tests {
                 evolution_event: nostr_sdk::EventBuilder::new(nostr_sdk::Kind::Custom(444), "ok")
                     .sign_with_keys(&keys)
                     .expect("dummy event"),
+                expected_epoch: 0,
                 added_pubkeys: vec![],
+                removed_pubkeys: vec![],
+                self_removed: false,
                 welcome_rumors: vec![],
+                transport_applied_membership: false,
+                transport_delivered_welcomes: false,
+                stale_epoch_conflict: false,
             };
 
             core.handle_group_evolution_published(
@@ -10361,8 +10661,14 @@ mod tests {
                 )
                 .sign_with_keys(&keys)
                 .expect("dummy event"),
+                expected_epoch: 0,
                 added_pubkeys: vec![],
+                removed_pubkeys: vec![],
+                self_removed: false,
                 welcome_rumors: vec![],
+                transport_applied_membership: false,
+                transport_delivered_welcomes: false,
+                stale_epoch_conflict: false,
             };
 
             core.handle_group_evolution_published(

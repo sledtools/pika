@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use mdk_storage_traits::GroupId;
 use nostr_sdk::prelude::{Event, PublicKey, UnsignedEvent};
 
@@ -12,8 +12,14 @@ pub struct PreparedMembershipEvolution {
     pub mls_group_id: GroupId,
     pub nostr_group_id_hex: String,
     pub evolution_event: Event,
+    pub expected_epoch: u64,
     pub added_pubkeys: Vec<PublicKey>,
+    pub removed_pubkeys: Vec<PublicKey>,
+    pub self_removed: bool,
     pub welcome_rumors: Vec<UnsignedEvent>,
+    pub transport_applied_membership: bool,
+    pub transport_delivered_welcomes: bool,
+    pub stale_epoch_conflict: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -29,6 +35,7 @@ pub struct MembershipUpdateResult {
     pub added_pubkeys: Vec<PublicKey>,
     pub merge_error: Option<String>,
     pub welcome_delivery: Option<WelcomeDeliveryPlan>,
+    pub transport_applied_membership: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +97,10 @@ impl<'a> MembershipRuntime<'a> {
             None,
             Vec::new(),
         )
+        .map(|mut prepared| {
+            prepared.removed_pubkeys = removed_pubkeys.to_vec();
+            prepared
+        })
     }
 
     pub fn prepare_leave_group(
@@ -104,6 +115,10 @@ impl<'a> MembershipRuntime<'a> {
             None,
             Vec::new(),
         )
+        .map(|mut prepared| {
+            prepared.self_removed = true;
+            prepared
+        })
     }
 
     pub fn prepare_evolution(
@@ -113,6 +128,12 @@ impl<'a> MembershipRuntime<'a> {
         welcome_rumors: Option<Vec<UnsignedEvent>>,
         added_pubkeys: Vec<PublicKey>,
     ) -> Result<PreparedMembershipEvolution> {
+        let expected_epoch = self
+            .mdk
+            .get_group(&mls_group_id)
+            .context("get group for evolution")?
+            .ok_or_else(|| anyhow!("group not found"))?
+            .epoch;
         let nostr_group_id_hex = self
             .mdk
             .get_group(&mls_group_id)
@@ -124,8 +145,14 @@ impl<'a> MembershipRuntime<'a> {
             mls_group_id,
             nostr_group_id_hex,
             evolution_event,
+            expected_epoch,
             added_pubkeys,
+            removed_pubkeys: Vec::new(),
+            self_removed: false,
             welcome_rumors: welcome_rumors.unwrap_or_default(),
+            transport_applied_membership: false,
+            transport_delivered_welcomes: false,
+            stale_epoch_conflict: false,
         })
     }
 
@@ -138,6 +165,8 @@ impl<'a> MembershipRuntime<'a> {
             nostr_group_id_hex,
             added_pubkeys,
             welcome_rumors,
+            transport_applied_membership,
+            transport_delivered_welcomes,
             ..
         } = prepared;
 
@@ -147,14 +176,16 @@ impl<'a> MembershipRuntime<'a> {
             .err()
             .map(|err| err.to_string());
 
-        let welcome_delivery = if merge_error.is_none() && !welcome_rumors.is_empty() {
-            Some(WelcomeDeliveryPlan {
-                recipients: added_pubkeys.clone(),
-                welcome_rumors,
-            })
-        } else {
-            None
-        };
+        let welcome_delivery =
+            if merge_error.is_none() && !transport_delivered_welcomes && !welcome_rumors.is_empty()
+            {
+                Some(WelcomeDeliveryPlan {
+                    recipients: added_pubkeys.clone(),
+                    welcome_rumors,
+                })
+            } else {
+                None
+            };
 
         MembershipUpdateResult {
             mls_group_id,
@@ -162,11 +193,20 @@ impl<'a> MembershipRuntime<'a> {
             added_pubkeys,
             merge_error,
             welcome_delivery,
+            transport_applied_membership,
         }
     }
 }
 
 impl PreparedMembershipEvolution {
+    pub fn is_membership_change(&self) -> bool {
+        !self.added_pubkeys.is_empty() || !self.removed_pubkeys.is_empty() || self.self_removed
+    }
+
+    pub fn mark_stale_epoch_conflict(&mut self) {
+        self.stale_epoch_conflict = true;
+    }
+
     pub async fn publish_with<F, Fut>(&self, mut publish: F) -> EvolutionPublishStatus
     where
         F: FnMut(Event) -> Fut,
@@ -247,6 +287,14 @@ mod tests {
         assert_eq!(prepared.added_pubkeys, vec![peer_keys.public_key()]);
         assert_eq!(prepared.welcome_rumors.len(), 1);
         assert_eq!(prepared.evolution_event.kind, Kind::MlsGroupMessage);
+        assert_eq!(
+            prepared.expected_epoch,
+            inviter_mdk
+                .get_group(&group_id)
+                .expect("get group")
+                .expect("group")
+                .epoch
+        );
     }
 
     #[test]
@@ -301,6 +349,8 @@ mod tests {
             .expect("prepare remove members");
 
         assert!(prepared.added_pubkeys.is_empty());
+        assert_eq!(prepared.removed_pubkeys, vec![peer_pubkey]);
+        assert!(!prepared.self_removed);
         assert!(prepared.welcome_rumors.is_empty());
         assert_eq!(prepared.evolution_event.kind, Kind::MlsGroupMessage);
     }
@@ -314,6 +364,8 @@ mod tests {
             .expect("prepare leave group");
 
         assert!(prepared.added_pubkeys.is_empty());
+        assert!(prepared.removed_pubkeys.is_empty());
+        assert!(prepared.self_removed);
         assert!(prepared.welcome_rumors.is_empty());
         assert_eq!(prepared.evolution_event.kind, Kind::MlsGroupMessage);
     }

@@ -11,7 +11,8 @@ use crate::nostr_auth::{
 use crate::protocol::{
     AppendRoomEventRequest, AppendRoomEventResponse, ClaimKeyPackageRequest,
     ClaimKeyPackageResponse, ClaimWelcomesResponse, CreateRoomRequest, CreateRoomResponse,
-    RegisterDeviceRequest, RegisterDeviceResponse, SyncRoomEventsQuery, SyncRoomEventsResponse,
+    RegisterDeviceRequest, RegisterDeviceResponse, SubmitMembershipCommitRequest,
+    SubmitMembershipCommitResponse, SyncRoomEventsQuery, SyncRoomEventsResponse,
     UpdateRoomMembersRequest, UpdateRoomMembersResponse, UploadKeyPackageRequest,
     UploadKeyPackageResponse, UploadWelcomeRequest, UploadWelcomeResponse,
 };
@@ -50,6 +51,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/rooms/:room_id/events",
             post(append_room_event).get(sync_room_events),
+        )
+        .route(
+            "/v1/rooms/:room_id/membership-commits",
+            post(submit_membership_commit),
         )
         .route("/v1/rooms/:room_id/members", post(update_room_members))
         .with_state(state)
@@ -216,6 +221,22 @@ async fn sync_room_events(
     Ok(Json(SyncRoomEventsResponse { room, events }))
 }
 
+async fn submit_membership_commit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(room_id): Path<String>,
+    Json(request): Json<SubmitMembershipCommitRequest>,
+) -> Result<Json<SubmitMembershipCommitResponse>, (StatusCode, String)> {
+    let claims = session_claims(&state, &headers)?;
+    let now = Timestamp::now().as_secs();
+    let (room, event) = state
+        .store
+        .submit_membership_commit(&claims.npub, &room_id, request, now)
+        .await
+        .map_err(store_handle_error)?;
+    Ok(Json(SubmitMembershipCommitResponse { room, event }))
+}
+
 async fn update_room_members(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -262,6 +283,7 @@ fn store_error(err: StoreError) -> (StatusCode, String) {
             StatusCode::NOT_FOUND
         }
         StoreError::NotRoomMember | StoreError::DeviceOwnerMismatch => StatusCode::FORBIDDEN,
+        StoreError::RoomEpochMismatch { .. } => StatusCode::CONFLICT,
         StoreError::EmptyEventContent | StoreError::EmptyKeyPackagePayload => {
             StatusCode::BAD_REQUEST
         }
@@ -434,6 +456,7 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&CreateRoomRequest {
                             member_npubs: vec!["npub1bob".to_string()],
+                            epoch: None,
                         })
                         .expect("serialize create request"),
                     ))
@@ -447,6 +470,7 @@ mod tests {
             .expect("read create room body");
         let create_room: CreateRoomResponse =
             serde_json::from_slice(&create_room_body).expect("decode create room body");
+        assert_eq!(create_room.room.epoch, 0);
         assert!(
             create_room
                 .room
@@ -531,9 +555,344 @@ mod tests {
             .expect("read sync body");
         let sync: SyncRoomEventsResponse =
             serde_json::from_slice(&sync_body).expect("decode sync body");
+        assert_eq!(sync.room.epoch, 0);
         assert_eq!(sync.room.last_seq, 1);
         assert_eq!(sync.events.len(), 1);
         assert_eq!(sync.events[0].content, "ciphertext-1");
+    }
+
+    #[tokio::test]
+    async fn member_can_submit_authoritative_membership_commit() {
+        let app = router(test_state());
+        let (app, alice_token, alice_npub) = login_token(app, "chat.test").await;
+        let (app, _bob_token, bob_npub) = login_token(app, "chat.test").await;
+        let (app, carol_token, carol_npub) = login_token(app, "chat.test").await;
+
+        let create_room_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/rooms")
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&CreateRoomRequest {
+                            member_npubs: vec![bob_npub.clone()],
+                            epoch: None,
+                        })
+                        .expect("serialize create room request"),
+                    ))
+                    .expect("build create room request"),
+            )
+            .await
+            .expect("create room response");
+        let create_room_body = to_bytes(create_room_response.into_body(), usize::MAX)
+            .await
+            .expect("read create room body");
+        let create_room: CreateRoomResponse =
+            serde_json::from_slice(&create_room_body).expect("decode create room body");
+
+        let register_device_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/devices/register")
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RegisterDeviceRequest {
+                            platform: Some("ios".to_string()),
+                            push_token: None,
+                        })
+                        .expect("serialize register device request"),
+                    ))
+                    .expect("build register device request"),
+            )
+            .await
+            .expect("register device response");
+        let register_device_body = to_bytes(register_device_response.into_body(), usize::MAX)
+            .await
+            .expect("read register device body");
+        let register_device: RegisterDeviceResponse =
+            serde_json::from_slice(&register_device_body).expect("decode register device body");
+
+        let commit_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/v1/rooms/{}/membership-commits",
+                        create_room.room.room_id
+                    ))
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&crate::protocol::SubmitMembershipCommitRequest {
+                            expected_epoch: 0,
+                            sender_device_id: Some(register_device.device.device_id.clone()),
+                            member_npubs: vec![
+                                alice_npub.clone(),
+                                bob_npub.clone(),
+                                carol_npub.clone(),
+                            ],
+                            wrapper_event_json: "{\"kind\":1059,\"content\":\"membership-commit\"}"
+                                .to_string(),
+                            welcomes: vec![crate::protocol::WelcomeEnvelope {
+                                recipient_npub: carol_npub.clone(),
+                                wrapper_event_json: "{\"kind\":1059,\"content\":\"welcome\"}"
+                                    .to_string(),
+                            }],
+                        })
+                        .expect("serialize membership commit request"),
+                    ))
+                    .expect("build membership commit request"),
+            )
+            .await
+            .expect("membership commit response");
+        assert_eq!(commit_response.status(), StatusCode::OK);
+        let commit_body = to_bytes(commit_response.into_body(), usize::MAX)
+            .await
+            .expect("read membership commit body");
+        let committed: crate::protocol::SubmitMembershipCommitResponse =
+            serde_json::from_slice(&commit_body).expect("decode membership commit body");
+        assert_eq!(committed.room.epoch, 1);
+        assert_eq!(committed.room.last_seq, 1);
+        assert!(committed.room.members.contains(&carol_npub));
+        assert_eq!(
+            committed.event.event_type,
+            crate::protocol::RoomEventType::Commit
+        );
+        assert_eq!(committed.event.seq, 1);
+        assert_eq!(committed.event.epoch, 1);
+
+        let claim_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/welcomes/claim")
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {carol_token}"))
+                    .body(Body::empty())
+                    .expect("build claim welcomes request"),
+            )
+            .await
+            .expect("claim welcomes response");
+        assert_eq!(claim_response.status(), StatusCode::OK);
+        let claim_body = to_bytes(claim_response.into_body(), usize::MAX)
+            .await
+            .expect("read claim welcomes body");
+        let claimed: ClaimWelcomesResponse =
+            serde_json::from_slice(&claim_body).expect("decode claim welcomes body");
+        assert_eq!(claimed.welcomes.len(), 1);
+        assert_eq!(claimed.welcomes[0].recipient_npub, carol_npub);
+
+        let sync_response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/v1/rooms/{}/events?after_seq=0&limit=10",
+                        create_room.room.room_id
+                    ))
+                    .method("GET")
+                    .header(header::AUTHORIZATION, format!("Bearer {carol_token}"))
+                    .body(Body::empty())
+                    .expect("build sync request"),
+            )
+            .await
+            .expect("sync response");
+        assert_eq!(sync_response.status(), StatusCode::OK);
+        let sync_body = to_bytes(sync_response.into_body(), usize::MAX)
+            .await
+            .expect("read sync body");
+        let sync: SyncRoomEventsResponse =
+            serde_json::from_slice(&sync_body).expect("decode sync body");
+        assert_eq!(sync.room.epoch, 1);
+        assert_eq!(sync.events.len(), 1);
+        assert_eq!(
+            sync.events[0].event_type,
+            crate::protocol::RoomEventType::Commit
+        );
+    }
+
+    #[tokio::test]
+    async fn membership_commit_rejects_stale_epoch_without_side_effects() {
+        let app = router(test_state());
+        let (app, alice_token, alice_npub) = login_token(app, "chat.test").await;
+        let (app, _bob_token, bob_npub) = login_token(app, "chat.test").await;
+        let (app, carol_token, carol_npub) = login_token(app, "chat.test").await;
+
+        let create_room_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/rooms")
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&CreateRoomRequest {
+                            member_npubs: vec![bob_npub.clone()],
+                            epoch: None,
+                        })
+                        .expect("serialize create room request"),
+                    ))
+                    .expect("build create room request"),
+            )
+            .await
+            .expect("create room response");
+        let create_room_body = to_bytes(create_room_response.into_body(), usize::MAX)
+            .await
+            .expect("read create room body");
+        let create_room: CreateRoomResponse =
+            serde_json::from_slice(&create_room_body).expect("decode create room body");
+
+        let register_device_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/devices/register")
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RegisterDeviceRequest {
+                            platform: Some("ios".to_string()),
+                            push_token: None,
+                        })
+                        .expect("serialize register device request"),
+                    ))
+                    .expect("build register device request"),
+            )
+            .await
+            .expect("register device response");
+        let register_device_body = to_bytes(register_device_response.into_body(), usize::MAX)
+            .await
+            .expect("read register device body");
+        let register_device: RegisterDeviceResponse =
+            serde_json::from_slice(&register_device_body).expect("decode register device body");
+
+        let first_commit_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/v1/rooms/{}/membership-commits",
+                        create_room.room.room_id
+                    ))
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&crate::protocol::SubmitMembershipCommitRequest {
+                            expected_epoch: 0,
+                            sender_device_id: Some(register_device.device.device_id.clone()),
+                            member_npubs: vec![alice_npub.clone(), bob_npub.clone()],
+                            wrapper_event_json: "{\"kind\":1059,\"content\":\"membership-commit\"}"
+                                .to_string(),
+                            welcomes: vec![],
+                        })
+                        .expect("serialize first membership commit request"),
+                    ))
+                    .expect("build first membership commit request"),
+            )
+            .await
+            .expect("first membership commit response");
+        assert_eq!(first_commit_response.status(), StatusCode::OK);
+
+        let stale_commit_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/v1/rooms/{}/membership-commits",
+                        create_room.room.room_id
+                    ))
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&crate::protocol::SubmitMembershipCommitRequest {
+                            expected_epoch: 0,
+                            sender_device_id: Some(register_device.device.device_id),
+                            member_npubs: vec![alice_npub, bob_npub, carol_npub.clone()],
+                            wrapper_event_json: "{\"kind\":1059,\"content\":\"stale-commit\"}"
+                                .to_string(),
+                            welcomes: vec![crate::protocol::WelcomeEnvelope {
+                                recipient_npub: carol_npub.clone(),
+                                wrapper_event_json: "{\"kind\":1059,\"content\":\"welcome\"}"
+                                    .to_string(),
+                            }],
+                        })
+                        .expect("serialize stale membership commit request"),
+                    ))
+                    .expect("build stale membership commit request"),
+            )
+            .await
+            .expect("stale membership commit response");
+        assert_eq!(stale_commit_response.status(), StatusCode::CONFLICT);
+
+        let claim_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/welcomes/claim")
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {carol_token}"))
+                    .body(Body::empty())
+                    .expect("build claim welcomes request"),
+            )
+            .await
+            .expect("claim welcomes response");
+        let claim_body = to_bytes(claim_response.into_body(), usize::MAX)
+            .await
+            .expect("read claim welcomes body");
+        let claimed: ClaimWelcomesResponse =
+            serde_json::from_slice(&claim_body).expect("decode claim welcomes body");
+        assert!(claimed.welcomes.is_empty());
+
+        let sync_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/v1/rooms/{}/events?after_seq=0&limit=10",
+                        create_room.room.room_id
+                    ))
+                    .method("GET")
+                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+                    .body(Body::empty())
+                    .expect("build sync request"),
+            )
+            .await
+            .expect("sync response");
+        assert_eq!(sync_response.status(), StatusCode::OK);
+        let sync_body = to_bytes(sync_response.into_body(), usize::MAX)
+            .await
+            .expect("read sync body");
+        let sync: SyncRoomEventsResponse =
+            serde_json::from_slice(&sync_body).expect("decode sync body");
+        assert_eq!(sync.room.epoch, 1);
+        assert_eq!(sync.room.last_seq, 1);
+        assert_eq!(sync.events.len(), 1);
+
+        let carol_sync_response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/v1/rooms/{}/events?after_seq=0&limit=10",
+                        create_room.room.room_id
+                    ))
+                    .method("GET")
+                    .header(header::AUTHORIZATION, format!("Bearer {carol_token}"))
+                    .body(Body::empty())
+                    .expect("build sync request"),
+            )
+            .await
+            .expect("carol sync response");
+        assert_eq!(carol_sync_response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
@@ -710,6 +1069,7 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&CreateRoomRequest {
                             member_npubs: vec![bob_npub.clone()],
+                            epoch: None,
                         })
                         .expect("serialize create room request"),
                     ))
@@ -789,6 +1149,7 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&CreateRoomRequest {
                             member_npubs: vec!["npub1bob".to_string()],
+                            epoch: None,
                         })
                         .expect("serialize create request"),
                     ))
@@ -843,6 +1204,7 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&CreateRoomRequest {
                             member_npubs: vec![bob_npub],
+                            epoch: None,
                         })
                         .expect("serialize create room request"),
                     ))
@@ -918,6 +1280,7 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&CreateRoomRequest {
                             member_npubs: vec!["npub1bob".to_string()],
+                            epoch: None,
                         })
                         .expect("serialize create room request"),
                     ))

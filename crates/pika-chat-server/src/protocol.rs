@@ -61,6 +61,8 @@ pub struct RoomSummary {
     pub room_id: String,
     pub created_by: String,
     pub members: Vec<String>,
+    #[serde(default)]
+    pub epoch: u64,
     pub last_seq: u64,
     pub created_at: u64,
 }
@@ -69,6 +71,7 @@ pub struct RoomSummary {
 pub struct CreateRoomRequest {
     #[serde(default)]
     pub member_npubs: Vec<String>,
+    pub epoch: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +88,12 @@ pub struct UpdateRoomMembersRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateRoomMembersResponse {
     pub room: RoomSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WelcomeEnvelope {
+    pub recipient_npub: String,
+    pub wrapper_event_json: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -143,6 +152,23 @@ pub struct AppendRoomEventRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppendRoomEventResponse {
+    pub event: RoomEvent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubmitMembershipCommitRequest {
+    pub expected_epoch: u64,
+    pub sender_device_id: Option<String>,
+    #[serde(default)]
+    pub member_npubs: Vec<String>,
+    pub wrapper_event_json: String,
+    #[serde(default)]
+    pub welcomes: Vec<WelcomeEnvelope>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubmitMembershipCommitResponse {
+    pub room: RoomSummary,
     pub event: RoomEvent,
 }
 

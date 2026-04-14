@@ -41,7 +41,13 @@ struct PeerProfileSheet: View {
         self.onUnfollow = onUnfollow
         self.onOpenMediaGallery = onOpenMediaGallery
         self.onClose = onClose
-        self.cachedProfileQr = QRCodeImage.make(from: profile.npub)
+        self.cachedProfileQr = QRCodeImage.make(
+            from: profile.profileCode.isEmpty ? profile.npub : profile.profileCode
+        )
+    }
+
+    private var profileCode: String {
+        profile.profileCode.isEmpty ? profile.npub : profile.profileCode
     }
 
     var body: some View {
@@ -195,14 +201,14 @@ struct PeerProfileSheet: View {
             }
 
             HStack(alignment: .center, spacing: 12) {
-                Text(profile.npub)
+                Text(profileCode)
                     .font(.system(.footnote, design: .monospaced))
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 Button {
-                    UIPasteboard.general.string = profile.npub
+                    UIPasteboard.general.string = profileCode
                     didCopyNpub = true
                     copyResetTask?.cancel()
                     copyResetTask = Task { @MainActor in

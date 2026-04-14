@@ -318,6 +318,7 @@ pub struct MemberInfo {
 pub struct PeerProfileState {
     pub pubkey: String,
     pub npub: String,
+    pub profile_code: String,
     pub name: Option<String>,
     pub about: Option<String>,
     pub picture_url: Option<String>,

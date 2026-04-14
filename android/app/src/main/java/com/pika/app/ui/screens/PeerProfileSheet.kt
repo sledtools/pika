@@ -54,6 +54,7 @@ fun PeerProfileSheet(
     val ctx = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val profileCode = if (profile.profileCode.isBlank()) profile.npub else profile.profileCode
 
     ModalBottomSheet(
         onDismissRequest = {
@@ -103,22 +104,22 @@ fun PeerProfileSheet(
                 }
             }
 
-            // Public key
+            // Profile code
             item {
-                ProfileSectionCard(title = "Public Key") {
+                ProfileSectionCard(title = "Profile Code") {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            profile.npub,
+                            profileCode,
                             style = MaterialTheme.typography.bodyMedium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f),
                         )
                         IconButton(onClick = {
-                            clipboard.setText(AnnotatedString(profile.npub))
+                            clipboard.setText(AnnotatedString(profileCode))
                             Toast.makeText(ctx, "Copied", Toast.LENGTH_SHORT).show()
                         }) {
-                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy npub", modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy profile code", modifier = Modifier.size(18.dp))
                         }
                     }
                 }
@@ -126,7 +127,9 @@ fun PeerProfileSheet(
 
             // QR code
             item {
-                val qr = remember(profile.npub) { QrCode.encode(profile.npub, 512).asImageBitmap() }
+                val qr = remember(profileCode) {
+                    QrCode.encode(profileCode, 512).asImageBitmap()
+                }
                 ProfileSectionCard {
                     Column(
                         modifier = Modifier.fillMaxWidth(),
@@ -134,7 +137,7 @@ fun PeerProfileSheet(
                     ) {
                         Image(
                             bitmap = qr,
-                            contentDescription = "Peer npub QR",
+                            contentDescription = "Peer profile code QR",
                             modifier = Modifier.size(200.dp).clip(MaterialTheme.shapes.medium),
                         )
                     }

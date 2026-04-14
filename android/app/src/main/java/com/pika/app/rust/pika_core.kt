@@ -3409,6 +3409,8 @@ data class PeerProfileState (
     , 
     var `npub`: kotlin.String
     , 
+    var `profileCode`: kotlin.String
+    , 
     var `name`: kotlin.String?
     , 
     var `about`: kotlin.String?
@@ -3434,6 +3436,7 @@ public object FfiConverterTypePeerProfileState: FfiConverterRustBuffer<PeerProfi
         return PeerProfileState(
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
             FfiConverterOptionalString.read(buf),
             FfiConverterOptionalString.read(buf),
             FfiConverterOptionalString.read(buf),
@@ -3444,6 +3447,7 @@ public object FfiConverterTypePeerProfileState: FfiConverterRustBuffer<PeerProfi
     override fun allocationSize(value: PeerProfileState) = (
             FfiConverterString.allocationSize(value.`pubkey`) +
             FfiConverterString.allocationSize(value.`npub`) +
+            FfiConverterString.allocationSize(value.`profileCode`) +
             FfiConverterOptionalString.allocationSize(value.`name`) +
             FfiConverterOptionalString.allocationSize(value.`about`) +
             FfiConverterOptionalString.allocationSize(value.`pictureUrl`) +
@@ -3453,6 +3457,7 @@ public object FfiConverterTypePeerProfileState: FfiConverterRustBuffer<PeerProfi
     override fun write(value: PeerProfileState, buf: ByteBuffer) {
             FfiConverterString.write(value.`pubkey`, buf)
             FfiConverterString.write(value.`npub`, buf)
+            FfiConverterString.write(value.`profileCode`, buf)
             FfiConverterOptionalString.write(value.`name`, buf)
             FfiConverterOptionalString.write(value.`about`, buf)
             FfiConverterOptionalString.write(value.`pictureUrl`, buf)

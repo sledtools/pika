@@ -234,6 +234,7 @@ mod tests {
         state.peer_profile = Some(crate::PeerProfileState {
             pubkey: "peer_pk".into(),
             npub: "npub1peer".into(),
+            profile_code: "npub1peer".into(),
             name: None,
             about: None,
             picture_url: None,

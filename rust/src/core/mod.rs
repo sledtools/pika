@@ -5909,9 +5909,16 @@ impl AppCore {
                 };
 
                 let is_followed = self.state.follow_list.iter().any(|f| f.pubkey == pubkey);
+                let configured_chat_server =
+                    self.private_chat_server_url().map(|url| url.to_string());
+                let profile_code = crate::chat_invite::build_chat_invite_code(
+                    &npub,
+                    configured_chat_server.as_deref(),
+                );
                 self.state.peer_profile = Some(crate::state::PeerProfileState {
                     pubkey: pubkey.clone(),
                     npub,
+                    profile_code,
                     name,
                     about,
                     picture_url,
@@ -11368,6 +11375,51 @@ mod tests {
         assert_eq!(
             state.profile_code,
             format!("pika://chat/{npub}?server=https%3A%2F%2Fchat.example")
+        );
+    }
+
+    #[test]
+    fn open_peer_profile_uses_chat_server_profile_code_when_configured() {
+        use nostr_sdk::prelude::ToBech32;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().to_string_lossy().into_owned();
+        let mut core = make_core(data_dir.clone());
+        let keys = nostr_sdk::prelude::Keys::generate();
+        let peer_keys = nostr_sdk::prelude::Keys::generate();
+        let peer_pubkey_hex = peer_keys.public_key().to_hex();
+        let peer_npub = peer_keys.public_key().to_bech32().expect("npub");
+        let self_npub = keys.public_key().to_bech32().expect("npub");
+        let mdk = crate::mdk_support::open_mdk(&data_dir, &keys.public_key(), "").unwrap();
+
+        core.session = Some(super::Session {
+            pubkey: keys.public_key(),
+            local_keys: Some(keys),
+            mdk,
+            client: nostr_sdk::Client::default(),
+            alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            giftwrap_sub: None,
+            group_sub: None,
+            groups: std::collections::HashMap::new(),
+        });
+
+        core.state.auth = crate::state::AuthState::LoggedIn {
+            npub: self_npub,
+            pubkey: core.session.as_ref().unwrap().pubkey.to_hex(),
+            mode: crate::state::AuthMode::LocalNsec,
+        };
+        core.config.disable_network = Some(true);
+        core.config.private_chat_server_url = Some("https://chat.example/".into());
+
+        core.handle_action(crate::AppAction::OpenPeerProfile {
+            pubkey: peer_pubkey_hex,
+        });
+
+        let profile = core.state.peer_profile.expect("peer profile");
+        assert_eq!(profile.npub, peer_npub);
+        assert_eq!(
+            profile.profile_code,
+            format!("pika://chat/{peer_npub}?server=https%3A%2F%2Fchat.example")
         );
     }
 

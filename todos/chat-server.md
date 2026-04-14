@@ -88,6 +88,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `private_chat_server_url` is separate from relay settings, which keeps the next runtime cut honest about what transport it is actually using.
 - `pika_core` now has a first chat-server client seam:
   when `private_chat_server_url` is configured, key-package upload and peer key-package lookup use the chat server instead of relay fetch/publish.
+- That widened to the group bootstrap callers too:
+  direct chat, new group chat, and add-members all pull peer key packages from the chat server when configured.
 - This is intentionally partial:
   welcome delivery, commit submission, ordered message sync, and the broader runtime still depend on the old relay/MDK path and need the next cuts.
 - The first durable transport model is file-backed:

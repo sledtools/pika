@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+use ::url::Url;
 use anyhow::Context;
 use flume::Sender;
 use hypernote_protocol as hn;
@@ -262,6 +263,46 @@ async fn fetch_key_packages_for_peers(
         key_package_events,
         failed_peers: failed,
         candidate_kp_relays: all_candidate_relays,
+    }
+}
+
+async fn fetch_key_packages_for_peers_via_chat_server(
+    http_client: &reqwest::Client,
+    signer_client: &Client,
+    base_url: &Url,
+    peer_pubkeys: &[PublicKey],
+) -> FetchedKeyPackages {
+    let mut key_package_events: Vec<Event> = Vec::new();
+    let mut failed: Vec<(PublicKey, String)> = Vec::new();
+
+    for pk in peer_pubkeys {
+        let peer_npub = match chat_server::peer_npub(pk) {
+            Ok(npub) => npub,
+            Err(err) => {
+                failed.push((*pk, err.to_string()));
+                continue;
+            }
+        };
+
+        match chat_server::claim_key_package_event(
+            http_client,
+            signer_client,
+            base_url,
+            &peer_npub,
+            None,
+        )
+        .await
+        {
+            Ok(Some(event)) => key_package_events.push(event),
+            Ok(None) => failed.push((*pk, "No key package found".to_string())),
+            Err(err) => failed.push((*pk, format!("Fetch failed: {err:#}"))),
+        }
+    }
+
+    FetchedKeyPackages {
+        key_package_events,
+        failed_peers: failed,
+        candidate_kp_relays: Vec::new(),
     }
 }
 
@@ -5758,18 +5799,32 @@ impl AppCore {
                     return;
                 }
 
-                let (client, tx) = {
+                let (client, http_client, tx) = {
                     let Some(sess) = self.session.as_ref() else {
                         self.set_busy(|b| b.creating_chat = false);
                         return;
                     };
-                    (sess.client.clone(), self.core_sender.clone())
+                    (
+                        sess.client.clone(),
+                        self.http_client.clone(),
+                        self.core_sender.clone(),
+                    )
                 };
+                let private_chat_server_url = self.private_chat_server_url();
                 let relay_roles = self.relay_role_plan(Vec::new());
 
                 self.runtime.spawn(async move {
-                    let fetched =
-                        fetch_key_packages_for_peers(&client, &peer_pubkeys, &relay_roles).await;
+                    let fetched = if let Some(base_url) = private_chat_server_url {
+                        fetch_key_packages_for_peers_via_chat_server(
+                            &http_client,
+                            &client,
+                            &base_url,
+                            &peer_pubkeys,
+                        )
+                        .await
+                    } else {
+                        fetch_key_packages_for_peers(&client, &peer_pubkeys, &relay_roles).await
+                    };
 
                     let _ = tx.send(CoreMsg::Internal(Box::new(
                         InternalEvent::GroupKeyPackagesFetched {
@@ -5807,13 +5862,18 @@ impl AppCore {
                 }
                 self.set_busy(|b| b.creating_chat = true);
 
-                let (client, tx) = {
+                let (client, http_client, tx) = {
                     let Some(sess) = self.session.as_ref() else {
                         self.set_busy(|b| b.creating_chat = false);
                         return;
                     };
-                    (sess.client.clone(), self.core_sender.clone())
+                    (
+                        sess.client.clone(),
+                        self.http_client.clone(),
+                        self.core_sender.clone(),
+                    )
                 };
+                let private_chat_server_url = self.private_chat_server_url();
                 let relay_roles = self.relay_role_plan(Vec::new());
                 let chat_id_clone = chat_id.clone();
                 let peer_names: HashMap<PublicKey, String> = peer_pubkeys
@@ -5823,8 +5883,17 @@ impl AppCore {
 
                 // Fetch key packages then add members.
                 self.runtime.spawn(async move {
-                    let fetched =
-                        fetch_key_packages_for_peers(&client, &peer_pubkeys, &relay_roles).await;
+                    let fetched = if let Some(base_url) = private_chat_server_url {
+                        fetch_key_packages_for_peers_via_chat_server(
+                            &http_client,
+                            &client,
+                            &base_url,
+                            &peer_pubkeys,
+                        )
+                        .await
+                    } else {
+                        fetch_key_packages_for_peers(&client, &peer_pubkeys, &relay_roles).await
+                    };
 
                     if !fetched.failed_peers.is_empty() {
                         let names: Vec<String> = fetched
@@ -9019,8 +9088,11 @@ mod tests {
         use crate::actions::AppAction;
         use crate::state::{AuthMode, AuthState};
         use crate::updates::InternalEvent;
-        use nostr_sdk::{Client, Keys, RelayUrl, ToBech32};
+        use nostr_sdk::{Client, EventBuilder, Keys, Kind, RelayUrl, ToBech32};
+        use pika_chat_server::store::StoreHandle;
+        use pika_chat_server::{router, AppState as ChatServerAppState, SessionManager};
         use pika_marmot_runtime::membership::PreparedMembershipEvolution;
+        use url::Url;
 
         /// Create a core with a minimal session (logged in, no groups registered).
         fn make_logged_in_core() -> (AppCore, tempfile::TempDir) {
@@ -9041,6 +9113,27 @@ mod tests {
                 groups: std::collections::HashMap::new(),
             });
             (core, tmp)
+        }
+
+        async fn spawn_test_chat_server() -> (Url, tokio::task::JoinHandle<()>) {
+            let state = ChatServerAppState {
+                sessions: SessionManager::new([4u8; 32], 600),
+                trust_forwarded_host: false,
+                store: StoreHandle::in_memory(),
+            };
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind chat server listener");
+            let addr = listener.local_addr().expect("listener addr");
+            let handle = tokio::spawn(async move {
+                axum::serve(listener, router(state))
+                    .await
+                    .expect("serve test chat server");
+            });
+            (
+                Url::parse(&format!("http://{addr}/")).expect("chat server base url"),
+                handle,
+            )
         }
 
         #[test]
@@ -9118,6 +9211,44 @@ mod tests {
 
             lookup_client.shutdown().await;
             session_client.shutdown().await;
+        }
+
+        #[tokio::test]
+        async fn group_fetch_can_claim_key_packages_from_chat_server() {
+            let (base_url, handle) = spawn_test_chat_server().await;
+            let http_client = reqwest::Client::new();
+
+            let owner_keys = Keys::generate();
+            let owner_client = Client::builder().signer(owner_keys.clone()).build();
+            let claimer_client = Client::builder().signer(Keys::generate()).build();
+            let key_package_event = EventBuilder::new(Kind::MlsKeyPackage, "opaque-key-package")
+                .sign_with_keys(&owner_keys)
+                .expect("sign key package event");
+
+            super::super::chat_server::upload_key_package_event(
+                &http_client,
+                &owner_client,
+                &base_url,
+                Some("ios"),
+                None,
+                &key_package_event,
+            )
+            .await
+            .expect("upload key package");
+
+            let fetched = super::super::fetch_key_packages_for_peers_via_chat_server(
+                &http_client,
+                &claimer_client,
+                &base_url,
+                &[owner_keys.public_key()],
+            )
+            .await;
+
+            assert_eq!(fetched.key_package_events.len(), 1);
+            assert!(fetched.failed_peers.is_empty());
+            assert!(fetched.candidate_kp_relays.is_empty());
+
+            handle.abort();
         }
 
         #[test]

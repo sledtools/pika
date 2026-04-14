@@ -34,7 +34,7 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
 - [x] Decide v1 priorities: favor simplicity and maintainability over early metadata optimization.
 - [x] Inventory the relay/MDK/Marmot private-chat surface and mark what should be deleted, replaced, or kept.
 - [~] Write the v1 protocol surface:
-  signed login and session auth are implemented; device registration, room create, room event append, and room sync are implemented; key package upload/claim, commit submit validation, explicit ack, and invite payloads remain.
+  signed login and session auth are implemented; device registration, key package upload/claim, room create, room event append, and room sync are implemented; commit submit validation, explicit ack, and invite payloads remain.
 - [~] Add a new server crate for private chat transport, likely `crates/pika-chat-server`.
 - [ ] Reuse or extract shared server pieces from `pika-server`:
   Axum setup, Postgres patterns, push plumbing, NIP-98 auth helpers.
@@ -82,6 +82,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `POST /v1/session/login`, `GET /v1/session/me`, stateless signed session tokens, and tests.
 - The next server slice now exists too:
   `POST /v1/devices/register`, `POST /v1/rooms`, `POST /v1/rooms/:room_id/events`, and `GET /v1/rooms/:room_id/events`.
+- Key-package inventory is now server-owned too:
+  `POST /v1/key-packages` uploads opaque package blobs for a registered device, and `POST /v1/key-packages/claim` consumes one package at a time for room bootstrap or room-scoped membership work.
 - The first durable transport model is file-backed:
   `PIKA_CHAT_SERVER_STATE_PATH` points at a JSON room/device log with persistent sequence numbers.
 - The inventory pass confirmed the biggest simplification wins:

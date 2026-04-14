@@ -21,6 +21,42 @@ pub struct RegisterDeviceResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KeyPackageRecord {
+    pub key_package_id: String,
+    pub owner_npub: String,
+    pub device_id: String,
+    pub ciphersuite: Option<String>,
+    pub payload: String,
+    pub created_at: u64,
+    pub claimed_at: Option<u64>,
+    pub claimed_by_npub: Option<String>,
+    pub claimed_by_room_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UploadKeyPackageRequest {
+    pub device_id: String,
+    pub ciphersuite: Option<String>,
+    pub payload: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UploadKeyPackageResponse {
+    pub key_package: KeyPackageRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaimKeyPackageRequest {
+    pub owner_npub: String,
+    pub room_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaimKeyPackageResponse {
+    pub key_package: KeyPackageRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RoomSummary {
     pub room_id: String,
     pub created_by: String,

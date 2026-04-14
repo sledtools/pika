@@ -9,8 +9,8 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::protocol::{
-    AppendRoomEventRequest, CreateRoomRequest, DeviceRecord, RegisterDeviceRequest, RoomEvent,
-    RoomSummary,
+    AppendRoomEventRequest, ClaimKeyPackageRequest, CreateRoomRequest, DeviceRecord,
+    KeyPackageRecord, RegisterDeviceRequest, RoomEvent, RoomSummary, UploadKeyPackageRequest,
 };
 
 const MAX_SYNC_LIMIT: usize = 200;
@@ -27,6 +27,10 @@ pub enum StoreError {
     DeviceOwnerMismatch,
     #[error("event content must not be empty")]
     EmptyEventContent,
+    #[error("key package payload must not be empty")]
+    EmptyKeyPackagePayload,
+    #[error("key package not found")]
+    KeyPackageNotFound,
 }
 
 #[derive(Debug, Error)]
@@ -44,8 +48,10 @@ pub struct StoreHandle {
 }
 
 #[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ChatStore {
     devices_by_owner: BTreeMap<String, BTreeMap<String, DeviceRecord>>,
+    key_packages_by_owner: BTreeMap<String, Vec<KeyPackageRecord>>,
     rooms: BTreeMap<String, StoredRoom>,
 }
 
@@ -101,6 +107,30 @@ impl StoreHandle {
         let room = store.create_room(creator_npub, request, now);
         self.persist_locked(&store)?;
         Ok(room)
+    }
+
+    pub async fn upload_key_package(
+        &self,
+        owner_npub: &str,
+        request: UploadKeyPackageRequest,
+        now: u64,
+    ) -> Result<KeyPackageRecord, StoreHandleError> {
+        let mut store = self.inner.write().await;
+        let key_package = store.upload_key_package(owner_npub, request, now)?;
+        self.persist_locked(&store)?;
+        Ok(key_package)
+    }
+
+    pub async fn claim_key_package(
+        &self,
+        claimer_npub: &str,
+        request: ClaimKeyPackageRequest,
+        now: u64,
+    ) -> Result<KeyPackageRecord, StoreHandleError> {
+        let mut store = self.inner.write().await;
+        let key_package = store.claim_key_package(claimer_npub, request, now)?;
+        self.persist_locked(&store)?;
+        Ok(key_package)
     }
 
     pub async fn append_room_event(
@@ -217,6 +247,83 @@ impl ChatStore {
             },
         );
         summary
+    }
+
+    pub fn upload_key_package(
+        &mut self,
+        owner_npub: &str,
+        request: UploadKeyPackageRequest,
+        now: u64,
+    ) -> Result<KeyPackageRecord, StoreError> {
+        let devices = self
+            .devices_by_owner
+            .get(owner_npub)
+            .ok_or(StoreError::DeviceNotFound)?;
+        if !devices.contains_key(&request.device_id) {
+            return Err(StoreError::DeviceOwnerMismatch);
+        }
+
+        let payload = request.payload.trim().to_string();
+        if payload.is_empty() {
+            return Err(StoreError::EmptyKeyPackagePayload);
+        }
+
+        let key_package = KeyPackageRecord {
+            key_package_id: new_prefixed_id("kp"),
+            owner_npub: owner_npub.to_string(),
+            device_id: request.device_id,
+            ciphersuite: clean_optional_field(request.ciphersuite),
+            payload,
+            created_at: now,
+            claimed_at: None,
+            claimed_by_npub: None,
+            claimed_by_room_id: None,
+        };
+        self.key_packages_by_owner
+            .entry(owner_npub.to_string())
+            .or_default()
+            .push(key_package.clone());
+        Ok(key_package)
+    }
+
+    pub fn claim_key_package(
+        &mut self,
+        claimer_npub: &str,
+        request: ClaimKeyPackageRequest,
+        now: u64,
+    ) -> Result<KeyPackageRecord, StoreError> {
+        let owner_npub = request.owner_npub.trim().to_ascii_lowercase();
+        if owner_npub.is_empty() {
+            return Err(StoreError::KeyPackageNotFound);
+        }
+
+        if let Some(room_id) = request.room_id.as_deref() {
+            let room = self.rooms.get(room_id).ok_or(StoreError::RoomNotFound)?;
+            if !room
+                .summary
+                .members
+                .iter()
+                .any(|member| member == claimer_npub)
+            {
+                return Err(StoreError::NotRoomMember);
+            }
+        }
+
+        let key_packages = self
+            .key_packages_by_owner
+            .get_mut(&owner_npub)
+            .ok_or(StoreError::KeyPackageNotFound)?;
+        let Some(key_package) = key_packages
+            .iter_mut()
+            .find(|record| record.claimed_at.is_none())
+        else {
+            return Err(StoreError::KeyPackageNotFound);
+        };
+
+        key_package.claimed_at = Some(now);
+        key_package.claimed_by_npub = Some(claimer_npub.to_string());
+        key_package.claimed_by_room_id = request.room_id;
+        Ok(key_package.clone())
     }
 
     pub fn append_room_event(
@@ -343,7 +450,10 @@ fn tmp_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{AppendRoomEventRequest, CreateRoomRequest, RoomEventType};
+    use crate::protocol::{
+        AppendRoomEventRequest, ClaimKeyPackageRequest, CreateRoomRequest, RegisterDeviceRequest,
+        RoomEventType, UploadKeyPackageRequest,
+    };
 
     #[test]
     fn create_room_deduplicates_members() {
@@ -385,6 +495,56 @@ mod tests {
             )
             .expect_err("outsider should fail");
         assert!(matches!(err, StoreError::NotRoomMember));
+    }
+
+    #[test]
+    fn key_package_upload_and_claim_round_trip() {
+        let mut store = ChatStore::default();
+        let device = store.register_device(
+            "npub1alice",
+            RegisterDeviceRequest {
+                platform: Some("ios".to_string()),
+                push_token: None,
+            },
+            100,
+        );
+        let key_package = store
+            .upload_key_package(
+                "npub1alice",
+                UploadKeyPackageRequest {
+                    device_id: device.device_id.clone(),
+                    ciphersuite: Some("mls128".to_string()),
+                    payload: "opaque-key-package".to_string(),
+                },
+                101,
+            )
+            .expect("upload key package");
+        assert_eq!(key_package.claimed_at, None);
+
+        let claimed = store
+            .claim_key_package(
+                "npub1bob",
+                ClaimKeyPackageRequest {
+                    owner_npub: "npub1alice".to_string(),
+                    room_id: None,
+                },
+                102,
+            )
+            .expect("claim key package");
+        assert_eq!(claimed.claimed_by_npub.as_deref(), Some("npub1bob"));
+        assert_eq!(claimed.payload, "opaque-key-package");
+
+        let err = store
+            .claim_key_package(
+                "npub1carol",
+                ClaimKeyPackageRequest {
+                    owner_npub: "npub1alice".to_string(),
+                    room_id: None,
+                },
+                103,
+            )
+            .expect_err("single uploaded package should be exhausted");
+        assert!(matches!(err, StoreError::KeyPackageNotFound));
     }
 
     #[test]

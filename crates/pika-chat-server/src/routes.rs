@@ -9,8 +9,10 @@ use crate::nostr_auth::{
     event_from_authorization_header, expected_host_from_headers, verify_nip98_event,
 };
 use crate::protocol::{
-    AppendRoomEventRequest, AppendRoomEventResponse, CreateRoomRequest, CreateRoomResponse,
-    RegisterDeviceRequest, RegisterDeviceResponse, SyncRoomEventsQuery, SyncRoomEventsResponse,
+    AppendRoomEventRequest, AppendRoomEventResponse, ClaimKeyPackageRequest,
+    ClaimKeyPackageResponse, CreateRoomRequest, CreateRoomResponse, RegisterDeviceRequest,
+    RegisterDeviceResponse, SyncRoomEventsQuery, SyncRoomEventsResponse, UploadKeyPackageRequest,
+    UploadKeyPackageResponse,
 };
 use crate::session::{SessionClaims, SessionManager, SessionTokenResponse};
 use crate::store::{StoreError, StoreHandle, StoreHandleError};
@@ -39,6 +41,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/session/login", post(login))
         .route("/v1/session/me", get(me))
         .route("/v1/devices/register", post(register_device))
+        .route("/v1/key-packages", post(upload_key_package))
+        .route("/v1/key-packages/claim", post(claim_key_package))
         .route("/v1/rooms", post(create_room))
         .route(
             "/v1/rooms/:room_id/events",
@@ -110,6 +114,38 @@ async fn create_room(
     }))
 }
 
+async fn upload_key_package(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<UploadKeyPackageRequest>,
+) -> Result<Json<UploadKeyPackageResponse>, (StatusCode, String)> {
+    let claims = session_claims(&state, &headers)?;
+    let now = Timestamp::now().as_secs();
+    let key_package = state
+        .store
+        .upload_key_package(&claims.npub, request, now)
+        .await;
+    Ok(Json(UploadKeyPackageResponse {
+        key_package: key_package.map_err(store_handle_error)?,
+    }))
+}
+
+async fn claim_key_package(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ClaimKeyPackageRequest>,
+) -> Result<Json<ClaimKeyPackageResponse>, (StatusCode, String)> {
+    let claims = session_claims(&state, &headers)?;
+    let now = Timestamp::now().as_secs();
+    let key_package = state
+        .store
+        .claim_key_package(&claims.npub, request, now)
+        .await;
+    Ok(Json(ClaimKeyPackageResponse {
+        key_package: key_package.map_err(store_handle_error)?,
+    }))
+}
+
 async fn append_room_event(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -175,9 +211,13 @@ fn internal(err: anyhow::Error) -> (StatusCode, String) {
 
 fn store_error(err: StoreError) -> (StatusCode, String) {
     let status = match err {
-        StoreError::RoomNotFound | StoreError::DeviceNotFound => StatusCode::NOT_FOUND,
+        StoreError::RoomNotFound | StoreError::DeviceNotFound | StoreError::KeyPackageNotFound => {
+            StatusCode::NOT_FOUND
+        }
         StoreError::NotRoomMember | StoreError::DeviceOwnerMismatch => StatusCode::FORBIDDEN,
-        StoreError::EmptyEventContent => StatusCode::BAD_REQUEST,
+        StoreError::EmptyEventContent | StoreError::EmptyKeyPackagePayload => {
+            StatusCode::BAD_REQUEST
+        }
     };
     (status, err.to_string())
 }
@@ -450,6 +490,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn member_can_upload_and_claim_key_package() {
+        let app = router(test_state());
+        let (app, alice_token, _) = login_token(app, "chat.test").await;
+        let (app, bob_token, _) = login_token(app, "chat.test").await;
+
+        let register_device_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/devices/register")
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RegisterDeviceRequest {
+                            platform: Some("ios".to_string()),
+                            push_token: None,
+                        })
+                        .expect("serialize register device request"),
+                    ))
+                    .expect("build register device request"),
+            )
+            .await
+            .expect("register device response");
+        assert_eq!(register_device_response.status(), StatusCode::OK);
+        let register_device_body = to_bytes(register_device_response.into_body(), usize::MAX)
+            .await
+            .expect("read register device body");
+        let register_device: RegisterDeviceResponse =
+            serde_json::from_slice(&register_device_body).expect("decode register device body");
+
+        let upload_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/key-packages")
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&UploadKeyPackageRequest {
+                            device_id: register_device.device.device_id.clone(),
+                            ciphersuite: Some("mls128".to_string()),
+                            payload: "opaque-key-package".to_string(),
+                        })
+                        .expect("serialize upload key package request"),
+                    ))
+                    .expect("build upload key package request"),
+            )
+            .await
+            .expect("upload key package response");
+        assert_eq!(upload_response.status(), StatusCode::OK);
+        let upload_body = to_bytes(upload_response.into_body(), usize::MAX)
+            .await
+            .expect("read upload key package body");
+        let uploaded: UploadKeyPackageResponse =
+            serde_json::from_slice(&upload_body).expect("decode upload key package body");
+        assert_eq!(uploaded.key_package.claimed_at, None);
+
+        let claim_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/key-packages/claim")
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {bob_token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ClaimKeyPackageRequest {
+                            owner_npub: uploaded.key_package.owner_npub.clone(),
+                            room_id: None,
+                        })
+                        .expect("serialize claim key package request"),
+                    ))
+                    .expect("build claim key package request"),
+            )
+            .await
+            .expect("claim key package response");
+        assert_eq!(claim_response.status(), StatusCode::OK);
+        let claim_body = to_bytes(claim_response.into_body(), usize::MAX)
+            .await
+            .expect("read claim key package body");
+        let claimed: ClaimKeyPackageResponse =
+            serde_json::from_slice(&claim_body).expect("decode claim key package body");
+        assert_eq!(claimed.key_package.payload, "opaque-key-package");
+        assert!(claimed.key_package.claimed_at.is_some());
+    }
+
+    #[tokio::test]
     async fn outsider_cannot_append_to_room() {
         let app = router(test_state());
         let (app, alice_token, _) = login_token(app, "chat.test").await;
@@ -500,5 +628,107 @@ mod tests {
             .await
             .expect("append response");
         assert_eq!(append_response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn outsider_cannot_claim_room_scoped_key_package() {
+        let app = router(test_state());
+        let (app, alice_token, _) = login_token(app, "chat.test").await;
+        let (app, mallory_token, _) = login_token(app, "chat.test").await;
+
+        let register_device_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/devices/register")
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RegisterDeviceRequest {
+                            platform: Some("ios".to_string()),
+                            push_token: None,
+                        })
+                        .expect("serialize register device request"),
+                    ))
+                    .expect("build register device request"),
+            )
+            .await
+            .expect("register device response");
+        let register_device_body = to_bytes(register_device_response.into_body(), usize::MAX)
+            .await
+            .expect("read register device body");
+        let register_device: RegisterDeviceResponse =
+            serde_json::from_slice(&register_device_body).expect("decode register device body");
+
+        let create_room_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/rooms")
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&CreateRoomRequest {
+                            member_npubs: vec!["npub1bob".to_string()],
+                        })
+                        .expect("serialize create room request"),
+                    ))
+                    .expect("build create room request"),
+            )
+            .await
+            .expect("create room response");
+        let create_room_body = to_bytes(create_room_response.into_body(), usize::MAX)
+            .await
+            .expect("read create room body");
+        let create_room: CreateRoomResponse =
+            serde_json::from_slice(&create_room_body).expect("decode create room body");
+
+        let upload_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/key-packages")
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&UploadKeyPackageRequest {
+                            device_id: register_device.device.device_id,
+                            ciphersuite: Some("mls128".to_string()),
+                            payload: "opaque-key-package".to_string(),
+                        })
+                        .expect("serialize upload key package request"),
+                    ))
+                    .expect("build upload key package request"),
+            )
+            .await
+            .expect("upload key package response");
+        let upload_body = to_bytes(upload_response.into_body(), usize::MAX)
+            .await
+            .expect("read upload key package body");
+        let uploaded: UploadKeyPackageResponse =
+            serde_json::from_slice(&upload_body).expect("decode upload key package body");
+
+        let claim_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/key-packages/claim")
+                    .method("POST")
+                    .header(header::AUTHORIZATION, format!("Bearer {mallory_token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ClaimKeyPackageRequest {
+                            owner_npub: uploaded.key_package.owner_npub,
+                            room_id: Some(create_room.room.room_id),
+                        })
+                        .expect("serialize claim key package request"),
+                    ))
+                    .expect("build claim key package request"),
+            )
+            .await
+            .expect("claim key package response");
+        assert_eq!(claim_response.status(), StatusCode::FORBIDDEN);
     }
 }

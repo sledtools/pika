@@ -348,6 +348,8 @@ impl ChatStore {
             sender_npub,
             request.recipient_npub,
             request.wrapper_event_json,
+            request.server_url,
+            request.room_id,
             now,
         )?;
         self.welcomes_by_recipient
@@ -466,6 +468,8 @@ impl ChatStore {
                     sender_npub,
                     welcome.recipient_npub,
                     welcome.wrapper_event_json,
+                    welcome.server_url,
+                    welcome.room_id,
                     now,
                 )
             })
@@ -570,6 +574,8 @@ fn prepare_welcome_record(
     sender_npub: &str,
     recipient_npub: String,
     wrapper_event_json: String,
+    server_url: Option<String>,
+    room_id: Option<String>,
     now: u64,
 ) -> Result<WelcomeRecord, StoreError> {
     let recipient_npub = recipient_npub.trim().to_ascii_lowercase();
@@ -577,12 +583,20 @@ fn prepare_welcome_record(
     if wrapper_event_json.is_empty() {
         return Err(StoreError::EmptyEventContent);
     }
+    let server_url = clean_optional_field(server_url);
+    let room_id = clean_optional_field(room_id);
+    let (server_url, room_id) = match (server_url, room_id) {
+        (Some(server_url), Some(room_id)) => (Some(server_url), Some(room_id)),
+        _ => (None, None),
+    };
 
     Ok(WelcomeRecord {
         welcome_id: new_prefixed_id("welcome"),
         recipient_npub,
         sender_npub: sender_npub.to_string(),
         wrapper_event_json,
+        server_url,
+        room_id,
         created_at: now,
     })
 }
@@ -766,6 +780,8 @@ mod tests {
                     welcomes: vec![WelcomeEnvelope {
                         recipient_npub: "npub1carol".to_string(),
                         wrapper_event_json: "{\"kind\":1059,\"content\":\"welcome\"}".to_string(),
+                        server_url: Some("https://chat.example".to_string()),
+                        room_id: Some(room.room_id.clone()),
                     }],
                 },
                 102,
@@ -782,6 +798,11 @@ mod tests {
         let claimed = store.claim_welcomes("npub1carol");
         assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].sender_npub, "npub1alice");
+        assert_eq!(
+            claimed[0].server_url.as_deref(),
+            Some("https://chat.example")
+        );
+        assert_eq!(claimed[0].room_id.as_deref(), Some(room.room_id.as_str()));
 
         let synced_summary = store
             .room_summary_for_member("npub1carol", &room.room_id)
@@ -821,6 +842,8 @@ mod tests {
                     welcomes: vec![WelcomeEnvelope {
                         recipient_npub: "npub1carol".to_string(),
                         wrapper_event_json: "{\"kind\":1059,\"content\":\"welcome\"}".to_string(),
+                        server_url: Some("https://chat.example".to_string()),
+                        room_id: Some(room.room_id.clone()),
                     }],
                 },
                 102,

@@ -83,6 +83,8 @@ pub struct CreateRoomResponse {
 pub struct WelcomeEnvelope {
     pub recipient_npub: String,
     pub wrapper_event_json: String,
+    pub server_url: Option<String>,
+    pub room_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -91,6 +93,8 @@ pub struct WelcomeRecord {
     pub recipient_npub: String,
     pub sender_npub: String,
     pub wrapper_event_json: String,
+    pub server_url: Option<String>,
+    pub room_id: Option<String>,
     pub created_at: u64,
 }
 
@@ -98,6 +102,8 @@ pub struct WelcomeRecord {
 pub struct UploadWelcomeRequest {
     pub recipient_npub: String,
     pub wrapper_event_json: String,
+    pub server_url: Option<String>,
+    pub room_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

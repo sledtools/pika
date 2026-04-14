@@ -738,6 +738,7 @@ impl AppCore {
                                 &base_url,
                                 &receiver_npub,
                                 &giftwrap,
+                                None,
                             )
                             .await
                             {

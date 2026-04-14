@@ -627,6 +627,8 @@ mod tests {
                                 recipient_npub: carol_npub.clone(),
                                 wrapper_event_json: "{\"kind\":1059,\"content\":\"welcome\"}"
                                     .to_string(),
+                                server_url: Some("https://chat.example".to_string()),
+                                room_id: Some(create_room.room.room_id.clone()),
                             }],
                         })
                         .expect("serialize membership commit request"),
@@ -671,6 +673,14 @@ mod tests {
             serde_json::from_slice(&claim_body).expect("decode claim welcomes body");
         assert_eq!(claimed.welcomes.len(), 1);
         assert_eq!(claimed.welcomes[0].recipient_npub, carol_npub);
+        assert_eq!(
+            claimed.welcomes[0].server_url.as_deref(),
+            Some("https://chat.example")
+        );
+        assert_eq!(
+            claimed.welcomes[0].room_id.as_deref(),
+            Some(create_room.room.room_id.as_str())
+        );
 
         let sync_response = app
             .oneshot(
@@ -807,6 +817,8 @@ mod tests {
                                 recipient_npub: carol_npub.clone(),
                                 wrapper_event_json: "{\"kind\":1059,\"content\":\"welcome\"}"
                                     .to_string(),
+                                server_url: Some("https://chat.example".to_string()),
+                                room_id: Some(create_room.room.room_id.clone()),
                             }],
                         })
                         .expect("serialize stale membership commit request"),
@@ -984,6 +996,8 @@ mod tests {
                         serde_json::to_vec(&UploadWelcomeRequest {
                             recipient_npub: bob_npub.clone(),
                             wrapper_event_json: "{\"kind\":1059}".to_string(),
+                            server_url: Some("https://chat.example".to_string()),
+                            room_id: Some("room_123".to_string()),
                         })
                         .expect("serialize upload welcome request"),
                     ))
@@ -1013,6 +1027,11 @@ mod tests {
             serde_json::from_slice(&claim_body).expect("decode claim welcomes body");
         assert_eq!(claimed.welcomes.len(), 1);
         assert_eq!(claimed.welcomes[0].recipient_npub, bob_npub);
+        assert_eq!(
+            claimed.welcomes[0].server_url.as_deref(),
+            Some("https://chat.example")
+        );
+        assert_eq!(claimed.welcomes[0].room_id.as_deref(), Some("room_123"));
 
         let empty_claim_response = app
             .oneshot(

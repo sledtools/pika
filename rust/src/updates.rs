@@ -172,7 +172,7 @@ pub enum InternalEvent {
         wrapper: nostr_sdk::prelude::Event,
     },
     ChatServerWelcomesClaimed {
-        welcomes: Vec<(nostr_sdk::prelude::Event, nostr_sdk::prelude::UnsignedEvent)>,
+        welcomes: Vec<crate::core::chat_server::ClaimedWelcomeEvent>,
         error: Option<String>,
     },
 

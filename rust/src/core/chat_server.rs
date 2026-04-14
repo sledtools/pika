@@ -16,6 +16,19 @@ use serde::de::DeserializeOwned;
 use url::Url;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WelcomeRoomBinding {
+    pub server_url: String,
+    pub room_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClaimedWelcomeEvent {
+    pub wrapper: Event,
+    pub rumor: nostr_sdk::prelude::UnsignedEvent,
+    pub room_binding: Option<WelcomeRoomBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubmitMembershipCommitError {
     StaleEpochConflict(String),
     RequestFailed(String),
@@ -324,6 +337,7 @@ pub async fn upload_welcome_event(
     base_url: &Url,
     recipient_npub: &str,
     wrapper: &Event,
+    room_binding: Option<&WelcomeRoomBinding>,
 ) -> Result<()> {
     let access_token = login(http_client, signer_client, base_url).await?;
     let url = endpoint(base_url, "/v1/welcomes")?;
@@ -336,6 +350,8 @@ pub async fn upload_welcome_event(
                 recipient_npub: recipient_npub.trim().to_ascii_lowercase(),
                 wrapper_event_json: serde_json::to_string(wrapper)
                     .context("serialize welcome wrapper")?,
+                server_url: room_binding.map(|binding| binding.server_url.clone()),
+                room_id: room_binding.map(|binding| binding.room_id.clone()),
             })
             .send()
             .await
@@ -350,7 +366,7 @@ pub async fn claim_welcome_events(
     http_client: &reqwest::Client,
     signer_client: &Client,
     base_url: &Url,
-) -> Result<Vec<(Event, nostr_sdk::prelude::UnsignedEvent)>> {
+) -> Result<Vec<ClaimedWelcomeEvent>> {
     let access_token = login(http_client, signer_client, base_url).await?;
     let url = endpoint(base_url, "/v1/welcomes/claim")?;
     let claimed: ClaimWelcomesResponse = read_json(
@@ -373,7 +389,18 @@ pub async fn claim_welcome_events(
             .unwrap_gift_wrap(&wrapper)
             .await
             .context("unwrap claimed welcome giftwrap")?;
-        welcomes.push((wrapper, unwrapped.rumor));
+        let room_binding = match (record.server_url, record.room_id) {
+            (Some(server_url), Some(room_id)) => Some(WelcomeRoomBinding {
+                server_url,
+                room_id,
+            }),
+            _ => None,
+        };
+        welcomes.push(ClaimedWelcomeEvent {
+            wrapper,
+            rumor: unwrapped.rumor,
+            room_binding,
+        });
     }
     Ok(welcomes)
 }
@@ -642,6 +669,8 @@ mod tests {
             vec![WelcomeEnvelope {
                 recipient_npub: carol_npub.clone(),
                 wrapper_event_json: "{\"kind\":1059,\"content\":\"welcome\"}".to_string(),
+                server_url: Some("https://chat.example".to_string()),
+                room_id: Some(room.room_id.clone()),
             }],
         )
         .await
@@ -738,6 +767,10 @@ mod tests {
             &base_url,
             &receiver_npub,
             &wrapper,
+            Some(&WelcomeRoomBinding {
+                server_url: "https://chat.example".to_string(),
+                room_id: "room_123".to_string(),
+            }),
         )
         .await
         .expect("upload welcome event");
@@ -746,8 +779,22 @@ mod tests {
             .await
             .expect("claim welcome events");
         assert_eq!(claimed.len(), 1);
-        assert_eq!(claimed[0].0.id, wrapper.id);
-        assert_eq!(claimed[0].1.id(), rumor.id);
+        assert_eq!(claimed[0].wrapper.id, wrapper.id);
+        assert_eq!(claimed[0].rumor.id(), rumor.id);
+        assert_eq!(
+            claimed[0]
+                .room_binding
+                .as_ref()
+                .map(|binding| binding.server_url.as_str()),
+            Some("https://chat.example")
+        );
+        assert_eq!(
+            claimed[0]
+                .room_binding
+                .as_ref()
+                .map(|binding| binding.room_id.as_str()),
+            Some("room_123")
+        );
 
         let claimed_again = claim_welcome_events(&http_client, &receiver_client, &base_url)
             .await

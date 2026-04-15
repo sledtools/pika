@@ -677,11 +677,11 @@ pub struct BootstrappedRuntimeSession {
     pub open: RuntimeSessionOpenState,
 }
 
-pub struct RuntimeQueries<'a> {
+struct RuntimeQueries<'a> {
     mdk: &'a PikaMdk,
 }
 
-pub struct RuntimeCommands<'a> {
+struct RuntimeCommands<'a> {
     mdk: &'a PikaMdk,
     client: Option<&'a Client>,
 }
@@ -692,11 +692,11 @@ pub struct PikaRuntime<'a> {
 }
 
 impl RuntimeSession {
-    pub fn queries(&self) -> RuntimeQueries<'_> {
+    fn queries(&self) -> RuntimeQueries<'_> {
         RuntimeQueries::new(&self.mdk)
     }
 
-    pub fn commands(&self) -> RuntimeCommands<'_> {
+    fn commands(&self) -> RuntimeCommands<'_> {
         RuntimeCommands::with_client(&self.mdk, &self.client)
     }
 
@@ -815,7 +815,7 @@ impl BootstrappedRuntimeSession {
 }
 
 impl<'a> RuntimeQueries<'a> {
-    pub fn new(mdk: &'a PikaMdk) -> Self {
+    fn new(mdk: &'a PikaMdk) -> Self {
         Self { mdk }
     }
 
@@ -877,11 +877,7 @@ impl<'a> RuntimeQueries<'a> {
 }
 
 impl<'a> RuntimeCommands<'a> {
-    pub fn new(mdk: &'a PikaMdk) -> Self {
-        Self { mdk, client: None }
-    }
-
-    pub fn with_client(mdk: &'a PikaMdk, client: &'a Client) -> Self {
+    fn with_client(mdk: &'a PikaMdk, client: &'a Client) -> Self {
         Self {
             mdk,
             client: Some(client),
@@ -954,8 +950,7 @@ impl<'a> RuntimeCommands<'a> {
         nostr_group_id_hex: &str,
         key_package_events: &[Event],
     ) -> Result<PreparedMembershipEvolution> {
-        let group =
-            RuntimeQueries::new(self.mdk).lookup_joined_group_snapshot(nostr_group_id_hex)?;
+        let group = PikaRuntime::new(self.mdk).lookup_joined_group_snapshot(nostr_group_id_hex)?;
         self.prepare_add_members(&group.mls_group_id, key_package_events)
     }
 
@@ -972,8 +967,7 @@ impl<'a> RuntimeCommands<'a> {
         nostr_group_id_hex: &str,
         removed_pubkeys: &[PublicKey],
     ) -> Result<PreparedMembershipEvolution> {
-        let group =
-            RuntimeQueries::new(self.mdk).lookup_joined_group_snapshot(nostr_group_id_hex)?;
+        let group = PikaRuntime::new(self.mdk).lookup_joined_group_snapshot(nostr_group_id_hex)?;
         self.prepare_remove_members(&group.mls_group_id, removed_pubkeys)
     }
 
@@ -988,8 +982,7 @@ impl<'a> RuntimeCommands<'a> {
         &self,
         nostr_group_id_hex: &str,
     ) -> Result<PreparedMembershipEvolution> {
-        let group =
-            RuntimeQueries::new(self.mdk).lookup_joined_group_snapshot(nostr_group_id_hex)?;
+        let group = PikaRuntime::new(self.mdk).lookup_joined_group_snapshot(nostr_group_id_hex)?;
         self.prepare_leave_group(&group.mls_group_id)
     }
 
@@ -1058,48 +1051,6 @@ impl<'a> RuntimeCommands<'a> {
         reason: &str,
     ) -> Result<PreparedCallSignal, String> {
         CallWorkflowRuntime::new(self.mdk).prepare_end_signal(call_id, reason)
-    }
-
-    pub fn complete_membership_evolution_operation(
-        &self,
-        prepared: PreparedMembershipEvolution,
-        publish_status: EvolutionPublishStatus,
-    ) -> RuntimeOperationEvent {
-        let operation_id = prepared.evolution_event.id;
-        match publish_status {
-            EvolutionPublishStatus::Published => RuntimeOperationEvent::MembershipEvolution(
-                MembershipEvolutionOperationEvent::Completed {
-                    operation_id,
-                    result: self.finalize_published_evolution(prepared),
-                },
-            ),
-            EvolutionPublishStatus::PublishFailed(error) => {
-                RuntimeOperationEvent::membership_evolution_failed(prepared, error)
-            }
-        }
-    }
-
-    pub fn complete_outbound_publish_operation(
-        &self,
-        prepared: PreparedConversationAction,
-        publish_status: OutboundConversationPublishStatus,
-    ) -> RuntimeOperationEvent {
-        RuntimeOperationEvent::complete_outbound_conversation_publish(prepared, publish_status)
-    }
-
-    pub fn complete_call_signal_publish_operation(
-        &self,
-        kind: CallSignalPublishKind,
-        nostr_group_id_hex: String,
-        prepared: PreparedCallSignal,
-        publish_status: CallSignalPublishStatus,
-    ) -> RuntimeOperationEvent {
-        RuntimeOperationEvent::complete_call_signal_publish(
-            kind,
-            nostr_group_id_hex,
-            prepared,
-            publish_status,
-        )
     }
 
     pub fn prepare_upload(
@@ -1184,11 +1135,11 @@ impl<'a> PikaRuntime<'a> {
         self.client
     }
 
-    pub fn queries(&self) -> RuntimeQueries<'_> {
+    fn queries(&self) -> RuntimeQueries<'_> {
         RuntimeQueries::new(self.mdk)
     }
 
-    pub fn commands(&self) -> RuntimeCommands<'_> {
+    fn commands(&self) -> RuntimeCommands<'_> {
         RuntimeCommands {
             mdk: self.mdk,
             client: self.client,
@@ -1682,6 +1633,48 @@ impl<'a> PikaRuntime<'a> {
         reason: &str,
     ) -> Result<PreparedCallSignal, String> {
         self.commands().prepare_end_call_signal(call_id, reason)
+    }
+
+    pub fn complete_membership_evolution_operation(
+        &self,
+        prepared: PreparedMembershipEvolution,
+        publish_status: EvolutionPublishStatus,
+    ) -> RuntimeOperationEvent {
+        let operation_id = prepared.evolution_event.id;
+        match publish_status {
+            EvolutionPublishStatus::Published => RuntimeOperationEvent::MembershipEvolution(
+                MembershipEvolutionOperationEvent::Completed {
+                    operation_id,
+                    result: self.finalize_published_evolution(prepared),
+                },
+            ),
+            EvolutionPublishStatus::PublishFailed(error) => {
+                RuntimeOperationEvent::membership_evolution_failed(prepared, error)
+            }
+        }
+    }
+
+    pub fn complete_outbound_publish_operation(
+        &self,
+        prepared: PreparedConversationAction,
+        publish_status: OutboundConversationPublishStatus,
+    ) -> RuntimeOperationEvent {
+        RuntimeOperationEvent::complete_outbound_conversation_publish(prepared, publish_status)
+    }
+
+    pub fn complete_call_signal_publish_operation(
+        &self,
+        kind: CallSignalPublishKind,
+        nostr_group_id_hex: String,
+        prepared: PreparedCallSignal,
+        publish_status: CallSignalPublishStatus,
+    ) -> RuntimeOperationEvent {
+        RuntimeOperationEvent::complete_call_signal_publish(
+            kind,
+            nostr_group_id_hex,
+            prepared,
+            publish_status,
+        )
     }
 
     pub fn handle_inbound_call_signal(
@@ -2635,7 +2628,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_queries_surface_explicit_read_boundary() {
+    fn pika_runtime_surface_explicit_read_boundary() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
@@ -2659,7 +2652,7 @@ mod tests {
             )
             .expect("create group");
         let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
-        let queries = RuntimeQueries::new(&inviter_mdk);
+        let queries = PikaRuntime::new(&inviter_mdk);
 
         let refreshed = queries
             .refresh_session_open_state(inviter_keys.public_key(), default_open_request())
@@ -2686,7 +2679,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_commands_prepare_outbound_action_through_explicit_boundary() {
+    fn pika_runtime_prepare_outbound_action_through_explicit_boundary() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
@@ -2711,7 +2704,7 @@ mod tests {
             .expect("create group");
         let chat_id = hex::encode(created.group.nostr_group_id);
 
-        let prepared = RuntimeCommands::new(&inviter_mdk)
+        let prepared = PikaRuntime::new(&inviter_mdk)
             .prepare_outbound_action(
                 inviter_keys.public_key(),
                 &chat_id,
@@ -2728,7 +2721,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_commands_complete_outbound_publish_operation_returns_completed_event() {
+    fn pika_runtime_complete_outbound_publish_operation_returns_completed_event() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
@@ -2752,7 +2745,7 @@ mod tests {
             )
             .expect("create group");
         let chat_id = hex::encode(created.group.nostr_group_id);
-        let commands = RuntimeCommands::new(&inviter_mdk);
+        let commands = PikaRuntime::new(&inviter_mdk);
         let prepared = commands
             .prepare_outbound_action(
                 inviter_keys.public_key(),
@@ -2780,7 +2773,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_commands_complete_outbound_publish_operation_returns_failed_event() {
+    fn pika_runtime_complete_outbound_publish_operation_returns_failed_event() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
@@ -2804,7 +2797,7 @@ mod tests {
             )
             .expect("create group");
         let chat_id = hex::encode(created.group.nostr_group_id);
-        let commands = RuntimeCommands::new(&inviter_mdk);
+        let commands = PikaRuntime::new(&inviter_mdk);
         let prepared = commands
             .prepare_outbound_action(
                 inviter_keys.public_key(),
@@ -2835,11 +2828,11 @@ mod tests {
     }
 
     #[test]
-    fn runtime_commands_prepare_outgoing_call_invite_through_explicit_boundary() {
+    fn pika_runtime_prepare_outgoing_call_invite_through_explicit_boundary() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mdk = open_test_mdk(&dir);
         let peer = Keys::generate();
-        let commands = RuntimeCommands::new(&mdk);
+        let commands = PikaRuntime::new(&mdk);
         let session = CallSessionParams {
             moq_url: "https://moq.local/anon".to_string(),
             broadcast_base: "pika/calls/550e8400-e29b-41d4-a716-446655440010".to_string(),
@@ -2863,7 +2856,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_commands_prepare_accept_incoming_call_through_explicit_boundary() {
+    fn pika_runtime_prepare_accept_incoming_call_through_explicit_boundary() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mdk = open_test_mdk(&dir);
         let local = Keys::generate();
@@ -2907,7 +2900,7 @@ mod tests {
             })
             .expect("derive relay auth");
 
-        let prepared = RuntimeCommands::new(&mdk)
+        let prepared = PikaRuntime::new(&mdk)
             .prepare_accept_incoming_call(
                 &PendingIncomingCall {
                     call_id: call_id.to_string(),
@@ -2929,11 +2922,11 @@ mod tests {
     }
 
     #[test]
-    fn runtime_commands_prepare_reject_call_signal_through_explicit_boundary() {
+    fn pika_runtime_prepare_reject_call_signal_through_explicit_boundary() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mdk = open_test_mdk(&dir);
 
-        let prepared = RuntimeCommands::new(&mdk)
+        let prepared = PikaRuntime::new(&mdk)
             .prepare_reject_call_signal("550e8400-e29b-41d4-a716-446655440012", "busy")
             .expect("prepare reject call signal");
 
@@ -2943,11 +2936,11 @@ mod tests {
     }
 
     #[test]
-    fn runtime_commands_prepare_end_call_signal_through_explicit_boundary() {
+    fn pika_runtime_prepare_end_call_signal_through_explicit_boundary() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mdk = open_test_mdk(&dir);
 
-        let prepared = RuntimeCommands::new(&mdk)
+        let prepared = PikaRuntime::new(&mdk)
             .prepare_end_call_signal("550e8400-e29b-41d4-a716-446655440013", "user_hangup")
             .expect("prepare end call signal");
 
@@ -2957,10 +2950,10 @@ mod tests {
     }
 
     #[test]
-    fn runtime_commands_complete_call_signal_publish_operation_returns_completed_event() {
+    fn pika_runtime_complete_call_signal_publish_operation_returns_completed_event() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mdk = open_test_mdk(&dir);
-        let operation = RuntimeCommands::new(&mdk).complete_call_signal_publish_operation(
+        let operation = PikaRuntime::new(&mdk).complete_call_signal_publish_operation(
             CallSignalPublishKind::Invite,
             "deadbeef".to_string(),
             PreparedCallSignal {
@@ -2984,13 +2977,13 @@ mod tests {
     }
 
     #[test]
-    fn runtime_commands_complete_call_signal_publish_operation_returns_failed_event() {
+    fn pika_runtime_complete_call_signal_publish_operation_returns_failed_event() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mdk = open_test_mdk(&dir);
         let wrapper_event_id =
             EventId::from_hex("1111111111111111111111111111111111111111111111111111111111111111")
                 .expect("event id");
-        let operation = RuntimeCommands::new(&mdk).complete_call_signal_publish_operation(
+        let operation = PikaRuntime::new(&mdk).complete_call_signal_publish_operation(
             CallSignalPublishKind::Invite,
             "deadbeef".to_string(),
             PreparedCallSignal {
@@ -3019,7 +3012,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_commands_prepare_and_finish_media_upload_through_explicit_boundary() {
+    fn pika_runtime_prepare_and_finish_media_upload_through_explicit_boundary() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
@@ -3043,7 +3036,7 @@ mod tests {
             )
             .expect("create group");
 
-        let commands = RuntimeCommands::new(&inviter_mdk);
+        let commands = PikaRuntime::new(&inviter_mdk);
         let prepared = commands
             .prepare_upload(
                 &created.group.mls_group_id,
@@ -3072,7 +3065,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_commands_complete_media_upload_operation_returns_completed_event() {
+    fn pika_runtime_complete_media_upload_operation_returns_completed_event() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
@@ -3095,7 +3088,7 @@ mod tests {
                 ),
             )
             .expect("create group");
-        let commands = RuntimeCommands::new(&inviter_mdk);
+        let commands = PikaRuntime::new(&inviter_mdk);
         let prepared = commands
             .prepare_upload(
                 &created.group.mls_group_id,
@@ -3133,7 +3126,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_commands_complete_media_upload_operation_returns_failed_event() {
+    fn pika_runtime_complete_media_upload_operation_returns_failed_event() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
@@ -3156,7 +3149,7 @@ mod tests {
                 ),
             )
             .expect("create group");
-        let commands = RuntimeCommands::new(&inviter_mdk);
+        let commands = PikaRuntime::new(&inviter_mdk);
         let prepared = commands
             .prepare_upload(
                 &created.group.mls_group_id,
@@ -3193,7 +3186,7 @@ mod tests {
         }
     }
     #[test]
-    fn runtime_commands_finalize_membership_evolution_through_explicit_boundary() {
+    fn pika_runtime_finalize_membership_evolution_through_explicit_boundary() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let peer_dir = tempfile::tempdir().expect("peer tempdir");
@@ -3223,7 +3216,7 @@ mod tests {
         inviter_mdk
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
-        let commands = RuntimeCommands::new(&inviter_mdk);
+        let commands = PikaRuntime::new(&inviter_mdk);
 
         let prepared = commands
             .prepare_add_members(&created.group.mls_group_id, &[peer_kp])
@@ -3252,7 +3245,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_commands_prepare_remove_members_through_explicit_boundary() {
+    fn pika_runtime_prepare_remove_members_through_explicit_boundary() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
@@ -3278,7 +3271,7 @@ mod tests {
         inviter_mdk
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
-        let commands = RuntimeCommands::new(&inviter_mdk);
+        let commands = PikaRuntime::new(&inviter_mdk);
 
         let prepared = commands
             .prepare_remove_members(&created.group.mls_group_id, &[invitee_keys.public_key()])
@@ -3293,7 +3286,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_commands_prepare_leave_group_through_explicit_boundary() {
+    fn pika_runtime_prepare_leave_group_through_explicit_boundary() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
@@ -3319,7 +3312,7 @@ mod tests {
         inviter_mdk
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
-        let commands = RuntimeCommands::new(&inviter_mdk);
+        let commands = PikaRuntime::new(&inviter_mdk);
 
         let prepared = commands
             .prepare_leave_group(&created.group.mls_group_id)
@@ -3334,7 +3327,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_commands_complete_membership_operation_returns_completed_event() {
+    fn pika_runtime_complete_membership_operation_returns_completed_event() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let peer_dir = tempfile::tempdir().expect("peer tempdir");
@@ -3364,7 +3357,7 @@ mod tests {
         inviter_mdk
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
-        let commands = RuntimeCommands::new(&inviter_mdk);
+        let commands = PikaRuntime::new(&inviter_mdk);
         let prepared = commands
             .prepare_add_members(&created.group.mls_group_id, &[peer_kp])
             .expect("prepare add members");
@@ -3387,7 +3380,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_commands_complete_membership_operation_returns_failed_event() {
+    fn pika_runtime_complete_membership_operation_returns_failed_event() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let peer_dir = tempfile::tempdir().expect("peer tempdir");
@@ -3417,7 +3410,7 @@ mod tests {
         inviter_mdk
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
-        let commands = RuntimeCommands::new(&inviter_mdk);
+        let commands = PikaRuntime::new(&inviter_mdk);
         let prepared = commands
             .prepare_add_members(&created.group.mls_group_id, &[peer_kp])
             .expect("prepare add members");

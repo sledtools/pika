@@ -1,7 +1,7 @@
 use nostr_sdk::hashes::{Hash as _, sha256};
 use pika_media::crypto::{FrameKeyMaterial, opaque_participant_label};
 use pika_mls::PikaMdk;
-use pika_mls::encrypted_media::crypto::{DEFAULT_SCHEME_VERSION, derive_encryption_key};
+use pika_mls::encrypted_media::crypto::DEFAULT_SCHEME_VERSION;
 use pika_mls::prelude::GroupId;
 use serde::{Deserialize, Serialize};
 
@@ -269,35 +269,38 @@ fn derive_track_keys(
     let rx_filename = format!("call/{}/{track}/{}", ctx.call_id, ctx.peer_pubkey_hex);
     let root_filename = format!("call/{}/{track}/group-root", ctx.call_id);
 
-    let tx_base = *derive_encryption_key(
-        ctx.mdk.as_raw(),
-        ctx.mls_group_id,
-        DEFAULT_SCHEME_VERSION,
-        &tx_hash,
-        "application/pika-call",
-        &tx_filename,
-    )
-    .map_err(|e| format!("derive tx media key for {track} failed: {e}"))?;
+    let tx_base = ctx
+        .mdk
+        .derive_media_encryption_key(
+            ctx.mls_group_id,
+            DEFAULT_SCHEME_VERSION,
+            &tx_hash,
+            "application/pika-call",
+            &tx_filename,
+        )
+        .map_err(|e| format!("derive tx media key for {track} failed: {e}"))?;
 
-    let rx_base = *derive_encryption_key(
-        ctx.mdk.as_raw(),
-        ctx.mls_group_id,
-        DEFAULT_SCHEME_VERSION,
-        &rx_hash,
-        "application/pika-call",
-        &rx_filename,
-    )
-    .map_err(|e| format!("derive rx media key for {track} failed: {e}"))?;
+    let rx_base = ctx
+        .mdk
+        .derive_media_encryption_key(
+            ctx.mls_group_id,
+            DEFAULT_SCHEME_VERSION,
+            &rx_hash,
+            "application/pika-call",
+            &rx_filename,
+        )
+        .map_err(|e| format!("derive rx media key for {track} failed: {e}"))?;
 
-    let group_root = *derive_encryption_key(
-        ctx.mdk.as_raw(),
-        ctx.mls_group_id,
-        DEFAULT_SCHEME_VERSION,
-        &root_hash,
-        "application/pika-call",
-        &root_filename,
-    )
-    .map_err(|e| format!("derive media group root for {track} failed: {e}"))?;
+    let group_root = ctx
+        .mdk
+        .derive_media_encryption_key(
+            ctx.mls_group_id,
+            DEFAULT_SCHEME_VERSION,
+            &root_hash,
+            "application/pika-call",
+            &root_filename,
+        )
+        .map_err(|e| format!("derive media group root for {track} failed: {e}"))?;
 
     let tx_keys = FrameKeyMaterial::from_base_key(
         tx_base,
@@ -361,15 +364,16 @@ pub fn derive_relay_auth_token(ctx: &CallCryptoDeriveContext<'_>) -> Result<Stri
         shared_seed.as_bytes(),
         ctx.call_id.as_bytes(),
     ]);
-    let auth_key = *derive_encryption_key(
-        ctx.mdk.as_raw(),
-        ctx.mls_group_id,
-        DEFAULT_SCHEME_VERSION,
-        &auth_hash,
-        "application/pika-call-auth",
-        &format!("call/{}/relay-auth", ctx.call_id),
-    )
-    .map_err(|e| format!("derive relay auth token failed: {e}"))?;
+    let auth_key = ctx
+        .mdk
+        .derive_media_encryption_key(
+            ctx.mls_group_id,
+            DEFAULT_SCHEME_VERSION,
+            &auth_hash,
+            "application/pika-call-auth",
+            &format!("call/{}/relay-auth", ctx.call_id),
+        )
+        .map_err(|e| format!("derive relay auth token failed: {e}"))?;
     let token_hash = context_hash(&[
         b"pika.call.relay.auth.token.v1",
         &auth_key,

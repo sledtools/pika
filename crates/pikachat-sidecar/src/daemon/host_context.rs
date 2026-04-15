@@ -39,14 +39,6 @@ impl<'a> DaemonHostContext<'a> {
         PikaRuntime::with_client(self.mdk, self.client)
     }
 
-    fn commands(&self) -> crate::runtime::RuntimeCommands<'a> {
-        crate::runtime::RuntimeCommands::with_client(self.mdk, self.client)
-    }
-
-    fn queries(&self) -> crate::runtime::RuntimeQueries<'a> {
-        crate::runtime::RuntimeQueries::new(self.mdk)
-    }
-
     pub(super) fn lookup_joined_group_snapshot(
         &self,
         nostr_group_id: &str,
@@ -93,14 +85,14 @@ impl<'a> DaemonHostContext<'a> {
     pub(super) fn list_pending_welcome_snapshots(
         &self,
     ) -> anyhow::Result<Vec<crate::welcome::PendingWelcomeSnapshot>> {
-        self.queries().list_pending_welcome_snapshots()
+        self.runtime().list_pending_welcome_snapshots()
     }
 
     pub(super) fn lookup_pending_welcome(
         &self,
         target: &EventId,
     ) -> anyhow::Result<Option<pika_mls::storage_traits::welcomes::types::Welcome>> {
-        self.queries().lookup_pending_welcome(target)
+        self.runtime().lookup_pending_welcome(target)
     }
 
     pub(super) fn parse_message_media_attachments(
@@ -156,7 +148,7 @@ impl<'a> DaemonHostContext<'a> {
         prepared: PreparedConversationAction,
         publish_status: crate::outbound::OutboundConversationPublishStatus,
     ) -> crate::runtime::RuntimeOperationEvent {
-        self.commands()
+        self.runtime()
             .complete_outbound_publish_operation(prepared, publish_status)
     }
 
@@ -167,7 +159,7 @@ impl<'a> DaemonHostContext<'a> {
         prepared: crate::call_runtime::PreparedCallSignal,
         publish_status: crate::runtime::CallSignalPublishStatus,
     ) -> crate::runtime::RuntimeOperationEvent {
-        self.commands().complete_call_signal_publish_operation(
+        self.runtime().complete_call_signal_publish_operation(
             kind,
             nostr_group_id_hex,
             prepared,
@@ -226,10 +218,10 @@ impl<'a> DaemonHostContext<'a> {
         action: OutboundConversationAction,
     ) -> Result<PreparedConversationAction, DaemonPrepareError> {
         let target = self
-            .commands()
+            .runtime()
             .resolve_outbound_target(nostr_group_id)
             .map_err(DaemonPrepareError::BadGroup)?;
-        self.commands()
+        self.runtime()
             .prepare_outbound_action_for_target(self.keys.public_key(), target, action)
             .map_err(DaemonPrepareError::Prepare)
     }
@@ -242,7 +234,7 @@ impl<'a> DaemonHostContext<'a> {
         let mls_group_id = self
             .resolve_group(nostr_group_id)
             .map_err(DaemonPrepareError::BadGroup)?;
-        self.commands()
+        self.runtime()
             .prepare_add_members(&mls_group_id, key_package_events)
             .map_err(DaemonPrepareError::Prepare)
     }
@@ -255,7 +247,7 @@ impl<'a> DaemonHostContext<'a> {
         let mls_group_id = self
             .resolve_group(nostr_group_id)
             .map_err(DaemonPrepareError::BadGroup)?;
-        self.commands()
+        self.runtime()
             .prepare_remove_members(&mls_group_id, removed_pubkeys)
             .map_err(DaemonPrepareError::Prepare)
     }
@@ -267,7 +259,7 @@ impl<'a> DaemonHostContext<'a> {
         let mls_group_id = self
             .resolve_group(nostr_group_id)
             .map_err(DaemonPrepareError::BadGroup)?;
-        self.commands()
+        self.runtime()
             .prepare_leave_group(&mls_group_id)
             .map_err(DaemonPrepareError::Prepare)
     }
@@ -277,7 +269,7 @@ impl<'a> DaemonHostContext<'a> {
         &self,
         prepared: PreparedMembershipEvolution,
     ) -> MembershipUpdateResult {
-        self.commands().finalize_published_evolution(prepared)
+        self.runtime().finalize_published_evolution(prepared)
     }
 
     pub(super) fn complete_membership_evolution_operation(
@@ -285,7 +277,7 @@ impl<'a> DaemonHostContext<'a> {
         prepared: PreparedMembershipEvolution,
         publish_status: EvolutionPublishStatus,
     ) -> crate::runtime::RuntimeOperationEvent {
-        self.commands()
+        self.runtime()
             .complete_membership_evolution_operation(prepared, publish_status)
     }
 
@@ -316,7 +308,7 @@ impl<'a> DaemonHostContext<'a> {
         call_id: &str,
         session: &CallSessionParams,
     ) -> anyhow::Result<(PendingOutgoingCall, crate::call_runtime::PreparedCallSignal)> {
-        self.commands()
+        self.runtime()
             .prepare_outgoing_call_invite(nostr_group_id, peer_pubkey_hex, call_id, session)
             .map_err(anyhow::Error::msg)
     }
@@ -328,7 +320,7 @@ impl<'a> DaemonHostContext<'a> {
         let mls_group_id = self
             .resolve_group(&invite.target_id)
             .map_err(|e| format!("resolve call group failed: {e:#}"))?;
-        self.commands().prepare_accept_incoming_call(
+        self.runtime().prepare_accept_incoming_call(
             invite,
             GroupCallContext {
                 mls_group_id: &mls_group_id,
@@ -342,7 +334,7 @@ impl<'a> DaemonHostContext<'a> {
         call_id: &str,
         reason: &str,
     ) -> Result<crate::call_runtime::PreparedCallSignal, String> {
-        self.commands().prepare_reject_call_signal(call_id, reason)
+        self.runtime().prepare_reject_call_signal(call_id, reason)
     }
 
     pub(super) fn prepare_end_call_signal(
@@ -350,7 +342,7 @@ impl<'a> DaemonHostContext<'a> {
         call_id: &str,
         reason: &str,
     ) -> Result<crate::call_runtime::PreparedCallSignal, String> {
-        self.commands().prepare_end_call_signal(call_id, reason)
+        self.runtime().prepare_end_call_signal(call_id, reason)
     }
 
     pub(super) fn process_classified_inbound_group_message(
@@ -381,7 +373,7 @@ impl<'a> DaemonHostContext<'a> {
         subscribed_group_ids: Vec<String>,
         giftwrap_lookback_sec: u64,
     ) -> anyhow::Result<crate::runtime::RuntimeSessionOpenState> {
-        self.queries().refresh_session_open_state(
+        self.runtime().refresh_session_open_state(
             self.keys.public_key(),
             super::daemon_open_request(
                 subscribed_group_ids,
@@ -406,7 +398,7 @@ impl<'a> DaemonHostContext<'a> {
         mime_type: Option<&str>,
         filename: Option<&str>,
     ) -> anyhow::Result<crate::media::PreparedMediaUpload> {
-        self.commands()
+        self.runtime()
             .prepare_upload(mls_group_id, bytes, mime_type, filename)
     }
 
@@ -417,7 +409,7 @@ impl<'a> DaemonHostContext<'a> {
         upload: &pika_mls::encrypted_media::types::EncryptedMediaUpload,
         status: crate::runtime::MediaUploadStatus,
     ) -> crate::runtime::RuntimeOperationEvent {
-        self.commands().complete_media_upload_operation(
+        self.runtime().complete_media_upload_operation(
             mls_group_id,
             nostr_group_id_hex,
             upload,

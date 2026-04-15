@@ -187,6 +187,25 @@ impl PikaMls {
     ) -> encrypted_media::manager::EncryptedMediaManager<'_, MdkSqliteStorage> {
         self.inner.media_manager(group_id)
     }
+
+    pub fn derive_media_encryption_key(
+        &self,
+        group_id: &storage_traits::GroupId,
+        scheme_version: &str,
+        original_hash: &[u8; 32],
+        mime_type: &str,
+        filename: &str,
+    ) -> std::result::Result<[u8; 32], encrypted_media::EncryptedMediaError> {
+        encrypted_media::crypto::derive_encryption_key(
+            &self.inner,
+            group_id,
+            scheme_version,
+            original_hash,
+            mime_type,
+            filename,
+        )
+        .map(|secret| *secret)
+    }
 }
 
 impl std::fmt::Debug for PikaMls {

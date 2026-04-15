@@ -346,15 +346,15 @@ shared-runtime-regression:
     #!/usr/bin/env bash
     set -euo pipefail
     if [[ -n "${PIKACI_APPLE_RUST_PREPARED_MANIFEST:-}" ]]; then
-      ./scripts/apple-host-run-prepared-entry pika-marmot-runtime-package-tests publish_welcome_rumors_
-      ./scripts/apple-host-run-prepared-entry pika-marmot-runtime-package-tests create_group_and_publish_welcomes_returns_group_and_published_metadata
+      ./scripts/apple-host-run-prepared-entry pikachat-sidecar-package-tests publish_welcome_rumors_pairs_each_recipient_with_one_welcome
+      ./scripts/apple-host-run-prepared-entry pikachat-sidecar-package-tests create_group_and_publish_welcomes_returns_group_and_published_metadata
       ./scripts/apple-host-run-prepared-entry pikachat-sidecar-package-tests init_group_uses_shared_runtime_helper_and_keeps_expiration_tag
       ./scripts/apple-host-run-prepared-entry pika-core-lib-tests app_background_publish_uses_shared_welcome_pairing
       ./scripts/apple-host-run-prepared-entry pikahut-integration-deterministic cli_smoke_local --ignored --nocapture
       ./scripts/apple-host-run-prepared-entry pikahut-integration-deterministic openclaw_scenario_invite_and_chat_daemon --ignored --nocapture
     else
-      cargo test -p pika-marmot-runtime publish_welcome_rumors_
-      cargo test -p pika-marmot-runtime create_group_and_publish_welcomes_returns_group_and_published_metadata
+      cargo test -p pikachat-sidecar publish_welcome_rumors_pairs_each_recipient_with_one_welcome
+      cargo test -p pikachat-sidecar create_group_and_publish_welcomes_returns_group_and_published_metadata
       cargo test -p pikachat-sidecar init_group_uses_shared_runtime_helper_and_keeps_expiration_tag
       cargo test -p pika_core app_background_publish_uses_shared_welcome_pairing
       cargo test -p pikahut --test integration_deterministic cli_smoke_local -- --ignored --nocapture

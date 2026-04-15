@@ -84,8 +84,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   chat-server key-package uploads no longer register throwaway devices first, and chat-server DM/group bootstrap now ignores peer/candidate relay hints instead of folding them into server-bound group routing.
 - [x] Isolate MDK relay-tag compatibility behind a fake relay:
   chat-server mode now uses `wss://private-chat.invalid` only where MDK still insists on non-empty relay tags, and session startup filters that sentinel back out before any network connection is attempted.
+- [x] Delete one thin Marmot helper seam instead of preserving it:
+  the shared create-group/welcome helper moved into the existing welcome module, and the extra `pika-marmot-runtime::group` wrapper module is gone.
 - Next seam:
-  start the larger runtime cut toward direct OpenMLS usage so chat-server mode can stop carrying MDK relay-tag compatibility at all.
+  cut `pika_core` off the `pika-marmot-runtime` app-facing facade first, so chat-server mode only depends on direct MDK/OpenMLS operations instead of the extra runtime wrapper layer.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
 
@@ -174,3 +176,5 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   A user can keep the same `npub` while future room migration remains a later feature.
 - Git history is the compatibility layer for deleted private-chat code.
   We should not preserve old relay/Marmot paths longer than necessary once the new slice is proven.
+- The highest-value simplification after the current transport slices is not "replace MDK all at once."
+  It is deleting `pika_core`'s dependency on the `pika-marmot-runtime` facade so the remaining MLS surface is smaller and more honest before the OpenMLS runtime cut.

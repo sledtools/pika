@@ -59,9 +59,6 @@ use pika_marmot_runtime::call_runtime::{
 use pika_marmot_runtime::conversation::{
     ConversationEvent, RuntimeApplicationMessage, RuntimeGroupUpdate,
 };
-use pika_marmot_runtime::group::{
-    create_group_and_plan_welcome_delivery, GroupWelcomeDeliveryPlan, PlannedGroupCreation,
-};
 use pika_marmot_runtime::membership::{EvolutionPublishStatus, PreparedMembershipEvolution};
 #[cfg(test)]
 pub(crate) use pika_marmot_runtime::message::TYPING_INDICATOR_KIND;
@@ -78,7 +75,10 @@ use pika_marmot_runtime::runtime::{
     RuntimeApplicationMessageInterpretation, RuntimeConversationEventInterpretation,
     RuntimeOperationEvent, RuntimeRelayRolePlan,
 };
-use pika_marmot_runtime::welcome::accept_welcome_and_catch_up;
+use pika_marmot_runtime::welcome::{
+    accept_welcome_and_catch_up, create_group_and_plan_welcome_delivery, GroupWelcomeDeliveryPlan,
+    PlannedGroupCreation,
+};
 
 /// Load all cached profiles from the on-disk database as `FollowListEntry`.
 pub(crate) fn load_cached_profiles(data_dir: &str) -> Vec<crate::state::FollowListEntry> {
@@ -9066,8 +9066,8 @@ mod tests {
         use crate::updates::InternalEvent;
         use mdk_core::prelude::{GroupId, NostrGroupConfigData};
         use nostr_sdk::prelude::*;
-        use pika_marmot_runtime::group::create_group_and_plan_welcome_delivery;
         use pika_marmot_runtime::membership::PreparedMembershipEvolution;
+        use pika_marmot_runtime::welcome::create_group_and_plan_welcome_delivery;
 
         /// Creates a core with a real MDK session and a group already in storage,
         /// with the group registered in session.groups so add-members can find it.

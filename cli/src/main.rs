@@ -18,6 +18,7 @@ use pika_managed_agent_contract::{AgentProvisionRequest, AgentStartupPhase, Incu
 use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
 use pika_marmot_runtime::runtime::MarmotRuntime;
+use pika_marmot_runtime::welcome::{CreatedGroup, create_group_and_publish_welcomes};
 use pika_relay_profiles::{
     default_key_package_relays, default_message_relays, default_primary_blossom_server,
 };
@@ -1190,7 +1191,7 @@ async fn create_group_and_publish_welcomes_for_invite(
     peer_kp: Event,
     peer_pubkey: PublicKey,
     config: NostrGroupConfigData,
-) -> anyhow::Result<pika_marmot_runtime::group::CreatedGroup> {
+) -> anyhow::Result<CreatedGroup> {
     create_group_and_publish_welcomes_for_invite_with_publisher(
         keys,
         mdk,
@@ -1213,12 +1214,12 @@ async fn create_group_and_publish_welcomes_for_invite_with_publisher<F, Fut>(
     peer_pubkey: PublicKey,
     config: NostrGroupConfigData,
     publish_giftwrap: F,
-) -> anyhow::Result<pika_marmot_runtime::group::CreatedGroup>
+) -> anyhow::Result<CreatedGroup>
 where
     F: FnMut(PublicKey, Event) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<()>>,
 {
-    pika_marmot_runtime::group::create_group_and_publish_welcomes(
+    create_group_and_publish_welcomes(
         keys,
         mdk,
         vec![peer_kp],

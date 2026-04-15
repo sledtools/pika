@@ -156,7 +156,7 @@ pub enum InternalEvent {
         chat_id: String,
         server_url: String,
         room_id: Option<String>,
-        initial_welcome_delivery: Option<pika_marmot_runtime::group::GroupWelcomeDeliveryPlan>,
+        initial_welcome_delivery: Option<pika_marmot_runtime::welcome::GroupWelcomeDeliveryPlan>,
         error: Option<String>,
     },
     ChatServerSyncPoll,

@@ -35,6 +35,7 @@ impl AppUpdate {
 pub enum CoreMsg {
     Action(AppAction),
     Internal(Box<InternalEvent>),
+    Shutdown,
 }
 
 #[derive(Debug)]

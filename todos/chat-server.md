@@ -45,7 +45,7 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   bound-room membership commits now go through one server write that validates room epoch, persists the Commit, updates room membership, and enqueues Welcomes with room metadata; initial room bootstrap now creates the room before the first Welcome is uploaded so the first invite can carry the same binding context.
 - [ ] Build a new client runtime around OpenMLS and local durable storage.
 - [ ] Route push notifications from server-stored room events instead of relay listeners.
-- [ ] Migrate one narrow chat path end to end:
+- [x] Migrate one narrow chat path end to end:
   1:1 chat create, invite, accept, send text, resume after reconnect.
 - [ ] Delete relay-centric private chat pieces once the replacement is proven.
 - [ ] Remove compatibility scaffolding aggressively instead of preserving both chat stacks long-term.
@@ -72,8 +72,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   the app now builds `pika://chat/<npub>?server=...` profile codes when `private_chat_server_url` is configured, deep-link/manual-entry parsing preserves that payload, CreateChat rejects mismatched or missing local chat-server config instead of silently discarding the server hint, `pikachat qr --server-url ...` can emit the same shape, and both self-profile and peer-profile share surfaces now advertise the same canonical payload.
 - [x] Add a fixture-backed app E2E for the new transport:
   `pikahut` now has a dedicated `relay-chat-server` profile that starts `pika-chat-server`, fixture manifests expose `chat_server_url`, and `rust/tests/e2e_messaging.rs` covers create-DM / welcome-accept / send / receive through the chat server path.
+- [x] Cover reconnect/resume on the new fixture lane:
+  the chat-server E2E now restarts the receiving app, verifies the persisted `chat_id -> room_id` binding and `last_synced_seq`, and confirms that new post-restart messages arrive through resumed room sync.
 - Next seam:
-  keep cutting the remaining relay/MDK bootstrap assumptions out of the chat-server path, starting with reconnect/resume coverage on the new fixture lane and any still-dead relay lookups that survive after a room is server-bound.
+  keep cutting the remaining relay/MDK bootstrap assumptions out of the chat-server path, starting with any still-dead relay lookups that survive after a room is server-bound and the lifecycle/test scaffolding that still assumes the old relay runtime.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
 
@@ -136,6 +138,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `PIKA_CHAT_SERVER_STATE_PATH` points at a JSON room/device log with persistent sequence numbers.
 - Chat-server key packages still need non-empty relay tags for MDK compatibility:
   even though the chat server owns delivery in this mode, the current MDK-backed group bootstrap rejects a claimed key package whose relays tag is empty, so chat-server uploads now keep the app's long-lived relay URLs in the event metadata until the OpenMLS runtime cut replaces that parser dependency.
+- `FfiApp` now has a real shutdown path on drop:
+  the actor loop stops its session/runtime when the last app handle is released, which keeps restart tests honest and avoids duplicate MLS processing from leaked background instances.
 - The inventory pass confirmed the biggest simplification wins:
   cut `pika-marmot-runtime`, delete `pika-server`'s relay listener path, and replace relay-centric app config early.
 - The v1 routing model is intentionally less Matrix-like:

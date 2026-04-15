@@ -265,6 +265,10 @@ impl FfiApp {
             );
             core.set_video_frame_receiver(video_receiver_for_core);
             while let Ok(msg) = core_rx.recv() {
+                if matches!(msg, CoreMsg::Shutdown) {
+                    core.shutdown();
+                    break;
+                }
                 core.handle_message(msg);
             }
         });
@@ -338,6 +342,12 @@ impl FfiApp {
                 *poison.into_inner() = Some(bridge);
             }
         }
+    }
+}
+
+impl Drop for FfiApp {
+    fn drop(&mut self) {
+        let _ = self.core_tx.send(CoreMsg::Shutdown);
     }
 }
 

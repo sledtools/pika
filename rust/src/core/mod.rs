@@ -3421,7 +3421,17 @@ impl AppCore {
                 self.handle_action(action.clone());
             }
             CoreMsg::Internal(internal) => self.handle_internal(*internal),
+            CoreMsg::Shutdown => self.shutdown(),
         }
+    }
+
+    pub(crate) fn shutdown(&mut self) {
+        self.clear_pending_nostr_connect_login();
+        self.stop_session();
+        self.call_runtime.stop_all();
+        self.cancel_call_duration_ticks();
+        self.cancel_call_offer_timeout();
+        self.cancel_voice_recording_ticks();
     }
 
     fn handle_internal(&mut self, internal: InternalEvent) {

@@ -380,7 +380,6 @@ impl AppCore {
             let session_client = sess.client.clone();
             let http_client = self.http_client.clone();
             let tx = self.core_sender.clone();
-            let push_token = self.push_apns_token.clone();
             self.runtime.spawn(async move {
                 let event = match session_client.sign_event_builder(builder).await {
                     Ok(event) => event,
@@ -400,8 +399,6 @@ impl AppCore {
                     &http_client,
                     &session_client,
                     &base_url,
-                    Some(chat_server::platform_label()),
-                    push_token.as_deref(),
                     &event,
                 )
                 .await;

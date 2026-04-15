@@ -4092,12 +4092,14 @@ impl AppCore {
         };
         let kp_event = normalize_peer_key_package_event_for_mdk(&kp_event);
 
-        // Merge our default relays with any relays the peer advertised in their key package.
-        let peer_relays = extract_relays_from_key_package_event(&kp_event).unwrap_or_default();
         let mut group_relays = self.default_relays();
-        for r in peer_relays.iter().cloned() {
-            if !group_relays.contains(&r) {
-                group_relays.push(r);
+        if self.private_chat_server_url().is_none() {
+            // Relay-mode bootstrap still needs peer relay hints for group routing.
+            let peer_relays = extract_relays_from_key_package_event(&kp_event).unwrap_or_default();
+            for r in peer_relays.iter().cloned() {
+                if !group_relays.contains(&r) {
+                    group_relays.push(r);
+                }
             }
         }
         let group_result = {
@@ -4617,19 +4619,26 @@ impl AppCore {
                 .map(normalize_peer_key_package_event_for_mdk)
                 .collect();
 
-            let peer_relays: Vec<RelayUrl> = kp_events
-                .iter()
-                .flat_map(|e| extract_relays_from_key_package_event(e).unwrap_or_default())
-                .collect();
+            let use_relay_metadata = self.private_chat_server_url().is_none();
+            let peer_relays: Vec<RelayUrl> = if use_relay_metadata {
+                kp_events
+                    .iter()
+                    .flat_map(|e| extract_relays_from_key_package_event(e).unwrap_or_default())
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let mut group_relays = self.default_relays();
-            for r in candidate_kp_relays.iter().cloned() {
-                if !group_relays.contains(&r) {
-                    group_relays.push(r);
+            if use_relay_metadata {
+                for r in candidate_kp_relays.iter().cloned() {
+                    if !group_relays.contains(&r) {
+                        group_relays.push(r);
+                    }
                 }
-            }
-            for r in peer_relays.iter().cloned() {
-                if !group_relays.contains(&r) {
-                    group_relays.push(r);
+                for r in peer_relays.iter().cloned() {
+                    if !group_relays.contains(&r) {
+                        group_relays.push(r);
+                    }
                 }
             }
 
@@ -9120,11 +9129,15 @@ mod tests {
         /// Create a separate MDK instance for a peer and generate a signed
         /// key package event from it.
         fn make_peer_key_package(peer_keys: &Keys) -> Event {
+            make_peer_key_package_with_relay(peer_keys, "wss://test.relay")
+        }
+
+        fn make_peer_key_package_with_relay(peer_keys: &Keys, relay: &str) -> Event {
             let tempdir = tempfile::tempdir().expect("tempdir");
             let peer_dir = tempdir.path().to_string_lossy().into_owned();
 
             let peer_mdk = open_mdk(&peer_dir, &peer_keys.public_key(), "").expect("open peer mdk");
-            let relay = RelayUrl::parse("wss://test.relay").unwrap();
+            let relay = RelayUrl::parse(relay).unwrap();
             let (content, tags, _hash_ref) = peer_mdk
                 .create_key_package_for_event(&peer_keys.public_key(), vec![relay])
                 .expect("create_key_package_for_event");
@@ -9221,6 +9234,47 @@ mod tests {
                 "app create-group should still navigate immediately without waiting for welcome delivery"
             );
             assert!(core.state.toast.is_none());
+        }
+
+        #[test]
+        fn chat_server_group_create_ignores_candidate_and_peer_relay_metadata() {
+            let (mut core, _chat_id, _keys, _gid) = make_core_with_group();
+            core.config.private_chat_server_url = Some("https://chat.example".into());
+            core.config.relay_urls = Some(vec!["wss://local.example".into()]);
+            core.config.disable_network = Some(true);
+            core.state.busy.creating_chat = true;
+
+            let peer = Keys::generate();
+            let kp_event = make_peer_key_package_with_relay(&peer, "wss://peer-only.example");
+
+            core.handle_internal(InternalEvent::GroupKeyPackagesFetched {
+                peer_pubkeys: vec![peer.public_key()],
+                group_name: "Server Ordered Group".into(),
+                existing_chat_id: None,
+                key_package_events: vec![kp_event],
+                failed_peers: vec![],
+                candidate_kp_relays: vec![
+                    RelayUrl::parse("wss://candidate-only.example").expect("relay url")
+                ],
+            });
+
+            let session = core.session.as_ref().expect("session");
+            let created = session
+                .groups
+                .values()
+                .find(|group| group.group_name.as_deref() == Some("Server Ordered Group"))
+                .expect("created group");
+            let relays = session
+                .mdk
+                .get_relays(&created.mls_group_id)
+                .expect("group relays");
+
+            assert_eq!(relays.len(), 1);
+            assert!(relays.contains(&RelayUrl::parse("wss://local.example").expect("relay")));
+            assert!(
+                !relays.contains(&RelayUrl::parse("wss://candidate-only.example").expect("relay"))
+            );
+            assert!(!relays.contains(&RelayUrl::parse("wss://peer-only.example").expect("relay")));
         }
 
         #[test]
@@ -9947,9 +10001,10 @@ mod tests {
     mod group_management_validation {
         use super::*;
         use crate::actions::AppAction;
+        use crate::mdk_support::open_mdk;
         use crate::state::{AuthMode, AuthState};
         use crate::updates::InternalEvent;
-        use nostr_sdk::{Client, EventBuilder, Keys, Kind, RelayUrl, ToBech32};
+        use nostr_sdk::{Client, Event, EventBuilder, Keys, Kind, RelayUrl, ToBech32};
         use pika_chat_server::store::StoreHandle;
         use pika_chat_server::{router, AppState as ChatServerAppState, SessionManager};
         use pika_marmot_runtime::membership::PreparedMembershipEvolution;
@@ -9974,6 +10029,21 @@ mod tests {
                 groups: std::collections::HashMap::new(),
             });
             (core, tmp)
+        }
+
+        fn make_peer_key_package_with_relay(peer_keys: &Keys, relay: &str) -> Event {
+            let peer_tmp = tempfile::tempdir().expect("peer tempdir");
+            let peer_dir = peer_tmp.path().to_string_lossy().into_owned();
+            let peer_mdk = open_mdk(&peer_dir, &peer_keys.public_key(), "").expect("open peer mdk");
+            let relay = RelayUrl::parse(relay).expect("relay url");
+            let (content, tags, _hash_ref) = peer_mdk
+                .create_key_package_for_event(&peer_keys.public_key(), vec![relay])
+                .expect("create peer key package");
+
+            EventBuilder::new(Kind::MlsKeyPackage, content)
+                .tags(tags)
+                .sign_with_keys(peer_keys)
+                .expect("sign peer key package")
         }
 
         async fn spawn_test_chat_server() -> (Url, tokio::task::JoinHandle<()>) {
@@ -10090,8 +10160,6 @@ mod tests {
                 &http_client,
                 &owner_client,
                 &base_url,
-                Some("ios"),
-                None,
                 &key_package_event,
             )
             .await
@@ -10237,6 +10305,42 @@ mod tests {
                 )
             );
             assert!(!core.state.busy.creating_chat);
+        }
+
+        #[test]
+        fn chat_server_direct_chat_creation_ignores_peer_relay_tags() {
+            let (mut core, _tmp) = make_logged_in_core();
+            let peer_keys = Keys::generate();
+            let peer_pubkey = peer_keys.public_key();
+            let kp_event = make_peer_key_package_with_relay(&peer_keys, "wss://peer-only.example");
+            core.config.private_chat_server_url = Some("https://chat.example".into());
+            core.config.relay_urls = Some(vec!["wss://local.example".into()]);
+            core.config.disable_network = Some(true);
+            core.direct_chat_creation_token = 14;
+            core.pending_direct_chat_creation = Some(super::super::PendingDirectChatCreation {
+                token: 14,
+                peer_pubkey,
+            });
+            core.state.busy.creating_chat = true;
+
+            core.handle_internal(InternalEvent::PeerKeyPackageFetched {
+                token: 14,
+                peer_pubkey,
+                key_package_event: Some(kp_event),
+                error: None,
+            });
+
+            let session = core.session.as_ref().expect("session");
+            assert_eq!(session.groups.len(), 1);
+            let created = session.groups.values().next().expect("created chat");
+            let relays = session
+                .mdk
+                .get_relays(&created.mls_group_id)
+                .expect("group relays");
+
+            assert_eq!(relays.len(), 1);
+            assert!(relays.contains(&RelayUrl::parse("wss://local.example").expect("relay")));
+            assert!(!relays.contains(&RelayUrl::parse("wss://peer-only.example").expect("relay")));
         }
 
         #[test]

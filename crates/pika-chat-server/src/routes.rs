@@ -896,32 +896,6 @@ mod tests {
         let (app, alice_token, _) = login_token(app, "chat.test").await;
         let (app, bob_token, _) = login_token(app, "chat.test").await;
 
-        let register_device_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/devices/register")
-                    .method("POST")
-                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        serde_json::to_vec(&RegisterDeviceRequest {
-                            platform: Some("ios".to_string()),
-                            push_token: None,
-                        })
-                        .expect("serialize register device request"),
-                    ))
-                    .expect("build register device request"),
-            )
-            .await
-            .expect("register device response");
-        assert_eq!(register_device_response.status(), StatusCode::OK);
-        let register_device_body = to_bytes(register_device_response.into_body(), usize::MAX)
-            .await
-            .expect("read register device body");
-        let register_device: RegisterDeviceResponse =
-            serde_json::from_slice(&register_device_body).expect("decode register device body");
-
         let upload_response = app
             .clone()
             .oneshot(
@@ -932,7 +906,7 @@ mod tests {
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&UploadKeyPackageRequest {
-                            device_id: register_device.device.device_id.clone(),
+                            device_id: None,
                             ciphersuite: Some("mls128".to_string()),
                             payload: "opaque-key-package".to_string(),
                         })
@@ -949,6 +923,7 @@ mod tests {
         let uploaded: UploadKeyPackageResponse =
             serde_json::from_slice(&upload_body).expect("decode upload key package body");
         assert_eq!(uploaded.key_package.claimed_at, None);
+        assert_eq!(uploaded.key_package.device_id, None);
 
         let claim_response = app
             .oneshot(
@@ -1113,31 +1088,6 @@ mod tests {
         let (app, alice_token, _) = login_token(app, "chat.test").await;
         let (app, mallory_token, _) = login_token(app, "chat.test").await;
 
-        let register_device_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/devices/register")
-                    .method("POST")
-                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        serde_json::to_vec(&RegisterDeviceRequest {
-                            platform: Some("ios".to_string()),
-                            push_token: None,
-                        })
-                        .expect("serialize register device request"),
-                    ))
-                    .expect("build register device request"),
-            )
-            .await
-            .expect("register device response");
-        let register_device_body = to_bytes(register_device_response.into_body(), usize::MAX)
-            .await
-            .expect("read register device body");
-        let register_device: RegisterDeviceResponse =
-            serde_json::from_slice(&register_device_body).expect("decode register device body");
-
         let create_room_response = app
             .clone()
             .oneshot(
@@ -1173,7 +1123,7 @@ mod tests {
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&UploadKeyPackageRequest {
-                            device_id: register_device.device.device_id,
+                            device_id: None,
                             ciphersuite: Some("mls128".to_string()),
                             payload: "opaque-key-package".to_string(),
                         })

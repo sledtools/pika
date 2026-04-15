@@ -5,10 +5,9 @@ use nostr_sdk::prelude::{Client, Event, EventBuilder, Kind, Tag, TagKind, ToBech
 use pika_chat_server::protocol::{
     AppendRoomEventRequest, AppendRoomEventResponse, ClaimKeyPackageRequest,
     ClaimKeyPackageResponse, ClaimWelcomesResponse, CreateRoomRequest, CreateRoomResponse,
-    KeyPackageRecord, RegisterDeviceRequest, RegisterDeviceResponse, RoomEvent, RoomEventType,
-    RoomSummary, SubmitMembershipCommitRequest, SubmitMembershipCommitResponse,
-    SyncRoomEventsResponse, UploadKeyPackageRequest, UploadKeyPackageResponse,
-    UploadWelcomeRequest, UploadWelcomeResponse, WelcomeEnvelope,
+    KeyPackageRecord, RoomEvent, RoomEventType, RoomSummary, SubmitMembershipCommitRequest,
+    SubmitMembershipCommitResponse, SyncRoomEventsResponse, UploadKeyPackageRequest,
+    UploadKeyPackageResponse, UploadWelcomeRequest, UploadWelcomeResponse, WelcomeEnvelope,
 };
 use pika_chat_server::SessionTokenResponse;
 use reqwest::{Method, StatusCode};
@@ -118,38 +117,6 @@ pub async fn login(
     )
     .await?;
     Ok(response.access_token)
-}
-
-pub async fn register_device(
-    http_client: &reqwest::Client,
-    base_url: &Url,
-    access_token: &str,
-    platform: Option<&str>,
-    push_token: Option<&str>,
-) -> Result<String> {
-    let url = endpoint(base_url, "/v1/devices/register")?;
-    let response: RegisterDeviceResponse = read_json(
-        http_client
-            .post(url)
-            .bearer_auth(access_token)
-            .header("Accept", "application/json")
-            .json(&RegisterDeviceRequest {
-                platform: platform
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(ToString::to_string),
-                push_token: push_token
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(ToString::to_string),
-            })
-            .send()
-            .await
-            .context("send chat-server register-device request")?,
-        "chat-server register device",
-    )
-    .await?;
-    Ok(response.device.device_id)
 }
 
 pub async fn create_room(
@@ -409,13 +376,9 @@ pub async fn upload_key_package_event(
     http_client: &reqwest::Client,
     signer_client: &Client,
     base_url: &Url,
-    platform: Option<&str>,
-    push_token: Option<&str>,
     key_package_event: &Event,
 ) -> Result<KeyPackageRecord> {
     let access_token = login(http_client, signer_client, base_url).await?;
-    let device_id =
-        register_device(http_client, base_url, &access_token, platform, push_token).await?;
     let url = endpoint(base_url, "/v1/key-packages")?;
     read_json(
         http_client
@@ -423,7 +386,7 @@ pub async fn upload_key_package_event(
             .bearer_auth(access_token)
             .header("Accept", "application/json")
             .json(&UploadKeyPackageRequest {
-                device_id,
+                device_id: None,
                 ciphersuite: None,
                 payload: serde_json::to_string(key_package_event)
                     .context("serialize key package event payload")?,
@@ -479,10 +442,6 @@ pub fn peer_npub(peer_pubkey: &nostr_sdk::prelude::PublicKey) -> Result<String> 
         .map_err(|err| anyhow!("encode peer npub: {err}"))
 }
 
-pub fn platform_label() -> &'static str {
-    std::env::consts::OS
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,20 +485,15 @@ mod tests {
             .sign_with_keys(&alice_keys)
             .expect("sign key package event");
 
-        let uploaded = upload_key_package_event(
-            &http_client,
-            &alice_client,
-            &base_url,
-            Some("ios"),
-            Some("push-token"),
-            &key_package_event,
-        )
-        .await
-        .expect("upload key package");
+        let uploaded =
+            upload_key_package_event(&http_client, &alice_client, &base_url, &key_package_event)
+                .await
+                .expect("upload key package");
         assert_eq!(
             uploaded.owner_npub,
             alice_keys.public_key().to_bech32().unwrap().to_lowercase()
         );
+        assert_eq!(uploaded.device_id, None);
 
         let claimed = claim_key_package_event(
             &http_client,
@@ -819,16 +773,9 @@ mod tests {
         let key_package_event = EventBuilder::new(Kind::MlsKeyPackage, "opaque-key-package")
             .sign_with_keys(&owner_keys)
             .expect("sign key package event");
-        upload_key_package_event(
-            &http_client,
-            &owner_client,
-            &base_url,
-            Some("ios"),
-            None,
-            &key_package_event,
-        )
-        .await
-        .expect("upload key package");
+        upload_key_package_event(&http_client, &owner_client, &base_url, &key_package_event)
+            .await
+            .expect("upload key package");
 
         let room = create_room(
             &http_client,

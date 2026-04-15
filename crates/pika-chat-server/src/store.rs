@@ -288,13 +288,7 @@ impl ChatStore {
         request: UploadKeyPackageRequest,
         now: u64,
     ) -> Result<KeyPackageRecord, StoreError> {
-        let devices = self
-            .devices_by_owner
-            .get(owner_npub)
-            .ok_or(StoreError::DeviceNotFound)?;
-        if !devices.contains_key(&request.device_id) {
-            return Err(StoreError::DeviceOwnerMismatch);
-        }
+        self.ensure_device_owner(owner_npub, request.device_id.as_deref())?;
 
         let payload = request.payload.trim().to_string();
         if payload.is_empty() {
@@ -304,7 +298,7 @@ impl ChatStore {
         let key_package = KeyPackageRecord {
             key_package_id: new_prefixed_id("kp"),
             owner_npub: owner_npub.to_string(),
-            device_id: request.device_id,
+            device_id: clean_optional_field(request.device_id),
             ciphersuite: clean_optional_field(request.ciphersuite),
             payload,
             created_at: now,
@@ -697,26 +691,19 @@ mod tests {
     #[test]
     fn key_package_upload_and_claim_round_trip() {
         let mut store = ChatStore::default();
-        let device = store.register_device(
-            "npub1alice",
-            RegisterDeviceRequest {
-                platform: Some("ios".to_string()),
-                push_token: None,
-            },
-            100,
-        );
         let key_package = store
             .upload_key_package(
                 "npub1alice",
                 UploadKeyPackageRequest {
-                    device_id: device.device_id.clone(),
+                    device_id: None,
                     ciphersuite: Some("mls128".to_string()),
                     payload: "opaque-key-package".to_string(),
                 },
-                101,
+                100,
             )
             .expect("upload key package");
         assert_eq!(key_package.claimed_at, None);
+        assert_eq!(key_package.device_id, None);
 
         let claimed = store
             .claim_key_package(

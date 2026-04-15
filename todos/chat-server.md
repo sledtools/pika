@@ -80,8 +80,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   chat-server mode no longer publishes kind-0 group-profile wrappers only to relays that peers are not subscribed to; bound profile updates now append through the chat server and fixture E2E coverage proves the peer profile cache updates.
 - [x] Route bound call signals through the room log too:
   chat-server mode now appends call invite/end wrappers through the room log for bound chats, and fixture E2E coverage proves the peer rings and observes remote hangup without relay private-chat subscriptions.
+- [x] Trim relay-era bootstrap metadata from chat-server mode:
+  chat-server key-package uploads no longer register throwaway devices first, and chat-server DM/group bootstrap now ignores peer/candidate relay hints instead of folding them into server-bound group routing.
 - Next seam:
-  keep cutting the remaining relay/MDK bootstrap assumptions out of the chat-server path, starting with the key-package / welcome bootstrap bits that still lean on MDK-era relay metadata and the larger runtime cut toward OpenMLS.
+  keep cutting the remaining relay/MDK bootstrap assumptions out of the chat-server path, starting with the mandatory relay tags that MDK still requires on key packages and welcome rumors, plus the larger runtime cut toward OpenMLS.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
 
@@ -154,6 +156,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `rust/tests/e2e_messaging.rs` uses a shared mutex so the `chat_server_*` subset can run together without multiple tests fighting over the fixed local chat-server port.
 - Bound call control now follows the same transport split as text/profile updates:
   `publish_call_signal` appends wrappers through the room log whenever a `chat_id -> room_id` binding exists, and only uses relay publish for unbound / relay-mode calls.
+- Chat-server key-package bootstrap is simpler now:
+  the app uploads key packages straight to the chat server without first registering a device, while the server still accepts optional device IDs for future sender attribution and push plumbing.
+- Chat-server room bootstrap now treats relay metadata as compatibility-only:
+  direct-chat and group creation keep local default relays for MDK parsing, but stop importing peer key-package relay hints or candidate lookup relays into server-bound group state.
 - The inventory pass confirmed the biggest simplification wins:
   cut `pika-marmot-runtime`, delete `pika-server`'s relay listener path, and replace relay-centric app config early.
 - The v1 routing model is intentionally less Matrix-like:

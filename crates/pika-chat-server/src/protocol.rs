@@ -24,7 +24,7 @@ pub struct RegisterDeviceResponse {
 pub struct KeyPackageRecord {
     pub key_package_id: String,
     pub owner_npub: String,
-    pub device_id: String,
+    pub device_id: Option<String>,
     pub ciphersuite: Option<String>,
     pub payload: String,
     pub created_at: u64,
@@ -35,7 +35,7 @@ pub struct KeyPackageRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UploadKeyPackageRequest {
-    pub device_id: String,
+    pub device_id: Option<String>,
     pub ciphersuite: Option<String>,
     pub payload: String,
 }

@@ -1,4 +1,5 @@
 use crate::mdk_support::PikaMdk;
+use pika_mls::conversation::ConversationQueries;
 use pika_mls::storage_traits::GroupId;
 
 use super::call_support::{
@@ -317,8 +318,7 @@ impl<'a> CallWorkflowRuntime<'a> {
         session: &CallSessionParams,
         peer_pubkey_hex: &str,
     ) -> Result<CallMediaCryptoContext, String> {
-        let group_epoch = self
-            .mdk
+        let group_epoch = ConversationQueries::new(self.mdk)
             .get_group(group.mls_group_id)
             .map_err(|e| format!("load mls group failed: {e}"))?
             .ok_or_else(|| "mls group not found".to_string())?

@@ -4,6 +4,7 @@ use crate::call::{
     ParsedCallSignal, build_call_signal_json, derive_call_media_crypto_context,
     validate_relay_auth_token,
 };
+use pika_mls::conversation::ConversationQueries;
 use pika_mls::prelude::GroupId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -316,8 +317,7 @@ impl<'a> CallWorkflowRuntime<'a> {
         session: &CallSessionParams,
         peer_pubkey_hex: &str,
     ) -> Result<CallMediaCryptoContext, String> {
-        let group_epoch = self
-            .mdk
+        let group_epoch = ConversationQueries::new(self.mdk)
             .get_group(group.mls_group_id)
             .map_err(|e| format!("load mls group failed: {e}"))?
             .ok_or_else(|| "mls group not found".to_string())?

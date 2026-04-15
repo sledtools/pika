@@ -7,8 +7,10 @@ use anyhow::{Context, anyhow};
 use clap::Subcommand;
 use nostr_blossom::client::BlossomClient;
 use nostr_sdk::prelude::*;
+use pika_mls::conversation::{ConversationQueries, process_group_message_event, wrap_rumor};
 use pika_mls::encrypted_media::types::MediaProcessingOptions;
 use pika_mls::prelude::*;
+use pika_mls::welcome::{WelcomeQueries, accept_pending_welcome, stage_pending_welcome};
 use rand::RngCore;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;
@@ -18,6 +20,37 @@ use tracing::{info, warn};
 use crate::Cli;
 
 const NOSTR_PER_MESSAGE_TIMEOUT: Duration = Duration::from_secs(1);
+
+fn create_group_message(
+    mdk: &PikaMdk,
+    mls_group_id: &GroupId,
+    rumor: UnsignedEvent,
+) -> anyhow::Result<Event> {
+    Ok(wrap_rumor(mdk, mls_group_id, rumor)
+        .context("create_message")?
+        .wrapper)
+}
+
+fn process_group_message(mdk: &PikaMdk, event: &Event) -> anyhow::Result<MessageProcessingResult> {
+    process_group_message_event(mdk, event)?
+        .ok_or_else(|| anyhow!("expected MLS group message wrapper"))
+}
+
+fn list_joined_groups(
+    mdk: &PikaMdk,
+) -> anyhow::Result<Vec<pika_mls::conversation::JoinedGroupSnapshot>> {
+    ConversationQueries::new(mdk)
+        .list_joined_group_snapshots()
+        .context("get_groups")
+}
+
+fn list_pending_welcomes(
+    mdk: &PikaMdk,
+) -> anyhow::Result<Vec<pika_mls::storage_traits::welcomes::types::Welcome>> {
+    WelcomeQueries::new(mdk)
+        .list_pending_welcomes()
+        .context("get_pending_welcomes")
+}
 
 #[derive(Debug, Subcommand)]
 #[allow(clippy::enum_variant_names)]
@@ -264,9 +297,8 @@ async fn scenario_invite_and_chat_peer(
     info!("[phase4] prompt={prompt}");
 
     let a_rumor = EventBuilder::new(Kind::ChatMessage, prompt).build(a_keys.public_key());
-    let a_msg_event = a_mdk
-        .create_message(&mls_group_id, a_rumor)
-        .context("A create_message")?;
+    let a_msg_event =
+        create_group_message(&a_mdk, &mls_group_id, a_rumor).context("A create_message")?;
     publish_and_confirm(&a_client, relay_url.clone(), &a_msg_event, "a_to_peer").await?;
 
     let peer_received = wait_for_exact_application(
@@ -418,21 +450,16 @@ async fn scenario_invite_and_chat(
         unwrapped_rumor.pubkey.to_hex().to_lowercase()
     );
 
-    b_mdk
-        .process_welcome(&wrapper_event_id, &unwrapped_rumor)
+    stage_pending_welcome(&b_mdk, &wrapper_event_id, &unwrapped_rumor)
         .context("mdk process_welcome")?;
 
-    let pending = b_mdk
-        .get_pending_welcomes(None)
-        .context("get_pending_welcomes")?;
+    let pending = list_pending_welcomes(&b_mdk)?;
     if pending.len() != 1 {
         return Err(anyhow!("expected 1 pending welcome, got {}", pending.len()));
     }
-    b_mdk
-        .accept_welcome(&pending[0])
-        .context("accept_welcome")?;
+    accept_pending_welcome(&b_mdk, &pending[0]).context("accept_welcome")?;
 
-    let b_groups = b_mdk.get_groups().context("b get_groups")?;
+    let b_groups = list_joined_groups(&b_mdk).context("b get_groups")?;
     if b_groups.len() != 1 {
         return Err(anyhow!(
             "expected B to have 1 group, got {}",
@@ -440,7 +467,7 @@ async fn scenario_invite_and_chat(
         ));
     }
     let b_group = &b_groups[0];
-    let b_nostr_group_id_hex = hex::encode(b_group.nostr_group_id);
+    let b_nostr_group_id_hex = b_group.nostr_group_id_hex.clone();
     if b_nostr_group_id_hex != nostr_group_id_hex {
         return Err(anyhow!(
             "group id mismatch: A={} B={}",
@@ -467,9 +494,8 @@ async fn scenario_invite_and_chat(
     let b_sub = subscribe_group_msgs(&b_client, &nostr_group_id_hex).await?;
 
     let a_rumor = EventBuilder::new(Kind::ChatMessage, a_to_b.clone()).build(a_keys.public_key());
-    let a_msg_event = a_mdk
-        .create_message(&mls_group_id, a_rumor)
-        .context("A create_message")?;
+    let a_msg_event =
+        create_group_message(&a_mdk, &mls_group_id, a_rumor).context("A create_message")?;
     publish_and_confirm(&a_client, relay_url.clone(), &a_msg_event, "a_to_b").await?;
 
     let b_received = wait_for_exact_application(
@@ -489,9 +515,8 @@ async fn scenario_invite_and_chat(
     );
 
     let b_rumor = EventBuilder::new(Kind::ChatMessage, b_to_a.clone()).build(b_keys.public_key());
-    let b_msg_event = b_mdk
-        .create_message(&mls_group_id, b_rumor)
-        .context("B create_message")?;
+    let b_msg_event =
+        create_group_message(&b_mdk, &mls_group_id, b_rumor).context("B create_message")?;
     publish_and_confirm(&b_client, relay_url.clone(), &b_msg_event, "b_to_a").await?;
 
     let a_received = wait_for_exact_application(
@@ -650,9 +675,8 @@ async fn scenario_invite_and_chat_rustbot(
     info!("[phase2] prompt={prompt}");
 
     let a_rumor = EventBuilder::new(Kind::ChatMessage, prompt).build(a_keys.public_key());
-    let a_msg_event = a_mdk
-        .create_message(&mls_group_id, a_rumor)
-        .context("A create_message")?;
+    let a_msg_event =
+        create_group_message(&a_mdk, &mls_group_id, a_rumor).context("A create_message")?;
     publish_and_confirm(&a_client, relay_url.clone(), &a_msg_event, "a_to_bot").await?;
 
     let bot_received = wait_for_exact_application(
@@ -900,9 +924,8 @@ async fn scenario_invite_and_chat_daemon(
     info!("[phase3] prompt={prompt}");
 
     let a_rumor = EventBuilder::new(Kind::ChatMessage, prompt.clone()).build(a_keys.public_key());
-    let a_msg_event = a_mdk
-        .create_message(&mls_group_id, a_rumor)
-        .context("A create_message")?;
+    let a_msg_event =
+        create_group_message(&a_mdk, &mls_group_id, a_rumor).context("A create_message")?;
     publish_and_confirm(&a_client, relay_url.clone(), &a_msg_event, "a_to_daemon").await?;
 
     // When daemon reports it received the prompt, command it to send the reply.
@@ -1031,17 +1054,15 @@ async fn bot_main(
         unwrapped_rumor.pubkey.to_hex().to_lowercase()
     );
 
-    mdk.process_welcome(&wrapper_event_id, &unwrapped_rumor)
+    stage_pending_welcome(&mdk, &wrapper_event_id, &unwrapped_rumor)
         .context("mdk process_welcome")?;
-    let pending = mdk
-        .get_pending_welcomes(None)
-        .context("get_pending_welcomes")?;
+    let pending = list_pending_welcomes(&mdk)?;
     if pending.len() != 1 {
         return Err(anyhow!("expected 1 pending welcome, got {}", pending.len()));
     }
-    mdk.accept_welcome(&pending[0]).context("accept_welcome")?;
+    accept_pending_welcome(&mdk, &pending[0]).context("accept_welcome")?;
 
-    let groups = mdk.get_groups().context("get_groups")?;
+    let groups = list_joined_groups(&mdk)?;
     if groups.is_empty() {
         return Err(anyhow!("expected bot to have at least 1 group, got 0"));
     }
@@ -1049,7 +1070,7 @@ async fn bot_main(
     let mut group_subscriptions = Vec::new();
     let mut subscribed_group_ids = Vec::new();
     for group in groups {
-        let nostr_group_id_hex = hex::encode(group.nostr_group_id);
+        let nostr_group_id_hex = group.nostr_group_id_hex;
         println!("[openclaw_bot] joined_group nostr_group_id={nostr_group_id_hex}");
         let sub = subscribe_group_msgs(&client, &nostr_group_id_hex).await?;
         group_subscriptions.push(sub);
@@ -1130,7 +1151,7 @@ async fn bot_main(
                 rumor.pubkey.to_hex().to_lowercase()
             );
 
-            if let Err(err) = mdk.process_welcome(&ev.id, &rumor) {
+            if let Err(err) = stage_pending_welcome(&mdk, &ev.id, &rumor) {
                 warn!(
                     "[openclaw_bot] process_welcome failed wrapper_id={} err={err}",
                     ev.id.to_hex()
@@ -1138,7 +1159,7 @@ async fn bot_main(
                 continue;
             }
 
-            let pending = match mdk.get_pending_welcomes(None) {
+            let pending = match list_pending_welcomes(&mdk) {
                 Ok(v) => v,
                 Err(err) => {
                     warn!("[openclaw_bot] get_pending_welcomes failed err={err}");
@@ -1146,12 +1167,12 @@ async fn bot_main(
                 }
             };
             for welcome in pending {
-                if let Err(err) = mdk.accept_welcome(&welcome) {
+                if let Err(err) = accept_pending_welcome(&mdk, &welcome) {
                     warn!("[openclaw_bot] accept_welcome failed err={err}");
                 }
             }
 
-            let groups = match mdk.get_groups() {
+            let groups = match list_joined_groups(&mdk) {
                 Ok(v) => v,
                 Err(err) => {
                     warn!("[openclaw_bot] get_groups failed err={err}");
@@ -1160,7 +1181,7 @@ async fn bot_main(
             };
 
             for group in groups {
-                let nostr_group_id_hex = hex::encode(group.nostr_group_id);
+                let nostr_group_id_hex = group.nostr_group_id_hex;
                 if subscribed_group_ids
                     .iter()
                     .any(|known| known == &nostr_group_id_hex)
@@ -1190,7 +1211,7 @@ async fn bot_main(
             continue;
         }
 
-        match mdk.process_message(&ev) {
+        match process_group_message(&mdk, &ev) {
             Ok(MessageProcessingResult::ApplicationMessage(msg)) => {
                 let from = msg.pubkey;
                 println!(
@@ -1219,8 +1240,7 @@ async fn bot_main(
                         &hn_reply,
                     )
                     .build(keys.public_key());
-                    let hn_event = mdk
-                        .create_message(&msg.mls_group_id, hn_rumor)
+                    let hn_event = create_group_message(&mdk, &msg.mls_group_id, hn_rumor)
                         .context("bot create_message (hypernote)")?;
                     publish_and_confirm(&client, relay_url.clone(), &hn_event, "bot_hypernote")
                         .await?;
@@ -1257,9 +1277,9 @@ async fn bot_main(
                                 "media_batch_error".to_string(),
                             )
                             .build(keys.public_key());
-                            let err_event = mdk
-                                .create_message(&msg.mls_group_id, err_rumor)
-                                .context("bot create_message (media_batch_error)")?;
+                            let err_event =
+                                create_group_message(&mdk, &msg.mls_group_id, err_rumor)
+                                    .context("bot create_message (media_batch_error)")?;
                             publish_and_confirm(
                                 &client,
                                 relay_url.clone(),
@@ -1279,8 +1299,7 @@ async fn bot_main(
                 println!("[openclaw_bot] replying content={reply}");
                 let reply_rumor =
                     EventBuilder::new(Kind::ChatMessage, reply.clone()).build(keys.public_key());
-                let reply_event = mdk
-                    .create_message(&msg.mls_group_id, reply_rumor)
+                let reply_event = create_group_message(&mdk, &msg.mls_group_id, reply_rumor)
                     .context("bot create_message")?;
                 publish_and_confirm(&client, relay_url.clone(), &reply_event, "bot_reply").await?;
                 println!("[openclaw_bot] ok replied={reply}");
@@ -1523,8 +1542,7 @@ async fn send_test_media_batch(
         builder = builder.tag(tag.clone());
     }
     let rumor = builder.build(keys.public_key());
-    let event = mdk
-        .create_message(mls_group_id, rumor)
+    let event = create_group_message(mdk, mls_group_id, rumor)
         .context("bot create_message (media_batch)")?;
     publish_and_confirm(client, relay_url, &event, "bot_media_batch").await?;
     Ok(event.id.to_hex())
@@ -1818,7 +1836,7 @@ async fn ingest_group_backlog(
         .context("fetch group backlog")?;
 
     for ev in events.iter() {
-        match mdk.process_message(ev) {
+        match process_group_message(mdk, ev) {
             Ok(res) => info!(
                 "[phase1] ingest kind=445 id={} result={:?}",
                 ev.id.to_hex(),
@@ -1876,7 +1894,7 @@ async fn wait_for_exact_application(
             continue;
         }
 
-        match mdk.process_message(&ev) {
+        match process_group_message(mdk, &ev) {
             Ok(MessageProcessingResult::ApplicationMessage(msg)) => {
                 info!(
                     "[phase1] inbound kind=445 id={} decrypt=ok rumor_pubkey={} rumor_kind={} content_len={}",

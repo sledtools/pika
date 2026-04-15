@@ -4,13 +4,13 @@ use std::path::{Path, PathBuf};
 use ::image::GenericImageView as _;
 use base64::Engine;
 use mdk_core::encrypted_media::types::MediaReference;
-use pika_marmot_runtime::media::{upload_encrypted_blob, MAX_CHAT_MEDIA_BYTES};
 use sha2::{Digest, Sha256};
 
 use crate::state::{ChatMediaAttachment, ChatMediaKind, MediaGalleryItem, MediaGalleryState};
 use crate::updates::ChatMediaUploadStatus;
 
 use super::chat_media_db::{self, ChatMediaRecord};
+use super::media_support::{self, MediaUploadResult, UploadedBlob, MAX_CHAT_MEDIA_BYTES};
 use super::*;
 
 const RESIZE_MAX_DIMENSION: u32 = 1600;
@@ -339,8 +339,8 @@ pub(super) fn resolve_mime_type(mime_type: &str, filename: &str) -> String {
 
 fn validate_uploaded_blob_hash(
     upload: &EncryptedMediaUpload,
-    uploaded_blob: pika_marmot_runtime::media::UploadedBlob,
-) -> Result<pika_marmot_runtime::media::UploadedBlob, &'static str> {
+    uploaded_blob: UploadedBlob,
+) -> Result<UploadedBlob, &'static str> {
     let expected_hash_hex = hex::encode(upload.encrypted_hash);
     if !uploaded_blob
         .descriptor_sha256_hex
@@ -358,13 +358,8 @@ fn prepare_chat_media_upload(
     bytes: &[u8],
     mime_type: &str,
     filename: &str,
-) -> anyhow::Result<pika_marmot_runtime::media::PreparedMediaUpload> {
-    pika_marmot_runtime::media::MediaRuntime::new(mdk).prepare_upload(
-        group_id,
-        bytes,
-        Some(mime_type),
-        Some(filename),
-    )
+) -> anyhow::Result<media_support::PreparedMediaUpload> {
+    media_support::prepare_upload(mdk, group_id, bytes, Some(mime_type), Some(filename))
 }
 
 #[cfg(test)]
@@ -374,12 +369,12 @@ fn finalize_chat_media_upload(
     upload: &EncryptedMediaUpload,
     uploaded_url: String,
     descriptor_sha256_hex: String,
-) -> pika_marmot_runtime::media::RuntimeMediaUploadResult {
-    pika_marmot_runtime::media::MediaRuntime::new(mdk).finish_upload(
+) -> MediaUploadResult {
+    media_support::finish_upload(
+        mdk,
         group_id,
         upload,
-        pika_marmot_runtime::media::UploadedBlob {
-            blossom_server: "app-local".to_string(),
+        UploadedBlob {
             uploaded_url,
             descriptor_sha256_hex,
         },
@@ -393,8 +388,9 @@ fn decrypt_chat_media_download(
     reference: &MediaReference,
     encrypted_data: &[u8],
     expected_encrypted_hash_hex: Option<&str>,
-) -> anyhow::Result<pika_marmot_runtime::media::RuntimeDownloadedMedia> {
-    pika_marmot_runtime::media::MediaRuntime::new(mdk).decrypt_downloaded_media(
+) -> anyhow::Result<media_support::DownloadedMedia> {
+    media_support::decrypt_downloaded_media(
+        mdk,
         group_id,
         reference,
         encrypted_data,
@@ -504,7 +500,7 @@ impl AppCore {
         &self,
         chat_id: &str,
         account_pubkey: &str,
-        completed: &pika_marmot_runtime::media::RuntimeMediaUploadResult,
+        completed: &MediaUploadResult,
     ) -> ChatMediaAttachment {
         self.attachment_from_reference(
             chat_id,
@@ -518,7 +514,7 @@ impl AppCore {
         &mut self,
         account_pubkey: &str,
         chat_id: &str,
-        completed: &pika_marmot_runtime::media::RuntimeMediaUploadResult,
+        completed: &MediaUploadResult,
     ) {
         let Some(conn) = self.chat_media_db.as_ref() else {
             return;
@@ -636,8 +632,8 @@ impl AppCore {
         &self,
         chat_id: &str,
         upload: &EncryptedMediaUpload,
-        uploaded_blob: pika_marmot_runtime::media::UploadedBlob,
-    ) -> Result<pika_marmot_runtime::media::RuntimeMediaUploadResult, String> {
+        uploaded_blob: UploadedBlob,
+    ) -> Result<MediaUploadResult, String> {
         let Some(sess) = self.session.as_ref() else {
             return Err("session not ready".to_string());
         };
@@ -1571,7 +1567,7 @@ impl AppCore {
                 prepared,
             } = upload_task;
             let upload_mime = prepared.upload.mime_type.clone();
-            let result = upload_encrypted_blob(
+            let result = media_support::upload_encrypted_blob(
                 &signer_keys,
                 prepared.encrypted_data,
                 &upload_mime,

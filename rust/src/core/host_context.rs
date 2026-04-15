@@ -282,8 +282,9 @@ impl<'a> AppHostContext<'a> {
         bytes: &[u8],
         mime_type: Option<&str>,
         filename: Option<&str>,
-    ) -> anyhow::Result<pika_marmot_runtime::media::PreparedMediaUpload> {
-        pika_marmot_runtime::media::MediaRuntime::new(&self.session.mdk).prepare_upload(
+    ) -> anyhow::Result<super::media_support::PreparedMediaUpload> {
+        super::media_support::prepare_upload(
+            &self.session.mdk,
             mls_group_id,
             bytes,
             mime_type,
@@ -296,15 +297,16 @@ impl<'a> AppHostContext<'a> {
         mls_group_id: &GroupId,
         upload: &EncryptedMediaUpload,
         status: ChatMediaUploadStatus,
-    ) -> Result<pika_marmot_runtime::media::RuntimeMediaUploadResult, String> {
+    ) -> Result<super::media_support::MediaUploadResult, String> {
         match status {
-            ChatMediaUploadStatus::Uploaded(uploaded_blob) => Ok(
-                pika_marmot_runtime::media::MediaRuntime::new(&self.session.mdk).finish_upload(
+            ChatMediaUploadStatus::Uploaded(uploaded_blob) => {
+                Ok(super::media_support::finish_upload(
+                    &self.session.mdk,
                     mls_group_id,
                     upload,
                     uploaded_blob,
-                ),
-            ),
+                ))
+            }
             ChatMediaUploadStatus::UploadFailed(error) => Err(error),
         }
     }
@@ -315,8 +317,9 @@ impl<'a> AppHostContext<'a> {
         reference: &MediaReference,
         encrypted_data: &[u8],
         expected_encrypted_hash_hex: Option<&str>,
-    ) -> anyhow::Result<pika_marmot_runtime::media::RuntimeDownloadedMedia> {
-        pika_marmot_runtime::media::MediaRuntime::new(&self.session.mdk).decrypt_downloaded_media(
+    ) -> anyhow::Result<super::media_support::DownloadedMedia> {
+        super::media_support::decrypt_downloaded_media(
+            &self.session.mdk,
             mls_group_id,
             reference,
             encrypted_data,

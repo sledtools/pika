@@ -32,20 +32,20 @@ impl AppUpdate {
 }
 
 #[derive(Debug)]
-pub enum CoreMsg {
+pub(crate) enum CoreMsg {
     Action(AppAction),
     Internal(Box<InternalEvent>),
     Shutdown,
 }
 
 #[derive(Debug, Clone)]
-pub enum ChatMediaUploadStatus {
-    Uploaded(pika_marmot_runtime::media::UploadedBlob),
+pub(crate) enum ChatMediaUploadStatus {
+    Uploaded(crate::core::media_support::UploadedBlob),
     UploadFailed(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CallSignalPublishKind {
+pub(crate) enum CallSignalPublishKind {
     Invite,
     Accept,
     Reject,
@@ -53,7 +53,7 @@ pub enum CallSignalPublishKind {
 }
 
 #[derive(Debug)]
-pub enum InternalEvent {
+pub(crate) enum InternalEvent {
     // Nostr receive path
     GiftWrapReceived {
         wrapper: nostr_sdk::prelude::Event,

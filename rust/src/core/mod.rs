@@ -8,6 +8,7 @@ mod config;
 mod group_profile;
 mod host_context;
 mod interop;
+pub(crate) mod media_support;
 mod min_version;
 mod profile;
 mod profile_db;
@@ -595,7 +596,7 @@ struct LocalOutgoing {
 struct PendingMediaSend {
     chat_id: String,
     caption: String,
-    prepared: pika_marmot_runtime::media::PreparedMediaUpload,
+    prepared: media_support::PreparedMediaUpload,
     account_pubkey: String,
     temp_rumor_id: String,
 }
@@ -613,14 +614,14 @@ struct PendingMediaBatchSend {
 #[derive(Debug, Clone)]
 struct BatchMediaItem {
     request_id: String,
-    prepared: pika_marmot_runtime::media::PreparedMediaUpload,
-    completed_upload: Option<pika_marmot_runtime::media::RuntimeMediaUploadResult>,
+    prepared: media_support::PreparedMediaUpload,
+    completed_upload: Option<media_support::MediaUploadResult>,
 }
 
 #[derive(Debug, Clone)]
 struct PendingMediaUploadTask {
     request_id: String,
-    prepared: pika_marmot_runtime::media::PreparedMediaUpload,
+    prepared: media_support::PreparedMediaUpload,
 }
 
 impl PendingMediaUploadTask {
@@ -8024,8 +8025,7 @@ mod tests {
                             &group_id,
                             &prepared.upload,
                             crate::updates::ChatMediaUploadStatus::Uploaded(
-                                pika_marmot_runtime::media::UploadedBlob {
-                                    blossom_server: "https://example.com".to_string(),
+                                crate::core::media_support::UploadedBlob {
                                     uploaded_url: "https://example.com/blob".to_string(),
                                     descriptor_sha256_hex: hex::encode(
                                         prepared.upload.encrypted_hash,
@@ -8128,8 +8128,7 @@ mod tests {
             core.handle_chat_media_upload_completed(
                 request_id.clone(),
                 crate::updates::ChatMediaUploadStatus::Uploaded(
-                    pika_marmot_runtime::media::UploadedBlob {
-                        blossom_server: "https://example.com".to_string(),
+                    crate::core::media_support::UploadedBlob {
                         uploaded_url: "https://example.com/blob".to_string(),
                         descriptor_sha256_hex:
                             "0000000000000000000000000000000000000000000000000000000000000000"
@@ -8204,8 +8203,7 @@ mod tests {
             core.handle_chat_media_upload_completed(
                 first_request_id,
                 crate::updates::ChatMediaUploadStatus::Uploaded(
-                    pika_marmot_runtime::media::UploadedBlob {
-                        blossom_server: "https://example.com".to_string(),
+                    crate::core::media_support::UploadedBlob {
                         uploaded_url: "https://example.com/blob-1".to_string(),
                         descriptor_sha256_hex: first_hash,
                     },
@@ -8292,8 +8290,7 @@ mod tests {
             core.handle_chat_media_upload_completed(
                 first_request_id,
                 crate::updates::ChatMediaUploadStatus::Uploaded(
-                    pika_marmot_runtime::media::UploadedBlob {
-                        blossom_server: "https://example.com".to_string(),
+                    crate::core::media_support::UploadedBlob {
                         uploaded_url: "https://example.com/blob-1".to_string(),
                         descriptor_sha256_hex:
                             "0000000000000000000000000000000000000000000000000000000000000000"
@@ -8404,8 +8401,7 @@ mod tests {
                     &group_id,
                     &first.upload,
                     crate::updates::ChatMediaUploadStatus::Uploaded(
-                        pika_marmot_runtime::media::UploadedBlob {
-                            blossom_server: "https://example.com".to_string(),
+                        crate::core::media_support::UploadedBlob {
                             uploaded_url: "https://example.com/blob-1".to_string(),
                             descriptor_sha256_hex: hex::encode(first.upload.encrypted_hash),
                         },
@@ -8574,8 +8570,7 @@ mod tests {
             core.handle_chat_media_upload_completed(
                 request_id,
                 crate::updates::ChatMediaUploadStatus::Uploaded(
-                    pika_marmot_runtime::media::UploadedBlob {
-                        blossom_server: "https://example.com".to_string(),
+                    crate::core::media_support::UploadedBlob {
                         uploaded_url: "https://example.com/workflow".to_string(),
                         descriptor_sha256_hex: expected_hash_hex,
                     },

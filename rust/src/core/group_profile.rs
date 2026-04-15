@@ -1,5 +1,5 @@
+use super::media_support::upload_encrypted_blob;
 use base64::Engine;
-use pika_marmot_runtime::media::upload_encrypted_blob;
 
 use super::*;
 

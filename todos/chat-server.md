@@ -128,8 +128,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `pika_core` and `pikachat-sidecar` now import `pika-mls` reexports instead of depending on `mdk-core` / `mdk-storage-traits` directly, which leaves `pika-mls` as the single repo-local MDK dependency seam.
 - [x] Replace the repo-local MDK type alias with a real wrapper:
   `PikaMdk` is now a concrete `pika-mls` wrapper type rather than `type PikaMdk = MDK<MdkSqliteStorage>`, sidecar code no longer names raw `MDK<MdkSqliteStorage>` directly, and the remaining raw MDK escapes are explicit compatibility paths hanging off that wrapper.
+- [x] Move the first duplicated read/query helpers into `pika-mls`:
+  joined-group snapshots, message-page queries, and pending-welcome lookup/snapshot helpers now live in `crates/pika-mls/src/{conversation,welcome}.rs`, and both `pika_core` and `pikachat-sidecar` alias those shared types instead of carrying near-copy structs/functions.
 - Next seam:
-  move the duplicated query/snapshot helpers out of `pika_core` and `pikachat-sidecar` into `pika-mls`, then trim the wrapper's remaining raw MDK escape hatches from the inside.
+  move the remaining duplicated welcome/conversation helper logic into `pika-mls`, then start replacing the wrapper's remaining raw MDK escape hatches from the inside.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
 
@@ -228,6 +230,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   The repo no longer pretends MDK is sprinkled everywhere; the real seam is `pika-mls`, so the next chunk can replace that implementation directly instead of chasing imports across the app.
 - The next high-deletion slice is not cryptography.
   The duplicated group/message/welcome query helpers in `rust/src/core/*` and `crates/pikachat-sidecar/src/*` should move into `pika-mls` first, because they are mostly read/query plumbing and give a better deletion multiplier than attacking media or outbound crypto paths immediately.
+- That read/query slice is now underway in landed code too.
+  `pika-mls` now owns the shared joined-group/message-page/pending-welcome query layer, which cuts some of the lowest-risk duplication before we touch the more stateful membership and message-mutation paths.
 - The highest-value simplification after the current transport slices is not "replace MDK all at once."
   It is deleting `pika_core`'s dependency on the `pika-marmot-runtime` facade so the remaining MLS surface is smaller and more honest before the OpenMLS runtime cut.
 - That facade cut can land incrementally.

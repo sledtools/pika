@@ -6,6 +6,9 @@ use anyhow::{Context, Result, anyhow};
 use nostr::{Event, EventId, Keys, PublicKey, RelayUrl, UnsignedEvent};
 use serde::{Deserialize, Serialize};
 
+pub mod conversation;
+pub mod welcome;
+
 pub use mdk_core::{self, MdkConfig, encrypted_media, prelude};
 pub use mdk_sqlite_storage::{self, MdkSqliteStorage};
 pub use mdk_storage_traits::{self as storage_traits};

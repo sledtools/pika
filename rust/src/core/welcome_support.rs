@@ -3,11 +3,13 @@ use std::future::Future;
 
 use anyhow::{Context, Result};
 use nostr_sdk::prelude::{
-    Event, EventBuilder, EventId, NostrSigner, PublicKey, RelayUrl, Tag, Timestamp, UnsignedEvent,
+    Event, EventBuilder, EventId, NostrSigner, PublicKey, Tag, UnsignedEvent,
 };
 #[cfg(test)]
 use nostr_sdk::prelude::{Keys, Kind};
 use pika_mls::prelude::NostrGroupConfigData;
+pub(crate) use pika_mls::welcome::PendingWelcomeSnapshot;
+use pika_mls::welcome::WelcomeQueries;
 
 use crate::mdk_support::PikaMdk;
 
@@ -39,67 +41,15 @@ pub(crate) struct PlannedGroupCreation {
     pub welcome_delivery: Option<GroupWelcomeDeliveryPlan>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PendingWelcomeSnapshot {
-    pub wrapper_event_id: EventId,
-    pub welcome_event_id: EventId,
-    pub welcomer: PublicKey,
-    pub created_at: Timestamp,
-    pub nostr_group_id_hex: String,
-    pub mls_group_id: pika_mls::storage_traits::GroupId,
-    pub group_name: String,
-    pub group_description: String,
-    pub member_count: u32,
-    pub group_relays: Vec<RelayUrl>,
-}
-
-impl PendingWelcomeSnapshot {
-    fn from_welcome(welcome: &StoredWelcome) -> Self {
-        Self {
-            wrapper_event_id: welcome.wrapper_event_id,
-            welcome_event_id: welcome.id,
-            welcomer: welcome.welcomer,
-            created_at: welcome.event.created_at,
-            nostr_group_id_hex: hex::encode(welcome.nostr_group_id),
-            mls_group_id: welcome.mls_group_id.clone(),
-            group_name: welcome.group_name.clone(),
-            group_description: welcome.group_description.clone(),
-            member_count: welcome.member_count,
-            group_relays: welcome.group_relays.iter().cloned().collect(),
-        }
-    }
-}
-
-fn pending_welcome_matches_event_id(welcome: &StoredWelcome, target: &EventId) -> bool {
-    welcome.wrapper_event_id == *target || welcome.id == *target
-}
-
-fn find_pending_welcome<'a>(
-    welcomes: &'a [StoredWelcome],
-    target: &EventId,
-) -> Option<&'a StoredWelcome> {
-    welcomes
-        .iter()
-        .find(|welcome| pending_welcome_matches_event_id(welcome, target))
-}
-
 pub(crate) fn list_pending_welcome_snapshots(mdk: &PikaMdk) -> Result<Vec<PendingWelcomeSnapshot>> {
-    Ok(mdk
-        .get_pending_welcomes(None)
-        .context("get pending welcomes")?
-        .iter()
-        .map(PendingWelcomeSnapshot::from_welcome)
-        .collect())
+    WelcomeQueries::new(mdk).list_pending_welcome_snapshots()
 }
 
 pub(crate) fn lookup_pending_welcome(
     mdk: &PikaMdk,
     target: &EventId,
 ) -> Result<Option<StoredWelcome>> {
-    let pending = mdk
-        .get_pending_welcomes(None)
-        .context("get pending welcomes")?;
-    Ok(find_pending_welcome(&pending, target).cloned())
+    WelcomeQueries::new(mdk).lookup_pending_welcome(target)
 }
 
 #[cfg(test)]

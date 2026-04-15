@@ -1,10 +1,16 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use nostr_sdk::Metadata;
 use nostr_sdk::prelude::{
     Alphabet, Client, Event, EventId, Filter, Kind, PublicKey, RelayUrl, SingleLetterTag, Timestamp,
+};
+use pika_mls::conversation::ConversationQueries;
+pub use pika_mls::conversation::{
+    JoinedGroupMemberSnapshot as RuntimeJoinedGroupMemberSnapshot,
+    JoinedGroupSnapshot as RuntimeJoinedGroupSnapshot, MessagePage as RuntimeMessagePage,
+    MessagePageQuery as RuntimeMessagePageQuery,
 };
 use pika_mls::prelude::{GroupId, MessageProcessingResult};
 use pika_mls::storage_traits::{
@@ -49,47 +55,6 @@ pub enum ConversationEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeJoinedGroupMemberSnapshot {
-    pub pubkey: PublicKey,
-    pub is_admin: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeJoinedGroupSnapshot {
-    pub nostr_group_id_hex: String,
-    pub mls_group_id: GroupId,
-    pub mls_group_id_hex: String,
-    pub name: String,
-    pub description: String,
-    pub relay_urls: Vec<RelayUrl>,
-    pub member_snapshots: Vec<RuntimeJoinedGroupMemberSnapshot>,
-    pub last_message_at: Option<Timestamp>,
-}
-
-impl RuntimeJoinedGroupSnapshot {
-    pub fn member_count(&self) -> u32 {
-        self.member_snapshots.len() as u32
-    }
-
-    pub fn other_member_snapshots(
-        &self,
-        local_pubkey: &PublicKey,
-    ) -> Vec<RuntimeJoinedGroupMemberSnapshot> {
-        self.member_snapshots
-            .iter()
-            .filter(|member| member.pubkey != *local_pubkey)
-            .cloned()
-            .collect()
-    }
-
-    pub fn is_admin(&self, pubkey: &PublicKey) -> bool {
-        self.member_snapshots
-            .iter()
-            .any(|member| member.pubkey == *pubkey && member.is_admin)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeGroupSummary {
     pub nostr_group_id_hex: String,
     pub mls_group_id_hex: String,
@@ -105,28 +70,6 @@ pub struct RuntimeGroupProfileSnapshot {
     pub metadata_json: String,
     pub metadata: Metadata,
     pub created_at: Timestamp,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct RuntimeMessagePageQuery {
-    pub limit: usize,
-    pub offset: usize,
-}
-
-impl RuntimeMessagePageQuery {
-    pub const fn new(limit: usize, offset: usize) -> Self {
-        Self { limit, offset }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct RuntimeMessagePage {
-    pub nostr_group_id_hex: String,
-    pub mls_group_id: GroupId,
-    pub messages: Vec<Message>,
-    pub fetched_count: usize,
-    pub next_offset: usize,
-    pub storage_exhausted: bool,
 }
 
 pub struct ConversationRuntime<'a> {
@@ -194,36 +137,22 @@ impl<'a> ConversationRuntime<'a> {
     }
 
     pub fn find_group(&self, nostr_group_id_hex: &str) -> Result<Group> {
-        let group_id_bytes =
-            hex::decode(nostr_group_id_hex).map_err(|_| anyhow!("nostr_group_id must be hex"))?;
-        if group_id_bytes.len() != 32 {
-            anyhow::bail!("nostr_group_id must be 32 bytes hex");
-        }
-        self.mdk
-            .get_groups()
-            .context("get_groups")?
-            .into_iter()
-            .find(|group| group.nostr_group_id.as_slice() == group_id_bytes.as_slice())
-            .ok_or_else(|| anyhow!("group not found"))
+        ConversationQueries::new(self.mdk).find_group(nostr_group_id_hex)
     }
 
     pub fn mls_group_id_for_nostr_group_id(&self, nostr_group_id_hex: &str) -> Result<GroupId> {
-        Ok(self.find_group(nostr_group_id_hex)?.mls_group_id)
+        ConversationQueries::new(self.mdk).mls_group_id_for_nostr_group_id(nostr_group_id_hex)
     }
 
     pub fn lookup_joined_group_snapshot(
         &self,
         nostr_group_id_hex: &str,
     ) -> Result<RuntimeJoinedGroupSnapshot> {
-        self.joined_group_snapshot(self.find_group(nostr_group_id_hex)?)
+        ConversationQueries::new(self.mdk).lookup_joined_group_snapshot(nostr_group_id_hex)
     }
 
     pub fn list_joined_group_snapshots(&self) -> Result<Vec<RuntimeJoinedGroupSnapshot>> {
-        let groups = self.mdk.get_groups().context("get_groups")?;
-        groups
-            .into_iter()
-            .map(|group| self.joined_group_snapshot(group))
-            .collect()
+        ConversationQueries::new(self.mdk).list_joined_group_snapshots()
     }
 
     pub fn list_groups(&self) -> Result<Vec<RuntimeGroupSummary>> {
@@ -248,10 +177,7 @@ impl<'a> ConversationRuntime<'a> {
         nostr_group_id_hex: &str,
         pagination: Option<Pagination>,
     ) -> Result<Vec<Message>> {
-        let mls_group_id = self.mls_group_id_for_nostr_group_id(nostr_group_id_hex)?;
-        self.mdk
-            .get_messages(&mls_group_id, pagination)
-            .context("get messages")
+        ConversationQueries::new(self.mdk).get_messages(nostr_group_id_hex, pagination)
     }
 
     pub fn load_message_page(
@@ -259,23 +185,7 @@ impl<'a> ConversationRuntime<'a> {
         nostr_group_id_hex: &str,
         query: RuntimeMessagePageQuery,
     ) -> Result<RuntimeMessagePage> {
-        let mls_group_id = self.mls_group_id_for_nostr_group_id(nostr_group_id_hex)?;
-        let messages = self
-            .mdk
-            .get_messages(
-                &mls_group_id,
-                Some(Pagination::new(Some(query.limit), Some(query.offset))),
-            )
-            .context("get message page")?;
-        let fetched_count = messages.len();
-        Ok(RuntimeMessagePage {
-            nostr_group_id_hex: nostr_group_id_hex.to_string(),
-            mls_group_id,
-            messages,
-            fetched_count,
-            next_offset: query.offset + fetched_count,
-            storage_exhausted: fetched_count < query.limit,
-        })
+        ConversationQueries::new(self.mdk).load_message_page(nostr_group_id_hex, query)
     }
 
     pub fn lookup_group_profile_snapshot(
@@ -389,39 +299,7 @@ impl<'a> ConversationRuntime<'a> {
     }
 
     fn nostr_group_id_hex(&self, mls_group_id: &GroupId) -> Result<Option<String>> {
-        Ok(self
-            .mdk
-            .get_group(mls_group_id)?
-            .map(|group| hex::encode(group.nostr_group_id)))
-    }
-
-    fn joined_group_snapshot(&self, group: Group) -> Result<RuntimeJoinedGroupSnapshot> {
-        let admin_pubkeys = group.admin_pubkeys.clone();
-        let mls_group_id = group.mls_group_id.clone();
-        let member_snapshots = self.mdk.get_members(&mls_group_id).unwrap_or_default();
-        let relay_urls = self
-            .mdk
-            .get_relays(&mls_group_id)
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
-        let member_snapshots = member_snapshots
-            .into_iter()
-            .map(|pubkey| RuntimeJoinedGroupMemberSnapshot {
-                is_admin: admin_pubkeys.contains(&pubkey),
-                pubkey,
-            })
-            .collect();
-        Ok(RuntimeJoinedGroupSnapshot {
-            nostr_group_id_hex: hex::encode(group.nostr_group_id),
-            mls_group_id_hex: hex::encode(group.mls_group_id.as_slice()),
-            name: group.name,
-            description: group.description,
-            relay_urls,
-            member_snapshots,
-            last_message_at: group.last_message_at,
-            mls_group_id,
-        })
+        ConversationQueries::new(self.mdk).nostr_group_id_hex(mls_group_id)
     }
 }
 

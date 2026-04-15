@@ -94,8 +94,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `pika_core` now builds initial session state directly from `mdk` plus the shared low-level planning helpers, and no longer uses `BootstrappedRuntimeSession`, `RuntimeSessionOpenRequest`, `RuntimeSessionOpenState`, or `RuntimeQueries` in app code.
 - [x] Trim runtime-owned session-planning wrappers from app startup:
   `pika_core` now keeps app-local sync-plan, group-subscription, and welcome-inbox structs, and only calls the low-level relay-role / welcome-subscription helpers it still needs.
+- [x] Remove runtime-owned relay-role planning from app code:
+  `pika_core` now owns `RelayRolePlan` and the relay-role union logic in `config.rs`, and session/key-package flows consume that local type instead of `RuntimeRelayRolePlan`.
 - Next seam:
-  remove the remaining runtime relay/session helper residue from `pika_core`, starting with `RuntimeRelayRolePlan` in `session.rs` / `config.rs` and the leftover notification/session helper calls in the session path.
+  remove the remaining runtime relay/session helper residue from `pika_core`, starting with the notification/session ingress helpers in `session.rs` (`classify_inbound_relay_event`, `InboundRelayEvent`, `InboundRelaySeenCache`, and the remaining subscription helper calls).
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
 
@@ -187,4 +189,4 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
 - The highest-value simplification after the current transport slices is not "replace MDK all at once."
   It is deleting `pika_core`'s dependency on the `pika-marmot-runtime` facade so the remaining MLS surface is smaller and more honest before the OpenMLS runtime cut.
 - That facade cut can land incrementally.
-  The first pass was to stop constructing `MarmotRuntime` / `RuntimeCommands` in app host context code; the second pass replaced the remaining runtime-owned event/result carrier enums with direct app-local result types; the third pass deleted the runtime bootstrap/open-state wrappers from app startup; the fourth pass replaced the remaining session-planning structs with app-local ones; the next pass is the remaining runtime relay/session helper cleanup.
+  The first pass was to stop constructing `MarmotRuntime` / `RuntimeCommands` in app host context code; the second pass replaced the remaining runtime-owned event/result carrier enums with direct app-local result types; the third pass deleted the runtime bootstrap/open-state wrappers from app startup; the fourth pass replaced the remaining session-planning structs with app-local ones; the fifth pass moved relay-role planning local too; the next pass is the remaining runtime relay/session helper cleanup.

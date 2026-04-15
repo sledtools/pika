@@ -45,6 +45,7 @@ use crate::state::{
     VoiceRecordingState,
 };
 use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
+use config::RelayRolePlan;
 
 use mdk_core::encrypted_media::types::{EncryptedMediaUpload, MediaReference};
 use mdk_core::prelude::{message_types, GroupId, MessageProcessingResult, NostrGroupConfigData};
@@ -70,7 +71,6 @@ use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversa
 use pika_marmot_runtime::runtime::{
     temporary_client_from_session_signer, CallSignalPublishKind,
     RuntimeApplicationMessageInterpretation, RuntimeConversationEventInterpretation,
-    RuntimeRelayRolePlan,
 };
 use pika_marmot_runtime::welcome::{
     accept_welcome_and_catch_up, create_group_and_plan_welcome_delivery, GroupWelcomeDeliveryPlan,
@@ -156,7 +156,7 @@ struct FetchedKeyPackages {
 async fn fetch_key_packages_for_peers(
     session_client: &Client,
     peer_pubkeys: &[PublicKey],
-    relay_roles: &RuntimeRelayRolePlan,
+    relay_roles: &RelayRolePlan,
 ) -> FetchedKeyPackages {
     let mut key_package_events: Vec<Event> = Vec::new();
     let mut failed: Vec<(PublicKey, String)> = Vec::new();

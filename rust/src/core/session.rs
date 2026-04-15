@@ -2,12 +2,12 @@
 
 use std::future::Future;
 
+use super::config::{plan_relay_roles, RelayRolePlan};
 use super::*;
 use pika_marmot_runtime::runtime::{
     classify_inbound_relay_event, connect_runtime_relays, group_subscription_state_from_mdk,
-    plan_runtime_relay_roles, subscribe_group_messages_combined, subscribe_welcome_inbox,
+    subscribe_group_messages_combined, subscribe_welcome_inbox,
     temporary_client_from_session_signer, InboundRelayEvent, InboundRelaySeenCache,
-    RuntimeRelayRolePlan,
 };
 use pika_marmot_runtime::welcome::{list_pending_welcome_snapshots, publish_welcome_rumors};
 
@@ -32,7 +32,7 @@ struct AppWelcomeInboxIntent {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct AppSessionSyncPlan {
-    relay_roles: RuntimeRelayRolePlan,
+    relay_roles: RelayRolePlan,
     welcome_inbox: AppWelcomeInboxIntent,
     group_subscriptions: AppGroupSubscriptionPlan,
 }
@@ -103,7 +103,7 @@ fn plan_app_session_sync_from_mdk(
     temporary_key_package_relays: Vec<RelayUrl>,
 ) -> anyhow::Result<AppSessionSyncPlan> {
     let group_subscriptions = plan_app_group_subscriptions_from_mdk(mdk, subscribed_group_ids)?;
-    let relay_roles = plan_runtime_relay_roles(
+    let relay_roles = plan_relay_roles(
         long_lived_session_relays,
         group_subscriptions.current.relay_urls.clone(),
         temporary_key_package_relays,
@@ -1829,7 +1829,7 @@ mod tests {
             groups: HashMap::new(),
         };
         let plan = plan_app_group_subscriptions(&session).expect("plan app group subscriptions");
-        let relay_roles = pika_marmot_runtime::runtime::plan_runtime_relay_roles(
+        let relay_roles = plan_relay_roles(
             vec![RelayUrl::parse("wss://message-1.example").expect("message relay")],
             plan.current.relay_urls.clone(),
             vec![RelayUrl::parse("wss://kp-1.example").expect("kp relay")],

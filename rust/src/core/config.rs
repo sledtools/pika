@@ -2,7 +2,6 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use nostr_sdk::prelude::RelayUrl;
-use pika_marmot_runtime::runtime::{plan_runtime_relay_roles, RuntimeRelayRolePlan};
 use pika_relay_profiles::{
     app_default_key_package_relays, app_default_message_relays, LEGACY_APP_DEFAULT_MESSAGE_RELAYS,
 };
@@ -17,6 +16,46 @@ pub(crate) const CHAT_SERVER_MLS_COMPAT_RELAY: &str = "wss://private-chat.invali
 
 pub(crate) fn is_chat_server_compat_relay(relay: &RelayUrl) -> bool {
     relay.as_str_without_trailing_slash() == CHAT_SERVER_MLS_COMPAT_RELAY
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct RelayRolePlan {
+    pub(super) long_lived_session_relays: Vec<RelayUrl>,
+    pub(super) active_group_relays: Vec<RelayUrl>,
+    pub(super) temporary_key_package_relays: Vec<RelayUrl>,
+    pub(super) session_connect_relays: Vec<RelayUrl>,
+    pub(super) key_package_operation_relays: Vec<RelayUrl>,
+}
+
+pub(super) fn plan_relay_roles<I, J, K>(
+    long_lived_session_relays: I,
+    active_group_relays: J,
+    temporary_key_package_relays: K,
+) -> RelayRolePlan
+where
+    I: IntoIterator<Item = RelayUrl>,
+    J: IntoIterator<Item = RelayUrl>,
+    K: IntoIterator<Item = RelayUrl>,
+{
+    let long_lived_session_relays: BTreeSet<RelayUrl> =
+        long_lived_session_relays.into_iter().collect();
+    let active_group_relays: BTreeSet<RelayUrl> = active_group_relays.into_iter().collect();
+    let temporary_key_package_relays: BTreeSet<RelayUrl> =
+        temporary_key_package_relays.into_iter().collect();
+
+    let mut session_connect_relays = long_lived_session_relays.clone();
+    session_connect_relays.extend(active_group_relays.iter().cloned());
+
+    let mut key_package_operation_relays = long_lived_session_relays.clone();
+    key_package_operation_relays.extend(temporary_key_package_relays.iter().cloned());
+
+    RelayRolePlan {
+        long_lived_session_relays: long_lived_session_relays.into_iter().collect(),
+        active_group_relays: active_group_relays.into_iter().collect(),
+        temporary_key_package_relays: temporary_key_package_relays.into_iter().collect(),
+        session_connect_relays: session_connect_relays.into_iter().collect(),
+        key_package_operation_relays: key_package_operation_relays.into_iter().collect(),
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -194,11 +233,8 @@ impl AppCore {
         self.default_relays()
     }
 
-    pub(super) fn relay_role_plan(
-        &self,
-        active_group_relays: Vec<RelayUrl>,
-    ) -> RuntimeRelayRolePlan {
-        plan_runtime_relay_roles(
+    pub(super) fn relay_role_plan(&self, active_group_relays: Vec<RelayUrl>) -> RelayRolePlan {
+        plan_relay_roles(
             self.long_lived_session_relays(),
             active_group_relays,
             self.temporary_key_package_relays(),

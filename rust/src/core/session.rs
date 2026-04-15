@@ -5,7 +5,6 @@ use std::future::Future;
 
 use super::config::{plan_relay_roles, RelayRolePlan};
 use super::*;
-use pika_marmot_runtime::runtime::temporary_client_from_session_signer;
 use pika_marmot_runtime::welcome::{list_pending_welcome_snapshots, publish_welcome_rumors};
 
 const APP_INBOUND_RELAY_SEEN_CAP: usize = 2048;
@@ -723,22 +722,24 @@ impl AppCore {
         let session_client = sess.client.clone();
         let tx = self.core_sender.clone();
         self.runtime.spawn(async move {
-            let client =
-                match temporary_client_from_session_signer(&session_client, "key package publish")
-                    .await
-                {
-                    Ok(client) => client,
-                    Err(e) => {
-                        let _ = tx.send(CoreMsg::Internal(Box::new(
-                            InternalEvent::KeyPackagePublished {
-                                token,
-                                ok: false,
-                                error: Some(format!("key package publish client failed: {e:#}")),
-                            },
-                        )));
-                        return;
-                    }
-                };
+            let client = match app_client_from_session_signer(
+                &session_client,
+                "key package publish",
+            )
+            .await
+            {
+                Ok(client) => client,
+                Err(e) => {
+                    let _ = tx.send(CoreMsg::Internal(Box::new(
+                        InternalEvent::KeyPackagePublished {
+                            token,
+                            ok: false,
+                            error: Some(format!("key package publish client failed: {e:#}")),
+                        },
+                    )));
+                    return;
+                }
+            };
             let event = match client.sign_event_builder(builder).await {
                 Ok(e) => e,
                 Err(e) => {

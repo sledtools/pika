@@ -7,6 +7,43 @@ pub(super) struct AppHostContext<'a> {
     session: &'a Session,
 }
 
+#[derive(Debug, Clone)]
+pub(super) enum AppApplicationMessageInterpretation {
+    TypingIndicator {
+        message: RuntimeApplicationMessage,
+    },
+    CallSignal {
+        message: RuntimeApplicationMessage,
+        parsed_signal: Option<ParsedCallSignal>,
+    },
+    Content {
+        message: RuntimeApplicationMessage,
+    },
+    GroupProfile {
+        message: RuntimeApplicationMessage,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum AppConversationRefreshReason {
+    UnresolvedGroup { mls_group_id: GroupId },
+    PreviouslyFailed,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum AppConversationEventInterpretation {
+    Application {
+        message: Box<RuntimeApplicationMessage>,
+    },
+    GroupUpdate {
+        update: RuntimeGroupUpdate,
+        is_commit: bool,
+    },
+    NeedsFullRefresh {
+        reason: AppConversationRefreshReason,
+    },
+}
+
 impl Session {
     pub(super) fn host_context(&self) -> AppHostContext<'_> {
         AppHostContext { session: self }
@@ -170,35 +207,23 @@ impl<'a> AppHostContext<'a> {
     pub(super) fn process_group_message_event(
         &self,
         event: Event,
-    ) -> anyhow::Result<pika_marmot_runtime::runtime::InboundGroupMessageProcessing> {
-        let event_id = event.id;
-        match pika_marmot_runtime::conversation::ConversationRuntime::new(&self.session.mdk)
-            .process_event(&event)?
-        {
-            Some(conversation_event) => Ok(
-                pika_marmot_runtime::runtime::InboundGroupMessageProcessing::Processed {
-                    event_id,
-                    conversation_event,
-                },
-            ),
-            None => Ok(
-                pika_marmot_runtime::runtime::InboundGroupMessageProcessing::Ignored { event_id },
-            ),
-        }
+    ) -> anyhow::Result<Option<ConversationEvent>> {
+        pika_marmot_runtime::conversation::ConversationRuntime::new(&self.session.mdk)
+            .process_event(&event)
     }
 
-    pub(super) fn interpret_runtime_application_message(
+    pub(super) fn interpret_application_message(
         &self,
         runtime_msg: RuntimeApplicationMessage,
-    ) -> pika_marmot_runtime::runtime::RuntimeApplicationMessageInterpretation {
+    ) -> AppApplicationMessageInterpretation {
         match runtime_msg.classification {
             pika_marmot_runtime::message::MessageClassification::TypingIndicator => {
-                pika_marmot_runtime::runtime::RuntimeApplicationMessageInterpretation::TypingIndicator {
+                AppApplicationMessageInterpretation::TypingIndicator {
                     message: runtime_msg,
                 }
             }
             pika_marmot_runtime::message::MessageClassification::CallSignal => {
-                pika_marmot_runtime::runtime::RuntimeApplicationMessageInterpretation::CallSignal {
+                AppApplicationMessageInterpretation::CallSignal {
                     parsed_signal: pika_marmot_runtime::call::parse_call_signal(
                         &runtime_msg.message.content,
                     ),
@@ -209,12 +234,12 @@ impl<'a> AppHostContext<'a> {
             | pika_marmot_runtime::message::MessageClassification::Reaction
             | pika_marmot_runtime::message::MessageClassification::Hypernote
             | pika_marmot_runtime::message::MessageClassification::HypernoteResponse => {
-                pika_marmot_runtime::runtime::RuntimeApplicationMessageInterpretation::Content {
+                AppApplicationMessageInterpretation::Content {
                     message: runtime_msg,
                 }
             }
             pika_marmot_runtime::message::MessageClassification::GroupProfile => {
-                pika_marmot_runtime::runtime::RuntimeApplicationMessageInterpretation::GroupProfile {
+                AppApplicationMessageInterpretation::GroupProfile {
                     message: runtime_msg,
                 }
             }
@@ -224,33 +249,26 @@ impl<'a> AppHostContext<'a> {
     pub(super) fn interpret_conversation_event(
         &self,
         event: ConversationEvent,
-    ) -> pika_marmot_runtime::runtime::RuntimeConversationEventInterpretation {
+    ) -> AppConversationEventInterpretation {
         match event {
             ConversationEvent::Application(message) => {
-                pika_marmot_runtime::runtime::RuntimeConversationEventInterpretation::Application {
-                    message,
-                }
+                AppConversationEventInterpretation::Application { message }
             }
             ConversationEvent::GroupUpdate(update) => {
                 let is_commit = matches!(
                     update.kind,
                     pika_marmot_runtime::conversation::RuntimeGroupUpdateKind::Commit
                 );
-                pika_marmot_runtime::runtime::RuntimeConversationEventInterpretation::GroupUpdate {
-                    update,
-                    is_commit,
-                }
+                AppConversationEventInterpretation::GroupUpdate { update, is_commit }
             }
             ConversationEvent::UnresolvedGroup { mls_group_id } => {
-                pika_marmot_runtime::runtime::RuntimeConversationEventInterpretation::NeedsFullRefresh {
-                    reason: pika_marmot_runtime::runtime::RuntimeConversationRefreshReason::UnresolvedGroup {
-                        mls_group_id,
-                    },
+                AppConversationEventInterpretation::NeedsFullRefresh {
+                    reason: AppConversationRefreshReason::UnresolvedGroup { mls_group_id },
                 }
             }
             ConversationEvent::PreviouslyFailed => {
-                pika_marmot_runtime::runtime::RuntimeConversationEventInterpretation::NeedsFullRefresh {
-                    reason: pika_marmot_runtime::runtime::RuntimeConversationRefreshReason::PreviouslyFailed,
+                AppConversationEventInterpretation::NeedsFullRefresh {
+                    reason: AppConversationRefreshReason::PreviouslyFailed,
                 }
             }
         }

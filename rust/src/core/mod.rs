@@ -46,6 +46,7 @@ use crate::state::{
 };
 use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
 use config::RelayRolePlan;
+use host_context::{AppApplicationMessageInterpretation, AppConversationEventInterpretation};
 
 use mdk_core::encrypted_media::types::{EncryptedMediaUpload, MediaReference};
 use mdk_core::prelude::{message_types, GroupId, MessageProcessingResult, NostrGroupConfigData};
@@ -68,10 +69,7 @@ pub(crate) use pika_marmot_runtime::message::{
     CALL_SIGNAL_KIND, HYPERNOTE_ACTION_RESPONSE_KIND, HYPERNOTE_KIND,
 };
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
-use pika_marmot_runtime::runtime::{
-    temporary_client_from_session_signer, CallSignalPublishKind,
-    RuntimeApplicationMessageInterpretation, RuntimeConversationEventInterpretation,
-};
+use pika_marmot_runtime::runtime::CallSignalPublishKind;
 use pika_marmot_runtime::welcome::{
     accept_welcome_and_catch_up, create_group_and_plan_welcome_delivery, GroupWelcomeDeliveryPlan,
     PlannedGroupCreation,
@@ -153,6 +151,17 @@ struct FetchedKeyPackages {
     candidate_kp_relays: Vec<RelayUrl>,
 }
 
+async fn app_client_from_session_signer(
+    session_client: &Client,
+    purpose: &str,
+) -> anyhow::Result<Client> {
+    let signer = session_client
+        .signer()
+        .await
+        .with_context(|| format!("{purpose} signer unavailable"))?;
+    Ok(Client::new(signer))
+}
+
 async fn fetch_key_packages_for_peers(
     session_client: &Client,
     peer_pubkeys: &[PublicKey],
@@ -167,7 +176,7 @@ async fn fetch_key_packages_for_peers(
         .cloned()
         .collect();
     let lookup_client =
-        match temporary_client_from_session_signer(session_client, "key package lookup").await {
+        match app_client_from_session_signer(session_client, "key package lookup").await {
             Ok(client) => client,
             Err(err) => {
                 return FetchedKeyPackages {
@@ -5245,7 +5254,7 @@ impl AppCore {
             };
             let event_id = event.id;
             match sess.host_context().process_group_message_event(event) {
-                Ok(processed) => processed.into_conversation_event(),
+                Ok(processed) => processed,
                 Err(e) => {
                     tracing::error!(event_id = %event_id.to_hex(), %e, "process_message failed");
                     self.toast(format!("Message decrypt failed: {e}"));
@@ -5278,15 +5287,21 @@ impl AppCore {
             sess.host_context().interpret_conversation_event(event)
         };
         match interpreted {
-            RuntimeConversationEventInterpretation::Application { message } => {
+            AppConversationEventInterpretation::Application { message } => {
                 self.handle_runtime_application_message(*message);
             }
-            RuntimeConversationEventInterpretation::GroupUpdate { update, is_commit } => {
+            AppConversationEventInterpretation::GroupUpdate { update, is_commit } => {
                 self.handle_runtime_group_update(update, is_commit);
             }
-            RuntimeConversationEventInterpretation::NeedsFullRefresh { .. } => {
-                self.refresh_all_from_storage();
-            }
+            AppConversationEventInterpretation::NeedsFullRefresh { reason } => match reason {
+                host_context::AppConversationRefreshReason::UnresolvedGroup { mls_group_id } => {
+                    let _ = mls_group_id;
+                    self.refresh_all_from_storage();
+                }
+                host_context::AppConversationRefreshReason::PreviouslyFailed => {
+                    self.refresh_all_from_storage();
+                }
+            },
         }
     }
 
@@ -5307,10 +5322,10 @@ impl AppCore {
                 return;
             };
             sess.host_context()
-                .interpret_runtime_application_message(runtime_msg)
+                .interpret_application_message(runtime_msg)
         };
         match interpreted {
-            RuntimeApplicationMessageInterpretation::TypingIndicator { message } => {
+            AppApplicationMessageInterpretation::TypingIndicator { message } => {
                 let chat_id = message.nostr_group_id_hex;
                 let msg = message.message;
                 let sender_hex = msg.pubkey.to_hex();
@@ -5320,7 +5335,7 @@ impl AppCore {
                     self.refresh_typing_if_open(&chat_id);
                 }
             }
-            RuntimeApplicationMessageInterpretation::CallSignal {
+            AppApplicationMessageInterpretation::CallSignal {
                 message,
                 parsed_signal,
             } => {
@@ -5332,7 +5347,7 @@ impl AppCore {
                 self.refresh_chat_list_from_storage();
                 self.refresh_current_chat_if_open(&chat_id);
             }
-            RuntimeApplicationMessageInterpretation::Content { message } => {
+            AppApplicationMessageInterpretation::Content { message } => {
                 let chat_id = message.nostr_group_id_hex;
                 let kind = message.classification;
                 let msg = message.message;
@@ -5353,7 +5368,7 @@ impl AppCore {
                 self.refresh_chat_list_from_storage();
                 self.refresh_current_chat_if_open(&chat_id);
             }
-            RuntimeApplicationMessageInterpretation::GroupProfile { message } => {
+            AppApplicationMessageInterpretation::GroupProfile { message } => {
                 let chat_id = message.nostr_group_id_hex;
                 let msg = message.message;
                 // Determine profile owner: if the rumor has a `p` tag, this is
@@ -7414,6 +7429,10 @@ mod tests {
 
     mod handle_message_processing {
         use super::*;
+        use crate::core::host_context::{
+            AppApplicationMessageInterpretation, AppConversationEventInterpretation,
+            AppConversationRefreshReason,
+        };
         use crate::mdk_support::open_mdk;
         use crate::state::ChatViewState;
         use mdk_core::prelude::{
@@ -7430,10 +7449,6 @@ mod tests {
         };
         use pika_marmot_runtime::message::TYPING_INDICATOR_KIND;
         use pika_marmot_runtime::outbound::OutboundConversationAction;
-        use pika_marmot_runtime::runtime::{
-            RuntimeApplicationMessageInterpretation, RuntimeConversationEventInterpretation,
-            RuntimeConversationRefreshReason,
-        };
 
         /// Creates a core with a real MDK session and a group in storage.
         /// Returns (core, chat_id_hex, creator_keys, group_id).
@@ -7756,10 +7771,10 @@ mod tests {
             let interpreted = core
                 .host_context()
                 .expect("host context")
-                .interpret_runtime_application_message(runtime_msg);
+                .interpret_application_message(runtime_msg);
 
             match interpreted {
-                RuntimeApplicationMessageInterpretation::CallSignal {
+                AppApplicationMessageInterpretation::CallSignal {
                     parsed_signal: Some(ParsedCallSignal::Invite { call_id, .. }),
                     ..
                 } => assert_eq!(call_id, "550e8400-e29b-41d4-a716-446655440000"),
@@ -7786,21 +7801,21 @@ mod tests {
             let interpreted_failed = host.interpret_conversation_event(failed);
 
             match interpreted_commit {
-                RuntimeConversationEventInterpretation::GroupUpdate { is_commit, .. } => {
+                AppConversationEventInterpretation::GroupUpdate { is_commit, .. } => {
                     assert!(is_commit)
                 }
                 other => panic!("expected group-update interpretation, got {other:?}"),
             }
             match interpreted_unresolved {
-                RuntimeConversationEventInterpretation::NeedsFullRefresh {
-                    reason: RuntimeConversationRefreshReason::UnresolvedGroup { mls_group_id },
+                AppConversationEventInterpretation::NeedsFullRefresh {
+                    reason: AppConversationRefreshReason::UnresolvedGroup { mls_group_id },
                 } => assert_eq!(mls_group_id, group_id),
                 other => panic!("expected unresolved-group refresh reason, got {other:?}"),
             }
             assert!(matches!(
                 interpreted_failed,
-                RuntimeConversationEventInterpretation::NeedsFullRefresh {
-                    reason: RuntimeConversationRefreshReason::PreviouslyFailed
+                AppConversationEventInterpretation::NeedsFullRefresh {
+                    reason: AppConversationRefreshReason::PreviouslyFailed
                 }
             ));
         }
@@ -10087,12 +10102,10 @@ mod tests {
         #[tokio::test]
         async fn temporary_session_relay_client_keeps_lookup_relays_separate() {
             let session_client = Client::builder().signer(Keys::generate()).build();
-            let lookup_client = super::super::temporary_client_from_session_signer(
-                &session_client,
-                "key package lookup",
-            )
-            .await
-            .expect("lookup client");
+            let lookup_client =
+                super::super::app_client_from_session_signer(&session_client, "key package lookup")
+                    .await
+                    .expect("lookup client");
             let relay = RelayUrl::parse("wss://kp-lookup.example").expect("relay url");
 
             lookup_client

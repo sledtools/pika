@@ -76,6 +76,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   the chat-server E2E now restarts the receiving app, verifies the persisted `chat_id -> room_id` binding and `last_synced_seq`, and confirms that new post-restart messages arrive through resumed room sync.
 - [x] Stop doing relay lookup work on already-bound room-log publishes:
   once a chat already has `chat_id -> room_id`, both message publish and membership-commit publish now branch straight to chat-server append/submit without first asking MDK for relay targets they will never use.
+- [x] Route bound group-profile updates through the room log too:
+  chat-server mode no longer publishes kind-0 group-profile wrappers only to relays that peers are not subscribed to; bound profile updates now append through the chat server and fixture E2E coverage proves the peer profile cache updates.
 - Next seam:
   keep cutting the remaining relay/MDK bootstrap assumptions out of the chat-server path, starting with the key-package / welcome bootstrap bits that still lean on MDK-era relay metadata and the larger runtime cut toward OpenMLS.
 - List the first data migrations and config cuts needed in the app:
@@ -144,6 +146,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   the actor loop stops its session/runtime when the last app handle is released, which keeps restart tests honest and avoids duplicate MLS processing from leaked background instances.
 - Server-bound room-log publishes are simpler now:
   once a room binding exists, the app no longer asks MDK for per-group relay targets before sending normal messages or membership commits through the chat server.
+- Bound group-profile delivery now matches the rest of the private-chat transport:
+  in chat-server mode, peers learn profile updates through room sync rather than relay subscriptions that the app intentionally disabled.
+- The chat-server fixture tests now serialize in-process:
+  `rust/tests/e2e_messaging.rs` uses a shared mutex so the `chat_server_*` subset can run together without multiple tests fighting over the fixed local chat-server port.
 - The inventory pass confirmed the biggest simplification wins:
   cut `pika-marmot-runtime`, delete `pika-server`'s relay listener path, and replace relay-centric app config early.
 - The v1 routing model is intentionally less Matrix-like:

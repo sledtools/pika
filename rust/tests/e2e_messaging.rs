@@ -5,6 +5,7 @@
 //! few of these tests as higher-level regression boundaries.
 
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use pika_core::{AppAction, AuthState, CallStatus, FfiApp};
@@ -13,6 +14,14 @@ use tempfile::tempdir;
 
 mod support;
 use support::{create_or_open_dm_chat, wait_until, write_config, write_config_with_chat_server};
+
+fn chat_server_test_guard() -> MutexGuard<'static, ()> {
+    static CHAT_SERVER_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    CHAT_SERVER_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("chat server test lock")
+}
 
 fn open_chat(app: &FfiApp, chat_id: &str, timeout: Duration) {
     app.dispatch(AppAction::OpenChat {
@@ -144,6 +153,17 @@ fn load_chat_server_binding(data_dir: &Path, chat_id: &str) -> (String, String, 
     .expect("load chat server room binding")
 }
 
+fn load_group_profile_name(data_dir: &Path, chat_id: &str, pubkey: &str) -> Option<String> {
+    let db_path = data_dir.join("profiles.sqlite3");
+    let conn = Connection::open(db_path).expect("open profile db");
+    conn.query_row(
+        "SELECT name FROM profiles WHERE chat_id = ?1 AND pubkey = ?2",
+        rusqlite::params![chat_id, pubkey],
+        |row| row.get(0),
+    )
+    .ok()
+}
+
 #[test]
 fn relay_backed_dm_delivery_reaches_peer_chat_state() {
     // `pikahut` now owns the fuller end-user contract for "create DM, send first message, peer
@@ -206,6 +226,7 @@ fn relay_backed_dm_delivery_reaches_peer_chat_state() {
 
 #[test]
 fn chat_server_dm_delivery_reaches_peer_chat_state() {
+    let _guard = chat_server_test_guard();
     let infra = support::TestInfra::start_relay_and_chat_server();
     let chat_server_url = infra.chat_server_url.as_ref().expect("chat_server_url");
 
@@ -276,6 +297,7 @@ fn chat_server_dm_delivery_reaches_peer_chat_state() {
 
 #[test]
 fn chat_server_dm_resume_after_restart_keeps_room_binding_and_syncs_new_messages() {
+    let _guard = chat_server_test_guard();
     let infra = support::TestInfra::start_relay_and_chat_server();
     let chat_server_url = infra.chat_server_url.as_ref().expect("chat_server_url");
 
@@ -394,6 +416,79 @@ fn chat_server_dm_resume_after_restart_keeps_room_binding_and_syncs_new_messages
     assert_eq!(binding_after_sync.0, binding_before_restart.0);
     assert_eq!(binding_after_sync.1, binding_before_restart.1);
     assert!(binding_after_sync.2 > binding_after_restart.2);
+}
+
+#[test]
+fn chat_server_group_profile_updates_reach_peer_profile_cache() {
+    let _guard = chat_server_test_guard();
+    let infra = support::TestInfra::start_relay_and_chat_server();
+    let chat_server_url = infra.chat_server_url.as_ref().expect("chat_server_url");
+
+    let dir_a = tempdir().unwrap();
+    let dir_b = tempdir().unwrap();
+    write_config_with_chat_server(
+        &dir_a.path().to_string_lossy(),
+        &infra.relay_url,
+        chat_server_url,
+    );
+    write_config_with_chat_server(
+        &dir_b.path().to_string_lossy(),
+        &infra.relay_url,
+        chat_server_url,
+    );
+
+    let alice = FfiApp::new(
+        dir_a.path().to_string_lossy().to_string(),
+        String::new(),
+        String::new(),
+    );
+    let bob = FfiApp::new(
+        dir_b.path().to_string_lossy().to_string(),
+        String::new(),
+        String::new(),
+    );
+
+    alice.dispatch(AppAction::CreateAccount);
+    bob.dispatch(AppAction::CreateAccount);
+
+    wait_until("alice logged in", Duration::from_secs(10), || {
+        matches!(alice.state().auth, AuthState::LoggedIn { .. })
+    });
+    wait_until("bob logged in", Duration::from_secs(10), || {
+        matches!(bob.state().auth, AuthState::LoggedIn { .. })
+    });
+
+    let alice_pubkey = match alice.state().auth {
+        AuthState::LoggedIn { pubkey, .. } => pubkey,
+        _ => unreachable!(),
+    };
+    let bob_npub = match bob.state().auth {
+        AuthState::LoggedIn { npub, .. } => npub,
+        _ => unreachable!(),
+    };
+
+    let chat_id = create_chat_server_dm_and_open(&alice, &bob_npub, Duration::from_secs(30));
+    wait_until("bob chat id matches", Duration::from_secs(45), || {
+        bob.state()
+            .chat_list
+            .iter()
+            .any(|chat| chat.chat_id == chat_id)
+    });
+
+    alice.dispatch(AppAction::SaveGroupProfile {
+        chat_id: chat_id.clone(),
+        name: "Alice Chat Name".into(),
+        about: "chat-server profile update".into(),
+    });
+
+    wait_until(
+        "bob profile cache has updated group profile",
+        Duration::from_secs(30),
+        || {
+            load_group_profile_name(dir_b.path(), &chat_id, &alice_pubkey).as_deref()
+                == Some("Alice Chat Name")
+        },
+    );
 }
 
 #[test]

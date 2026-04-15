@@ -248,6 +248,60 @@ impl AppCore {
         };
 
         let client = sess.client.clone();
+        let http_client = self.http_client.clone();
+        let tx = self.core_sender.clone();
+        let room_binding = self.chat_server_rooms.get(chat_id).cloned();
+        let chat_id = chat_id.to_string();
+
+        if let Some(binding) = room_binding {
+            self.runtime.spawn(async move {
+                let room_id = binding.room_id.clone();
+                let base_url = match Url::parse(&binding.server_url) {
+                    Ok(url) => url,
+                    Err(err) => {
+                        tracing::warn!(
+                            %chat_id,
+                            server_url = %binding.server_url,
+                            %err,
+                            "group profile publish has invalid chat-server URL"
+                        );
+                        return;
+                    }
+                };
+
+                match chat_server::append_wrapped_room_event(
+                    &http_client,
+                    &client,
+                    &base_url,
+                    &room_id,
+                    RoomEventType::ApplicationMessage,
+                    &wrapper,
+                )
+                .await
+                {
+                    Ok(appended) => {
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::ChatServerRoomEventAppended {
+                                chat_id,
+                                room_id,
+                                seq: appended.seq,
+                                wrapper,
+                            },
+                        )));
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            %chat_id,
+                            room_id = %binding.room_id,
+                            error = %err,
+                            "group profile chat-server append failed"
+                        );
+                    }
+                }
+            });
+            return;
+        }
+
         let relays: Vec<RelayUrl> = sess
             .mdk
             .get_relays(mls_group_id)

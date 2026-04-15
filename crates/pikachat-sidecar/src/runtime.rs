@@ -686,7 +686,7 @@ pub struct RuntimeCommands<'a> {
     client: Option<&'a Client>,
 }
 
-pub struct MarmotRuntime<'a> {
+pub struct PikaRuntime<'a> {
     mdk: &'a PikaMdk,
     client: Option<&'a Client>,
 }
@@ -700,8 +700,8 @@ impl RuntimeSession {
         RuntimeCommands::with_client(&self.mdk, &self.client)
     }
 
-    pub fn runtime(&self) -> MarmotRuntime<'_> {
-        MarmotRuntime::with_client(&self.mdk, &self.client)
+    pub fn runtime(&self) -> PikaRuntime<'_> {
+        PikaRuntime::with_client(&self.mdk, &self.client)
     }
 
     pub async fn connect_relays(
@@ -809,7 +809,7 @@ impl RuntimeSession {
 }
 
 impl BootstrappedRuntimeSession {
-    pub fn runtime(&self) -> MarmotRuntime<'_> {
+    pub fn runtime(&self) -> PikaRuntime<'_> {
         self.session.runtime()
     }
 }
@@ -1160,7 +1160,7 @@ impl<'a> RuntimeCommands<'a> {
     }
 }
 
-impl<'a> MarmotRuntime<'a> {
+impl<'a> PikaRuntime<'a> {
     pub fn new(mdk: &'a PikaMdk) -> Self {
         Self { mdk, client: None }
     }
@@ -2123,7 +2123,7 @@ mod tests {
             "hello through shared runtime",
             Tags::new(),
         );
-        let runtime = MarmotRuntime::new(&mdk);
+        let runtime = PikaRuntime::new(&mdk);
 
         let processed = runtime
             .process_classified_inbound_group_message(InboundRelayEvent::GroupMessage {
@@ -2157,7 +2157,7 @@ mod tests {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let keys = Keys::generate();
         let mdk = open_test_mdk(&tempdir);
-        let runtime = MarmotRuntime::new(&mdk);
+        let runtime = PikaRuntime::new(&mdk);
         let event = EventBuilder::new(Kind::TextNote, "not a group message")
             .sign_with_keys(&keys)
             .expect("sign text note");
@@ -2178,7 +2178,7 @@ mod tests {
     fn interpret_runtime_application_message_parses_shared_call_signal() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let mdk = open_test_mdk(&tempdir);
-        let runtime = MarmotRuntime::new(&mdk);
+        let runtime = PikaRuntime::new(&mdk);
         let call_id = "550e8400-e29b-41d4-a716-446655440000";
         let session = CallSessionParams {
             moq_url: "https://moq.example.com/anon".to_string(),
@@ -2216,7 +2216,7 @@ mod tests {
     fn interpret_runtime_application_message_marks_typing_content_and_group_profile() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let mdk = open_test_mdk(&tempdir);
-        let runtime = MarmotRuntime::new(&mdk);
+        let runtime = PikaRuntime::new(&mdk);
         let typing = make_runtime_application_message(
             crate::message::MessageClassification::TypingIndicator,
             crate::message::TYPING_INDICATOR_KIND,
@@ -2251,7 +2251,7 @@ mod tests {
     fn interpret_conversation_event_surfaces_group_update_commit_state() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let mdk = open_test_mdk(&tempdir);
-        let runtime = MarmotRuntime::new(&mdk);
+        let runtime = PikaRuntime::new(&mdk);
         let update = crate::conversation::RuntimeGroupUpdate {
             mls_group_id: GroupId::from_slice(&[1, 2, 3]),
             nostr_group_id_hex: "deadbeef".to_string(),
@@ -2281,7 +2281,7 @@ mod tests {
     fn interpret_conversation_event_surfaces_refresh_reasons() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let mdk = open_test_mdk(&tempdir);
-        let runtime = MarmotRuntime::new(&mdk);
+        let runtime = PikaRuntime::new(&mdk);
         let group_id = GroupId::from_slice(&[9, 9, 9]);
 
         let unresolved = runtime.interpret_conversation_event(ConversationEvent::UnresolvedGroup {
@@ -2326,7 +2326,7 @@ mod tests {
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
         let expected_group_id = hex::encode(created.group.nostr_group_id);
-        let runtime = MarmotRuntime::new(&inviter_mdk);
+        let runtime = PikaRuntime::new(&inviter_mdk);
 
         let plan = runtime
             .plan_group_subscriptions(vec!["stale-group".to_string()])
@@ -2423,7 +2423,7 @@ mod tests {
             )
             .expect("create group");
         let expected_group_id = hex::encode(created.group.nostr_group_id);
-        let runtime = MarmotRuntime::new(&inviter_mdk);
+        let runtime = PikaRuntime::new(&inviter_mdk);
         let welcome_inbox = RuntimeWelcomeInboxSubscriptionIntent {
             lookback: Some(Duration::from_secs(30)),
             limit: Some(25),

@@ -14,18 +14,17 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use hypernote_protocol as hn;
 use nostr_sdk::prelude::*;
 use pika_managed_agent_contract::{AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams};
-use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
-use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
-use pika_marmot_runtime::runtime::MarmotRuntime;
-use pika_marmot_runtime::welcome::{
-    CreatedGroup, accept_pending_welcome, create_group_and_publish_welcomes, find_pending_welcome,
-};
 use pika_mls::prelude::*;
 use pika_mls::welcome::WelcomeQueries;
 use pika_relay_profiles::{
     default_key_package_relays, default_message_relays, default_primary_blossom_server,
 };
-use pikachat_sidecar as pika_marmot_runtime;
+use pikachat_sidecar::key_package::normalize_peer_key_package_event_for_mdk;
+use pikachat_sidecar::outbound::{OutboundConversationAction, PreparedConversationAction};
+use pikachat_sidecar::runtime::PikaRuntime;
+use pikachat_sidecar::welcome::{
+    CreatedGroup, accept_pending_welcome, create_group_and_publish_welcomes, find_pending_welcome,
+};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -827,7 +826,7 @@ fn find_group(
     mdk: &mdk_util::PikaMdk,
     nostr_group_id_hex: &str,
 ) -> anyhow::Result<pika_mls::storage_traits::groups::types::Group> {
-    MarmotRuntime::new(mdk)
+    PikaRuntime::new(mdk)
         .find_group(nostr_group_id_hex)
         .with_context(|| {
             format!(
@@ -842,7 +841,7 @@ fn prepare_cli_outbound_action(
     group: pika_mls::storage_traits::groups::types::Group,
     action: OutboundConversationAction,
 ) -> anyhow::Result<PreparedConversationAction> {
-    MarmotRuntime::new(mdk).prepare_outbound_action_for_group(sender, group, action)
+    PikaRuntime::new(mdk).prepare_outbound_action_for_group(sender, group, action)
 }
 
 fn print(v: serde_json::Value) {
@@ -859,7 +858,7 @@ async fn ingest_group_backlog(
     nostr_group_id_hex: &str,
     seen_mls_event_ids: &mut HashSet<EventId>,
 ) -> anyhow::Result<()> {
-    pika_marmot_runtime::ingest_group_backlog(
+    pikachat_sidecar::ingest_group_backlog(
         mdk,
         client,
         relay_urls,
@@ -871,7 +870,7 @@ async fn ingest_group_backlog(
     Ok(())
 }
 
-use pika_marmot_runtime::media::resolve_upload_metadata;
+use pikachat_sidecar::media::resolve_upload_metadata;
 
 fn blossom_servers_or_default(values: &[String]) -> Vec<String> {
     pika_relay_profiles::blossom_servers_or_default(values)
@@ -882,7 +881,7 @@ fn message_media_refs(
     group_id: &GroupId,
     tags: &Tags,
 ) -> Vec<serde_json::Value> {
-    MarmotRuntime::new(mdk)
+    PikaRuntime::new(mdk)
         .media()
         .parse_attachments_from_tags(group_id, tags.iter())
         .into_iter()
@@ -891,7 +890,7 @@ fn message_media_refs(
 }
 
 fn media_attachment_to_json(
-    attachment: pika_marmot_runtime::media::RuntimeMediaAttachment,
+    attachment: pikachat_sidecar::media::RuntimeMediaAttachment,
 ) -> serde_json::Value {
     json!({
         "original_hash_hex": attachment.original_hash_hex,
@@ -906,7 +905,7 @@ fn media_attachment_to_json(
 }
 
 fn media_upload_json(
-    result: &pika_marmot_runtime::media::RuntimeMediaUploadResult,
+    result: &pikachat_sidecar::media::RuntimeMediaUploadResult,
     bytes: usize,
 ) -> serde_json::Value {
     json!({
@@ -1294,9 +1293,7 @@ fn pending_welcome_json(
 
 fn cmd_groups(cli: &Cli) -> anyhow::Result<()> {
     let (_keys, mdk) = open(cli)?;
-    let groups = MarmotRuntime::new(&mdk)
-        .list_groups()
-        .context("get groups")?;
+    let groups = PikaRuntime::new(&mdk).list_groups().context("get groups")?;
     let out: Vec<serde_json::Value> = groups
         .iter()
         .map(|g| {
@@ -1326,7 +1323,7 @@ async fn upload_media(
         std::fs::read(file).with_context(|| format!("read media file {}", file.display()))?;
     let resolved = resolve_upload_metadata(file, mime_type, filename);
     let upload_servers = blossom_servers_or_default(blossom_servers);
-    let result = MarmotRuntime::new(mdk)
+    let result = PikaRuntime::new(mdk)
         .media()
         .upload_media(
             keys,
@@ -1516,7 +1513,7 @@ async fn cmd_send(
         },
     )
     .context("create message")?;
-    MarmotRuntime::with_client(&mdk, &client)
+    PikaRuntime::with_client(&mdk, &client)
         .publish_prepared_action(&relays, &prepared, "send_message")
         .await?;
     client.shutdown().await;
@@ -1692,7 +1689,7 @@ async fn cmd_send_hypernote(
         },
     )
     .context("create message")?;
-    MarmotRuntime::with_client(&mdk, &client)
+    PikaRuntime::with_client(&mdk, &client)
         .publish_prepared_action(&relays, &prepared, "send_hypernote")
         .await?;
     client.shutdown().await;
@@ -1734,7 +1731,7 @@ async fn cmd_download_media(
     let (mls_group_id, message) =
         found.ok_or_else(|| anyhow!("message {message_id_hex} not found in any group"))?;
 
-    let runtime = MarmotRuntime::new(&mdk);
+    let runtime = PikaRuntime::new(&mdk);
     let media = runtime
         .parse_message_attachments(&message)
         .into_iter()
@@ -2276,7 +2273,7 @@ fn cmd_messages(cli: &Cli, nostr_group_id_hex: &str, limit: usize) -> anyhow::Re
     let group = find_group(&mdk, nostr_group_id_hex)?;
 
     let pagination = pika_mls::storage_traits::groups::Pagination::new(Some(limit), None);
-    let msgs = MarmotRuntime::new(&mdk)
+    let msgs = PikaRuntime::new(&mdk)
         .get_messages(nostr_group_id_hex, Some(pagination))
         .context("get messages")?;
 
@@ -3163,7 +3160,7 @@ mod tests {
         let created = inviter_mdk
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        let runtime = MarmotRuntime::new(&inviter_mdk);
+        let runtime = PikaRuntime::new(&inviter_mdk);
         let prepared = runtime
             .prepare_upload(
                 &created.group.mls_group_id,
@@ -3175,7 +3172,7 @@ mod tests {
         let completed = runtime.finish_upload(
             &created.group.mls_group_id,
             &prepared.upload,
-            pika_marmot_runtime::media::UploadedBlob {
+            pikachat_sidecar::media::UploadedBlob {
                 blossom_server: "https://example.com".to_string(),
                 uploaded_url: "https://example.com/blob".to_string(),
                 descriptor_sha256_hex: hex::encode(prepared.upload.encrypted_hash),
@@ -3195,8 +3192,8 @@ mod tests {
 
     #[test]
     fn cli_media_upload_json_uses_actual_uploaded_server() {
-        let result = pika_marmot_runtime::media::RuntimeMediaUploadResult {
-            attachment: pika_marmot_runtime::media::RuntimeMediaAttachment {
+        let result = pikachat_sidecar::media::RuntimeMediaUploadResult {
+            attachment: pikachat_sidecar::media::RuntimeMediaAttachment {
                 url: "https://cdn.example/blob".to_string(),
                 mime_type: "text/plain".to_string(),
                 filename: "cli.txt".to_string(),
@@ -3217,7 +3214,7 @@ mod tests {
                 dimensions: None,
             },
             imeta_tag: Tag::parse(["imeta", "url https://cdn.example/blob"]).expect("imeta tag"),
-            uploaded_blob: pika_marmot_runtime::media::UploadedBlob {
+            uploaded_blob: pikachat_sidecar::media::UploadedBlob {
                 blossom_server: "https://fallback.example".to_string(),
                 uploaded_url: "https://cdn.example/blob".to_string(),
                 descriptor_sha256_hex: "bb".repeat(32),

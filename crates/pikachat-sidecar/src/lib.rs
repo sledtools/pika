@@ -5,8 +5,6 @@
 //! - the daemon only serves the native protocol surface; no secondary ACP backend bridge
 //!   is hosted here anymore.
 
-extern crate self as pika_marmot_runtime;
-
 use anyhow::Context;
 use anyhow::Result;
 use nostr_sdk::prelude::{Event, EventId};
@@ -63,7 +61,7 @@ pub fn ingest_application_message(
     mdk: &PikaMdk,
     event: &Event,
 ) -> Result<Option<pika_mls::storage_traits::messages::types::Message>> {
-    match runtime::MarmotRuntime::new(mdk).process_event(event)? {
+    match runtime::PikaRuntime::new(mdk).process_event(event)? {
         Some(conversation::ConversationEvent::Application(message)) => Ok(Some(message.message)),
         _ => Ok(None),
     }
@@ -77,7 +75,7 @@ pub async fn ingest_group_backlog(
     seen: &mut HashSet<EventId>,
     limit: usize,
 ) -> Result<Vec<pika_mls::storage_traits::messages::types::Message>> {
-    runtime::MarmotRuntime::with_client(mdk, client)
+    runtime::PikaRuntime::with_client(mdk, client)
         .ingest_group_backlog(relay_urls, nostr_group_id_hex, seen, limit)
         .await
 }

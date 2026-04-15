@@ -9,7 +9,6 @@ use nostr_blossom::client::BlossomClient;
 use nostr_sdk::prelude::*;
 use pika_mls::encrypted_media::types::MediaProcessingOptions;
 use pika_mls::prelude::*;
-use pikachat_sidecar as pika_marmot_runtime;
 use rand::RngCore;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;
@@ -1612,7 +1611,7 @@ async fn fetch_latest_key_package_for_mdk(
     author: &PublicKey,
     relay_url: RelayUrl,
 ) -> anyhow::Result<Event> {
-    pika_marmot_runtime::relay::fetch_latest_key_package_for_mdk(
+    pikachat_sidecar::relay::fetch_latest_key_package_for_mdk(
         client,
         author,
         &[relay_url],

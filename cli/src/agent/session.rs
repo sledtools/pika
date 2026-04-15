@@ -7,9 +7,8 @@ use std::time::Duration;
 use anyhow::Context;
 use nostr_sdk::JsonUtil;
 use nostr_sdk::prelude::*;
-use pika_marmot_runtime::welcome::create_group_and_publish_welcomes as create_group_and_publish_shared_welcomes;
 use pika_mls::prelude::*;
-use pikachat_sidecar as pika_marmot_runtime;
+use pikachat_sidecar::welcome::create_group_and_publish_welcomes as create_group_and_publish_shared_welcomes;
 use tokio::io::AsyncBufReadExt;
 
 use pika_agent_protocol::projection::{ProjectedContent, project_message};

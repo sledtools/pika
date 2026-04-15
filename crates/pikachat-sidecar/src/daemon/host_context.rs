@@ -1,8 +1,8 @@
 use super::*;
-use pika_marmot_runtime::membership::EvolutionPublishStatus;
+use crate::membership::EvolutionPublishStatus;
 #[cfg(test)]
-use pika_marmot_runtime::membership::MembershipUpdateResult;
-use pika_marmot_runtime::membership::PreparedMembershipEvolution;
+use crate::membership::MembershipUpdateResult;
+use crate::membership::PreparedMembershipEvolution;
 
 #[derive(Debug)]
 pub(super) enum DaemonPrepareError {
@@ -35,22 +35,22 @@ impl<'a> DaemonHostContext<'a> {
         }
     }
 
-    fn runtime(&self) -> MarmotRuntime<'a> {
-        MarmotRuntime::with_client(self.mdk, self.client)
+    fn runtime(&self) -> PikaRuntime<'a> {
+        PikaRuntime::with_client(self.mdk, self.client)
     }
 
-    fn commands(&self) -> pika_marmot_runtime::runtime::RuntimeCommands<'a> {
-        pika_marmot_runtime::runtime::RuntimeCommands::with_client(self.mdk, self.client)
+    fn commands(&self) -> crate::runtime::RuntimeCommands<'a> {
+        crate::runtime::RuntimeCommands::with_client(self.mdk, self.client)
     }
 
-    fn queries(&self) -> pika_marmot_runtime::runtime::RuntimeQueries<'a> {
-        pika_marmot_runtime::runtime::RuntimeQueries::new(self.mdk)
+    fn queries(&self) -> crate::runtime::RuntimeQueries<'a> {
+        crate::runtime::RuntimeQueries::new(self.mdk)
     }
 
     pub(super) fn lookup_joined_group_snapshot(
         &self,
         nostr_group_id: &str,
-    ) -> anyhow::Result<pika_marmot_runtime::conversation::RuntimeJoinedGroupSnapshot> {
+    ) -> anyhow::Result<crate::conversation::RuntimeJoinedGroupSnapshot> {
         self.runtime().lookup_joined_group_snapshot(nostr_group_id)
     }
 
@@ -62,7 +62,7 @@ impl<'a> DaemonHostContext<'a> {
 
     pub(super) fn list_groups(
         &self,
-    ) -> anyhow::Result<Vec<pika_marmot_runtime::conversation::RuntimeGroupSummary>> {
+    ) -> anyhow::Result<Vec<crate::conversation::RuntimeGroupSummary>> {
         self.runtime().list_groups()
     }
 
@@ -70,8 +70,7 @@ impl<'a> DaemonHostContext<'a> {
         &self,
         nostr_group_id: &str,
         owner_pubkeys: &[PublicKey],
-    ) -> anyhow::Result<Option<pika_marmot_runtime::conversation::RuntimeGroupProfileSnapshot>>
-    {
+    ) -> anyhow::Result<Option<crate::conversation::RuntimeGroupProfileSnapshot>> {
         self.runtime()
             .lookup_group_profile_snapshot_for_owners(nostr_group_id, owner_pubkeys)
     }
@@ -79,21 +78,21 @@ impl<'a> DaemonHostContext<'a> {
     #[cfg(test)]
     pub(super) fn list_joined_group_snapshots(
         &self,
-    ) -> anyhow::Result<Vec<pika_marmot_runtime::conversation::RuntimeJoinedGroupSnapshot>> {
+    ) -> anyhow::Result<Vec<crate::conversation::RuntimeJoinedGroupSnapshot>> {
         self.runtime().list_joined_group_snapshots()
     }
 
     pub(super) fn load_message_page(
         &self,
         nostr_group_id: &str,
-        query: pika_marmot_runtime::conversation::RuntimeMessagePageQuery,
-    ) -> anyhow::Result<pika_marmot_runtime::conversation::RuntimeMessagePage> {
+        query: crate::conversation::RuntimeMessagePageQuery,
+    ) -> anyhow::Result<crate::conversation::RuntimeMessagePage> {
         self.runtime().load_message_page(nostr_group_id, query)
     }
 
     pub(super) fn list_pending_welcome_snapshots(
         &self,
-    ) -> anyhow::Result<Vec<pika_marmot_runtime::welcome::PendingWelcomeSnapshot>> {
+    ) -> anyhow::Result<Vec<crate::welcome::PendingWelcomeSnapshot>> {
         self.queries().list_pending_welcome_snapshots()
     }
 
@@ -155,19 +154,19 @@ impl<'a> DaemonHostContext<'a> {
     pub(super) fn complete_outbound_publish_operation(
         &self,
         prepared: PreparedConversationAction,
-        publish_status: pika_marmot_runtime::outbound::OutboundConversationPublishStatus,
-    ) -> pika_marmot_runtime::runtime::RuntimeOperationEvent {
+        publish_status: crate::outbound::OutboundConversationPublishStatus,
+    ) -> crate::runtime::RuntimeOperationEvent {
         self.commands()
             .complete_outbound_publish_operation(prepared, publish_status)
     }
 
     pub(super) fn complete_call_signal_publish_operation(
         &self,
-        kind: pika_marmot_runtime::runtime::CallSignalPublishKind,
+        kind: crate::runtime::CallSignalPublishKind,
         nostr_group_id_hex: String,
-        prepared: pika_marmot_runtime::call_runtime::PreparedCallSignal,
-        publish_status: pika_marmot_runtime::runtime::CallSignalPublishStatus,
-    ) -> pika_marmot_runtime::runtime::RuntimeOperationEvent {
+        prepared: crate::call_runtime::PreparedCallSignal,
+        publish_status: crate::runtime::CallSignalPublishStatus,
+    ) -> crate::runtime::RuntimeOperationEvent {
         self.commands().complete_call_signal_publish_operation(
             kind,
             nostr_group_id_hex,
@@ -285,7 +284,7 @@ impl<'a> DaemonHostContext<'a> {
         &self,
         prepared: PreparedMembershipEvolution,
         publish_status: EvolutionPublishStatus,
-    ) -> pika_marmot_runtime::runtime::RuntimeOperationEvent {
+    ) -> crate::runtime::RuntimeOperationEvent {
         self.commands()
             .complete_membership_evolution_operation(prepared, publish_status)
     }
@@ -316,10 +315,7 @@ impl<'a> DaemonHostContext<'a> {
         peer_pubkey_hex: &str,
         call_id: &str,
         session: &CallSessionParams,
-    ) -> anyhow::Result<(
-        PendingOutgoingCall,
-        pika_marmot_runtime::call_runtime::PreparedCallSignal,
-    )> {
+    ) -> anyhow::Result<(PendingOutgoingCall, crate::call_runtime::PreparedCallSignal)> {
         self.commands()
             .prepare_outgoing_call_invite(nostr_group_id, peer_pubkey_hex, call_id, session)
             .map_err(anyhow::Error::msg)
@@ -328,7 +324,7 @@ impl<'a> DaemonHostContext<'a> {
     pub(super) fn prepare_accept_call(
         &self,
         invite: &PendingIncomingCall,
-    ) -> Result<pika_marmot_runtime::call_runtime::PreparedAcceptedCall, String> {
+    ) -> Result<crate::call_runtime::PreparedAcceptedCall, String> {
         let mls_group_id = self
             .resolve_group(&invite.target_id)
             .map_err(|e| format!("resolve call group failed: {e:#}"))?;
@@ -345,7 +341,7 @@ impl<'a> DaemonHostContext<'a> {
         &self,
         call_id: &str,
         reason: &str,
-    ) -> Result<pika_marmot_runtime::call_runtime::PreparedCallSignal, String> {
+    ) -> Result<crate::call_runtime::PreparedCallSignal, String> {
         self.commands().prepare_reject_call_signal(call_id, reason)
     }
 
@@ -353,22 +349,22 @@ impl<'a> DaemonHostContext<'a> {
         &self,
         call_id: &str,
         reason: &str,
-    ) -> Result<pika_marmot_runtime::call_runtime::PreparedCallSignal, String> {
+    ) -> Result<crate::call_runtime::PreparedCallSignal, String> {
         self.commands().prepare_end_call_signal(call_id, reason)
     }
 
     pub(super) fn process_classified_inbound_group_message(
         &self,
         inbound: InboundRelayEvent,
-    ) -> anyhow::Result<Option<pika_marmot_runtime::runtime::InboundGroupMessageProcessing>> {
+    ) -> anyhow::Result<Option<crate::runtime::InboundGroupMessageProcessing>> {
         self.runtime()
             .process_classified_inbound_group_message(inbound)
     }
 
     pub(super) fn interpret_runtime_application_message(
         &self,
-        runtime_msg: pika_marmot_runtime::conversation::RuntimeApplicationMessage,
-    ) -> pika_marmot_runtime::runtime::RuntimeApplicationMessageInterpretation {
+        runtime_msg: crate::conversation::RuntimeApplicationMessage,
+    ) -> crate::runtime::RuntimeApplicationMessageInterpretation {
         self.runtime()
             .interpret_runtime_application_message(runtime_msg)
     }
@@ -376,7 +372,7 @@ impl<'a> DaemonHostContext<'a> {
     pub(super) fn interpret_conversation_event(
         &self,
         event: ConversationEvent,
-    ) -> pika_marmot_runtime::runtime::RuntimeConversationEventInterpretation {
+    ) -> crate::runtime::RuntimeConversationEventInterpretation {
         self.runtime().interpret_conversation_event(event)
     }
 
@@ -384,7 +380,7 @@ impl<'a> DaemonHostContext<'a> {
         &self,
         subscribed_group_ids: Vec<String>,
         giftwrap_lookback_sec: u64,
-    ) -> anyhow::Result<pika_marmot_runtime::runtime::RuntimeSessionOpenState> {
+    ) -> anyhow::Result<crate::runtime::RuntimeSessionOpenState> {
         self.queries().refresh_session_open_state(
             self.keys.public_key(),
             super::daemon_open_request(
@@ -397,7 +393,7 @@ impl<'a> DaemonHostContext<'a> {
 
     pub(super) fn handle_inbound_call_signal(
         &self,
-        ctx: pika_marmot_runtime::call_runtime::InboundSignalContext<'_>,
+        ctx: crate::call_runtime::InboundSignalContext<'_>,
         signal: ParsedCallSignal,
     ) -> InboundCallSignalOutcome {
         self.runtime().handle_inbound_call_signal(ctx, signal)
@@ -409,7 +405,7 @@ impl<'a> DaemonHostContext<'a> {
         bytes: &[u8],
         mime_type: Option<&str>,
         filename: Option<&str>,
-    ) -> anyhow::Result<pika_marmot_runtime::media::PreparedMediaUpload> {
+    ) -> anyhow::Result<crate::media::PreparedMediaUpload> {
         self.commands()
             .prepare_upload(mls_group_id, bytes, mime_type, filename)
     }
@@ -419,8 +415,8 @@ impl<'a> DaemonHostContext<'a> {
         mls_group_id: &GroupId,
         nostr_group_id_hex: String,
         upload: &pika_mls::encrypted_media::types::EncryptedMediaUpload,
-        status: pika_marmot_runtime::runtime::MediaUploadStatus,
-    ) -> pika_marmot_runtime::runtime::RuntimeOperationEvent {
+        status: crate::runtime::MediaUploadStatus,
+    ) -> crate::runtime::RuntimeOperationEvent {
         self.commands().complete_media_upload_operation(
             mls_group_id,
             nostr_group_id_hex,

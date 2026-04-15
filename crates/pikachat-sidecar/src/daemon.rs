@@ -7,36 +7,36 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use anyhow::{Context, anyhow};
-use base64::Engine;
-use hypernote_protocol as hn;
-use nostr_sdk::prelude::*;
-use pika_marmot_runtime::call::{
+use crate::call::{
     CallCryptoDeriveContext, CallMediaCryptoContext, CallSessionParams, CallTrackSpec,
     ParsedCallSignal, derive_relay_auth_token as derive_shared_relay_auth_token,
     parse_call_signal as parse_shared_call_signal,
 };
-use pika_marmot_runtime::call_runtime::{
+use crate::call_runtime::{
     GroupCallContext, InboundCallPolicy, InboundCallSignalOutcome, PendingIncomingCall,
     PendingOutgoingCall,
 };
-use pika_marmot_runtime::conversation::ConversationEvent;
-use pika_marmot_runtime::message::{
+use crate::conversation::ConversationEvent;
+use crate::message::{
     CALL_SIGNAL_KIND, MessageClassification, classify_message as classify_shared_message,
 };
-use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
-use pika_marmot_runtime::runtime::{
+use crate::outbound::{OutboundConversationAction, PreparedConversationAction};
+use crate::runtime::{
     BootstrappedRuntimeSession, CallSignalPublishKind, CallSignalPublishStatus,
-    CompletedMediaUpload, InboundRelayEvent, MarmotRuntime, MediaUploadStatus, PublishedCallSignal,
+    CompletedMediaUpload, InboundRelayEvent, MediaUploadStatus, PikaRuntime, PublishedCallSignal,
     RuntimeApplicationMessageInterpretation, RuntimeBaseSessionSyncExecution,
     RuntimeConversationEventInterpretation, RuntimeSessionOpenRequest, RuntimeSessionSyncPlan,
     RuntimeWelcomeInboxSubscriptionIntent, bootstrap_runtime_session, classify_inbound_relay_event,
     subscribe_group_messages_individual,
 };
-use pika_marmot_runtime::welcome::{
+use crate::welcome::{
     AcceptedWelcome, CreatedGroup, accept_welcome_and_catch_up, create_group_and_publish_welcomes,
     ingest_unwrapped_welcome, publish_welcome_rumors,
 };
+use anyhow::{Context, anyhow};
+use base64::Engine;
+use hypernote_protocol as hn;
+use nostr_sdk::prelude::*;
 use pika_media::codec_opus::{OpusCodec, OpusPacket};
 use pika_media::crypto::{FrameInfo, decrypt_frame, encrypt_frame};
 use pika_media::network::NetworkRelay;
@@ -64,9 +64,9 @@ use crate::protocol::{
 use host_context::{DaemonHostContext, DaemonPrepareError};
 
 #[cfg(test)]
-use pika_marmot_runtime::call::key_id_for_sender;
+use crate::call::key_id_for_sender;
 #[cfg(test)]
-use pika_marmot_runtime::welcome::find_pending_welcome_index;
+use crate::welcome::find_pending_welcome_index;
 #[cfg(test)]
 use pika_media::crypto::{FrameKeyMaterial, opaque_participant_label};
 
@@ -118,7 +118,7 @@ fn bootstrap_runtime_for_daemon(
 fn plan_daemon_group_subscriptions(
     host: &DaemonHostContext<'_>,
     subscribed_group_ids: Vec<String>,
-) -> anyhow::Result<pika_marmot_runtime::runtime::RuntimeGroupSubscriptionPlan> {
+) -> anyhow::Result<crate::runtime::RuntimeGroupSubscriptionPlan> {
     Ok(host
         .refresh_session_state(subscribed_group_ids, 90)?
         .sync_plan
@@ -211,7 +211,7 @@ fn daemon_base_session_sync_plan(
 }
 
 async fn execute_daemon_base_session_sync(
-    session: &pika_marmot_runtime::runtime::RuntimeSession,
+    session: &crate::runtime::RuntimeSession,
     sync_plan: &RuntimeSessionSyncPlan,
     primary_relay_url: &RelayUrl,
 ) -> anyhow::Result<RuntimeBaseSessionSyncExecution> {
@@ -347,12 +347,12 @@ fn accept_welcome_not_found_message() -> String {
     )
 }
 
-use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
-use pika_marmot_runtime::media::{
+use crate::key_package::normalize_peer_key_package_event_for_mdk;
+use crate::media::{
     MAX_CHAT_MEDIA_BYTES, ParsedMediaAttachment, PreparedMediaUpload, RuntimeMediaAttachment,
     UploadedBlob, resolve_upload_metadata, upload_encrypted_blob,
 };
-use pika_marmot_runtime::relay::{fetch_latest_key_package_for_mdk, publish_and_confirm};
+use crate::relay::{fetch_latest_key_package_for_mdk, publish_and_confirm};
 
 fn blossom_servers_or_default(values: &[String]) -> Vec<String> {
     pika_relay_profiles::blossom_servers_or_default(values)
@@ -623,10 +623,8 @@ where
 
     let publish_status = match publish_event(prepared.evolution_event.clone(), "add_members").await
     {
-        Ok(()) => pika_marmot_runtime::membership::EvolutionPublishStatus::Published,
-        Err(err) => pika_marmot_runtime::membership::EvolutionPublishStatus::PublishFailed(
-            format!("{err:#}"),
-        ),
+        Ok(()) => crate::membership::EvolutionPublishStatus::Published,
+        Err(err) => crate::membership::EvolutionPublishStatus::PublishFailed(format!("{err:#}")),
     };
 
     let result = match host
@@ -640,7 +638,7 @@ where
         }
     };
 
-    let pika_marmot_runtime::membership::MembershipUpdateResult {
+    let crate::membership::MembershipUpdateResult {
         mls_group_id: _,
         nostr_group_id_hex,
         added_pubkeys,
@@ -769,7 +767,7 @@ fn handle_list_members_request(
 }
 
 fn group_member_outputs(
-    member_snapshots: Vec<pika_marmot_runtime::conversation::RuntimeJoinedGroupMemberSnapshot>,
+    member_snapshots: Vec<crate::conversation::RuntimeJoinedGroupMemberSnapshot>,
 ) -> Vec<GroupMemberOut> {
     let mut members: Vec<GroupMemberOut> = member_snapshots
         .into_iter()
@@ -814,13 +812,12 @@ where
         }
     };
 
-    let publish_status =
-        match publish_event(prepared.evolution_event.clone(), "remove_members").await {
-            Ok(()) => pika_marmot_runtime::membership::EvolutionPublishStatus::Published,
-            Err(err) => pika_marmot_runtime::membership::EvolutionPublishStatus::PublishFailed(
-                format!("{err:#}"),
-            ),
-        };
+    let publish_status = match publish_event(prepared.evolution_event.clone(), "remove_members")
+        .await
+    {
+        Ok(()) => crate::membership::EvolutionPublishStatus::Published,
+        Err(err) => crate::membership::EvolutionPublishStatus::PublishFailed(format!("{err:#}")),
+    };
 
     let result = match host
         .complete_membership_evolution_operation(prepared, publish_status)
@@ -833,7 +830,7 @@ where
         }
     };
 
-    let pika_marmot_runtime::membership::MembershipUpdateResult {
+    let crate::membership::MembershipUpdateResult {
         mls_group_id: _,
         nostr_group_id_hex,
         added_pubkeys: _,
@@ -922,10 +919,8 @@ where
 
     let publish_status = match publish_event(prepared.evolution_event.clone(), "leave_group").await
     {
-        Ok(()) => pika_marmot_runtime::membership::EvolutionPublishStatus::Published,
-        Err(err) => pika_marmot_runtime::membership::EvolutionPublishStatus::PublishFailed(
-            format!("{err:#}"),
-        ),
+        Ok(()) => crate::membership::EvolutionPublishStatus::Published,
+        Err(err) => crate::membership::EvolutionPublishStatus::PublishFailed(format!("{err:#}")),
     };
 
     let result = host
@@ -1123,8 +1118,8 @@ fn build_left_group_updated(nostr_group_id: &str) -> GroupUpdatedOut {
 
 fn infer_remote_membership_update_kind(
     local_pubkey: &PublicKey,
-    before: Option<&pika_marmot_runtime::conversation::RuntimeJoinedGroupSnapshot>,
-    after: Option<&pika_marmot_runtime::conversation::RuntimeJoinedGroupSnapshot>,
+    before: Option<&crate::conversation::RuntimeJoinedGroupSnapshot>,
+    after: Option<&crate::conversation::RuntimeJoinedGroupSnapshot>,
 ) -> Option<GroupUpdateKindOut> {
     let before_contains_local = before.is_some_and(|snapshot| {
         snapshot
@@ -1177,7 +1172,7 @@ fn emit_remote_group_commit_updated(
     event_sinks: &ProtocolEventSinks,
     host: &DaemonHostContext<'_>,
     local_pubkey: &PublicKey,
-    before: Option<&pika_marmot_runtime::conversation::RuntimeJoinedGroupSnapshot>,
+    before: Option<&crate::conversation::RuntimeJoinedGroupSnapshot>,
     nostr_group_id: &str,
 ) -> bool {
     let after = host.lookup_joined_group_snapshot(nostr_group_id).ok();
@@ -1319,14 +1314,10 @@ where
 
     let publish_status = match publish_prepared(prepared.clone()).await {
         Ok(wrapper_event_id) => {
-            pika_marmot_runtime::outbound::OutboundConversationPublishStatus::Published {
-                wrapper_event_id,
-            }
+            crate::outbound::OutboundConversationPublishStatus::Published { wrapper_event_id }
         }
         Err(err) => {
-            pika_marmot_runtime::outbound::OutboundConversationPublishStatus::PublishFailed(
-                format!("{err:#}"),
-            )
+            crate::outbound::OutboundConversationPublishStatus::PublishFailed(format!("{err:#}"))
         }
     };
 
@@ -1703,7 +1694,7 @@ async fn upload_daemon_media_file(
     let bytes = read_daemon_media_file(input.file_path, input.include_path_in_validation_errors)?;
     let path = Path::new(input.file_path);
     let resolved = resolve_upload_metadata(path, input.mime_type, input.filename);
-    let pika_marmot_runtime::media::PreparedMediaUpload {
+    let crate::media::PreparedMediaUpload {
         upload,
         encrypted_data,
     } = host
@@ -2229,7 +2220,7 @@ fn complete_daemon_call_signal_publish_result(
     host: &DaemonHostContext<'_>,
     kind: CallSignalPublishKind,
     nostr_group_id_hex: String,
-    prepared: pika_marmot_runtime::call_runtime::PreparedCallSignal,
+    prepared: crate::call_runtime::PreparedCallSignal,
     publish_status: CallSignalPublishStatus,
 ) -> Result<PublishedCallSignal, String> {
     host.complete_call_signal_publish_operation(kind, nostr_group_id_hex, prepared, publish_status)
@@ -2240,7 +2231,7 @@ async fn publish_signed_call_signal_result(
     host: &DaemonHostContext<'_>,
     kind: CallSignalPublishKind,
     nostr_group_id_hex: String,
-    prepared: pika_marmot_runtime::call_runtime::PreparedCallSignal,
+    prepared: crate::call_runtime::PreparedCallSignal,
     signed: &Event,
     label: &str,
 ) -> Result<PublishedCallSignal, String> {
@@ -4193,7 +4184,7 @@ pub async fn daemon_main(
                     InCmd::GetMessages { request_id, nostr_group_id, limit } => {
                         let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
                         let query =
-                            pika_marmot_runtime::conversation::RuntimeMessagePageQuery::new(limit, 0);
+                            crate::conversation::RuntimeMessagePageQuery::new(limit, 0);
                         match host.load_message_page(&nostr_group_id, query) {
                             Ok(page) => {
                                 let out: Vec<serde_json::Value> = page.messages.iter().map(|m| {
@@ -4242,13 +4233,13 @@ pub async fn daemon_main(
                             match host.publish_prepared(&prepared, "daemon_send").await {
                             Ok(wrapper) => (
                                 true,
-                                pika_marmot_runtime::outbound::OutboundConversationPublishStatus::Published {
+                                crate::outbound::OutboundConversationPublishStatus::Published {
                                     wrapper_event_id: wrapper.id,
                                 },
                             ),
                             Err(e) => (
                                 false,
-                                pika_marmot_runtime::outbound::OutboundConversationPublishStatus::PublishFailed(
+                                crate::outbound::OutboundConversationPublishStatus::PublishFailed(
                                     format!("{e:#}"),
                                 ),
                             ),
@@ -4689,7 +4680,7 @@ pub async fn daemon_main(
                                     continue;
                                 }
                             };
-                        let pika_marmot_runtime::call_runtime::PreparedAcceptedCall {
+                        let crate::call_runtime::PreparedAcceptedCall {
                             incoming,
                             signal,
                             media_crypto,
@@ -5482,7 +5473,7 @@ pub async fn daemon_main(
                                         _ => None,
                                     };
                                     match host.handle_inbound_call_signal(
-                                        pika_marmot_runtime::call_runtime::InboundSignalContext {
+                                        crate::call_runtime::InboundSignalContext {
                                             target_id: &nostr_group_id,
                                             sender_pubkey_hex: &sender_hex,
                                             group: GroupCallContext {
@@ -5740,9 +5731,9 @@ pub async fn daemon_main(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pika_marmot_runtime::conversation::{RuntimeGroupUpdate, RuntimeGroupUpdateKind};
-    use pika_marmot_runtime::media::{is_imeta_tag, mime_from_extension};
-    use pika_marmot_runtime::message::TYPING_INDICATOR_KIND;
+    use crate::conversation::{RuntimeGroupUpdate, RuntimeGroupUpdateKind};
+    use crate::media::{is_imeta_tag, mime_from_extension};
+    use crate::message::TYPING_INDICATOR_KIND;
     use pika_mls::prelude::NostrGroupConfigData;
 
     fn event_id(hex: &str) -> EventId {
@@ -6084,13 +6075,13 @@ mod tests {
         let first_page = host
             .load_message_page(
                 &nostr_group_id_hex,
-                pika_marmot_runtime::conversation::RuntimeMessagePageQuery::new(2, 0),
+                crate::conversation::RuntimeMessagePageQuery::new(2, 0),
             )
             .expect("load first page");
         let second_page = host
             .load_message_page(
                 &nostr_group_id_hex,
-                pika_marmot_runtime::conversation::RuntimeMessagePageQuery::new(2, 2),
+                crate::conversation::RuntimeMessagePageQuery::new(2, 2),
             )
             .expect("load second page");
 
@@ -6192,7 +6183,7 @@ mod tests {
 
         let operation = host.complete_outbound_publish_operation(
             prepared,
-            pika_marmot_runtime::outbound::OutboundConversationPublishStatus::Published {
+            crate::outbound::OutboundConversationPublishStatus::Published {
                 wrapper_event_id: EventId::all_zeros(),
             },
         );
@@ -6231,7 +6222,7 @@ mod tests {
                 &host,
                 kind,
                 "deadbeef".to_string(),
-                pika_marmot_runtime::call_runtime::PreparedCallSignal {
+                crate::call_runtime::PreparedCallSignal {
                     call_id: "550e8400-e29b-41d4-a716-446655440017".to_string(),
                     payload_json: payload_json.to_string(),
                 },
@@ -6263,7 +6254,7 @@ mod tests {
             &host,
             CallSignalPublishKind::Accept,
             "deadbeef".to_string(),
-            pika_marmot_runtime::call_runtime::PreparedCallSignal {
+            crate::call_runtime::PreparedCallSignal {
                 call_id: "550e8400-e29b-41d4-a716-446655440018".to_string(),
                 payload_json: "{\"type\":\"call.accept\"}".to_string(),
             },
@@ -6378,7 +6369,7 @@ mod tests {
 
         let operation = host.complete_membership_evolution_operation(
             prepared,
-            pika_marmot_runtime::membership::EvolutionPublishStatus::Published,
+            crate::membership::EvolutionPublishStatus::Published,
         );
         let completed_id = operation.operation_id();
         let result = operation
@@ -7655,10 +7646,7 @@ mod tests {
                             assert_eq!(metadata.about.as_deref(), Some("Profile About"));
                             assert_eq!(metadata.picture.as_deref(), Some(uploaded_url));
                             assert!(
-                                message
-                                    .tags
-                                    .iter()
-                                    .any(pika_marmot_runtime::media::is_imeta_tag),
+                                message.tags.iter().any(crate::media::is_imeta_tag),
                                 "profile image update should publish an imeta tag"
                             );
                         }
@@ -7906,7 +7894,7 @@ mod tests {
         })
         .to_string();
         let msg = make_test_message(CALL_SIGNAL_KIND, &content, Tags::new());
-        let runtime_msg = pika_marmot_runtime::conversation::RuntimeApplicationMessage {
+        let runtime_msg = crate::conversation::RuntimeApplicationMessage {
             mls_group_id: msg.mls_group_id.clone(),
             nostr_group_id_hex: "deadbeef".to_string(),
             classification: MessageClassification::CallSignal,
@@ -7958,17 +7946,14 @@ mod tests {
         match interpreted_unresolved {
             RuntimeConversationEventInterpretation::NeedsFullRefresh {
                 reason:
-                    pika_marmot_runtime::runtime::RuntimeConversationRefreshReason::UnresolvedGroup {
-                        mls_group_id,
-                    },
+                    crate::runtime::RuntimeConversationRefreshReason::UnresolvedGroup { mls_group_id },
             } => assert_eq!(mls_group_id, group_id),
             other => panic!("expected unresolved-group refresh reason, got {other:?}"),
         }
         assert!(matches!(
             interpreted_failed,
             RuntimeConversationEventInterpretation::NeedsFullRefresh {
-                reason:
-                    pika_marmot_runtime::runtime::RuntimeConversationRefreshReason::PreviouslyFailed
+                reason: crate::runtime::RuntimeConversationRefreshReason::PreviouslyFailed
             }
         ));
     }
@@ -8918,7 +8903,7 @@ mod tests {
                 &created.group.mls_group_id,
                 hex::encode(created.group.nostr_group_id),
                 &prepared.upload,
-                MediaUploadStatus::Uploaded(pika_marmot_runtime::media::UploadedBlob {
+                MediaUploadStatus::Uploaded(crate::media::UploadedBlob {
                     blossom_server: "https://example.com".to_string(),
                     uploaded_url: "https://example.com/blob".to_string(),
                     descriptor_sha256_hex: hex::encode(prepared.upload.encrypted_hash),
@@ -8985,7 +8970,7 @@ mod tests {
                 &created.group.mls_group_id,
                 hex::encode(created.group.nostr_group_id),
                 &first.upload,
-                MediaUploadStatus::Uploaded(pika_marmot_runtime::media::UploadedBlob {
+                MediaUploadStatus::Uploaded(crate::media::UploadedBlob {
                     blossom_server: "https://example.com".to_string(),
                     uploaded_url: "https://example.com/blob/1".to_string(),
                     descriptor_sha256_hex: hex::encode(first.upload.encrypted_hash),
@@ -8997,7 +8982,7 @@ mod tests {
                 &created.group.mls_group_id,
                 hex::encode(created.group.nostr_group_id),
                 &second.upload,
-                MediaUploadStatus::Uploaded(pika_marmot_runtime::media::UploadedBlob {
+                MediaUploadStatus::Uploaded(crate::media::UploadedBlob {
                     blossom_server: "https://example.com".to_string(),
                     uploaded_url: "https://example.com/blob/2".to_string(),
                     descriptor_sha256_hex: hex::encode(second.upload.encrypted_hash),
@@ -9066,13 +9051,11 @@ mod tests {
             &created.group.mls_group_id,
             hex::encode(created.group.nostr_group_id),
             &prepared.upload,
-            pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(
-                pika_marmot_runtime::media::UploadedBlob {
-                    blossom_server: "https://example.com".to_string(),
-                    uploaded_url: "https://example.com/blob".to_string(),
-                    descriptor_sha256_hex: hex::encode(prepared.upload.encrypted_hash),
-                },
-            ),
+            crate::runtime::MediaUploadStatus::Uploaded(crate::media::UploadedBlob {
+                blossom_server: "https://example.com".to_string(),
+                uploaded_url: "https://example.com/blob".to_string(),
+                descriptor_sha256_hex: hex::encode(prepared.upload.encrypted_hash),
+            }),
         );
         let operation_id = operation.operation_id();
         let completed = operation
@@ -9226,10 +9209,7 @@ mod tests {
                 assert_eq!(rumor.kind, Kind::ChatMessage);
                 assert_eq!(rumor.content, "daemon media caption");
                 assert!(
-                    rumor
-                        .tags
-                        .iter()
-                        .any(pika_marmot_runtime::media::is_imeta_tag),
+                    rumor.tags.iter().any(crate::media::is_imeta_tag),
                     "daemon send_media should publish imeta tags"
                 );
                 let _ = mls_group_id;

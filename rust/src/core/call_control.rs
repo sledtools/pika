@@ -1,19 +1,21 @@
-use super::*;
-use crate::state::CallStatus;
-use pika_marmot_runtime::call::{
+use super::call_support::{
     derive_relay_auth_token as derive_shared_relay_auth_token, DEFAULT_CALL_BROADCAST_PREFIX,
 };
-use pika_marmot_runtime::call_runtime::{
+use super::call_workflow::{
     GroupCallContext, InboundCallPolicy, InboundCallSignalOutcome, InboundSignalContext,
     PendingIncomingCall, PendingOutgoingCall, PreparedAcceptedCall, PreparedCallSignal,
 };
+use super::*;
+use crate::state::CallStatus;
 
-pub(super) use pika_marmot_runtime::call::{
+pub(super) use super::call_support::{
     CallCryptoDeriveContext, CallSessionParams, CallTrackSpec, ParsedCallSignal,
 };
 
 #[cfg(test)]
-use pika_marmot_runtime::call::{parse_call_signal, valid_relay_auth_token};
+use super::call_support::{
+    build_call_signal_json, parse_call_signal, valid_relay_auth_token, OutgoingCallSignal,
+};
 
 /// Type-safe call end reasons. Converted to strings for the UniFFI `CallStatus::Ended { reason }`
 /// and for the wire protocol (`call.end` / `call.reject` signals).
@@ -813,18 +815,18 @@ impl AppCore {
             }
             InboundCallSignalOutcome::IncomingAcceptFailed(failure) => {
                 self.toast(match failure.kind {
-                    pika_marmot_runtime::call_runtime::IncomingAcceptFailureKind::RelayAuth => {
+                    super::call_workflow::IncomingAcceptFailureKind::RelayAuth => {
                         format!("Call relay auth verification failed: {}", failure.error)
                     }
-                    pika_marmot_runtime::call_runtime::IncomingAcceptFailureKind::MediaCrypto => {
+                    super::call_workflow::IncomingAcceptFailureKind::MediaCrypto => {
                         format!("Call media key setup failed: {}", failure.error)
                     }
                 });
                 self.end_call_local(match failure.kind {
-                    pika_marmot_runtime::call_runtime::IncomingAcceptFailureKind::RelayAuth => {
+                    super::call_workflow::IncomingAcceptFailureKind::RelayAuth => {
                         CallEndReason::AuthFailed
                     }
-                    pika_marmot_runtime::call_runtime::IncomingAcceptFailureKind::MediaCrypto => {
+                    super::call_workflow::IncomingAcceptFailureKind::MediaCrypto => {
                         CallEndReason::RuntimeError
                     }
                 });
@@ -857,7 +859,6 @@ impl AppCore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pika_marmot_runtime::call::{build_call_signal_json, OutgoingCallSignal};
 
     #[test]
     fn parses_invite_signal() {

@@ -1,6 +1,8 @@
 mod agent;
 mod call_control;
 mod call_runtime;
+mod call_support;
+mod call_workflow;
 mod chat_media;
 mod chat_media_db;
 pub(crate) mod chat_server;
@@ -55,6 +57,10 @@ use config::RelayRolePlan;
 use conversation_support::{ConversationEvent, RuntimeApplicationMessage, RuntimeGroupUpdate};
 use host_context::{AppApplicationMessageInterpretation, AppConversationEventInterpretation};
 
+use call_support::ParsedCallSignal;
+use call_workflow::{
+    GroupCallContext, InboundCallSignalOutcome, InboundSignalContext, PreparedAcceptedCall,
+};
 use mdk_core::encrypted_media::types::{EncryptedMediaUpload, MediaReference};
 use mdk_core::prelude::{message_types, GroupId, MessageProcessingResult, NostrGroupConfigData};
 use mdk_storage_traits::groups::Pagination;
@@ -71,10 +77,6 @@ pub(crate) use message_support::{
 };
 use outbound_support::{OutboundConversationAction, PreparedConversationAction};
 use pika_chat_server::protocol::{RoomEvent, RoomEventType, WelcomeEnvelope};
-use pika_marmot_runtime::call::ParsedCallSignal;
-use pika_marmot_runtime::call_runtime::{
-    GroupCallContext, InboundCallSignalOutcome, InboundSignalContext, PreparedAcceptedCall,
-};
 use welcome_support::{
     accept_welcome_and_catch_up, create_group_and_plan_welcome_delivery, publish_welcome_rumors,
     GroupWelcomeDeliveryPlan, PlannedGroupCreation,
@@ -7433,6 +7435,10 @@ mod tests {
 
     mod handle_message_processing {
         use super::*;
+        use crate::core::call_support::{
+            build_call_signal_json, CallSessionParams, CallTrackSpec, OutgoingCallSignal,
+            ParsedCallSignal,
+        };
         use crate::core::conversation_support::{
             ConversationEvent, RuntimeApplicationMessage, RuntimeGroupUpdate,
             RuntimeGroupUpdateKind,
@@ -7450,10 +7456,6 @@ mod tests {
             message_types, GroupId, MessageProcessingResult, NostrGroupConfigData,
         };
         use nostr_sdk::prelude::*;
-        use pika_marmot_runtime::call::{
-            build_call_signal_json, CallSessionParams, CallTrackSpec, OutgoingCallSignal,
-            ParsedCallSignal,
-        };
 
         /// Creates a core with a real MDK session and a group in storage.
         /// Returns (core, chat_id_hex, creator_keys, group_id).

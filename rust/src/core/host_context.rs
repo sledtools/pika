@@ -227,7 +227,7 @@ impl<'a> AppHostContext<'a> {
             }
             super::message_support::MessageClassification::CallSignal => {
                 AppApplicationMessageInterpretation::CallSignal {
-                    parsed_signal: pika_marmot_runtime::call::parse_call_signal(
+                    parsed_signal: super::call_support::parse_call_signal(
                         &runtime_msg.message.content,
                     ),
                     message: runtime_msg,
@@ -343,21 +343,25 @@ impl<'a> AppHostContext<'a> {
         session: &call_control::CallSessionParams,
     ) -> Result<
         (
-            pika_marmot_runtime::call_runtime::PendingOutgoingCall,
-            pika_marmot_runtime::call_runtime::PreparedCallSignal,
+            super::call_workflow::PendingOutgoingCall,
+            super::call_workflow::PreparedCallSignal,
         ),
         String,
     > {
-        pika_marmot_runtime::call_runtime::CallWorkflowRuntime::new(&self.session.mdk)
-            .prepare_outgoing_invite(target_id, peer_pubkey_hex, call_id, session)
+        super::call_workflow::CallWorkflowRuntime::new(&self.session.mdk).prepare_outgoing_invite(
+            target_id,
+            peer_pubkey_hex,
+            call_id,
+            session,
+        )
     }
 
     pub(super) fn prepare_accept_incoming_call(
         &self,
-        incoming: &pika_marmot_runtime::call_runtime::PendingIncomingCall,
+        incoming: &super::call_workflow::PendingIncomingCall,
         group: GroupCallContext<'_>,
     ) -> Result<PreparedAcceptedCall, String> {
-        pika_marmot_runtime::call_runtime::CallWorkflowRuntime::new(&self.session.mdk)
+        super::call_workflow::CallWorkflowRuntime::new(&self.session.mdk)
             .prepare_accept_incoming(incoming, group)
     }
 
@@ -365,8 +369,8 @@ impl<'a> AppHostContext<'a> {
         &self,
         call_id: &str,
         reason: &str,
-    ) -> Result<pika_marmot_runtime::call_runtime::PreparedCallSignal, String> {
-        pika_marmot_runtime::call_runtime::CallWorkflowRuntime::new(&self.session.mdk)
+    ) -> Result<super::call_workflow::PreparedCallSignal, String> {
+        super::call_workflow::CallWorkflowRuntime::new(&self.session.mdk)
             .prepare_reject_signal(call_id, reason)
     }
 
@@ -374,8 +378,8 @@ impl<'a> AppHostContext<'a> {
         &self,
         call_id: &str,
         reason: &str,
-    ) -> Result<pika_marmot_runtime::call_runtime::PreparedCallSignal, String> {
-        pika_marmot_runtime::call_runtime::CallWorkflowRuntime::new(&self.session.mdk)
+    ) -> Result<super::call_workflow::PreparedCallSignal, String> {
+        super::call_workflow::CallWorkflowRuntime::new(&self.session.mdk)
             .prepare_end_signal(call_id, reason)
     }
 
@@ -384,7 +388,7 @@ impl<'a> AppHostContext<'a> {
         ctx: InboundSignalContext<'_>,
         signal: ParsedCallSignal,
     ) -> InboundCallSignalOutcome {
-        pika_marmot_runtime::call_runtime::CallWorkflowRuntime::new(&self.session.mdk)
+        super::call_workflow::CallWorkflowRuntime::new(&self.session.mdk)
             .handle_inbound_signal(ctx, signal)
     }
 }

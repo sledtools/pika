@@ -11,6 +11,7 @@ mod host_context;
 mod interop;
 pub(crate) mod media_support;
 pub(crate) mod membership_support;
+mod message_support;
 mod min_version;
 mod outbound_support;
 mod profile;
@@ -60,19 +61,19 @@ use mdk_storage_traits::groups::Pagination;
 use membership_support::{
     EvolutionPublishStatus, MembershipUpdateResult, PreparedMembershipEvolution,
 };
+#[cfg(test)]
+pub(crate) use message_support::TYPING_INDICATOR_KIND;
+use message_support::{
+    classify_message as classify_shared_message, MessageClassification as AppMessageKind,
+};
+pub(crate) use message_support::{
+    CALL_SIGNAL_KIND, HYPERNOTE_ACTION_RESPONSE_KIND, HYPERNOTE_KIND,
+};
 use outbound_support::{OutboundConversationAction, PreparedConversationAction};
 use pika_chat_server::protocol::{RoomEvent, RoomEventType, WelcomeEnvelope};
 use pika_marmot_runtime::call::ParsedCallSignal;
 use pika_marmot_runtime::call_runtime::{
     GroupCallContext, InboundCallSignalOutcome, InboundSignalContext, PreparedAcceptedCall,
-};
-#[cfg(test)]
-pub(crate) use pika_marmot_runtime::message::TYPING_INDICATOR_KIND;
-use pika_marmot_runtime::message::{
-    classify_message as classify_shared_message, MessageClassification as AppMessageKind,
-};
-pub(crate) use pika_marmot_runtime::message::{
-    CALL_SIGNAL_KIND, HYPERNOTE_ACTION_RESPONSE_KIND, HYPERNOTE_KIND,
 };
 use welcome_support::{
     accept_welcome_and_catch_up, create_group_and_plan_welcome_delivery, publish_welcome_rumors,
@@ -7760,7 +7761,7 @@ mod tests {
                 .expect("build call signal");
             let msg = make_test_message(
                 &other.public_key(),
-                pika_marmot_runtime::message::CALL_SIGNAL_KIND,
+                crate::core::CALL_SIGNAL_KIND,
                 &content,
                 &group_id,
                 Tags::new(),

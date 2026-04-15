@@ -159,7 +159,7 @@ pub(crate) fn interpret_processing_result(
 ) -> Option<ConversationEvent> {
     match result {
         MessageProcessingResult::ApplicationMessage(message) => {
-            let classification = pika_marmot_runtime::message::classify_message(
+            let classification = super::message_support::classify_message(
                 message.kind,
                 &message.content,
                 message.tags.iter(),

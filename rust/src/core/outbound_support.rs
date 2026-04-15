@@ -1,9 +1,10 @@
 use anyhow::Result;
 use mdk_storage_traits::GroupId;
 use nostr_sdk::prelude::{Event, EventId, Kind, PublicKey, Tag, TagKind, Timestamp, UnsignedEvent};
-use pika_marmot_runtime::message::TYPING_INDICATOR_KIND;
 
 use crate::mdk_support::PikaMdk;
+
+use super::message_support::TYPING_INDICATOR_KIND;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedConversationTarget {

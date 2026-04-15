@@ -220,12 +220,12 @@ impl<'a> AppHostContext<'a> {
         runtime_msg: RuntimeApplicationMessage,
     ) -> AppApplicationMessageInterpretation {
         match runtime_msg.classification {
-            pika_marmot_runtime::message::MessageClassification::TypingIndicator => {
+            super::message_support::MessageClassification::TypingIndicator => {
                 AppApplicationMessageInterpretation::TypingIndicator {
                     message: runtime_msg,
                 }
             }
-            pika_marmot_runtime::message::MessageClassification::CallSignal => {
+            super::message_support::MessageClassification::CallSignal => {
                 AppApplicationMessageInterpretation::CallSignal {
                     parsed_signal: pika_marmot_runtime::call::parse_call_signal(
                         &runtime_msg.message.content,
@@ -233,15 +233,15 @@ impl<'a> AppHostContext<'a> {
                     message: runtime_msg,
                 }
             }
-            pika_marmot_runtime::message::MessageClassification::Chat
-            | pika_marmot_runtime::message::MessageClassification::Reaction
-            | pika_marmot_runtime::message::MessageClassification::Hypernote
-            | pika_marmot_runtime::message::MessageClassification::HypernoteResponse => {
+            super::message_support::MessageClassification::Chat
+            | super::message_support::MessageClassification::Reaction
+            | super::message_support::MessageClassification::Hypernote
+            | super::message_support::MessageClassification::HypernoteResponse => {
                 AppApplicationMessageInterpretation::Content {
                     message: runtime_msg,
                 }
             }
-            pika_marmot_runtime::message::MessageClassification::GroupProfile => {
+            super::message_support::MessageClassification::GroupProfile => {
                 AppApplicationMessageInterpretation::GroupProfile {
                     message: runtime_msg,
                 }

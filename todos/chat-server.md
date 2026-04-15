@@ -78,6 +78,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   once a chat already has `chat_id -> room_id`, both message publish and membership-commit publish now branch straight to chat-server append/submit without first asking MDK for relay targets they will never use.
 - [x] Route bound group-profile updates through the room log too:
   chat-server mode no longer publishes kind-0 group-profile wrappers only to relays that peers are not subscribed to; bound profile updates now append through the chat server and fixture E2E coverage proves the peer profile cache updates.
+- [x] Route bound call signals through the room log too:
+  chat-server mode now appends call invite/end wrappers through the room log for bound chats, and fixture E2E coverage proves the peer rings and observes remote hangup without relay private-chat subscriptions.
 - Next seam:
   keep cutting the remaining relay/MDK bootstrap assumptions out of the chat-server path, starting with the key-package / welcome bootstrap bits that still lean on MDK-era relay metadata and the larger runtime cut toward OpenMLS.
 - List the first data migrations and config cuts needed in the app:
@@ -150,6 +152,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   in chat-server mode, peers learn profile updates through room sync rather than relay subscriptions that the app intentionally disabled.
 - The chat-server fixture tests now serialize in-process:
   `rust/tests/e2e_messaging.rs` uses a shared mutex so the `chat_server_*` subset can run together without multiple tests fighting over the fixed local chat-server port.
+- Bound call control now follows the same transport split as text/profile updates:
+  `publish_call_signal` appends wrappers through the room log whenever a `chat_id -> room_id` binding exists, and only uses relay publish for unbound / relay-mode calls.
 - The inventory pass confirmed the biggest simplification wins:
   cut `pika-marmot-runtime`, delete `pika-server`'s relay listener path, and replace relay-centric app config early.
 - The v1 routing model is intentionally less Matrix-like:

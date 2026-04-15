@@ -294,7 +294,7 @@ impl AppCore {
         let fallback_relays = self.default_relays();
         let failure_context = super::call_signal_publish_failure_context(kind);
 
-        let (client, wrapper, relays) = {
+        let (client, wrapper, room_binding, relays) = {
             let Some(sess) = self.session.as_mut() else {
                 return Err("no active session".to_string());
             };
@@ -315,18 +315,19 @@ impl AppCore {
                 .create_message(&group.mls_group_id, rumor)
                 .map_err(|e| format!("encrypt call signal failed: {e}"))?;
 
-            let relays: Vec<RelayUrl> = if network_enabled {
+            let room_binding = self.chat_server_rooms.get(chat_id).cloned();
+            let relays: Vec<RelayUrl> = if room_binding.is_some() || !network_enabled {
+                Vec::new()
+            } else {
                 sess.mdk
                     .get_relays(&group.mls_group_id)
                     .ok()
                     .map(|s| s.into_iter().collect())
                     .filter(|v: &Vec<RelayUrl>| !v.is_empty())
                     .unwrap_or_else(|| fallback_relays.clone())
-            } else {
-                vec![]
             };
 
-            (sess.client.clone(), wrapper, relays)
+            (sess.client.clone(), wrapper, room_binding, relays)
         };
 
         if !network_enabled {
@@ -335,7 +336,78 @@ impl AppCore {
 
         let tx = self.core_sender.clone();
         let chat_id = chat_id.to_string();
+        let http_client = self.http_client.clone();
         self.runtime.spawn(async move {
+            if let Some(binding) = room_binding {
+                let room_id = binding.room_id.clone();
+                let base_url = match Url::parse(&binding.server_url) {
+                    Ok(url) => url,
+                    Err(err) => {
+                        let operation = RuntimeOperationEvent::complete_call_signal_publish(
+                            kind,
+                            chat_id,
+                            signal,
+                            pika_marmot_runtime::runtime::CallSignalPublishStatus::PublishFailed {
+                                wrapper_event_id: wrapper.id,
+                                error: format!("invalid chat server URL: {err}"),
+                            },
+                        );
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::CallSignalPublishOperation { operation },
+                        )));
+                        return;
+                    }
+                };
+
+                match chat_server::append_wrapped_room_event(
+                    &http_client,
+                    &client,
+                    &base_url,
+                    &room_id,
+                    RoomEventType::ApplicationMessage,
+                    &wrapper,
+                )
+                .await
+                {
+                    Ok(appended) => {
+                        let operation = RuntimeOperationEvent::complete_call_signal_publish(
+                            kind,
+                            chat_id.clone(),
+                            signal,
+                            pika_marmot_runtime::runtime::CallSignalPublishStatus::Published {
+                                wrapper_event_id: wrapper.id,
+                            },
+                        );
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::CallSignalPublishOperation { operation },
+                        )));
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::ChatServerRoomEventAppended {
+                                chat_id,
+                                room_id,
+                                seq: appended.seq,
+                                wrapper,
+                            },
+                        )));
+                    }
+                    Err(err) => {
+                        let operation = RuntimeOperationEvent::complete_call_signal_publish(
+                            kind,
+                            chat_id,
+                            signal,
+                            pika_marmot_runtime::runtime::CallSignalPublishStatus::PublishFailed {
+                                wrapper_event_id: wrapper.id,
+                                error: err.to_string(),
+                            },
+                        );
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::CallSignalPublishOperation { operation },
+                        )));
+                    }
+                }
+                return;
+            }
+
             let outcome = super::relay_publish::publish_event_with_retry(
                 &client,
                 &relays,

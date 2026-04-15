@@ -492,6 +492,109 @@ fn chat_server_group_profile_updates_reach_peer_profile_cache() {
 }
 
 #[test]
+fn chat_server_call_end_signal_is_received_by_peer() {
+    let _guard = chat_server_test_guard();
+    let infra = support::TestInfra::start_relay_and_chat_server();
+    let chat_server_url = infra.chat_server_url.as_ref().expect("chat_server_url");
+
+    let dir_a = tempdir().unwrap();
+    let dir_b = tempdir().unwrap();
+    write_config_with_chat_server(
+        &dir_a.path().to_string_lossy(),
+        &infra.relay_url,
+        chat_server_url,
+    );
+    write_config_with_chat_server(
+        &dir_b.path().to_string_lossy(),
+        &infra.relay_url,
+        chat_server_url,
+    );
+
+    let alice = FfiApp::new(
+        dir_a.path().to_string_lossy().to_string(),
+        String::new(),
+        String::new(),
+    );
+    let bob = FfiApp::new(
+        dir_b.path().to_string_lossy().to_string(),
+        String::new(),
+        String::new(),
+    );
+
+    alice.dispatch(AppAction::CreateAccount);
+    bob.dispatch(AppAction::CreateAccount);
+    wait_until("alice logged in", Duration::from_secs(10), || {
+        matches!(alice.state().auth, AuthState::LoggedIn { .. })
+    });
+    wait_until("bob logged in", Duration::from_secs(10), || {
+        matches!(bob.state().auth, AuthState::LoggedIn { .. })
+    });
+
+    let bob_npub = match bob.state().auth {
+        AuthState::LoggedIn { npub, .. } => npub,
+        _ => unreachable!(),
+    };
+
+    let chat_id = create_chat_server_dm_and_open(&alice, &bob_npub, Duration::from_secs(30));
+    wait_until("bob sees chat", Duration::from_secs(45), || {
+        bob.state()
+            .chat_list
+            .iter()
+            .any(|chat| chat.chat_id == chat_id)
+    });
+
+    alice.dispatch(AppAction::StartCall {
+        chat_id: chat_id.clone(),
+    });
+    wait_until("alice offering", Duration::from_secs(10), || {
+        alice
+            .state()
+            .active_call
+            .as_ref()
+            .map(|call| matches!(call.status, CallStatus::Offering))
+            .unwrap_or(false)
+    });
+    wait_until("bob ringing", Duration::from_secs(15), || {
+        bob.state()
+            .active_call
+            .as_ref()
+            .map(|call| matches!(call.status, CallStatus::Ringing))
+            .unwrap_or(false)
+    });
+
+    alice.dispatch(AppAction::EndCall);
+    wait_until("alice call ended", Duration::from_secs(10), || {
+        alice
+            .state()
+            .active_call
+            .as_ref()
+            .map(|call| matches!(call.status, CallStatus::Ended { .. }))
+            .unwrap_or(false)
+    });
+    wait_until(
+        "bob call ended by peer hangup",
+        Duration::from_secs(15),
+        || {
+            bob.state()
+                .active_call
+                .as_ref()
+                .map(|call| matches!(call.status, CallStatus::Ended { .. }))
+                .unwrap_or(false)
+        },
+    );
+
+    let bob_reason = bob
+        .state()
+        .active_call
+        .as_ref()
+        .and_then(|call| match &call.status {
+            CallStatus::Ended { reason } => Some(reason.clone()),
+            _ => None,
+        });
+    assert_eq!(bob_reason.as_deref(), Some("user_hangup"));
+}
+
+#[test]
 fn call_invite_with_invalid_relay_auth_is_rejected() {
     let infra = support::TestInfra::start_relay();
 

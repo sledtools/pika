@@ -4429,7 +4429,8 @@ impl AppCore {
             return;
         }
 
-        let welcome = match sess.mdk.process_welcome(&wrapper.id, &rumor) {
+        let welcome = match pika_mls::welcome::stage_pending_welcome(&sess.mdk, &wrapper.id, &rumor)
+        {
             Ok(w) => w,
             Err(e) => {
                 tracing::error!(%e, "process_welcome failed");
@@ -10904,13 +10905,12 @@ mod tests {
                 "app accepts welcome immediately on receipt"
             );
             assert!(
-                core.session
-                    .as_ref()
-                    .expect("session")
-                    .mdk
-                    .get_pending_welcomes(None)
-                    .expect("pending welcomes")
-                    .is_empty(),
+                pika_mls::welcome::WelcomeQueries::new(
+                    &core.session.as_ref().expect("session").mdk
+                )
+                .list_pending_welcomes()
+                .expect("pending welcomes")
+                .is_empty(),
                 "app should not leave the welcome staged after eager accept"
             );
 
@@ -10931,13 +10931,12 @@ mod tests {
                 "re-delivered welcomes should not create duplicate active groups"
             );
             assert!(
-                core.session
-                    .as_ref()
-                    .expect("session")
-                    .mdk
-                    .get_pending_welcomes(None)
-                    .expect("pending welcomes")
-                    .is_empty(),
+                pika_mls::welcome::WelcomeQueries::new(
+                    &core.session.as_ref().expect("session").mdk
+                )
+                .list_pending_welcomes()
+                .expect("pending welcomes")
+                .is_empty(),
                 "re-delivered welcomes should stay skipped once the group is active"
             );
         }
@@ -11019,7 +11018,7 @@ mod tests {
 
         #[test]
         fn app_pending_welcome_queries_use_shared_runtime_helper() {
-            let (mut core, inviter_dir, invitee_keys) = make_logged_in_core();
+            let (core, inviter_dir, invitee_keys) = make_logged_in_core();
             let inviter_keys = Keys::generate();
             let inviter_mdk = crate::mdk_support::open_mdk(
                 &inviter_dir.path().join("inviter").to_string_lossy(),
@@ -11062,11 +11061,8 @@ mod tests {
                     .expect("gift wrap")
                 });
 
-            core.session
-                .as_mut()
-                .expect("session")
-                .mdk
-                .process_welcome(&wrapper.id, &welcome_rumor)
+            let session = core.session.as_ref().expect("session");
+            pika_mls::welcome::stage_pending_welcome(&session.mdk, &wrapper.id, &welcome_rumor)
                 .expect("process welcome");
 
             let host = core.host_context().expect("host context");

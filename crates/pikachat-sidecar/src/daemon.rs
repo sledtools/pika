@@ -5912,8 +5912,7 @@ mod tests {
                 .await
                 .expect("build giftwrap")
             });
-        invitee_mdk
-            .process_welcome(&wrapper.id, &welcome_rumor)
+        crate::welcome::stage_pending_welcome(&invitee_mdk, &wrapper.id, &welcome_rumor)
             .expect("process welcome");
 
         let signer: Arc<dyn NostrSigner> = Arc::new(invitee_keys.clone());
@@ -7231,8 +7230,8 @@ mod tests {
             .expect("welcome should ingest");
 
         let invitee_client = Client::builder().signer(invitee_keys.clone()).build();
-        let pending = invitee_mdk
-            .get_pending_welcomes(None)
+        let pending = pika_mls::welcome::WelcomeQueries::new(&invitee_mdk)
+            .list_pending_welcomes()
             .expect("get pending welcomes");
         let welcome = pending.first().expect("pending welcome");
         let mut seen_group_events = HashSet::new();
@@ -7342,8 +7341,8 @@ mod tests {
             .expect("welcome should ingest");
 
         let invitee_client = Client::builder().signer(invitee_keys.clone()).build();
-        let pending = invitee_mdk
-            .get_pending_welcomes(None)
+        let pending = pika_mls::welcome::WelcomeQueries::new(&invitee_mdk)
+            .list_pending_welcomes()
             .expect("get pending welcomes");
         let welcome = pending.first().expect("pending welcome");
         let mut seen_group_events = HashSet::new();
@@ -7786,8 +7785,8 @@ mod tests {
             .expect("ingest welcome")
             .expect("welcome should ingest");
 
-        let pending = invitee_mdk
-            .get_pending_welcomes(None)
+        let pending = pika_mls::welcome::WelcomeQueries::new(&invitee_mdk)
+            .list_pending_welcomes()
             .expect("get pending welcomes");
         let welcome = pending.first().expect("pending welcome");
         let mut seen_group_events = HashSet::new();
@@ -7812,8 +7811,8 @@ mod tests {
             "empty relay list should keep daemon wrapper catch-up narrow in tests"
         );
         assert!(
-            invitee_mdk
-                .get_pending_welcomes(None)
+            pika_mls::welcome::WelcomeQueries::new(&invitee_mdk)
+                .list_pending_welcomes()
                 .expect("get pending welcomes")
                 .is_empty(),
             "shared daemon helper should clear the pending welcome"

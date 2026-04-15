@@ -422,12 +422,14 @@ mod tests {
                 .expect("ingest welcome")
                 .expect("welcome should ingest");
             });
-        let pending = invitee_mdk
-            .get_pending_welcomes(None)
+        let pending = pika_mls::welcome::WelcomeQueries::new(&invitee_mdk)
+            .list_pending_welcomes()
             .expect("get pending welcomes");
-        invitee_mdk
-            .accept_welcome(pending.first().expect("pending welcome"))
-            .expect("accept welcome");
+        pika_mls::welcome::accept_pending_welcome(
+            &invitee_mdk,
+            pending.first().expect("pending welcome"),
+        )
+        .expect("accept welcome");
 
         let call_id = "call-runtime-test";
         let mut session = CallSessionParams {

@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use nostr::{
     Event, EventBuilder, EventId, Keys, Kind, NostrSigner, PublicKey, RelayUrl, Tag, Timestamp,
     UnsignedEvent,
@@ -102,6 +102,23 @@ pub fn accept_pending_welcome(mdk: &PikaMdk, welcome: &Welcome) -> Result<()> {
     mdk.accept_welcome(welcome).context("accept welcome")
 }
 
+pub fn stage_pending_welcome(
+    mdk: &PikaMdk,
+    wrapper_event_id: &EventId,
+    rumor: &UnsignedEvent,
+) -> Result<Welcome> {
+    if rumor.kind != Kind::MlsWelcome {
+        return Err(anyhow!("rumor is not an MLS welcome"));
+    }
+
+    mdk.process_welcome(wrapper_event_id, rumor)
+        .context("process welcome rumor")?;
+
+    WelcomeQueries::new(mdk)
+        .lookup_pending_welcome(wrapper_event_id)?
+        .ok_or_else(|| anyhow!("pending welcome missing after process"))
+}
+
 pub fn ingest_unwrapped_welcome<F>(
     mdk: &PikaMdk,
     wrapper_event_id: &EventId,
@@ -121,19 +138,9 @@ where
         return Ok(None);
     }
 
-    mdk.process_welcome(wrapper_event_id, rumor)
-        .context("process welcome rumor")?;
-
-    let pending = mdk
-        .get_pending_welcomes(None)
-        .context("get pending welcomes")?;
-    let stored = pending
-        .into_iter()
-        .find(|welcome| welcome.wrapper_event_id == *wrapper_event_id);
-    let (nostr_group_id_hex, group_name) = match stored {
-        Some(welcome) => (hex::encode(welcome.nostr_group_id), welcome.group_name),
-        None => (String::new(), String::new()),
-    };
+    let stored = stage_pending_welcome(mdk, wrapper_event_id, rumor)?;
+    let nostr_group_id_hex = hex::encode(stored.nostr_group_id);
+    let group_name = stored.group_name;
 
     Ok(Some(IngestedWelcome {
         wrapper_event_id: *wrapper_event_id,

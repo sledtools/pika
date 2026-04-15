@@ -7,7 +7,7 @@ use pika_mls::prelude::NostrGroupConfigData;
 pub use pika_mls::welcome::{
     CreatedGroup, GroupWelcomeDeliveryPlan, IngestedWelcome, PendingWelcomeSnapshot,
     PlannedGroupCreation, PublishedWelcome, accept_pending_welcome, find_pending_welcome,
-    find_pending_welcome_index, take_pending_welcome,
+    find_pending_welcome_index, stage_pending_welcome, take_pending_welcome,
 };
 use pika_mls::welcome::{
     WelcomeQueries, accept_pending_welcome as shared_accept_pending_welcome,
@@ -249,8 +249,8 @@ mod tests {
                     .expect("welcome should ingest");
             });
 
-        let mut pending = invitee_mdk
-            .get_pending_welcomes(None)
+        let mut pending = WelcomeQueries::new(&invitee_mdk)
+            .list_pending_welcomes()
             .expect("get pending welcomes");
 
         let by_wrapper = find_pending_welcome(&pending, &wrapper.id).expect("match wrapper id");
@@ -395,8 +395,8 @@ mod tests {
                     .expect("welcome should ingest");
             });
 
-        let pending = invitee_mdk
-            .get_pending_welcomes(None)
+        let pending = WelcomeQueries::new(&invitee_mdk)
+            .list_pending_welcomes()
             .expect("get pending welcomes");
         let welcome = pending.first().expect("pending welcome");
         let mut seen = HashSet::new();
@@ -427,8 +427,8 @@ mod tests {
             "empty relay list should preserve manual/narrow host behavior"
         );
         assert!(
-            invitee_mdk
-                .get_pending_welcomes(None)
+            WelcomeQueries::new(&invitee_mdk)
+                .list_pending_welcomes()
                 .expect("get pending welcomes")
                 .is_empty(),
             "accept should clear the pending welcome"
@@ -494,8 +494,8 @@ mod tests {
         );
         assert_eq!(ingested.group_name, "Runtime ingest test");
 
-        let pending = invitee_mdk
-            .get_pending_welcomes(None)
+        let pending = WelcomeQueries::new(&invitee_mdk)
+            .list_pending_welcomes()
             .expect("get pending welcomes");
         assert_eq!(pending.len(), 1, "ingest should stage exactly one welcome");
         assert_eq!(

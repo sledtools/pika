@@ -1,11 +1,17 @@
+use std::collections::HashSet;
+use std::time::Duration;
+
 use anyhow::{anyhow, Context, Result};
-use mdk_core::prelude::GroupId;
+use mdk_core::prelude::{GroupId, MessageProcessingResult};
 use mdk_storage_traits::{
     groups::{types::Group, Pagination},
     messages::types::Message,
 };
-use nostr_sdk::prelude::{PublicKey, RelayUrl, Timestamp};
+use nostr_sdk::prelude::{
+    Alphabet, Client, Event, EventId, Filter, Kind, PublicKey, RelayUrl, SingleLetterTag, Timestamp,
+};
 
+use super::AppMessageKind;
 use crate::mdk_support::PikaMdk;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +53,38 @@ impl JoinedGroupSnapshot {
             .iter()
             .any(|member| member.pubkey == *pubkey && member.is_admin)
     }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RuntimeApplicationMessage {
+    pub nostr_group_id_hex: String,
+    pub classification: AppMessageKind,
+    pub message: Message,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum RuntimeGroupUpdateKind {
+    Proposal,
+    PendingProposal,
+    IgnoredProposal,
+    ExternalJoinProposal,
+    Commit,
+    Unprocessable,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RuntimeGroupUpdate {
+    pub mls_group_id: GroupId,
+    pub nostr_group_id_hex: String,
+    pub kind: RuntimeGroupUpdateKind,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ConversationEvent {
+    Application(Box<RuntimeApplicationMessage>),
+    GroupUpdate(RuntimeGroupUpdate),
+    UnresolvedGroup { mls_group_id: GroupId },
+    PreviouslyFailed,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -105,6 +143,95 @@ pub(crate) fn load_message_page(
     })
 }
 
+pub(crate) fn process_event(mdk: &PikaMdk, event: &Event) -> Result<Option<ConversationEvent>> {
+    if event.kind != Kind::MlsGroupMessage {
+        return Ok(None);
+    }
+    let result = mdk
+        .process_message(event)
+        .context("process group message")?;
+    Ok(interpret_processing_result(mdk, result))
+}
+
+pub(crate) fn interpret_processing_result(
+    mdk: &PikaMdk,
+    result: MessageProcessingResult,
+) -> Option<ConversationEvent> {
+    match result {
+        MessageProcessingResult::ApplicationMessage(message) => {
+            let classification = pika_marmot_runtime::message::classify_message(
+                message.kind,
+                &message.content,
+                message.tags.iter(),
+            )?;
+            let nostr_group_id_hex =
+                nostr_group_id_hex_for_mls_group_id(mdk, &message.mls_group_id)
+                    .ok()
+                    .flatten()?;
+            Some(ConversationEvent::Application(Box::new(
+                RuntimeApplicationMessage {
+                    nostr_group_id_hex,
+                    classification,
+                    message,
+                },
+            )))
+        }
+        MessageProcessingResult::Proposal(update) => group_update(
+            mdk,
+            update.mls_group_id.clone(),
+            RuntimeGroupUpdateKind::Proposal,
+        ),
+        MessageProcessingResult::PendingProposal { mls_group_id } => {
+            group_update(mdk, mls_group_id, RuntimeGroupUpdateKind::PendingProposal)
+        }
+        MessageProcessingResult::IgnoredProposal { mls_group_id, .. } => {
+            group_update(mdk, mls_group_id, RuntimeGroupUpdateKind::IgnoredProposal)
+        }
+        MessageProcessingResult::ExternalJoinProposal { mls_group_id } => group_update(
+            mdk,
+            mls_group_id,
+            RuntimeGroupUpdateKind::ExternalJoinProposal,
+        ),
+        MessageProcessingResult::Commit { mls_group_id } => {
+            group_update(mdk, mls_group_id, RuntimeGroupUpdateKind::Commit)
+        }
+        MessageProcessingResult::Unprocessable { mls_group_id } => {
+            group_update(mdk, mls_group_id, RuntimeGroupUpdateKind::Unprocessable)
+        }
+        MessageProcessingResult::PreviouslyFailed => Some(ConversationEvent::PreviouslyFailed),
+    }
+}
+
+pub(crate) async fn ingest_backlog_messages(
+    mdk: &PikaMdk,
+    client: &Client,
+    relay_urls: &[RelayUrl],
+    nostr_group_id_hex: &str,
+    seen: &mut HashSet<EventId>,
+    limit: usize,
+) -> Result<Vec<Message>> {
+    let filter = Filter::new()
+        .kind(Kind::MlsGroupMessage)
+        .custom_tag(SingleLetterTag::lowercase(Alphabet::H), nostr_group_id_hex)
+        .limit(limit);
+
+    let events = client
+        .fetch_events_from(relay_urls.to_vec(), filter, Duration::from_secs(10))
+        .await
+        .context("fetch group backlog")?;
+
+    let mut messages = Vec::new();
+    for event in events.iter() {
+        if !seen.insert(event.id) {
+            continue;
+        }
+        if let Some(ConversationEvent::Application(message)) = process_event(mdk, event)? {
+            messages.push(message.message);
+        }
+    }
+    Ok(messages)
+}
+
 fn find_group(mdk: &PikaMdk, nostr_group_id_hex: &str) -> Result<Group> {
     let group_id_bytes =
         hex::decode(nostr_group_id_hex).map_err(|_| anyhow!("nostr_group_id must be hex"))?;
@@ -120,6 +247,33 @@ fn find_group(mdk: &PikaMdk, nostr_group_id_hex: &str) -> Result<Group> {
 
 fn mls_group_id_for_nostr_group_id(mdk: &PikaMdk, nostr_group_id_hex: &str) -> Result<GroupId> {
     Ok(find_group(mdk, nostr_group_id_hex)?.mls_group_id)
+}
+
+fn nostr_group_id_hex_for_mls_group_id(
+    mdk: &PikaMdk,
+    mls_group_id: &GroupId,
+) -> Result<Option<String>> {
+    Ok(mdk
+        .get_group(mls_group_id)?
+        .map(|group| hex::encode(group.nostr_group_id)))
+}
+
+fn group_update(
+    mdk: &PikaMdk,
+    mls_group_id: GroupId,
+    kind: RuntimeGroupUpdateKind,
+) -> Option<ConversationEvent> {
+    let Some(nostr_group_id_hex) = nostr_group_id_hex_for_mls_group_id(mdk, &mls_group_id)
+        .ok()
+        .flatten()
+    else {
+        return Some(ConversationEvent::UnresolvedGroup { mls_group_id });
+    };
+    Some(ConversationEvent::GroupUpdate(RuntimeGroupUpdate {
+        mls_group_id,
+        nostr_group_id_hex,
+        kind,
+    }))
 }
 
 fn joined_group_snapshot(mdk: &PikaMdk, group: Group) -> Result<JoinedGroupSnapshot> {

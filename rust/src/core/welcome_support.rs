@@ -192,16 +192,17 @@ where
 
     if !relay_urls.is_empty() {
         let nostr_group_id_hex = hex::encode(welcome.nostr_group_id);
-        let _ingested_messages: Vec<StoredMessage> = pika_marmot_runtime::ingest_group_backlog(
-            mdk,
-            client,
-            relay_urls,
-            &nostr_group_id_hex,
-            seen,
-            limit,
-        )
-        .await
-        .context("ingest accepted welcome backlog")?;
+        let _ingested_messages: Vec<StoredMessage> =
+            super::conversation_support::ingest_backlog_messages(
+                mdk,
+                client,
+                relay_urls,
+                &nostr_group_id_hex,
+                seen,
+                limit,
+            )
+            .await
+            .context("ingest accepted welcome backlog")?;
     }
 
     Ok(())

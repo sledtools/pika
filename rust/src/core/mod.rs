@@ -49,6 +49,7 @@ use crate::state::{
 };
 use crate::updates::{AppUpdate, CallSignalPublishKind, CoreMsg, InternalEvent};
 use config::RelayRolePlan;
+use conversation_support::{ConversationEvent, RuntimeApplicationMessage, RuntimeGroupUpdate};
 use host_context::{AppApplicationMessageInterpretation, AppConversationEventInterpretation};
 
 use mdk_core::encrypted_media::types::{EncryptedMediaUpload, MediaReference};
@@ -58,9 +59,6 @@ use pika_chat_server::protocol::{RoomEvent, RoomEventType, WelcomeEnvelope};
 use pika_marmot_runtime::call::ParsedCallSignal;
 use pika_marmot_runtime::call_runtime::{
     GroupCallContext, InboundCallSignalOutcome, InboundSignalContext, PreparedAcceptedCall,
-};
-use pika_marmot_runtime::conversation::{
-    ConversationEvent, RuntimeApplicationMessage, RuntimeGroupUpdate,
 };
 use pika_marmot_runtime::membership::{EvolutionPublishStatus, PreparedMembershipEvolution};
 #[cfg(test)]
@@ -5426,7 +5424,6 @@ impl AppCore {
             return;
         };
         self.handle_runtime_application_message(RuntimeApplicationMessage {
-            mls_group_id: msg.mls_group_id.clone(),
             nostr_group_id_hex: chat_id.to_string(),
             classification,
             message: msg,
@@ -7431,6 +7428,10 @@ mod tests {
 
     mod handle_message_processing {
         use super::*;
+        use crate::core::conversation_support::{
+            ConversationEvent, RuntimeApplicationMessage, RuntimeGroupUpdate,
+            RuntimeGroupUpdateKind,
+        };
         use crate::core::host_context::{
             AppApplicationMessageInterpretation, AppConversationEventInterpretation,
             AppConversationRefreshReason,
@@ -7444,10 +7445,6 @@ mod tests {
         use pika_marmot_runtime::call::{
             build_call_signal_json, CallSessionParams, CallTrackSpec, OutgoingCallSignal,
             ParsedCallSignal,
-        };
-        use pika_marmot_runtime::conversation::{
-            ConversationEvent, RuntimeApplicationMessage, RuntimeGroupUpdate,
-            RuntimeGroupUpdateKind,
         };
         use pika_marmot_runtime::message::TYPING_INDICATOR_KIND;
         use pika_marmot_runtime::outbound::OutboundConversationAction;
@@ -7764,7 +7761,6 @@ mod tests {
                 Tags::new(),
             );
             let runtime_msg = RuntimeApplicationMessage {
-                mls_group_id: msg.mls_group_id.clone(),
                 nostr_group_id_hex: chat_id,
                 classification: crate::core::AppMessageKind::CallSignal,
                 message: msg,

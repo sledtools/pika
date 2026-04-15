@@ -198,8 +198,7 @@ impl<'a> AppHostContext<'a> {
         &self,
         event: Event,
     ) -> anyhow::Result<Option<ConversationEvent>> {
-        pika_marmot_runtime::conversation::ConversationRuntime::new(&self.session.mdk)
-            .process_event(&event)
+        super::conversation_support::process_event(&self.session.mdk, &event)
     }
 
     pub(super) fn interpret_application_message(
@@ -247,7 +246,7 @@ impl<'a> AppHostContext<'a> {
             ConversationEvent::GroupUpdate(update) => {
                 let is_commit = matches!(
                     update.kind,
-                    pika_marmot_runtime::conversation::RuntimeGroupUpdateKind::Commit
+                    super::conversation_support::RuntimeGroupUpdateKind::Commit
                 );
                 AppConversationEventInterpretation::GroupUpdate { update, is_commit }
             }
@@ -268,8 +267,7 @@ impl<'a> AppHostContext<'a> {
         &self,
         result: MessageProcessingResult,
     ) -> Option<ConversationEvent> {
-        pika_marmot_runtime::conversation::ConversationRuntime::new(&self.session.mdk)
-            .interpret_processing_result(result)
+        super::conversation_support::interpret_processing_result(&self.session.mdk, result)
     }
 
     pub(super) fn prepare_upload(

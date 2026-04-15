@@ -4111,7 +4111,10 @@ impl AppCore {
             };
 
             // Validate peer key package before use (spec-v2).
-            if let Err(e) = sess.mdk.parse_key_package(&kp_event) {
+            if let Err(e) = membership_support::validate_key_package_events(
+                &sess.mdk,
+                std::slice::from_ref(&kp_event),
+            ) {
                 self.fail_direct_chat_creation(format!(
                     "Invalid peer key package: {e}. If this is a Marmot/WhiteNoise interop peer, ensure it publishes MIP-00 compliant tags (mls_protocol_version=1.0, encoding=base64)."
                 ));
@@ -4649,12 +4652,10 @@ impl AppCore {
                 return;
             };
 
-            for ev in &kp_events {
-                if let Err(e) = sess.mdk.parse_key_package(ev) {
-                    self.set_busy(|b| b.creating_chat = false);
-                    self.toast(format!("Invalid key package: {e}"));
-                    return;
-                }
+            if let Err(e) = membership_support::validate_key_package_events(&sess.mdk, &kp_events) {
+                self.set_busy(|b| b.creating_chat = false);
+                self.toast(format!("Invalid key package: {e}"));
+                return;
             }
 
             let admins = vec![sess.pubkey];
@@ -4707,7 +4708,9 @@ impl AppCore {
         if let EvolutionPublishStatus::PublishFailed(ref error) = publish_status {
             if prepared.stale_epoch_conflict || Self::is_chat_server_epoch_conflict(error) {
                 if let Some(sess) = self.session.as_ref() {
-                    if let Err(clear_err) = sess.mdk.clear_pending_commit(&prepared.mls_group_id) {
+                    if let Err(clear_err) =
+                        membership_support::clear_pending_commit(&sess.mdk, &prepared.mls_group_id)
+                    {
                         tracing::warn!(
                             error = %clear_err,
                             chat_id = %prepared.nostr_group_id_hex,
@@ -6662,20 +6665,11 @@ impl AppCore {
                 };
 
                 let update = pika_mls::prelude::NostrGroupDataUpdate::new().name(name);
-                let result = match sess.mdk.update_group_data(&entry.mls_group_id, update) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        self.toast(format!("Rename failed: {e}"));
-                        return;
-                    }
-                };
 
-                let prepared = match sess.host_context().prepare_evolution(
-                    entry.mls_group_id.clone(),
-                    result.evolution_event,
-                    None,
-                    vec![],
-                ) {
+                let prepared = match sess
+                    .host_context()
+                    .prepare_group_data_update(&entry.mls_group_id, update)
+                {
                     Ok(prepared) => prepared,
                     Err(e) => {
                         self.toast(format!("Rename failed: {e}"));

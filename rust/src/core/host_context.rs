@@ -176,22 +176,6 @@ impl<'a> AppHostContext<'a> {
         )
     }
 
-    pub(super) fn prepare_evolution(
-        &self,
-        mls_group_id: GroupId,
-        evolution_event: Event,
-        welcome_rumors: Option<Vec<UnsignedEvent>>,
-        added_pubkeys: Vec<PublicKey>,
-    ) -> anyhow::Result<PreparedMembershipEvolution> {
-        super::membership_support::prepare_evolution(
-            &self.session.mdk,
-            mls_group_id,
-            evolution_event,
-            welcome_rumors,
-            added_pubkeys,
-        )
-    }
-
     pub(super) fn prepare_remove_members(
         &self,
         mls_group_id: &GroupId,
@@ -209,6 +193,18 @@ impl<'a> AppHostContext<'a> {
         mls_group_id: &GroupId,
     ) -> anyhow::Result<PreparedMembershipEvolution> {
         super::membership_support::prepare_leave_group(&self.session.mdk, mls_group_id)
+    }
+
+    pub(super) fn prepare_group_data_update(
+        &self,
+        mls_group_id: &GroupId,
+        update: pika_mls::prelude::NostrGroupDataUpdate,
+    ) -> anyhow::Result<PreparedMembershipEvolution> {
+        super::membership_support::prepare_group_data_update(
+            &self.session.mdk,
+            mls_group_id,
+            update,
+        )
     }
 
     pub(super) fn complete_membership_evolution_operation(

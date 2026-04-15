@@ -4,6 +4,7 @@ use anyhow::{Context, Result, anyhow};
 use nostr::{Event, PublicKey, UnsignedEvent};
 
 use crate::PikaMdk;
+use crate::prelude::NostrGroupDataUpdate;
 use crate::storage_traits::GroupId;
 
 #[derive(Debug, Clone)]
@@ -79,11 +80,7 @@ impl<'a> MembershipRuntime<'a> {
         mls_group_id: &GroupId,
         key_package_events: &[Event],
     ) -> Result<PreparedMembershipEvolution> {
-        for event in key_package_events {
-            self.mdk
-                .parse_key_package(event)
-                .context("parse key package")?;
-        }
+        validate_key_package_events(self.mdk, key_package_events)?;
 
         let result = self
             .mdk
@@ -170,6 +167,24 @@ impl<'a> MembershipRuntime<'a> {
         })
     }
 
+    pub fn prepare_group_data_update(
+        &self,
+        mls_group_id: &GroupId,
+        update: NostrGroupDataUpdate,
+    ) -> Result<PreparedMembershipEvolution> {
+        let result = self
+            .mdk
+            .update_group_data(mls_group_id, update)
+            .context("update group data")?;
+
+        self.prepare_evolution(
+            mls_group_id.clone(),
+            result.evolution_event,
+            None,
+            Vec::new(),
+        )
+    }
+
     pub fn finalize_published_evolution(
         &self,
         prepared: PreparedMembershipEvolution,
@@ -210,6 +225,18 @@ impl<'a> MembershipRuntime<'a> {
             transport_applied_membership,
         }
     }
+}
+
+pub fn validate_key_package_events(mdk: &PikaMdk, key_package_events: &[Event]) -> Result<()> {
+    for event in key_package_events {
+        mdk.parse_key_package(event).context("parse key package")?;
+    }
+    Ok(())
+}
+
+pub fn clear_pending_commit(mdk: &PikaMdk, mls_group_id: &GroupId) -> Result<()> {
+    mdk.clear_pending_commit(mls_group_id)
+        .context("clear pending commit")
 }
 
 impl PreparedMembershipEvolution {

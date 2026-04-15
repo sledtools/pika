@@ -134,8 +134,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   welcome ingest/giftwrap unwrap, welcome rumor publish planning, and group-create welcome delivery now live in `crates/pika-mls/src/welcome.rs`, while `pika_core` and `pikachat-sidecar` keep only the narrow accept-path wrappers that still differ in backlog catch-up and return shape.
 - [x] Move the duplicated membership evolution helpers into `pika-mls`:
   `crates/pika-mls/src/membership.rs` now owns membership-evolution prep/finalize types and logic, `pika_core` and `pikachat-sidecar` only keep thin wrapper traits for their local publish outcomes, and the app now routes remove-member / leave-group prep through that same shared boundary instead of calling raw MDK directly in `core/mod.rs`.
+- [x] Collapse the first remaining raw `PikaMdk` mutation helpers behind that shared boundary:
+  key-package validation, group-data update prep, and stale pending-commit cleanup now route through `crates/pika-mls/src/membership.rs`, so `pika_core` no longer calls `parse_key_package`, `update_group_data`, or `clear_pending_commit` directly in its main private-chat flows.
 - Next seam:
-  collapse the remaining raw `PikaMdk` mutation escape hatches from the inside, starting with group-data updates, pending-commit abort/clear helpers, and direct key-package validation paths.
+  keep shrinking the raw `PikaMdk` surface from inside `pika-mls`, starting with the remaining message/welcome escape hatches and any direct MDK consumers outside app/sidecar.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
 
@@ -240,6 +242,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   Shared welcome workflow helpers now live in `pika-mls`, so the next honest seam is membership mutation prep/finalize logic rather than keeping near-copy helpers in app and sidecar code.
 - That membership seam is now shared too.
   The next useful deletions are the smaller raw mutation helpers still called straight off `PikaMdk`, especially rename/update-group-data, stale pending-commit cleanup, and stray key-package validation paths.
+- Those raw helper paths are gone from the app now.
+  The remaining honest seam is the still-thin wrapper around MDK inside `pika-mls` plus the few direct wrapper consumers like CLI/NSE.
 - The highest-value simplification after the current transport slices is not "replace MDK all at once."
   It is deleting `pika_core`'s dependency on the `pika-marmot-runtime` facade so the remaining MLS surface is smaller and more honest before the OpenMLS runtime cut.
 - That facade cut can land incrementally.

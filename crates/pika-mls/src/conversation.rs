@@ -115,6 +115,10 @@ impl<'a> ConversationQueries<'a> {
         self.mdk.get_members(mls_group_id).context("get members")
     }
 
+    pub fn get_relays(&self, mls_group_id: &GroupId) -> Result<BTreeSet<RelayUrl>> {
+        self.mdk.get_relays(mls_group_id).context("get relays")
+    }
+
     pub fn get_message(
         &self,
         mls_group_id: &GroupId,

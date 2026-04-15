@@ -302,8 +302,7 @@ impl AppCore {
             return;
         }
 
-        let relays: Vec<RelayUrl> = sess
-            .mdk
+        let relays: Vec<RelayUrl> = pika_mls::conversation::ConversationQueries::new(&sess.mdk)
             .get_relays(mls_group_id)
             .ok()
             .map(|s| s.into_iter().collect())

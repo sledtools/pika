@@ -3959,7 +3959,11 @@ pub async fn daemon_main(
                                             "nostr_group_id": accepted.nostr_group_id_hex.clone(),
                                             "mls_group_id": mls_group_id_hex,
                                         })))).ok();
-                                        let member_count = mdk.get_members(&accepted.mls_group_id).map(|m| m.len() as u32).unwrap_or(0);
+                                        let member_count =
+                                            pika_mls::conversation::ConversationQueries::new(&mdk)
+                                                .get_members(&accepted.mls_group_id)
+                                                .map(|members| members.len() as u32)
+                                                .unwrap_or(0);
                                         out_tx.send(OutMsg::GroupJoined {
                                             nostr_group_id: accepted.nostr_group_id_hex,
                                             mls_group_id: mls_group_id_hex,
@@ -5233,7 +5237,11 @@ pub async fn daemon_main(
                             "mls_group_id": mls_group_id_hex,
                             "peer_pubkey": peer_pubkey.to_hex(),
                         })))).ok();
-                        let member_count = mdk.get_members(&created.group.mls_group_id).map(|m| m.len() as u32).unwrap_or(0);
+                        let member_count =
+                            pika_mls::conversation::ConversationQueries::new(&mdk)
+                                .get_members(&created.group.mls_group_id)
+                                .map(|members| members.len() as u32)
+                                .unwrap_or(0);
                         out_tx.send(OutMsg::GroupCreated {
                             nostr_group_id: nostr_group_id_hex,
                             mls_group_id: mls_group_id_hex,

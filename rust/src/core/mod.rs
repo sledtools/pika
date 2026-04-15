@@ -4201,7 +4201,9 @@ impl AppCore {
                         .map(|npub| npub.to_lowercase())
                 })
                 .collect::<Vec<_>>();
-            let epoch = match sess.mdk.get_group(&snapshot.mls_group_id) {
+            let epoch = match pika_mls::conversation::ConversationQueries::new(&sess.mdk)
+                .get_group(&snapshot.mls_group_id)
+            {
                 Ok(Some(group)) => group.epoch,
                 Ok(None) => {
                     tracing::warn!(%chat_id, "joined group missing during chat-server room binding");
@@ -4445,10 +4447,13 @@ impl AppCore {
         // groups from a prior process_welcome haven't been accepted
         // yet and should not block the accept flow.
         let already_joined = sess.groups.contains_key(&nostr_group_hex)
-            || sess.mdk.get_groups().unwrap_or_default().iter().any(|g| {
-                hex::encode(g.nostr_group_id) == nostr_group_hex
-                    && g.state == pika_mls::storage_traits::groups::types::GroupState::Active
-            });
+            || matches!(
+                pika_mls::conversation::ConversationQueries::new(&sess.mdk)
+                    .find_group(&nostr_group_hex),
+                Ok(group)
+                    if group.state
+                        == pika_mls::storage_traits::groups::types::GroupState::Active
+            );
         if already_joined {
             if let Some(binding) = room_binding.as_ref() {
                 self.upsert_chat_server_room_binding(
@@ -4765,13 +4770,13 @@ impl AppCore {
                     return;
                 };
                 let fallback_relays = self.default_relays();
-                let relays: Vec<RelayUrl> = sess
-                    .mdk
-                    .get_relays(&result.mls_group_id)
-                    .ok()
-                    .map(|s| s.into_iter().collect())
-                    .filter(|v: &Vec<RelayUrl>| !v.is_empty())
-                    .unwrap_or(fallback_relays);
+                let relays: Vec<RelayUrl> =
+                    pika_mls::conversation::ConversationQueries::new(&sess.mdk)
+                        .get_relays(&result.mls_group_id)
+                        .ok()
+                        .map(|s| s.into_iter().collect())
+                        .filter(|v: &Vec<RelayUrl>| !v.is_empty())
+                        .unwrap_or(fallback_relays);
                 self.publish_welcomes_to_peers(plan.recipients, plan.welcome_rumors, relays, None);
             }
         }
@@ -6211,11 +6216,11 @@ impl AppCore {
                     reply_to_message_id.as_ref().and_then(|reply_to_id| {
                         let reply_event_id = EventId::parse(reply_to_id).ok()?;
                         let group = sess.groups.get(&chat_id)?;
-                        let reply_target = sess
-                            .mdk
-                            .get_message(&group.mls_group_id, &reply_event_id)
-                            .ok()
-                            .flatten()?;
+                        let reply_target =
+                            pika_mls::conversation::ConversationQueries::new(&sess.mdk)
+                                .get_message(&group.mls_group_id, &reply_event_id)
+                                .ok()
+                                .flatten()?;
                         let p_tag = Tag::parse(vec![
                             "p".to_string(),
                             reply_target.pubkey.to_hex(),
@@ -6298,13 +6303,13 @@ impl AppCore {
                             self.toast("Chat not found");
                             return;
                         };
-                        let relays: Vec<RelayUrl> = sess
-                            .mdk
-                            .get_relays(&group.mls_group_id)
-                            .ok()
-                            .map(|s| s.into_iter().collect())
-                            .filter(|v: &Vec<RelayUrl>| !v.is_empty())
-                            .unwrap_or_else(|| fallback_relays.clone());
+                        let relays: Vec<RelayUrl> =
+                            pika_mls::conversation::ConversationQueries::new(&sess.mdk)
+                                .get_relays(&group.mls_group_id)
+                                .ok()
+                                .map(|s| s.into_iter().collect())
+                                .filter(|v: &Vec<RelayUrl>| !v.is_empty())
+                                .unwrap_or_else(|| fallback_relays.clone());
                         (sess.client.clone(), relays, ps)
                     }
                 };
@@ -6724,7 +6729,7 @@ impl AppCore {
         let relays: Vec<RelayUrl> = if room_binding.is_some() {
             Vec::new()
         } else {
-            sess.mdk
+            pika_mls::conversation::ConversationQueries::new(&sess.mdk)
                 .get_relays(&prepared.mls_group_id)
                 .ok()
                 .map(|s| s.into_iter().collect())

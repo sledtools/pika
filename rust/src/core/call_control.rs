@@ -304,7 +304,7 @@ impl AppCore {
             let relays: Vec<RelayUrl> = if room_binding.is_some() || !network_enabled {
                 Vec::new()
             } else {
-                sess.mdk
+                pika_mls::conversation::ConversationQueries::new(&sess.mdk)
                     .get_relays(&group.mls_group_id)
                     .ok()
                     .map(|s| s.into_iter().collect())

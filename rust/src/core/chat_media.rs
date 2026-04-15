@@ -1909,7 +1909,7 @@ impl AppCore {
             let relays: Vec<RelayUrl> = if room_binding.is_some() || !network_enabled {
                 Vec::new()
             } else {
-                sess.mdk
+                pika_mls::conversation::ConversationQueries::new(&sess.mdk)
                     .get_relays(&group.mls_group_id)
                     .ok()
                     .map(|s| s.into_iter().collect())
@@ -2076,7 +2076,9 @@ impl AppCore {
                 }
             };
 
-            let message = match sess.mdk.get_message(&group.mls_group_id, &message_event_id) {
+            let message = match pika_mls::conversation::ConversationQueries::new(&sess.mdk)
+                .get_message(&group.mls_group_id, &message_event_id)
+            {
                 Ok(Some(message)) => message,
                 Ok(None) => {
                     self.toast("Message not found");

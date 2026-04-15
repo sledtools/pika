@@ -70,8 +70,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   in chat-server mode, the app now creates the room first and only then uploads the first Welcome, so the initial invite can carry room binding metadata too.
 - [x] Define explicit invite payloads with explicit server URLs and no relay metadata:
   the app now builds `pika://chat/<npub>?server=...` profile codes when `private_chat_server_url` is configured, deep-link/manual-entry parsing preserves that payload, CreateChat rejects mismatched or missing local chat-server config instead of silently discarding the server hint, `pikachat qr --server-url ...` can emit the same shape, and both self-profile and peer-profile share surfaces now advertise the same canonical payload.
+- [x] Add a fixture-backed app E2E for the new transport:
+  `pikahut` now has a dedicated `relay-chat-server` profile that starts `pika-chat-server`, fixture manifests expose `chat_server_url`, and `rust/tests/e2e_messaging.rs` covers create-DM / welcome-accept / send / receive through the chat server path.
 - Next seam:
-  keep cutting the remaining relay/MDK bootstrap assumptions out of the chat-server path, starting with stale relay-first private-chat entrypoints and compatibility tests that no longer make sense when a room is server-bound.
+  keep cutting the remaining relay/MDK bootstrap assumptions out of the chat-server path, starting with reconnect/resume coverage on the new fixture lane and any still-dead relay lookups that survive after a room is server-bound.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
 
@@ -128,8 +130,12 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `MyProfileState` carries a generated profile code, mobile QR/copy/deep-link entry points preserve full `pika://chat/<npub>?server=...` payloads, the core validates that the local app is configured for the advertised server before creating the chat, and the CLI QR command can emit the same server-qualified payload when given `--server-url` or `PIKA_CHAT_SERVER_URL`.
 - The explicit invite contract now covers the major user-facing share paths:
   self-profile QR/copy, peer-profile QR/copy, deep-link intake, manual entry, and CLI QR generation all use the same `pika://chat/<npub>?server=...` payload when chat-server mode is configured.
+- `pikahut` can now boot the new transport too:
+  the `relay-chat-server` profile starts `pika-chat-server`, exports `PIKA_CHAT_SERVER_URL`, and gives the repo a repeatable app-level E2E lane for the new private-chat path.
 - The first durable transport model is file-backed:
   `PIKA_CHAT_SERVER_STATE_PATH` points at a JSON room/device log with persistent sequence numbers.
+- Chat-server key packages still need non-empty relay tags for MDK compatibility:
+  even though the chat server owns delivery in this mode, the current MDK-backed group bootstrap rejects a claimed key package whose relays tag is empty, so chat-server uploads now keep the app's long-lived relay URLs in the event metadata until the OpenMLS runtime cut replaces that parser dependency.
 - The inventory pass confirmed the biggest simplification wins:
   cut `pika-marmot-runtime`, delete `pika-server`'s relay listener path, and replace relay-centric app config early.
 - The v1 routing model is intentionally less Matrix-like:

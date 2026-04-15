@@ -8,6 +8,7 @@ pub const DEFAULT_PORT_BASE: u16 = 19_400;
 pub const DEFAULT_RELAY_PORT: u16 = DEFAULT_PORT_BASE; // 19400
 pub const DEFAULT_SERVER_PORT: u16 = DEFAULT_PORT_BASE + 1; // 19401
 pub const DEFAULT_MOQ_PORT: u16 = DEFAULT_PORT_BASE + 2; // 19402
+pub const DEFAULT_CHAT_SERVER_PORT: u16 = DEFAULT_PORT_BASE + 3; // 19403
 pub const DEFAULT_STATE_DIR: &str = ".pikahut";
 pub const TEST_WORKSPACE_ROOT_ENV: &str = "PIKAHUT_TEST_WORKSPACE_ROOT";
 
@@ -17,6 +18,7 @@ pub enum ProfileName {
     Relay,
     RelayMoq,
     RelayBot,
+    RelayChatServer,
     RelayServer,
     Backend,
     Postgres,
@@ -30,7 +32,12 @@ impl ProfileName {
     pub fn needs_relay(self) -> bool {
         matches!(
             self,
-            Self::Relay | Self::RelayMoq | Self::RelayBot | Self::RelayServer | Self::Backend
+            Self::Relay
+                | Self::RelayMoq
+                | Self::RelayBot
+                | Self::RelayChatServer
+                | Self::RelayServer
+                | Self::Backend
         )
     }
 
@@ -40,6 +47,10 @@ impl ProfileName {
 
     pub fn needs_server(self) -> bool {
         matches!(self, Self::Backend | Self::RelayServer)
+    }
+
+    pub fn needs_chat_server(self) -> bool {
+        matches!(self, Self::RelayChatServer)
     }
 
     pub fn needs_bot(self) -> bool {
@@ -55,11 +66,12 @@ impl FromStr for ProfileName {
             "relay" => Ok(Self::Relay),
             "relay-moq" => Ok(Self::RelayMoq),
             "relay-bot" => Ok(Self::RelayBot),
+            "relay-chat-server" => Ok(Self::RelayChatServer),
             "relay-server" => Ok(Self::RelayServer),
             "backend" => Ok(Self::Backend),
             "postgres" => Ok(Self::Postgres),
             _ => bail!(
-                "unknown profile: {s} (expected: relay, relay-moq, relay-bot, relay-server, backend, postgres)"
+                "unknown profile: {s} (expected: relay, relay-moq, relay-bot, relay-chat-server, relay-server, backend, postgres)"
             ),
         }
     }
@@ -71,6 +83,7 @@ impl std::fmt::Display for ProfileName {
             Self::Relay => write!(f, "relay"),
             Self::RelayMoq => write!(f, "relay-moq"),
             Self::RelayBot => write!(f, "relay-bot"),
+            Self::RelayChatServer => write!(f, "relay-chat-server"),
             Self::RelayServer => write!(f, "relay-server"),
             Self::Backend => write!(f, "backend"),
             Self::Postgres => write!(f, "postgres"),
@@ -160,10 +173,17 @@ impl ResolvedConfig {
             .unwrap_or(DEFAULT_MOQ_PORT);
         let moq_port = resolve_udp_port(moq_port)?;
 
-        // pika-server doesn't support port 0 natively, so resolve to a concrete port.
+        // Server-style fixtures use one concrete HTTP port slot today.
+        // `relay-server` uses it for pika-server; `relay-chat-server` uses it for pika-chat-server.
         let server_port = server_port_cli
             .or(overlay.server.as_ref().and_then(|s| s.port))
-            .unwrap_or(DEFAULT_SERVER_PORT);
+            .unwrap_or_else(|| {
+                if profile.needs_chat_server() {
+                    DEFAULT_CHAT_SERVER_PORT
+                } else {
+                    DEFAULT_SERVER_PORT
+                }
+            });
         let server_port = resolve_tcp_port(server_port)?;
 
         let open_provisioning = overlay
@@ -225,6 +245,14 @@ impl ResolvedConfig {
 
     pub fn server_url(&self) -> String {
         format!("http://localhost:{}", self.server_port)
+    }
+
+    pub fn chat_server_url(&self) -> String {
+        format!("http://localhost:{}", self.server_port)
+    }
+
+    pub fn chat_server_state_path(&self) -> PathBuf {
+        self.state_dir.join("chat-server-state.json")
     }
 }
 
@@ -374,6 +402,10 @@ mod tests {
             ProfileName::RelayBot
         );
         assert_eq!(
+            "relay-chat-server".parse::<ProfileName>().unwrap(),
+            ProfileName::RelayChatServer
+        );
+        assert_eq!(
             "backend".parse::<ProfileName>().unwrap(),
             ProfileName::Backend
         );
@@ -390,7 +422,14 @@ mod tests {
 
     #[test]
     fn profile_display_round_trip() {
-        for name in &["relay", "relay-moq", "relay-bot", "backend", "postgres"] {
+        for name in &[
+            "relay",
+            "relay-moq",
+            "relay-bot",
+            "relay-chat-server",
+            "backend",
+            "postgres",
+        ] {
             let parsed: ProfileName = name.parse().unwrap();
             assert_eq!(&parsed.to_string(), name);
         }
@@ -402,30 +441,42 @@ mod tests {
         assert!(ProfileName::Relay.needs_relay());
         assert!(!ProfileName::Relay.needs_moq());
         assert!(!ProfileName::Relay.needs_server());
+        assert!(!ProfileName::Relay.needs_chat_server());
         assert!(!ProfileName::Relay.needs_bot());
 
         assert!(!ProfileName::RelayMoq.needs_postgres());
         assert!(ProfileName::RelayMoq.needs_relay());
         assert!(ProfileName::RelayMoq.needs_moq());
         assert!(!ProfileName::RelayMoq.needs_server());
+        assert!(!ProfileName::RelayMoq.needs_chat_server());
         assert!(!ProfileName::RelayMoq.needs_bot());
+
+        assert!(!ProfileName::RelayChatServer.needs_postgres());
+        assert!(ProfileName::RelayChatServer.needs_relay());
+        assert!(!ProfileName::RelayChatServer.needs_moq());
+        assert!(!ProfileName::RelayChatServer.needs_server());
+        assert!(ProfileName::RelayChatServer.needs_chat_server());
+        assert!(!ProfileName::RelayChatServer.needs_bot());
 
         assert!(ProfileName::Backend.needs_postgres());
         assert!(ProfileName::Backend.needs_relay());
         assert!(ProfileName::Backend.needs_moq());
         assert!(ProfileName::Backend.needs_server());
+        assert!(!ProfileName::Backend.needs_chat_server());
         assert!(!ProfileName::Backend.needs_bot());
 
         assert!(!ProfileName::RelayBot.needs_postgres());
         assert!(ProfileName::RelayBot.needs_relay());
         assert!(!ProfileName::RelayBot.needs_moq());
         assert!(!ProfileName::RelayBot.needs_server());
+        assert!(!ProfileName::RelayBot.needs_chat_server());
         assert!(ProfileName::RelayBot.needs_bot());
 
         assert!(ProfileName::Postgres.needs_postgres());
         assert!(!ProfileName::Postgres.needs_relay());
         assert!(!ProfileName::Postgres.needs_moq());
         assert!(!ProfileName::Postgres.needs_server());
+        assert!(!ProfileName::Postgres.needs_chat_server());
         assert!(!ProfileName::Postgres.needs_bot());
     }
 

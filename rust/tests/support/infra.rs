@@ -15,6 +15,7 @@ pub struct TestInfra {
     pub relay_url: String,
     pub moq_url: Option<String>,
     pub server_url: Option<String>,
+    pub chat_server_url: Option<String>,
     state_dir: Option<PathBuf>,
 }
 
@@ -44,13 +45,40 @@ impl TestInfra {
         eprintln!("[TestInfra] pika-server pre-build done");
     }
 
+    fn prebuild_chat_server() {
+        if let Ok(server_bin) = std::env::var("PIKA_FIXTURE_CHAT_SERVER_CMD") {
+            let path = std::path::Path::new(&server_bin);
+            assert!(
+                path.exists(),
+                "PIKA_FIXTURE_CHAT_SERVER_CMD={} does not exist",
+                path.display()
+            );
+            eprintln!(
+                "[TestInfra] using staged pika-chat-server binary at {}",
+                path.display()
+            );
+            return;
+        }
+        eprintln!("[TestInfra] pre-building pika-chat-server...");
+        let status = std::process::Command::new("cargo")
+            .args(["build", "-p", "pika-chat-server"])
+            .status()
+            .expect("cargo build -p pika-chat-server");
+        assert!(status.success(), "pika-chat-server pre-build failed");
+        eprintln!("[TestInfra] pika-chat-server pre-build done");
+    }
+
     /// Start local infra via pikahut.
     fn start_with_profile(profile: ProfileName, need_moq: bool) -> Self {
         if profile.needs_server() {
             Self::prebuild_server();
         }
+        if profile.needs_chat_server() {
+            Self::prebuild_chat_server();
+        }
         let state_dir = tempfile::tempdir().expect("tempdir for pikahut").keep();
         let need_server = profile.needs_server();
+        let need_chat_server = profile.needs_chat_server();
         let resolved = ResolvedConfig::new(
             profile,
             None,
@@ -78,7 +106,7 @@ impl TestInfra {
         });
         let manifest = startup.unwrap_or_else(|e| {
             // Dump component logs to help diagnose startup failures.
-            for log in &["server.log", "relay.log", "postgres.log"] {
+            for log in &["chat-server.log", "server.log", "relay.log", "postgres.log"] {
                 let path = state_dir.join(log);
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     eprintln!("[TestInfra] === {log} ===\n{content}");
@@ -90,12 +118,16 @@ impl TestInfra {
         let relay_url = manifest.relay_url.expect("manifest missing relay_url");
         let moq_url = manifest.moq_url;
         let server_url = manifest.server_url;
+        let chat_server_url = manifest.chat_server_url;
 
         if need_moq && moq_url.is_none() {
             panic!("requested moq but pikahut manifest has no moq_url");
         }
         if need_server && server_url.is_none() {
             panic!("requested server but pikahut manifest has no server_url");
+        }
+        if need_chat_server && chat_server_url.is_none() {
+            panic!("requested chat server but pikahut manifest has no chat_server_url");
         }
 
         eprintln!("[TestInfra] local relay={relay_url}");
@@ -105,11 +137,15 @@ impl TestInfra {
         if let Some(ref srv) = server_url {
             eprintln!("[TestInfra] local server={srv}");
         }
+        if let Some(ref srv) = chat_server_url {
+            eprintln!("[TestInfra] local chat-server={srv}");
+        }
 
         Self {
             relay_url,
             moq_url,
             server_url,
+            chat_server_url,
             state_dir: Some(state_dir),
         }
     }
@@ -137,6 +173,11 @@ impl TestInfra {
     /// Start relay + postgres + pika-server (no moq).
     pub fn start_backend() -> Self {
         Self::start_with_profile(ProfileName::RelayServer, false)
+    }
+
+    /// Start relay + pika-chat-server local infra.
+    pub fn start_relay_and_chat_server() -> Self {
+        Self::start_with_profile(ProfileName::RelayChatServer, false)
     }
 }
 

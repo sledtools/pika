@@ -3,8 +3,8 @@ pub mod infra;
 #[allow(unused_imports)]
 pub use helpers::{
     create_account_and_wait, create_or_open_dm_chat, dm_chat_id_for_peer, get_logged_in_npub,
-    wait_until, wait_until_with_poll, write_config, write_config_multi, write_config_with_moq,
-    Collector,
+    wait_until, wait_until_with_poll, write_config, write_config_multi,
+    write_config_with_chat_server, write_config_with_moq, Collector,
 };
 #[allow(unused_imports)]
 pub use infra::TestInfra;

@@ -21,6 +21,12 @@ pub struct Manifest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub moq_start_time: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_server_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_server_pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_server_start_time: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub server_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_pid: Option<u32>,
@@ -75,7 +81,7 @@ impl Manifest {
         Ok(())
     }
 
-    /// PIDs of non-postgres children in teardown order (bot, server, moq, relay),
+    /// PIDs of non-postgres children in teardown order (bot, server, chat-server, moq, relay),
     /// paired with their recorded start times for safe kill verification.
     pub fn all_pids(&self) -> Vec<(u32, Option<&str>)> {
         let mut pids = Vec::new();
@@ -84,6 +90,9 @@ impl Manifest {
         }
         if let Some(pid) = self.server_pid {
             pids.push((pid, self.server_start_time.as_deref()));
+        }
+        if let Some(pid) = self.chat_server_pid {
+            pids.push((pid, self.chat_server_start_time.as_deref()));
         }
         if let Some(pid) = self.moq_pid {
             pids.push((pid, self.moq_start_time.as_deref()));
@@ -106,6 +115,9 @@ impl Manifest {
         if let Some(ref url) = self.server_url {
             env.push(("PIKA_SERVER_URL".into(), url.clone()));
             env.push(("PIKA_AGENT_API_BASE_URL".into(), url.clone()));
+        }
+        if let Some(ref url) = self.chat_server_url {
+            env.push(("PIKA_CHAT_SERVER_URL".into(), url.clone()));
         }
         if let Some(ref url) = self.database_url {
             env.push(("DATABASE_URL".into(), url.clone()));
@@ -153,6 +165,9 @@ mod tests {
             moq_url: Some("https://127.0.0.1:4443/anon".into()),
             moq_pid: Some(1237),
             moq_start_time: Some("Mon Feb 26 00:00:00 2026".into()),
+            chat_server_url: Some("http://localhost:9080".into()),
+            chat_server_pid: Some(1238),
+            chat_server_start_time: Some("Mon Feb 26 00:00:01 2026".into()),
             server_url: Some("http://localhost:8080".into()),
             server_pid: Some(1235),
             server_start_time: Some("Mon Feb 26 00:00:01 2026".into()),
@@ -200,7 +215,7 @@ mod tests {
         m.bot_pid = Some(100);
         m.bot_start_time = Some("Mon Feb 26 00:00:02 2026".into());
         let pids: Vec<u32> = m.all_pids().iter().map(|(p, _)| *p).collect();
-        assert_eq!(pids, vec![100, 1235, 1237, 1234]);
+        assert_eq!(pids, vec![100, 1235, 1238, 1237, 1234]);
     }
 
     #[test]
@@ -212,6 +227,7 @@ mod tests {
         assert!(keys.contains(&"RELAY_US"));
         assert!(keys.contains(&"PIKA_SERVER_URL"));
         assert!(keys.contains(&"PIKA_AGENT_API_BASE_URL"));
+        assert!(keys.contains(&"PIKA_CHAT_SERVER_URL"));
         assert!(keys.contains(&"DATABASE_URL"));
     }
 

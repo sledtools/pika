@@ -44,6 +44,21 @@ pub fn write_config(data_dir: &str, relay_url: &str) {
     std::fs::write(path, serde_json::to_vec(&v).unwrap()).unwrap();
 }
 
+pub fn write_config_with_chat_server(data_dir: &str, relay_url: &str, chat_server_url: &str) {
+    let path = std::path::Path::new(data_dir).join("pika_config.json");
+    let v = serde_json::json!({
+        "disable_network": false,
+        "disable_agent_allowlist_probe": true,
+        "relay_urls": [relay_url],
+        "key_package_relay_urls": [relay_url],
+        "private_chat_server_url": chat_server_url,
+        "call_moq_url": "ws://moq.local/anon",
+        "call_broadcast_prefix": "pika/calls",
+        "call_audio_backend": "synthetic",
+    });
+    std::fs::write(path, serde_json::to_vec(&v).unwrap()).unwrap();
+}
+
 pub fn write_config_with_moq(
     data_dir: &str,
     relay_url: &str,

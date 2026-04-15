@@ -11,6 +11,7 @@ use crate::config::ResolvedConfig;
 use crate::health;
 
 const PIKA_FIXTURE_RELAY_CMD_ENV: &str = "PIKA_FIXTURE_RELAY_CMD";
+const PIKA_FIXTURE_CHAT_SERVER_CMD_ENV: &str = "PIKA_FIXTURE_CHAT_SERVER_CMD";
 const PIKA_FIXTURE_SERVER_CMD_ENV: &str = "PIKA_FIXTURE_SERVER_CMD";
 
 fn fixture_binary_override_value(env_key: &str, cmd: Option<String>) -> Result<Option<PathBuf>> {
@@ -422,6 +423,63 @@ impl Server {
         health::wait_for_http(&health_url, Duration::from_secs(60)).await?;
 
         info!("[server] Ready ({url})");
+        Ok(Self { child, url })
+    }
+
+    pub fn pid(&self) -> Option<u32> {
+        self.child.id()
+    }
+}
+
+pub struct ChatServer {
+    pub child: Child,
+    pub url: String,
+}
+
+impl ChatServer {
+    pub async fn start(config: &ResolvedConfig, state_dir: &Path) -> Result<Self> {
+        let port = config.server_port;
+        let url = config.chat_server_url();
+        let log_path = state_dir.join("chat-server.log");
+
+        info!("[chat-server] Starting pika-chat-server on port {port}...");
+        let log_file = std::fs::File::create(&log_path)?;
+        let stderr_file = log_file.try_clone()?;
+
+        let mut child_cmd = if let Some(chat_server_bin) =
+            fixture_binary_override(PIKA_FIXTURE_CHAT_SERVER_CMD_ENV)?
+        {
+            Command::new(chat_server_bin)
+        } else {
+            let mut cmd = Command::new("cargo");
+            cmd.args(["run", "-q", "-p", "pika-chat-server"]);
+            cmd
+        };
+        child_cmd
+            .env("PIKA_CHAT_SERVER_BIND", format!("127.0.0.1:{port}"))
+            .env(
+                "PIKA_CHAT_SERVER_STATE_PATH",
+                config.chat_server_state_path(),
+            )
+            .env(
+                "PIKA_CHAT_SERVER_SESSION_SECRET_HEX",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            )
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()),
+            )
+            .current_dir(&config.workspace_root)
+            .stdout(StdStdio::from(log_file))
+            .stderr(StdStdio::from(stderr_file))
+            .kill_on_drop(true);
+
+        let child = child_cmd.spawn().context("spawn pika-chat-server")?;
+
+        let health_url = format!("http://127.0.0.1:{port}/health-check");
+        health::wait_for_http(&health_url, Duration::from_secs(60)).await?;
+
+        info!("[chat-server] Ready ({url})");
         Ok(Self { child, url })
     }
 

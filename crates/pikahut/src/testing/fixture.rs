@@ -186,6 +186,10 @@ impl FixtureHandle {
         self.manifest.server_url.as_deref()
     }
 
+    pub fn chat_server_url(&self) -> Option<&str> {
+        self.manifest.chat_server_url.as_deref()
+    }
+
     pub fn bot_npub(&self) -> Option<&str> {
         self.manifest.bot_npub.as_deref()
     }
@@ -249,6 +253,9 @@ mod tests {
             moq_url: None,
             moq_pid: None,
             moq_start_time: None,
+            chat_server_url: Some("http://127.0.0.1:19080".to_string()),
+            chat_server_pid: None,
+            chat_server_start_time: None,
             server_url: Some("http://127.0.0.1:18080".to_string()),
             server_pid: None,
             server_start_time: None,
@@ -288,10 +295,18 @@ mod tests {
 
         assert_eq!(handle.relay_url(), Some("ws://127.0.0.1:7777"));
         assert_eq!(handle.server_url(), Some("http://127.0.0.1:18080"));
+        assert_eq!(handle.chat_server_url(), Some("http://127.0.0.1:19080"));
         assert_eq!(handle.bot_npub(), Some("npub1test"));
         assert_eq!(
             handle.env_map().get("RELAY_EU").map(String::as_str),
             Some("ws://127.0.0.1:7777")
+        );
+        assert_eq!(
+            handle
+                .env_map()
+                .get("PIKA_CHAT_SERVER_URL")
+                .map(String::as_str),
+            Some("http://127.0.0.1:19080")
         );
     }
 

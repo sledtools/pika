@@ -6,7 +6,8 @@ use tokio::signal;
 use tracing::{error, info, warn};
 
 use crate::component::{
-    Bot, MoqRelay, Postgres, Relay, Server, get_process_fingerprint, kill_pid, kill_pid_safe,
+    Bot, ChatServer, MoqRelay, Postgres, Relay, Server, get_process_fingerprint, kill_pid,
+    kill_pid_safe,
 };
 use crate::config::ResolvedConfig;
 use crate::health;
@@ -38,6 +39,7 @@ struct RunningFixture {
     postgres: Option<Postgres>,
     relay: Option<Relay>,
     moq: Option<MoqRelay>,
+    chat_server: Option<ChatServer>,
     server: Option<Server>,
     bot: Option<Bot>,
 }
@@ -59,6 +61,14 @@ impl RunningFixture {
             kill_pid(pid);
         }
         self.server = None;
+
+        if let Some(ref mut chat_server) = self.chat_server
+            && let Some(pid) = chat_server.pid()
+        {
+            info!("[chat-server] Stopping (pid={pid})...");
+            kill_pid(pid);
+        }
+        self.chat_server = None;
 
         if let Some(ref mut moq) = self.moq
             && let Some(pid) = moq.pid()
@@ -93,6 +103,7 @@ pub async fn up_foreground(config: &ResolvedConfig) -> Result<()> {
         postgres: None,
         relay: None,
         moq: None,
+        chat_server: None,
         server: None,
         bot: None,
     };
@@ -133,6 +144,7 @@ pub async fn up_background(config: &ResolvedConfig) -> Result<()> {
         postgres: None,
         relay: None,
         moq: None,
+        chat_server: None,
         server: None,
         bot: None,
     };
@@ -175,6 +187,10 @@ async fn start_components(
         fixture.moq = Some(MoqRelay::start(config, state_dir).await?);
     }
 
+    if config.profile.needs_chat_server() {
+        fixture.chat_server = Some(ChatServer::start(config, state_dir).await?);
+    }
+
     if config.profile.needs_server() {
         let db_url = fixture
             .postgres
@@ -196,6 +212,7 @@ async fn start_components(
 fn build_manifest(config: &ResolvedConfig, fixture: &RunningFixture) -> Manifest {
     let relay_pid = fixture.relay.as_ref().and_then(|r| r.pid());
     let moq_pid = fixture.moq.as_ref().and_then(|m| m.pid());
+    let chat_server_pid = fixture.chat_server.as_ref().and_then(|s| s.pid());
     let server_pid = fixture.server.as_ref().and_then(|s| s.pid());
     let bot_pid = fixture.bot.as_ref().and_then(|b| b.pid());
 
@@ -207,6 +224,9 @@ fn build_manifest(config: &ResolvedConfig, fixture: &RunningFixture) -> Manifest
         moq_url: fixture.moq.as_ref().map(|m| m.url.clone()),
         moq_pid,
         moq_start_time: moq_pid.and_then(get_process_fingerprint),
+        chat_server_url: fixture.chat_server.as_ref().map(|s| s.url.clone()),
+        chat_server_pid,
+        chat_server_start_time: chat_server_pid.and_then(get_process_fingerprint),
         server_url: fixture.server.as_ref().map(|s| s.url.clone()),
         server_pid,
         server_start_time: server_pid.and_then(get_process_fingerprint),
@@ -230,6 +250,9 @@ fn print_summary(config: &ResolvedConfig, manifest: &Manifest) {
     }
     if let Some(ref url) = manifest.moq_url {
         eprintln!("  MoQ:       {url}");
+    }
+    if let Some(ref url) = manifest.chat_server_url {
+        eprintln!("  Chat:      {url}");
     }
     if let Some(ref url) = manifest.server_url {
         eprintln!("  Server:    {url}");
@@ -331,6 +354,13 @@ pub async fn status(state_dir: &Path, json: bool) -> Result<()> {
             m.server_pid.unwrap_or(0)
         );
     }
+    if let Some(ref url) = m.chat_server_url {
+        let tag = pid_status_tag(m.chat_server_pid, m.chat_server_start_time.as_deref());
+        eprintln!(
+            "Chat:      {url} (pid={}, {tag})",
+            m.chat_server_pid.unwrap_or(0)
+        );
+    }
     if let Some(ref url) = m.database_url {
         let tag = pid_status_tag(m.postgres_pid, None);
         eprintln!(
@@ -363,6 +393,7 @@ pub async fn logs(state_dir: &Path, follow: bool, component: Option<&str>) -> Re
         None => vec![
             ("relay", state_dir.join("relay.log")),
             ("moq", state_dir.join("moq.log")),
+            ("chat-server", state_dir.join("chat-server.log")),
             ("server", state_dir.join("server.log")),
             ("bot", state_dir.join("bot.log")),
         ],
@@ -477,6 +508,13 @@ pub async fn wait(state_dir: &Path, timeout_secs: u64) -> Result<()> {
             .await
             .context("server not healthy")?;
         info!("[wait] server healthy");
+    }
+
+    if let Some(ref url) = manifest.chat_server_url {
+        health::wait_for_http(&format!("{url}/health-check"), timeout)
+            .await
+            .context("chat server not healthy")?;
+        info!("[wait] chat server healthy");
     }
 
     info!("[wait] all components healthy");

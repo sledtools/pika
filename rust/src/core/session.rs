@@ -359,10 +359,11 @@ impl AppCore {
             self.key_package_publish_token = self.key_package_publish_token.wrapping_add(1);
             let token = self.key_package_publish_token;
             self.local_key_package_published = false;
+            let relays_for_tags = self.long_lived_session_relays();
 
             let (content, tags, _hash_ref) = match sess
                 .mdk
-                .create_key_package_for_event(&sess.pubkey, Vec::new())
+                .create_key_package_for_event(&sess.pubkey, relays_for_tags)
             {
                 Ok(v) => v,
                 Err(e) => {
@@ -1280,6 +1281,43 @@ mod tests {
             .tags(tags)
             .sign_with_keys(keys)
             .expect("sign key package")
+    }
+
+    #[test]
+    fn chat_server_key_packages_keep_relay_tags_for_mdk_compatibility() {
+        let (mut core, _tmp) = make_core_with_config(crate::core::config::AppConfig {
+            private_chat_server_url: Some("https://chat.example".to_string()),
+            relay_urls: Some(vec!["wss://message-1.example".to_string()]),
+            ..Default::default()
+        });
+        let session_dir = tempfile::tempdir().expect("session tempdir");
+        let keys = Keys::generate();
+        let mdk = open_test_mdk(&session_dir, &keys);
+        core.session = Some(crate::core::Session {
+            pubkey: keys.public_key(),
+            local_keys: Some(keys.clone()),
+            mdk,
+            client: Client::default(),
+            alive: Arc::new(AtomicBool::new(true)),
+            giftwrap_sub: None,
+            group_sub: None,
+            groups: std::collections::HashMap::new(),
+        });
+
+        let sess = core.session.as_ref().expect("session");
+        let (content, tags, _hash_ref) = sess
+            .mdk
+            .create_key_package_for_event(&sess.pubkey, core.long_lived_session_relays())
+            .expect("create key package");
+        let event = EventBuilder::new(Kind::MlsKeyPackage, content)
+            .tags(tags)
+            .sign_with_keys(&keys)
+            .expect("sign key package");
+        let normalized = crate::normalize_peer_key_package_event_for_mdk(&event);
+
+        sess.mdk
+            .parse_key_package(&normalized)
+            .expect("chat-server key package should stay parseable");
     }
 
     #[test]

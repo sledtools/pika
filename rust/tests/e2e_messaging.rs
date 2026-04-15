@@ -4,13 +4,13 @@
 //! message/call state transitions it asserts through `FfiApp`. `pikahut` selectors only pin a
 //! few of these tests as higher-level regression boundaries.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pika_core::{AppAction, AuthState, CallStatus, FfiApp};
 use tempfile::tempdir;
 
 mod support;
-use support::{create_or_open_dm_chat, wait_until, write_config};
+use support::{create_or_open_dm_chat, wait_until, write_config, write_config_with_chat_server};
 
 #[test]
 fn relay_backed_dm_delivery_reaches_peer_chat_state() {
@@ -95,6 +95,157 @@ fn relay_backed_dm_delivery_reaches_peer_chat_state() {
         .messages
         .iter()
         .find(|m| m.content == "hi-from-alice")
+        .unwrap();
+    assert!(!msg.is_mine);
+}
+
+#[test]
+fn chat_server_dm_delivery_reaches_peer_chat_state() {
+    let infra = support::TestInfra::start_relay_and_chat_server();
+    let chat_server_url = infra.chat_server_url.as_ref().expect("chat_server_url");
+
+    let dir_a = tempdir().unwrap();
+    let dir_b = tempdir().unwrap();
+    write_config_with_chat_server(
+        &dir_a.path().to_string_lossy(),
+        &infra.relay_url,
+        chat_server_url,
+    );
+    write_config_with_chat_server(
+        &dir_b.path().to_string_lossy(),
+        &infra.relay_url,
+        chat_server_url,
+    );
+
+    let alice = FfiApp::new(
+        dir_a.path().to_string_lossy().to_string(),
+        String::new(),
+        String::new(),
+    );
+    let bob = FfiApp::new(
+        dir_b.path().to_string_lossy().to_string(),
+        String::new(),
+        String::new(),
+    );
+
+    alice.dispatch(AppAction::CreateAccount);
+    bob.dispatch(AppAction::CreateAccount);
+
+    wait_until("alice logged in", Duration::from_secs(10), || {
+        matches!(alice.state().auth, AuthState::LoggedIn { .. })
+    });
+    wait_until("bob logged in", Duration::from_secs(10), || {
+        matches!(bob.state().auth, AuthState::LoggedIn { .. })
+    });
+
+    let bob_npub = match bob.state().auth {
+        AuthState::LoggedIn { npub, .. } => npub,
+        _ => unreachable!(),
+    };
+
+    alice.dispatch(AppAction::CreateChat {
+        peer_npub: bob_npub.clone(),
+    });
+    let create_deadline = Instant::now() + Duration::from_secs(30);
+    let chat_id = loop {
+        if let Some(chat_id) = support::dm_chat_id_for_peer(&alice, &bob_npub) {
+            break chat_id;
+        }
+        let state = alice.state();
+        if let Some(toast) = state.toast {
+            let chats: Vec<String> = state
+                .chat_list
+                .iter()
+                .map(|chat| {
+                    format!(
+                        "{}:{}:{}",
+                        chat.chat_id,
+                        chat.group_name.clone().unwrap_or_default(),
+                        chat.members.len()
+                    )
+                })
+                .collect();
+            panic!("alice create chat failed: {toast}; chats={chats:?}");
+        }
+        if Instant::now() >= create_deadline {
+            let chats: Vec<String> = state
+                .chat_list
+                .iter()
+                .map(|chat| {
+                    format!(
+                        "{}:{}:{}",
+                        chat.chat_id,
+                        chat.group_name.clone().unwrap_or_default(),
+                        chat.members.len()
+                    )
+                })
+                .collect();
+            panic!("alice direct chat did not appear; chats={chats:?}");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    alice.dispatch(AppAction::OpenChat {
+        chat_id: chat_id.clone(),
+    });
+    wait_until("alice chat opened", Duration::from_secs(20), || {
+        alice
+            .state()
+            .current_chat
+            .as_ref()
+            .map(|chat| chat.chat_id == chat_id)
+            .unwrap_or(false)
+    });
+    wait_until("bob chat id matches", Duration::from_secs(45), || {
+        bob.state().chat_list.iter().any(|c| c.chat_id == chat_id)
+    });
+
+    alice.dispatch(AppAction::SendMessage {
+        chat_id: chat_id.clone(),
+        content: "hi-from-alice-chat-server".into(),
+        kind: None,
+        reply_to_message_id: None,
+    });
+
+    wait_until("alice message sent", Duration::from_secs(20), || {
+        alice
+            .state()
+            .current_chat
+            .as_ref()
+            .and_then(|c| {
+                c.messages
+                    .iter()
+                    .find(|m| m.content == "hi-from-alice-chat-server")
+            })
+            .map(|m| matches!(m.delivery, pika_core::MessageDeliveryState::Sent))
+            .unwrap_or(false)
+    });
+
+    bob.dispatch(AppAction::OpenChat {
+        chat_id: chat_id.clone(),
+    });
+    wait_until(
+        "bob opened chat has message",
+        Duration::from_secs(30),
+        || {
+            bob.state()
+                .current_chat
+                .as_ref()
+                .and_then(|c| {
+                    c.messages
+                        .iter()
+                        .find(|m| m.content == "hi-from-alice-chat-server")
+                })
+                .is_some()
+        },
+    );
+    let bob_state = bob.state();
+    let msg = bob_state
+        .current_chat
+        .as_ref()
+        .unwrap()
+        .messages
+        .iter()
+        .find(|m| m.content == "hi-from-alice-chat-server")
         .unwrap();
     assert!(!msg.is_mine);
 }

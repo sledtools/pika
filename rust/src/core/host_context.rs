@@ -88,15 +88,15 @@ impl<'a> AppHostContext<'a> {
     #[cfg(test)]
     pub(super) fn list_pending_welcome_snapshots(
         &self,
-    ) -> anyhow::Result<Vec<pika_marmot_runtime::welcome::PendingWelcomeSnapshot>> {
-        pika_marmot_runtime::welcome::list_pending_welcome_snapshots(&self.session.mdk)
+    ) -> anyhow::Result<Vec<super::welcome_support::PendingWelcomeSnapshot>> {
+        super::welcome_support::list_pending_welcome_snapshots(&self.session.mdk)
     }
 
     pub(super) fn lookup_pending_welcome(
         &self,
         target: &EventId,
     ) -> anyhow::Result<Option<mdk_storage_traits::welcomes::types::Welcome>> {
-        pika_marmot_runtime::welcome::lookup_pending_welcome(&self.session.mdk, target)
+        super::welcome_support::lookup_pending_welcome(&self.session.mdk, target)
     }
 
     pub(super) fn prepare_outbound_action_for_chat(

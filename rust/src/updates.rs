@@ -168,7 +168,7 @@ pub(crate) enum InternalEvent {
         chat_id: String,
         server_url: String,
         room_id: Option<String>,
-        initial_welcome_delivery: Option<pika_marmot_runtime::welcome::GroupWelcomeDeliveryPlan>,
+        initial_welcome_delivery: Option<crate::core::welcome_support::GroupWelcomeDeliveryPlan>,
         error: Option<String>,
     },
     ChatServerSyncPoll,

@@ -18,6 +18,7 @@ mod push;
 mod relay_publish;
 mod session;
 mod storage;
+pub(crate) mod welcome_support;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::OsStr;
@@ -71,9 +72,9 @@ pub(crate) use pika_marmot_runtime::message::{
     CALL_SIGNAL_KIND, HYPERNOTE_ACTION_RESPONSE_KIND, HYPERNOTE_KIND,
 };
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
-use pika_marmot_runtime::welcome::{
-    accept_welcome_and_catch_up, create_group_and_plan_welcome_delivery, GroupWelcomeDeliveryPlan,
-    PlannedGroupCreation,
+use welcome_support::{
+    accept_welcome_and_catch_up, create_group_and_plan_welcome_delivery, publish_welcome_rumors,
+    GroupWelcomeDeliveryPlan, PlannedGroupCreation,
 };
 
 /// Load all cached profiles from the on-disk database as `FollowListEntry`.
@@ -4488,7 +4489,7 @@ impl AppCore {
                 &staged_welcome,
                 &mut seen,
                 0,
-                |_| async { Ok(()) },
+                || async { Ok(()) },
             )
             .await
         });
@@ -5006,7 +5007,7 @@ impl AppCore {
         let room_id = room_id.to_string();
         let envelopes = Arc::new(Mutex::new(Vec::<WelcomeEnvelope>::new()));
         let capture = Arc::clone(&envelopes);
-        pika_marmot_runtime::welcome::publish_welcome_rumors(
+        publish_welcome_rumors(
             &signer,
             welcome_rumors,
             recipients,
@@ -9023,13 +9024,13 @@ mod tests {
 
     mod group_key_packages {
         use super::*;
+        use crate::core::welcome_support::create_group_and_plan_welcome_delivery;
         use crate::core::DEFAULT_GROUP_DESCRIPTION;
         use crate::mdk_support::open_mdk;
         use crate::updates::InternalEvent;
         use mdk_core::prelude::{GroupId, NostrGroupConfigData};
         use nostr_sdk::prelude::*;
         use pika_marmot_runtime::membership::PreparedMembershipEvolution;
-        use pika_marmot_runtime::welcome::create_group_and_plan_welcome_delivery;
 
         /// Creates a core with a real MDK session and a group already in storage,
         /// with the group registered in session.groups so add-members can find it.

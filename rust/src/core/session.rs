@@ -4,8 +4,10 @@ use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 
 use super::config::{plan_relay_roles, RelayRolePlan};
+use super::welcome_support::{
+    list_pending_welcome_snapshots, publish_welcome_rumors, PendingWelcomeSnapshot,
+};
 use super::*;
-use pika_marmot_runtime::welcome::{list_pending_welcome_snapshots, publish_welcome_rumors};
 
 const APP_INBOUND_RELAY_SEEN_CAP: usize = 2048;
 
@@ -96,7 +98,7 @@ struct AppSessionSyncPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AppSessionOpenState {
     joined_group_snapshots: Vec<super::conversation_support::JoinedGroupSnapshot>,
-    pending_welcome_snapshots: Vec<pika_marmot_runtime::welcome::PendingWelcomeSnapshot>,
+    pending_welcome_snapshots: Vec<PendingWelcomeSnapshot>,
     sync_plan: AppSessionSyncPlan,
 }
 
@@ -2048,7 +2050,7 @@ mod tests {
         for (receiver, wrapper) in published {
             match receiver {
                 receiver if receiver == bob_keys.public_key() => {
-                    let ingested = pika_marmot_runtime::welcome::ingest_welcome_from_giftwrap(
+                    let ingested = super::welcome_support::ingest_welcome_from_giftwrap(
                         &bob_mdk,
                         &bob_keys,
                         &wrapper,
@@ -2059,7 +2061,7 @@ mod tests {
                     assert!(ingested.is_some(), "bob should ingest exactly one welcome");
                 }
                 receiver if receiver == charlie_keys.public_key() => {
-                    let ingested = pika_marmot_runtime::welcome::ingest_welcome_from_giftwrap(
+                    let ingested = super::welcome_support::ingest_welcome_from_giftwrap(
                         &charlie_mdk,
                         &charlie_keys,
                         &wrapper,

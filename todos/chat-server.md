@@ -142,6 +142,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `pika-mls::welcome` now owns pending-welcome listing plus the narrow accept helper, so app, sidecar, and CLI no longer call `accept_welcome` or raw pending-welcome listing directly for that flow.
 - [x] Share staged welcome processing too:
   `pika-mls::welcome::stage_pending_welcome` now owns the process-and-lookup step, so app and sidecar welcome ingest/tests no longer call `process_welcome` directly or re-scan raw pending welcomes after staging.
+- [x] Share raw wrapper create/process helpers too:
+  `pika-mls::conversation::{wrap_rumor, process_group_message_event}` now own the low-level MLS wrapper create/process step, and app / sidecar / CLI / NSE production paths no longer call `create_message` or `process_message` directly outside test harnesses.
 - [x] Delete the last production raw-MDK call-crypto escape hatch:
   `PikaMls` now exposes media-key derivation directly, so app and sidecar call flows no longer reach into `as_raw()` for call media / relay-auth key derivation.
 - [x] Move sidecar host callers onto one runtime surface:
@@ -151,7 +153,7 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
 - [x] Reuse the shared conversation query layer outside the sidecar too:
   `pika-mls::conversation::ConversationQueries` now owns DM lookup, cross-group message lookup, and the common group/member/relay/message query helpers; CLI / NSE / app-session / sidecar subscription planning / core relay fallback paths now use that shared surface instead of open-coding those scans against `PikaMdk`.
 - Next seam:
-  keep shrinking the raw `PikaMdk` surface from inside `pika-mls`, starting with shared message create/process helpers and the remaining direct wrapper consumers in CLI/NSE/core/sidecar.
+  keep shrinking the raw `PikaMdk` surface from inside `pika-mls`, starting with the remaining direct group/member/relay/message reads in production code and then the harness/test leftovers.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
 

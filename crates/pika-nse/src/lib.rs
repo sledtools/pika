@@ -1,7 +1,7 @@
 mod mdk_support;
 
 use nostr::{Event, Kind, TagKind};
-use pika_mls::conversation::ConversationQueries;
+use pika_mls::conversation::{process_group_message_event, ConversationQueries};
 use pika_mls::prelude::MessageProcessingResult;
 
 uniffi::setup_scaffolding!();
@@ -92,8 +92,9 @@ pub fn decrypt_push_notification(
         }
     };
 
-    let result = match mdk.process_message(&event) {
-        Ok(r) => r,
+    let result = match process_group_message_event(&mdk, &event) {
+        Ok(Some(r)) => r,
+        Ok(None) => return None,
         Err(e) => {
             return Some(PushNotificationResult::Error {
                 message: format!("failed to process message: {e}"),

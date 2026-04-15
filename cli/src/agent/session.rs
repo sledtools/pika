@@ -7,6 +7,7 @@ use std::time::Duration;
 use anyhow::Context;
 use nostr_sdk::JsonUtil;
 use nostr_sdk::prelude::*;
+use pika_mls::conversation::{process_group_message_event, wrap_rumor};
 use pika_mls::prelude::*;
 use pikachat_sidecar::welcome::create_group_and_publish_welcomes as create_group_and_publish_shared_welcomes;
 use tokio::io::AsyncBufReadExt;
@@ -235,9 +236,9 @@ pub async fn run_interactive_chat_loop(mut ctx: ChatLoopContext<'_>) -> anyhow::
                 }
 
                 let rumor = EventBuilder::new(Kind::ChatMessage, &line).build(keys.public_key());
-                let msg_event = mdk
-                    .create_message(mls_group_id, rumor)
-                    .context("create user chat message")?;
+                let msg_event = wrap_rumor(mdk, mls_group_id, rumor)
+                    .context("create user chat message")?
+                    .wrapper;
                 relay_util::publish_and_confirm(send_client, relays, &msg_event, plan.outbound_publish_label).await?;
                 if plan.wait_for_pending_replies_on_eof {
                     pending_replies = pending_replies.saturating_add(1);
@@ -265,8 +266,8 @@ pub async fn run_interactive_chat_loop(mut ctx: ChatLoopContext<'_>) -> anyhow::
                     continue;
                 }
                 let mut printed = false;
-                if let Ok(MessageProcessingResult::ApplicationMessage(msg)) =
-                    mdk.process_message(&event)
+                if let Ok(Some(MessageProcessingResult::ApplicationMessage(msg))) =
+                    process_group_message_event(mdk, &event)
                     && msg.pubkey == bot_pubkey
                 {
                     match project_message(&msg.content, plan.projection_mode) {

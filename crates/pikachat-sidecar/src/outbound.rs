@@ -3,6 +3,7 @@ use hypernote_protocol as hn;
 use nostr_sdk::prelude::{
     Client, Event, EventId, Kind, PublicKey, RelayUrl, Tag, TagKind, Timestamp, UnsignedEvent,
 };
+use pika_mls::conversation::wrap_rumor;
 use pika_mls::storage_traits::GroupId;
 use pika_mls::storage_traits::groups::types::Group;
 
@@ -140,16 +141,14 @@ impl<'a> OutboundConversationRuntime<'a> {
         target: ResolvedConversationTarget,
         action: OutboundConversationAction,
     ) -> Result<PreparedConversationAction> {
-        let (kind, mut rumor) = build_unsigned_action(sender, action);
-        rumor.ensure_id();
-        let rumor_id = rumor.id();
-        let wrapper = self.mdk.create_message(&target.mls_group_id, rumor)?;
+        let (kind, rumor) = build_unsigned_action(sender, action);
+        let wrapped = wrap_rumor(self.mdk, &target.mls_group_id, rumor)?;
 
         Ok(PreparedConversationAction {
             target,
             kind,
-            rumor_id,
-            wrapper,
+            rumor_id: wrapped.rumor_id,
+            wrapper: wrapped.wrapper,
         })
     }
 

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use nostr_sdk::prelude::{Event, EventId, Kind, PublicKey, Tag, TagKind, Timestamp, UnsignedEvent};
+use pika_mls::conversation::wrap_rumor;
 use pika_mls::storage_traits::GroupId;
 
 use crate::mdk_support::PikaMdk;
@@ -96,15 +97,16 @@ fn prepare_action_for_target(
     target: ResolvedConversationTarget,
     action: OutboundConversationAction,
 ) -> Result<PreparedConversationAction> {
-    let mut rumor = build_unsigned_action(sender, action);
-    rumor.ensure_id();
-    let rumor_id = rumor.id();
-    let wrapper = mdk.create_message(&target.mls_group_id, rumor)?;
+    let wrapped = wrap_rumor(
+        mdk,
+        &target.mls_group_id,
+        build_unsigned_action(sender, action),
+    )?;
 
     Ok(PreparedConversationAction {
         target,
-        rumor_id,
-        wrapper,
+        rumor_id: wrapped.rumor_id,
+        wrapper: wrapped.wrapper,
     })
 }
 

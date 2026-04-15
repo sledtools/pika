@@ -295,9 +295,8 @@ impl AppCore {
                 signal.payload_json.clone(),
             );
 
-            let wrapper = sess
-                .mdk
-                .create_message(&group.mls_group_id, rumor)
+            let wrapper = pika_mls::conversation::wrap_rumor(&sess.mdk, &group.mls_group_id, rumor)
+                .map(|wrapped| wrapped.wrapper)
                 .map_err(|e| format!("encrypt call signal failed: {e}"))?;
 
             let room_binding = self.chat_server_rooms.get(chat_id).cloned();

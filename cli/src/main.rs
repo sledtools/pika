@@ -14,7 +14,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use hypernote_protocol as hn;
 use nostr_sdk::prelude::*;
 use pika_managed_agent_contract::{AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams};
-use pika_mls::conversation::ConversationQueries;
+use pika_mls::conversation::{ConversationQueries, wrap_rumor};
 use pika_mls::prelude::*;
 use pika_mls::welcome::WelcomeQueries;
 use pika_relay_profiles::{
@@ -2422,9 +2422,9 @@ async fn cmd_update_group_profile(
 
     // Build kind-0 rumor and encrypt via MLS.
     let rumor = EventBuilder::new(Kind::Metadata, &metadata_json).build(keys.public_key());
-    let msg_event = mdk
-        .create_message(&group.mls_group_id, rumor)
-        .context("create group profile message")?;
+    let msg_event = wrap_rumor(&mdk, &group.mls_group_id, rumor)
+        .context("create group profile message")?
+        .wrapper;
     relay_util::publish_and_confirm(&client, &relays, &msg_event, "update_group_profile").await?;
     client.shutdown().await;
 

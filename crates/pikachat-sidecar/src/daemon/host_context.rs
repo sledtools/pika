@@ -173,10 +173,9 @@ impl<'a> DaemonHostContext<'a> {
         rumor: UnsignedEvent,
         label: &str,
     ) -> anyhow::Result<Event> {
-        let msg_event = self
-            .mdk
-            .create_message(mls_group_id, rumor)
-            .context("create_message")?;
+        let msg_event = pika_mls::conversation::wrap_rumor(self.mdk, mls_group_id, rumor)
+            .context("create_message")?
+            .wrapper;
         let signed = resign_wrapper_without_protected_tags(self.keys, &msg_event)?;
         if self.relay_urls.is_empty() {
             anyhow::bail!("no relays configured");
@@ -192,10 +191,9 @@ impl<'a> DaemonHostContext<'a> {
     ) -> anyhow::Result<Event> {
         let mls_group_id = self.resolve_group(nostr_group_id)?;
         let rumor = EventBuilder::new(CALL_SIGNAL_KIND, payload_json).build(self.keys.public_key());
-        let msg_event = self
-            .mdk
-            .create_message(&mls_group_id, rumor)
-            .context("create_message")?;
+        let msg_event = pika_mls::conversation::wrap_rumor(self.mdk, &mls_group_id, rumor)
+            .context("create_message")?
+            .wrapper;
         resign_wrapper_without_protected_tags(self.keys, &msg_event)
     }
 

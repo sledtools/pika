@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use nostr_sdk::prelude::{
     Alphabet, Client, Event, EventId, Filter, Kind, RelayUrl, SingleLetterTag,
 };
-use pika_mls::conversation::ConversationQueries;
+use pika_mls::conversation::{process_group_message_event, ConversationQueries};
 pub(crate) use pika_mls::conversation::{JoinedGroupSnapshot, MessagePage, MessagePageQuery};
 use pika_mls::prelude::{GroupId, MessageProcessingResult};
 use pika_mls::storage_traits::messages::types::Message;
@@ -65,12 +65,9 @@ pub(crate) fn load_message_page(
 }
 
 pub(crate) fn process_event(mdk: &PikaMdk, event: &Event) -> Result<Option<ConversationEvent>> {
-    if event.kind != Kind::MlsGroupMessage {
+    let Some(result) = process_group_message_event(mdk, event)? else {
         return Ok(None);
-    }
-    let result = mdk
-        .process_message(event)
-        .context("process group message")?;
+    };
     Ok(interpret_processing_result(mdk, result))
 }
 

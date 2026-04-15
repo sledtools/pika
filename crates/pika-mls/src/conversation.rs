@@ -1,14 +1,21 @@
 use std::collections::BTreeSet;
 
 use anyhow::{Context, Result, anyhow};
-use nostr::{EventId, PublicKey, RelayUrl, Timestamp};
+use nostr::{Event, EventId, Kind, PublicKey, RelayUrl, Timestamp, UnsignedEvent};
 
 use crate::PikaMdk;
+use crate::prelude::MessageProcessingResult;
 use crate::storage_traits::{
     GroupId,
     groups::{Pagination, types::Group},
     messages::types::Message,
 };
+
+#[derive(Debug, Clone)]
+pub struct WrappedRumor {
+    pub rumor_id: EventId,
+    pub wrapper: Event,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinedGroupMemberSnapshot {
@@ -236,4 +243,29 @@ impl<'a> ConversationQueries<'a> {
             mls_group_id,
         })
     }
+}
+
+pub fn wrap_rumor(
+    mdk: &PikaMdk,
+    mls_group_id: &GroupId,
+    mut rumor: UnsignedEvent,
+) -> Result<WrappedRumor> {
+    rumor.ensure_id();
+    let rumor_id = rumor.id();
+    let wrapper = mdk
+        .create_message(mls_group_id, rumor)
+        .context("create group wrapper")?;
+    Ok(WrappedRumor { rumor_id, wrapper })
+}
+
+pub fn process_group_message_event(
+    mdk: &PikaMdk,
+    event: &Event,
+) -> Result<Option<MessageProcessingResult>> {
+    if event.kind != Kind::MlsGroupMessage {
+        return Ok(None);
+    }
+    mdk.process_message(event)
+        .context("process group message")
+        .map(Some)
 }

@@ -6,7 +6,7 @@ use nostr_sdk::Metadata;
 use nostr_sdk::prelude::{
     Alphabet, Client, Event, EventId, Filter, Kind, PublicKey, RelayUrl, SingleLetterTag, Timestamp,
 };
-use pika_mls::conversation::ConversationQueries;
+use pika_mls::conversation::{ConversationQueries, process_group_message_event};
 pub use pika_mls::conversation::{
     JoinedGroupMemberSnapshot as RuntimeJoinedGroupMemberSnapshot,
     JoinedGroupSnapshot as RuntimeJoinedGroupSnapshot, MessagePage as RuntimeMessagePage,
@@ -82,13 +82,9 @@ impl<'a> ConversationRuntime<'a> {
     }
 
     pub fn process_event(&self, event: &Event) -> Result<Option<ConversationEvent>> {
-        if event.kind != Kind::MlsGroupMessage {
+        let Some(result) = process_group_message_event(self.mdk, event)? else {
             return Ok(None);
-        }
-        let result = self
-            .mdk
-            .process_message(event)
-            .context("process group message")?;
+        };
         Ok(self.interpret_processing_result(result))
     }
 

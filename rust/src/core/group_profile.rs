@@ -239,8 +239,8 @@ impl AppCore {
             metadata_json.to_string(),
         );
 
-        let wrapper = match sess.mdk.create_message(mls_group_id, rumor) {
-            Ok(ev) => ev,
+        let wrapper = match pika_mls::conversation::wrap_rumor(&sess.mdk, mls_group_id, rumor) {
+            Ok(wrapped) => wrapped.wrapper,
             Err(e) => {
                 tracing::warn!(err = %e, %chat_id, "group profile create_message failed");
                 return;

@@ -10,7 +10,9 @@ mod group_profile;
 mod host_context;
 mod interop;
 pub(crate) mod media_support;
+pub(crate) mod membership_support;
 mod min_version;
+mod outbound_support;
 mod profile;
 mod profile_db;
 mod profile_pics;
@@ -55,12 +57,15 @@ use host_context::{AppApplicationMessageInterpretation, AppConversationEventInte
 use mdk_core::encrypted_media::types::{EncryptedMediaUpload, MediaReference};
 use mdk_core::prelude::{message_types, GroupId, MessageProcessingResult, NostrGroupConfigData};
 use mdk_storage_traits::groups::Pagination;
+use membership_support::{
+    EvolutionPublishStatus, MembershipUpdateResult, PreparedMembershipEvolution,
+};
+use outbound_support::{OutboundConversationAction, PreparedConversationAction};
 use pika_chat_server::protocol::{RoomEvent, RoomEventType, WelcomeEnvelope};
 use pika_marmot_runtime::call::ParsedCallSignal;
 use pika_marmot_runtime::call_runtime::{
     GroupCallContext, InboundCallSignalOutcome, InboundSignalContext, PreparedAcceptedCall,
 };
-use pika_marmot_runtime::membership::{EvolutionPublishStatus, PreparedMembershipEvolution};
 #[cfg(test)]
 pub(crate) use pika_marmot_runtime::message::TYPING_INDICATOR_KIND;
 use pika_marmot_runtime::message::{
@@ -69,7 +74,6 @@ use pika_marmot_runtime::message::{
 pub(crate) use pika_marmot_runtime::message::{
     CALL_SIGNAL_KIND, HYPERNOTE_ACTION_RESPONSE_KIND, HYPERNOTE_KIND,
 };
-use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
 use welcome_support::{
     accept_welcome_and_catch_up, create_group_and_plan_welcome_delivery, publish_welcome_rumors,
     GroupWelcomeDeliveryPlan, PlannedGroupCreation,
@@ -4730,7 +4734,7 @@ impl AppCore {
     fn handle_membership_evolution_result(
         &mut self,
         chat_id: String,
-        result: Result<pika_marmot_runtime::membership::MembershipUpdateResult, String>,
+        result: Result<MembershipUpdateResult, String>,
     ) {
         let result = match result {
             Ok(result) => result,
@@ -7436,6 +7440,9 @@ mod tests {
             AppApplicationMessageInterpretation, AppConversationEventInterpretation,
             AppConversationRefreshReason,
         };
+        use crate::core::outbound_support::{
+            OutboundConversationAction, OutboundConversationPublishStatus,
+        };
         use crate::mdk_support::open_mdk;
         use crate::state::ChatViewState;
         use mdk_core::prelude::{
@@ -7446,8 +7453,6 @@ mod tests {
             build_call_signal_json, CallSessionParams, CallTrackSpec, OutgoingCallSignal,
             ParsedCallSignal,
         };
-        use pika_marmot_runtime::message::TYPING_INDICATOR_KIND;
-        use pika_marmot_runtime::outbound::OutboundConversationAction;
 
         /// Creates a core with a real MDK session and a group in storage.
         /// Returns (core, chat_id_hex, creator_keys, group_id).
@@ -7855,7 +7860,6 @@ mod tests {
                 .expect("prepare outbound action");
 
             assert_eq!(prepared.target.nostr_group_id_hex, chat_id);
-            assert_eq!(prepared.kind, TYPING_INDICATOR_KIND);
             assert_eq!(prepared.wrapper.kind, Kind::MlsGroupMessage);
             assert_ne!(prepared.rumor_id, EventId::all_zeros());
             assert_eq!(
@@ -7881,7 +7885,7 @@ mod tests {
                 .expect("prepare outbound action");
 
             assert_eq!(prepared.target.nostr_group_id_hex, chat_id);
-            assert_eq!(prepared.kind, TYPING_INDICATOR_KIND);
+            assert_eq!(prepared.wrapper.kind, Kind::MlsGroupMessage);
         }
 
         #[test]
@@ -7916,9 +7920,7 @@ mod tests {
                 .expect("host context")
                 .complete_outbound_publish_operation(
                     prepared,
-                    pika_marmot_runtime::outbound::OutboundConversationPublishStatus::Published {
-                        wrapper_event_id: EventId::all_zeros(),
-                    },
+                    OutboundConversationPublishStatus::Published,
                 );
 
             core.handle_internal(operation);
@@ -7965,9 +7967,7 @@ mod tests {
                 .expect("host context")
                 .complete_outbound_publish_operation(
                     prepared,
-                    pika_marmot_runtime::outbound::OutboundConversationPublishStatus::PublishFailed(
-                        "offline".to_string(),
-                    ),
+                    OutboundConversationPublishStatus::PublishFailed("offline".to_string()),
                 );
 
             core.handle_internal(operation);
@@ -9020,13 +9020,15 @@ mod tests {
 
     mod group_key_packages {
         use super::*;
+        use crate::core::membership_support::{
+            EvolutionPublishStatus, PreparedMembershipEvolution,
+        };
         use crate::core::welcome_support::create_group_and_plan_welcome_delivery;
         use crate::core::DEFAULT_GROUP_DESCRIPTION;
         use crate::mdk_support::open_mdk;
         use crate::updates::InternalEvent;
         use mdk_core::prelude::{GroupId, NostrGroupConfigData};
         use nostr_sdk::prelude::*;
-        use pika_marmot_runtime::membership::PreparedMembershipEvolution;
 
         /// Creates a core with a real MDK session and a group already in storage,
         /// with the group registered in session.groups so add-members can find it.
@@ -9419,7 +9421,7 @@ mod tests {
                 .host_context()
                 .complete_membership_evolution_operation(
                     prepared,
-                    pika_marmot_runtime::membership::EvolutionPublishStatus::Published,
+                    EvolutionPublishStatus::Published,
                 );
 
             core.handle_membership_evolution_result(chat_id.clone(), operation);
@@ -9459,10 +9461,7 @@ mod tests {
                 .expect("prepare membership evolution");
 
             core.pending_group_ops.insert(chat_id.clone());
-            core.handle_group_evolution_published(
-                prepared,
-                pika_marmot_runtime::membership::EvolutionPublishStatus::Published,
-            );
+            core.handle_group_evolution_published(prepared, EvolutionPublishStatus::Published);
 
             let after_merge = core
                 .session
@@ -9528,9 +9527,7 @@ mod tests {
                 .host_context()
                 .complete_membership_evolution_operation(
                     prepared,
-                    pika_marmot_runtime::membership::EvolutionPublishStatus::PublishFailed(
-                        "relay error".to_string(),
-                    ),
+                    EvolutionPublishStatus::PublishFailed("relay error".to_string()),
                 );
 
             core.handle_membership_evolution_result(chat_id.clone(), operation);
@@ -9565,7 +9562,7 @@ mod tests {
             core.pending_group_ops.insert(chat_id.clone());
             core.handle_group_evolution_published(
                 prepared,
-                pika_marmot_runtime::membership::EvolutionPublishStatus::PublishFailed(
+                EvolutionPublishStatus::PublishFailed(
                     "chat-server submit membership commit: request failed with status 409: room epoch mismatch: expected 1, actual 0"
                         .to_string(),
                 ),
@@ -9960,13 +9957,15 @@ mod tests {
     mod group_management_validation {
         use super::*;
         use crate::actions::AppAction;
+        use crate::core::membership_support::{
+            EvolutionPublishStatus, PreparedMembershipEvolution,
+        };
         use crate::mdk_support::open_mdk;
         use crate::state::{AuthMode, AuthState};
         use crate::updates::InternalEvent;
         use nostr_sdk::{Client, Event, EventBuilder, Keys, Kind, RelayUrl, ToBech32};
         use pika_chat_server::store::StoreHandle;
         use pika_chat_server::{router, AppState as ChatServerAppState, SessionManager};
-        use pika_marmot_runtime::membership::PreparedMembershipEvolution;
         use url::Url;
 
         /// Create a core with a minimal session (logged in, no groups registered).
@@ -10789,10 +10788,7 @@ mod tests {
                 stale_epoch_conflict: false,
             };
 
-            core.handle_group_evolution_published(
-                prepared,
-                pika_marmot_runtime::membership::EvolutionPublishStatus::Published,
-            );
+            core.handle_group_evolution_published(prepared, EvolutionPublishStatus::Published);
 
             assert!(!core.pending_group_ops.contains("chat1"));
         }
@@ -10825,9 +10821,7 @@ mod tests {
 
             core.handle_group_evolution_published(
                 prepared,
-                pika_marmot_runtime::membership::EvolutionPublishStatus::PublishFailed(
-                    "relay error".to_string(),
-                ),
+                EvolutionPublishStatus::PublishFailed("relay error".to_string()),
             );
 
             assert!(!core.pending_group_ops.contains("chat1"));

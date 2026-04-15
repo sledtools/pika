@@ -161,8 +161,8 @@ pub(crate) enum InternalEvent {
 
     // Result of publishing a group evolution event (add/remove/leave/rename commit).
     GroupEvolutionPublished {
-        prepared: pika_marmot_runtime::membership::PreparedMembershipEvolution,
-        publish_status: pika_marmot_runtime::membership::EvolutionPublishStatus,
+        prepared: crate::core::membership_support::PreparedMembershipEvolution,
+        publish_status: crate::core::membership_support::EvolutionPublishStatus,
     },
     ChatServerRoomBound {
         chat_id: String,

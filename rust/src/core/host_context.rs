@@ -104,8 +104,12 @@ impl<'a> AppHostContext<'a> {
         chat_id: &str,
         action: OutboundConversationAction,
     ) -> anyhow::Result<PreparedConversationAction> {
-        pika_marmot_runtime::outbound::OutboundConversationRuntime::new(&self.session.mdk)
-            .prepare_action(self.session.pubkey, chat_id, action)
+        super::outbound_support::prepare_action(
+            &self.session.mdk,
+            self.session.pubkey,
+            chat_id,
+            action,
+        )
     }
 
     pub(super) fn prepare_outbound_action_for_group_ids(
@@ -114,38 +118,38 @@ impl<'a> AppHostContext<'a> {
         nostr_group_id_hex: String,
         action: OutboundConversationAction,
     ) -> anyhow::Result<PreparedConversationAction> {
-        pika_marmot_runtime::outbound::OutboundConversationRuntime::new(&self.session.mdk)
-            .prepare_action_for_group_ids(
-                self.session.pubkey,
-                mls_group_id,
-                nostr_group_id_hex,
-                action,
-            )
+        super::outbound_support::prepare_action_for_group_ids(
+            &self.session.mdk,
+            self.session.pubkey,
+            mls_group_id,
+            nostr_group_id_hex,
+            action,
+        )
     }
 
     #[cfg(test)]
     pub(super) fn complete_outbound_publish_operation(
         &self,
         prepared: PreparedConversationAction,
-        publish_status: pika_marmot_runtime::outbound::OutboundConversationPublishStatus,
+        publish_status: super::outbound_support::OutboundConversationPublishStatus,
     ) -> InternalEvent {
         match publish_status {
-            pika_marmot_runtime::outbound::OutboundConversationPublishStatus::Published {
-                ..
-            } => InternalEvent::PublishMessageResult {
-                chat_id: prepared.target.nostr_group_id_hex,
-                rumor_id: prepared.rumor_id.to_hex(),
-                ok: true,
-                error: None,
-            },
-            pika_marmot_runtime::outbound::OutboundConversationPublishStatus::PublishFailed(
-                error,
-            ) => InternalEvent::PublishMessageResult {
-                chat_id: prepared.target.nostr_group_id_hex,
-                rumor_id: prepared.rumor_id.to_hex(),
-                ok: false,
-                error: Some(error),
-            },
+            super::outbound_support::OutboundConversationPublishStatus::Published => {
+                InternalEvent::PublishMessageResult {
+                    chat_id: prepared.target.nostr_group_id_hex,
+                    rumor_id: prepared.rumor_id.to_hex(),
+                    ok: true,
+                    error: None,
+                }
+            }
+            super::outbound_support::OutboundConversationPublishStatus::PublishFailed(error) => {
+                InternalEvent::PublishMessageResult {
+                    chat_id: prepared.target.nostr_group_id_hex,
+                    rumor_id: prepared.rumor_id.to_hex(),
+                    ok: false,
+                    error: Some(error),
+                }
+            }
         }
     }
 
@@ -165,8 +169,11 @@ impl<'a> AppHostContext<'a> {
     ) -> anyhow::Result<PreparedMembershipEvolution> {
         let snapshot =
             super::conversation_support::lookup_joined_group_snapshot(&self.session.mdk, chat_id)?;
-        pika_marmot_runtime::membership::MembershipRuntime::new(&self.session.mdk)
-            .prepare_add_members(&snapshot.mls_group_id, key_package_events)
+        super::membership_support::prepare_add_members(
+            &self.session.mdk,
+            &snapshot.mls_group_id,
+            key_package_events,
+        )
     }
 
     pub(super) fn prepare_evolution(
@@ -176,20 +183,27 @@ impl<'a> AppHostContext<'a> {
         welcome_rumors: Option<Vec<UnsignedEvent>>,
         added_pubkeys: Vec<PublicKey>,
     ) -> anyhow::Result<PreparedMembershipEvolution> {
-        pika_marmot_runtime::membership::MembershipRuntime::new(&self.session.mdk)
-            .prepare_evolution(mls_group_id, evolution_event, welcome_rumors, added_pubkeys)
+        super::membership_support::prepare_evolution(
+            &self.session.mdk,
+            mls_group_id,
+            evolution_event,
+            welcome_rumors,
+            added_pubkeys,
+        )
     }
 
     pub(super) fn complete_membership_evolution_operation(
         &self,
         prepared: PreparedMembershipEvolution,
         publish_status: EvolutionPublishStatus,
-    ) -> Result<pika_marmot_runtime::membership::MembershipUpdateResult, String> {
+    ) -> Result<super::membership_support::MembershipUpdateResult, String> {
         match publish_status {
-            EvolutionPublishStatus::Published => Ok(
-                pika_marmot_runtime::membership::MembershipRuntime::new(&self.session.mdk)
-                    .finalize_published_evolution(prepared),
-            ),
+            EvolutionPublishStatus::Published => {
+                Ok(super::membership_support::finalize_published_evolution(
+                    &self.session.mdk,
+                    prepared,
+                ))
+            }
             EvolutionPublishStatus::PublishFailed(error) => Err(error),
         }
     }

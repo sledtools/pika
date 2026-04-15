@@ -1,20 +1,10 @@
 use super::*;
-use pika_marmot_runtime::runtime::MarmotRuntime;
 
 pub(super) struct AppHostContext<'a> {
     session: &'a Session,
 }
 
-#[cfg(test)]
-pub(super) fn runtime_for_mdk(mdk: &PikaMdk) -> MarmotRuntime<'_> {
-    MarmotRuntime::new(mdk)
-}
-
 impl Session {
-    pub(super) fn runtime(&self) -> MarmotRuntime<'_> {
-        MarmotRuntime::with_client(&self.mdk, &self.client)
-    }
-
     pub(super) fn host_context(&self) -> AppHostContext<'_> {
         AppHostContext { session: self }
     }
@@ -30,17 +20,6 @@ impl AppCore {
 }
 
 impl<'a> AppHostContext<'a> {
-    fn runtime(&self) -> MarmotRuntime<'a> {
-        self.session.runtime()
-    }
-
-    fn commands(&self) -> pika_marmot_runtime::runtime::RuntimeCommands<'a> {
-        pika_marmot_runtime::runtime::RuntimeCommands::with_client(
-            &self.session.mdk,
-            &self.session.client,
-        )
-    }
-
     fn queries(&self) -> pika_marmot_runtime::runtime::RuntimeQueries<'a> {
         pika_marmot_runtime::runtime::RuntimeQueries::new(&self.session.mdk)
     }
@@ -49,7 +28,8 @@ impl<'a> AppHostContext<'a> {
         &self,
         chat_id: &str,
     ) -> anyhow::Result<pika_marmot_runtime::conversation::RuntimeJoinedGroupSnapshot> {
-        self.runtime().lookup_joined_group_snapshot(chat_id)
+        pika_marmot_runtime::conversation::ConversationRuntime::new(&self.session.mdk)
+            .lookup_joined_group_snapshot(chat_id)
     }
 
     pub(super) fn current_pubkey_hex(&self) -> String {
@@ -59,7 +39,8 @@ impl<'a> AppHostContext<'a> {
     pub(super) fn list_joined_group_snapshots(
         &self,
     ) -> anyhow::Result<Vec<pika_marmot_runtime::conversation::RuntimeJoinedGroupSnapshot>> {
-        self.runtime().list_joined_group_snapshots()
+        pika_marmot_runtime::conversation::ConversationRuntime::new(&self.session.mdk)
+            .list_joined_group_snapshots()
     }
 
     pub(super) fn load_message_page(
@@ -67,21 +48,22 @@ impl<'a> AppHostContext<'a> {
         chat_id: &str,
         query: pika_marmot_runtime::conversation::RuntimeMessagePageQuery,
     ) -> anyhow::Result<pika_marmot_runtime::conversation::RuntimeMessagePage> {
-        self.runtime().load_message_page(chat_id, query)
+        pika_marmot_runtime::conversation::ConversationRuntime::new(&self.session.mdk)
+            .load_message_page(chat_id, query)
     }
 
     #[cfg(test)]
     pub(super) fn list_pending_welcome_snapshots(
         &self,
     ) -> anyhow::Result<Vec<pika_marmot_runtime::welcome::PendingWelcomeSnapshot>> {
-        self.runtime().list_pending_welcome_snapshots()
+        pika_marmot_runtime::welcome::list_pending_welcome_snapshots(&self.session.mdk)
     }
 
     pub(super) fn lookup_pending_welcome(
         &self,
         target: &EventId,
     ) -> anyhow::Result<Option<mdk_storage_traits::welcomes::types::Welcome>> {
-        self.runtime().lookup_pending_welcome(target)
+        pika_marmot_runtime::welcome::lookup_pending_welcome(&self.session.mdk, target)
     }
 
     pub(super) fn prepare_outbound_action_for_chat(
@@ -89,8 +71,8 @@ impl<'a> AppHostContext<'a> {
         chat_id: &str,
         action: OutboundConversationAction,
     ) -> anyhow::Result<PreparedConversationAction> {
-        self.commands()
-            .prepare_outbound_action(self.session.pubkey, chat_id, action)
+        pika_marmot_runtime::outbound::OutboundConversationRuntime::new(&self.session.mdk)
+            .prepare_action(self.session.pubkey, chat_id, action)
     }
 
     pub(super) fn prepare_outbound_action_for_group_ids(
@@ -99,12 +81,13 @@ impl<'a> AppHostContext<'a> {
         nostr_group_id_hex: String,
         action: OutboundConversationAction,
     ) -> anyhow::Result<PreparedConversationAction> {
-        self.commands().prepare_outbound_action_for_group_ids(
-            self.session.pubkey,
-            mls_group_id,
-            nostr_group_id_hex,
-            action,
-        )
+        pika_marmot_runtime::outbound::OutboundConversationRuntime::new(&self.session.mdk)
+            .prepare_action_for_group_ids(
+                self.session.pubkey,
+                mls_group_id,
+                nostr_group_id_hex,
+                action,
+            )
     }
 
     #[cfg(test)]
@@ -113,8 +96,10 @@ impl<'a> AppHostContext<'a> {
         prepared: PreparedConversationAction,
         publish_status: pika_marmot_runtime::outbound::OutboundConversationPublishStatus,
     ) -> pika_marmot_runtime::runtime::RuntimeOperationEvent {
-        self.commands()
-            .complete_outbound_publish_operation(prepared, publish_status)
+        pika_marmot_runtime::runtime::RuntimeOperationEvent::complete_outbound_conversation_publish(
+            prepared,
+            publish_status,
+        )
     }
 
     #[cfg(test)]
@@ -125,7 +110,7 @@ impl<'a> AppHostContext<'a> {
         prepared: pika_marmot_runtime::call_runtime::PreparedCallSignal,
         publish_status: pika_marmot_runtime::runtime::CallSignalPublishStatus,
     ) -> pika_marmot_runtime::runtime::RuntimeOperationEvent {
-        self.commands().complete_call_signal_publish_operation(
+        pika_marmot_runtime::runtime::RuntimeOperationEvent::complete_call_signal_publish(
             kind,
             nostr_group_id_hex,
             prepared,
@@ -138,8 +123,11 @@ impl<'a> AppHostContext<'a> {
         chat_id: &str,
         key_package_events: &[Event],
     ) -> anyhow::Result<PreparedMembershipEvolution> {
-        self.commands()
-            .prepare_add_members_for_nostr_group_id(chat_id, key_package_events)
+        let snapshot =
+            pika_marmot_runtime::conversation::ConversationRuntime::new(&self.session.mdk)
+                .lookup_joined_group_snapshot(chat_id)?;
+        pika_marmot_runtime::membership::MembershipRuntime::new(&self.session.mdk)
+            .prepare_add_members(&snapshot.mls_group_id, key_package_events)
     }
 
     pub(super) fn prepare_evolution(
@@ -149,12 +137,8 @@ impl<'a> AppHostContext<'a> {
         welcome_rumors: Option<Vec<UnsignedEvent>>,
         added_pubkeys: Vec<PublicKey>,
     ) -> anyhow::Result<PreparedMembershipEvolution> {
-        self.commands().prepare_evolution(
-            mls_group_id,
-            evolution_event,
-            welcome_rumors,
-            added_pubkeys,
-        )
+        pika_marmot_runtime::membership::MembershipRuntime::new(&self.session.mdk)
+            .prepare_evolution(mls_group_id, evolution_event, welcome_rumors, added_pubkeys)
     }
 
     pub(super) fn complete_membership_evolution_operation(
@@ -162,30 +146,114 @@ impl<'a> AppHostContext<'a> {
         prepared: PreparedMembershipEvolution,
         publish_status: EvolutionPublishStatus,
     ) -> pika_marmot_runtime::runtime::RuntimeOperationEvent {
-        self.commands()
-            .complete_membership_evolution_operation(prepared, publish_status)
+        let operation_id = prepared.evolution_event.id;
+        match publish_status {
+            EvolutionPublishStatus::Published => {
+                pika_marmot_runtime::runtime::RuntimeOperationEvent::MembershipEvolution(
+                    pika_marmot_runtime::runtime::MembershipEvolutionOperationEvent::Completed {
+                        operation_id,
+                        result: pika_marmot_runtime::membership::MembershipRuntime::new(
+                            &self.session.mdk,
+                        )
+                        .finalize_published_evolution(prepared),
+                    },
+                )
+            }
+            EvolutionPublishStatus::PublishFailed(error) => {
+                pika_marmot_runtime::runtime::RuntimeOperationEvent::membership_evolution_failed(
+                    prepared, error,
+                )
+            }
+        }
     }
 
     pub(super) fn process_group_message_event(
         &self,
         event: Event,
     ) -> anyhow::Result<pika_marmot_runtime::runtime::InboundGroupMessageProcessing> {
-        self.runtime().process_group_message_event(event)
+        let event_id = event.id;
+        match pika_marmot_runtime::conversation::ConversationRuntime::new(&self.session.mdk)
+            .process_event(&event)?
+        {
+            Some(conversation_event) => Ok(
+                pika_marmot_runtime::runtime::InboundGroupMessageProcessing::Processed {
+                    event_id,
+                    conversation_event,
+                },
+            ),
+            None => Ok(
+                pika_marmot_runtime::runtime::InboundGroupMessageProcessing::Ignored { event_id },
+            ),
+        }
     }
 
     pub(super) fn interpret_runtime_application_message(
         &self,
         runtime_msg: RuntimeApplicationMessage,
     ) -> pika_marmot_runtime::runtime::RuntimeApplicationMessageInterpretation {
-        self.runtime()
-            .interpret_runtime_application_message(runtime_msg)
+        match runtime_msg.classification {
+            pika_marmot_runtime::message::MessageClassification::TypingIndicator => {
+                pika_marmot_runtime::runtime::RuntimeApplicationMessageInterpretation::TypingIndicator {
+                    message: runtime_msg,
+                }
+            }
+            pika_marmot_runtime::message::MessageClassification::CallSignal => {
+                pika_marmot_runtime::runtime::RuntimeApplicationMessageInterpretation::CallSignal {
+                    parsed_signal: pika_marmot_runtime::call::parse_call_signal(
+                        &runtime_msg.message.content,
+                    ),
+                    message: runtime_msg,
+                }
+            }
+            pika_marmot_runtime::message::MessageClassification::Chat
+            | pika_marmot_runtime::message::MessageClassification::Reaction
+            | pika_marmot_runtime::message::MessageClassification::Hypernote
+            | pika_marmot_runtime::message::MessageClassification::HypernoteResponse => {
+                pika_marmot_runtime::runtime::RuntimeApplicationMessageInterpretation::Content {
+                    message: runtime_msg,
+                }
+            }
+            pika_marmot_runtime::message::MessageClassification::GroupProfile => {
+                pika_marmot_runtime::runtime::RuntimeApplicationMessageInterpretation::GroupProfile {
+                    message: runtime_msg,
+                }
+            }
+        }
     }
 
     pub(super) fn interpret_conversation_event(
         &self,
         event: ConversationEvent,
     ) -> pika_marmot_runtime::runtime::RuntimeConversationEventInterpretation {
-        self.runtime().interpret_conversation_event(event)
+        match event {
+            ConversationEvent::Application(message) => {
+                pika_marmot_runtime::runtime::RuntimeConversationEventInterpretation::Application {
+                    message,
+                }
+            }
+            ConversationEvent::GroupUpdate(update) => {
+                let is_commit = matches!(
+                    update.kind,
+                    pika_marmot_runtime::conversation::RuntimeGroupUpdateKind::Commit
+                );
+                pika_marmot_runtime::runtime::RuntimeConversationEventInterpretation::GroupUpdate {
+                    update,
+                    is_commit,
+                }
+            }
+            ConversationEvent::UnresolvedGroup { mls_group_id } => {
+                pika_marmot_runtime::runtime::RuntimeConversationEventInterpretation::NeedsFullRefresh {
+                    reason: pika_marmot_runtime::runtime::RuntimeConversationRefreshReason::UnresolvedGroup {
+                        mls_group_id,
+                    },
+                }
+            }
+            ConversationEvent::PreviouslyFailed => {
+                pika_marmot_runtime::runtime::RuntimeConversationEventInterpretation::NeedsFullRefresh {
+                    reason: pika_marmot_runtime::runtime::RuntimeConversationRefreshReason::PreviouslyFailed,
+                }
+            }
+        }
     }
 
     #[cfg(test)]
@@ -193,8 +261,10 @@ impl<'a> AppHostContext<'a> {
         &self,
         subscribed_group_ids: Vec<String>,
     ) -> anyhow::Result<pika_marmot_runtime::runtime::RuntimeGroupSubscriptionPlan> {
-        self.runtime()
-            .plan_group_subscriptions(subscribed_group_ids)
+        pika_marmot_runtime::runtime::plan_group_subscriptions_from_mdk(
+            &self.session.mdk,
+            subscribed_group_ids,
+        )
     }
 
     pub(super) fn refresh_session_state(
@@ -219,7 +289,8 @@ impl<'a> AppHostContext<'a> {
         &self,
         result: MessageProcessingResult,
     ) -> Option<ConversationEvent> {
-        self.runtime().interpret_processing_result(result)
+        pika_marmot_runtime::conversation::ConversationRuntime::new(&self.session.mdk)
+            .interpret_processing_result(result)
     }
 
     pub(super) fn prepare_upload(
@@ -229,8 +300,12 @@ impl<'a> AppHostContext<'a> {
         mime_type: Option<&str>,
         filename: Option<&str>,
     ) -> anyhow::Result<pika_marmot_runtime::media::PreparedMediaUpload> {
-        self.commands()
-            .prepare_upload(mls_group_id, bytes, mime_type, filename)
+        pika_marmot_runtime::media::MediaRuntime::new(&self.session.mdk).prepare_upload(
+            mls_group_id,
+            bytes,
+            mime_type,
+            filename,
+        )
     }
 
     pub(super) fn complete_media_upload_operation(
@@ -240,12 +315,34 @@ impl<'a> AppHostContext<'a> {
         upload: &EncryptedMediaUpload,
         status: pika_marmot_runtime::runtime::MediaUploadStatus,
     ) -> pika_marmot_runtime::runtime::RuntimeOperationEvent {
-        self.commands().complete_media_upload_operation(
-            mls_group_id,
-            nostr_group_id_hex,
-            upload,
-            status,
-        )
+        let operation_id = EventId::from_byte_array(upload.encrypted_hash);
+        match status {
+            pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(uploaded_blob) => {
+                pika_marmot_runtime::runtime::RuntimeOperationEvent::MediaUpload(
+                    pika_marmot_runtime::runtime::MediaUploadOperationEvent::Completed {
+                        operation_id,
+                        result: Box::new(pika_marmot_runtime::runtime::CompletedMediaUpload {
+                            nostr_group_id_hex,
+                            result: pika_marmot_runtime::media::MediaRuntime::new(
+                                &self.session.mdk,
+                            )
+                            .finish_upload(
+                                mls_group_id,
+                                upload,
+                                uploaded_blob,
+                            ),
+                        }),
+                    },
+                )
+            }
+            pika_marmot_runtime::runtime::MediaUploadStatus::UploadFailed(error) => {
+                pika_marmot_runtime::runtime::RuntimeOperationEvent::media_upload_failed(
+                    nostr_group_id_hex,
+                    upload,
+                    error,
+                )
+            }
+        }
     }
 
     pub(super) fn decrypt_downloaded_media(
@@ -255,7 +352,7 @@ impl<'a> AppHostContext<'a> {
         encrypted_data: &[u8],
         expected_encrypted_hash_hex: Option<&str>,
     ) -> anyhow::Result<pika_marmot_runtime::media::RuntimeDownloadedMedia> {
-        self.runtime().decrypt_downloaded_media(
+        pika_marmot_runtime::media::MediaRuntime::new(&self.session.mdk).decrypt_downloaded_media(
             mls_group_id,
             reference,
             encrypted_data,
@@ -276,8 +373,8 @@ impl<'a> AppHostContext<'a> {
         ),
         String,
     > {
-        self.commands()
-            .prepare_outgoing_call_invite(target_id, peer_pubkey_hex, call_id, session)
+        pika_marmot_runtime::call_runtime::CallWorkflowRuntime::new(&self.session.mdk)
+            .prepare_outgoing_invite(target_id, peer_pubkey_hex, call_id, session)
     }
 
     pub(super) fn prepare_accept_incoming_call(
@@ -285,8 +382,8 @@ impl<'a> AppHostContext<'a> {
         incoming: &pika_marmot_runtime::call_runtime::PendingIncomingCall,
         group: GroupCallContext<'_>,
     ) -> Result<PreparedAcceptedCall, String> {
-        self.commands()
-            .prepare_accept_incoming_call(incoming, group)
+        pika_marmot_runtime::call_runtime::CallWorkflowRuntime::new(&self.session.mdk)
+            .prepare_accept_incoming(incoming, group)
     }
 
     pub(super) fn prepare_reject_call_signal(
@@ -294,7 +391,8 @@ impl<'a> AppHostContext<'a> {
         call_id: &str,
         reason: &str,
     ) -> Result<pika_marmot_runtime::call_runtime::PreparedCallSignal, String> {
-        self.commands().prepare_reject_call_signal(call_id, reason)
+        pika_marmot_runtime::call_runtime::CallWorkflowRuntime::new(&self.session.mdk)
+            .prepare_reject_signal(call_id, reason)
     }
 
     pub(super) fn prepare_end_call_signal(
@@ -302,7 +400,8 @@ impl<'a> AppHostContext<'a> {
         call_id: &str,
         reason: &str,
     ) -> Result<pika_marmot_runtime::call_runtime::PreparedCallSignal, String> {
-        self.commands().prepare_end_call_signal(call_id, reason)
+        pika_marmot_runtime::call_runtime::CallWorkflowRuntime::new(&self.session.mdk)
+            .prepare_end_signal(call_id, reason)
     }
 
     pub(super) fn handle_inbound_call_signal(
@@ -310,6 +409,7 @@ impl<'a> AppHostContext<'a> {
         ctx: InboundSignalContext<'_>,
         signal: ParsedCallSignal,
     ) -> InboundCallSignalOutcome {
-        self.runtime().handle_inbound_call_signal(ctx, signal)
+        pika_marmot_runtime::call_runtime::CallWorkflowRuntime::new(&self.session.mdk)
+            .handle_inbound_signal(ctx, signal)
     }
 }

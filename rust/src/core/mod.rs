@@ -46,8 +46,6 @@ use crate::state::{
 };
 use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
 
-#[cfg(test)]
-use host_context::runtime_for_mdk;
 use mdk_core::encrypted_media::types::{EncryptedMediaUpload, MediaReference};
 use mdk_core::prelude::{message_types, GroupId, MessageProcessingResult, NostrGroupConfigData};
 use mdk_storage_traits::groups::Pagination;

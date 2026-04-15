@@ -358,7 +358,12 @@ fn prepare_chat_media_upload(
     mime_type: &str,
     filename: &str,
 ) -> anyhow::Result<pika_marmot_runtime::media::PreparedMediaUpload> {
-    runtime_for_mdk(mdk).prepare_upload(group_id, bytes, Some(mime_type), Some(filename))
+    pika_marmot_runtime::media::MediaRuntime::new(mdk).prepare_upload(
+        group_id,
+        bytes,
+        Some(mime_type),
+        Some(filename),
+    )
 }
 
 #[cfg(test)]
@@ -369,7 +374,7 @@ fn finalize_chat_media_upload(
     uploaded_url: String,
     descriptor_sha256_hex: String,
 ) -> pika_marmot_runtime::media::RuntimeMediaUploadResult {
-    runtime_for_mdk(mdk).finish_upload(
+    pika_marmot_runtime::media::MediaRuntime::new(mdk).finish_upload(
         group_id,
         upload,
         pika_marmot_runtime::media::UploadedBlob {
@@ -388,7 +393,7 @@ fn decrypt_chat_media_download(
     encrypted_data: &[u8],
     expected_encrypted_hash_hex: Option<&str>,
 ) -> anyhow::Result<pika_marmot_runtime::media::RuntimeDownloadedMedia> {
-    runtime_for_mdk(mdk).decrypt_downloaded_media(
+    pika_marmot_runtime::media::MediaRuntime::new(mdk).decrypt_downloaded_media(
         group_id,
         reference,
         encrypted_data,

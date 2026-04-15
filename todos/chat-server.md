@@ -86,8 +86,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   chat-server mode now uses `wss://private-chat.invalid` only where MDK still insists on non-empty relay tags, and session startup filters that sentinel back out before any network connection is attempted.
 - [x] Delete one thin Marmot helper seam instead of preserving it:
   the shared create-group/welcome helper moved into the existing welcome module, and the extra `pika-marmot-runtime::group` wrapper module is gone.
+- [x] Cut the app host context off the broad Marmot facade:
+  `pika_core` no longer constructs `MarmotRuntime` / `RuntimeCommands` for its host-context read/write paths, and instead calls the narrower conversation, membership, media, welcome, and call helpers directly.
 - Next seam:
-  cut `pika_core` off the `pika-marmot-runtime` app-facing facade first, so chat-server mode only depends on direct MDK/OpenMLS operations instead of the extra runtime wrapper layer.
+  remove the remaining runtime-owned wrapper types from `pika_core` session/update plumbing, starting with the event/result carrier types that still tie app code to `pika-marmot-runtime::runtime`.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
 
@@ -178,3 +180,5 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   We should not preserve old relay/Marmot paths longer than necessary once the new slice is proven.
 - The highest-value simplification after the current transport slices is not "replace MDK all at once."
   It is deleting `pika_core`'s dependency on the `pika-marmot-runtime` facade so the remaining MLS surface is smaller and more honest before the OpenMLS runtime cut.
+- That facade cut can land incrementally.
+  The first pass was to stop constructing `MarmotRuntime` / `RuntimeCommands` in app host context code; the next pass is to replace the remaining runtime-owned carrier enums and session-open wrappers.

@@ -645,14 +645,11 @@ impl AppCore {
             return Err("Chat not found".to_string());
         };
 
-        sess.host_context()
-            .complete_media_upload_operation(
-                &group.mls_group_id,
-                chat_id.to_string(),
-                upload,
-                ChatMediaUploadStatus::Uploaded(uploaded_blob),
-            )
-            .map(|completed| completed.result)
+        sess.host_context().complete_media_upload_operation(
+            &group.mls_group_id,
+            upload,
+            ChatMediaUploadStatus::Uploaded(uploaded_blob),
+        )
     }
 
     /// Build media attachments without checking local file paths or persisting to DB.

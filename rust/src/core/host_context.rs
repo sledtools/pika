@@ -155,15 +155,9 @@ impl<'a> AppHostContext<'a> {
     #[cfg(test)]
     pub(super) fn complete_call_signal_publish_operation(
         &self,
-        kind: pika_marmot_runtime::runtime::CallSignalPublishKind,
-        publish_status: pika_marmot_runtime::runtime::CallSignalPublishStatus,
+        kind: CallSignalPublishKind,
+        error: Option<String>,
     ) -> InternalEvent {
-        let error = match publish_status {
-            pika_marmot_runtime::runtime::CallSignalPublishStatus::Published { .. } => None,
-            pika_marmot_runtime::runtime::CallSignalPublishStatus::PublishFailed {
-                error, ..
-            } => Some(error),
-        };
         InternalEvent::CallSignalPublishResult { kind, error }
     }
 
@@ -300,18 +294,17 @@ impl<'a> AppHostContext<'a> {
     pub(super) fn complete_media_upload_operation(
         &self,
         mls_group_id: &GroupId,
-        nostr_group_id_hex: String,
         upload: &EncryptedMediaUpload,
         status: ChatMediaUploadStatus,
-    ) -> Result<pika_marmot_runtime::runtime::CompletedMediaUpload, String> {
+    ) -> Result<pika_marmot_runtime::media::RuntimeMediaUploadResult, String> {
         match status {
-            ChatMediaUploadStatus::Uploaded(uploaded_blob) => {
-                Ok(pika_marmot_runtime::runtime::CompletedMediaUpload {
-                    nostr_group_id_hex,
-                    result: pika_marmot_runtime::media::MediaRuntime::new(&self.session.mdk)
-                        .finish_upload(mls_group_id, upload, uploaded_blob),
-                })
-            }
+            ChatMediaUploadStatus::Uploaded(uploaded_blob) => Ok(
+                pika_marmot_runtime::media::MediaRuntime::new(&self.session.mdk).finish_upload(
+                    mls_group_id,
+                    upload,
+                    uploaded_blob,
+                ),
+            ),
             ChatMediaUploadStatus::UploadFailed(error) => Err(error),
         }
     }

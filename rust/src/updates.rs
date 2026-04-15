@@ -44,6 +44,14 @@ pub enum ChatMediaUploadStatus {
     UploadFailed(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallSignalPublishKind {
+    Invite,
+    Accept,
+    Reject,
+    End,
+}
+
 #[derive(Debug)]
 pub enum InternalEvent {
     // Nostr receive path
@@ -63,7 +71,7 @@ pub enum InternalEvent {
         error: Option<String>,
     },
     CallSignalPublishResult {
-        kind: pika_marmot_runtime::runtime::CallSignalPublishKind,
+        kind: CallSignalPublishKind,
         error: Option<String>,
     },
     ChatMediaUploadCompleted {

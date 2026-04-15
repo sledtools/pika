@@ -100,8 +100,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `pika_core` now owns the relay seen-cache, inbound relay classifier, and welcome/group subscription helpers in `session.rs`; the session path no longer imports those helper types/functions from `pika-marmot-runtime::runtime`.
 - [x] Localize signer-client and host-context interpretation helpers:
   `pika_core` now owns the temporary signer-derived relay client plus the app-local message/conversation interpretation enums, so app code no longer imports `temporary_client_from_session_signer`, `InboundGroupMessageProcessing`, `RuntimeApplicationMessageInterpretation`, or `RuntimeConversationEventInterpretation`.
+- [x] Localize runtime-owned call/media result carriers:
+  `pika_core` now owns the call-signal publish kind, drops the test-only `CallSignalPublishStatus` bridge, and returns media upload results directly instead of wrapping them in `CompletedMediaUpload`.
 - Next seam:
-  remove the remaining runtime-owned app result carriers in `pika_core`, starting with the call-signal publish contract (`CallSignalPublishKind` / test-only `CallSignalPublishStatus`) and `CompletedMediaUpload`.
+  remove the next `pika-marmot-runtime` facade slice from `pika_core`, starting with the media helpers/types (`PreparedMediaUpload`, `RuntimeMediaUploadResult`, `RuntimeDownloadedMedia`, and `upload_encrypted_blob`) and then the conversation storage/query wrappers.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
 
@@ -193,4 +195,4 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
 - The highest-value simplification after the current transport slices is not "replace MDK all at once."
   It is deleting `pika_core`'s dependency on the `pika-marmot-runtime` facade so the remaining MLS surface is smaller and more honest before the OpenMLS runtime cut.
 - That facade cut can land incrementally.
-  The first pass was to stop constructing `MarmotRuntime` / `RuntimeCommands` in app host context code; the second pass replaced the remaining runtime-owned event/result carrier enums with direct app-local result types; the third pass deleted the runtime bootstrap/open-state wrappers from app startup; the fourth pass replaced the remaining session-planning structs with app-local ones; the fifth pass moved relay-role planning local; the sixth pass localized the remaining relay/session ingress helpers in `session.rs`; the seventh pass localized the temporary signer-derived client plus the app-side conversation/message interpretation wrappers; the next pass is the remaining call-signal/media result carriers.
+  The first pass was to stop constructing `MarmotRuntime` / `RuntimeCommands` in app host context code; the second pass replaced the remaining runtime-owned event/result carrier enums with direct app-local result types; the third pass deleted the runtime bootstrap/open-state wrappers from app startup; the fourth pass replaced the remaining session-planning structs with app-local ones; the fifth pass moved relay-role planning local; the sixth pass localized the remaining relay/session ingress helpers in `session.rs`; the seventh pass localized the temporary signer-derived client plus the app-side conversation/message interpretation wrappers; the eighth pass localized the remaining runtime-owned call/media result carriers; the next pass is the broader media helper/type slice.

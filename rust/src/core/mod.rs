@@ -44,7 +44,7 @@ use crate::state::{
     ChatSummary, ChatViewState, MessageDeliveryState, MyProfileState, Screen, VoiceRecordingPhase,
     VoiceRecordingState,
 };
-use crate::updates::{AppUpdate, CoreMsg, InternalEvent};
+use crate::updates::{AppUpdate, CallSignalPublishKind, CoreMsg, InternalEvent};
 use config::RelayRolePlan;
 use host_context::{AppApplicationMessageInterpretation, AppConversationEventInterpretation};
 
@@ -69,7 +69,6 @@ pub(crate) use pika_marmot_runtime::message::{
     CALL_SIGNAL_KIND, HYPERNOTE_ACTION_RESPONSE_KIND, HYPERNOTE_KIND,
 };
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
-use pika_marmot_runtime::runtime::CallSignalPublishKind;
 use pika_marmot_runtime::welcome::{
     accept_welcome_and_catch_up, create_group_and_plan_welcome_delivery, GroupWelcomeDeliveryPlan,
     PlannedGroupCreation,
@@ -7990,19 +7989,12 @@ mod tests {
         #[test]
         fn app_call_signal_publish_operation_result_uses_shared_runtime_event_boundary() {
             let (mut core, _chat_id, _keys, _group_id) = make_core_with_group();
-            let wrapper_event_id = EventId::from_hex(
-                "2222222222222222222222222222222222222222222222222222222222222222",
-            )
-            .expect("event id");
             let operation = core
                 .host_context()
                 .expect("host context")
                 .complete_call_signal_publish_operation(
-                    pika_marmot_runtime::runtime::CallSignalPublishKind::Invite,
-                    pika_marmot_runtime::runtime::CallSignalPublishStatus::PublishFailed {
-                        wrapper_event_id,
-                        error: "offline".to_string(),
-                    },
+                    crate::updates::CallSignalPublishKind::Invite,
+                    Some("offline".to_string()),
                 );
 
             core.handle_internal(operation);
@@ -8015,7 +8007,7 @@ mod tests {
 
         #[test]
         fn app_media_upload_commands_use_shared_command_boundary() {
-            let (core, chat_id, _keys, group_id) = make_core_with_group();
+            let (core, _chat_id, _keys, group_id) = make_core_with_group();
             let completed = core
                 .host_context()
                 .expect("host context")
@@ -8030,7 +8022,6 @@ mod tests {
                         .expect("host context")
                         .complete_media_upload_operation(
                             &group_id,
-                            chat_id.clone(),
                             &prepared.upload,
                             crate::updates::ChatMediaUploadStatus::Uploaded(
                                 pika_marmot_runtime::media::UploadedBlob {
@@ -8043,7 +8034,6 @@ mod tests {
                             ),
                         )
                         .expect("completed media upload")
-                        .result
                 })
                 .expect("prepare and complete upload");
 
@@ -8412,7 +8402,6 @@ mod tests {
                 .expect("host context")
                 .complete_media_upload_operation(
                     &group_id,
-                    chat_id.clone(),
                     &first.upload,
                     crate::updates::ChatMediaUploadStatus::Uploaded(
                         pika_marmot_runtime::media::UploadedBlob {
@@ -8422,8 +8411,7 @@ mod tests {
                         },
                     ),
                 )
-                .expect("completed media upload")
-                .result;
+                .expect("completed media upload");
             let second = core
                 .host_context()
                 .expect("host context")

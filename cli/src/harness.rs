@@ -9,6 +9,7 @@ use mdk_core::prelude::*;
 use nostr_blossom::client::BlossomClient;
 use nostr_sdk::prelude::*;
 use pika_marmot_runtime::{PikaMdk, load_or_create_keys, new_mdk};
+use pikachat_sidecar as pika_marmot_runtime;
 use rand::RngCore;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;

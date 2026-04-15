@@ -22,6 +22,7 @@ use pika_marmot_runtime::welcome::{CreatedGroup, create_group_and_publish_welcom
 use pika_relay_profiles::{
     default_key_package_relays, default_message_relays, default_primary_blossom_server,
 };
+use pikachat_sidecar as pika_marmot_runtime;
 use serde::Deserialize;
 use serde_json::json;
 

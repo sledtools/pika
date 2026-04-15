@@ -6069,29 +6069,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pika-marmot-runtime"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "hex",
- "hypernote-protocol",
- "mdk-core",
- "mdk-sqlite-storage",
- "mdk-storage-traits",
- "nostr-blossom",
- "nostr-sdk",
- "pika-media",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "pika-media"
 version = "0.1.0"
 dependencies = [
@@ -6228,7 +6205,6 @@ dependencies = [
  "paranoid-android",
  "pika-chat-server",
  "pika-managed-agent-contract",
- "pika-marmot-runtime",
  "pika-media",
  "pika-relay-profiles",
  "pika-tls",
@@ -6266,7 +6242,6 @@ dependencies = [
  "nostr-sdk",
  "pika-agent-protocol",
  "pika-managed-agent-contract",
- "pika-marmot-runtime",
  "pika-relay-profiles",
  "pika-test-utils",
  "pikachat-sidecar",
@@ -6287,19 +6262,21 @@ name = "pikachat-sidecar"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "hex",
  "hound",
  "hypernote-protocol",
  "mdk-core",
  "mdk-sqlite-storage",
  "mdk-storage-traits",
+ "nostr-blossom",
  "nostr-sdk",
- "pika-marmot-runtime",
  "pika-media",
  "pika-relay-profiles",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "tracing",

@@ -6,7 +6,6 @@ members = [
   "crates/hypernote-protocol",
   "crates/pika-agent-protocol",
   "crates/pika-cloud",
-  "crates/pika-marmot-runtime",
   "crates/pika-media",
   "crates/pika-relay-profiles",
   "crates/pika-server",

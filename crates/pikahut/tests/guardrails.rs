@@ -715,7 +715,6 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
     for (dependency_name, filter_path) in [
         ("pika-agent-protocol", "crates/pika-agent-protocol/**"),
         ("pika-cloud", "crates/pika-cloud/**"),
-        ("pika-marmot-runtime", "crates/pika-marmot-runtime/**"),
         ("pika-relay-profiles", "crates/pika-relay-profiles/**"),
         ("pikachat-sidecar", "crates/pikachat-sidecar/**"),
         ("hypernote-protocol", "crates/hypernote-protocol/**"),

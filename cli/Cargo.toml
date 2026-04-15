@@ -19,7 +19,6 @@ nostr-sdk = { workspace = true, features = ["nip59"] }
 pika-agent-protocol = { path = "../crates/pika-agent-protocol" }
 pika-managed-agent-contract = { workspace = true }
 pika-relay-profiles = { path = "../crates/pika-relay-profiles" }
-pika-marmot-runtime = { path = "../crates/pika-marmot-runtime" }
 pikachat-sidecar = { path = "../crates/pikachat-sidecar" }
 rand = { workspace = true }
 reqwest = { workspace = true, features = ["json", "native-tls"] }

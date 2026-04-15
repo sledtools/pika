@@ -156,7 +156,6 @@
         cp -R ${./crates/pika-agent-protocol} "$out/crates/pika-agent-protocol"
         cp -R ${./crates/pika-cloud} "$out/crates/pika-cloud"
         cp -R ${./crates/pika-desktop} "$out/crates/pika-desktop"
-        cp -R ${./crates/pika-marmot-runtime} "$out/crates/pika-marmot-runtime"
         cp -R ${./crates/pika-media} "$out/crates/pika-media"
         cp -R ${./crates/pika-relay-profiles} "$out/crates/pika-relay-profiles"
         cp -R ${./crates/pika-server} "$out/crates/pika-server"
@@ -598,7 +597,6 @@
           ./crates/pika-forge-model/Cargo.toml
           ./crates/pika-managed-agent-contract/Cargo.toml
           ./crates/pika-relay-profiles/Cargo.toml
-          ./crates/pika-marmot-runtime/Cargo.toml
           ./crates/hypernote-protocol/Cargo.toml
           ./crates/jerichoci/Cargo.toml
           ./crates/pikachat-sidecar/Cargo.toml
@@ -629,7 +627,6 @@
               ./crates/pika-incus-guest-role
               ./crates/pika-relay-profiles
               ./crates/pika-managed-agent-contract
-              ./crates/pika-marmot-runtime
               ./crates/hypernote-protocol
               ./crates/pika-desktop
               ./crates/pika-media
@@ -655,7 +652,6 @@
               ./crates/pika-incus-guest-role
               ./crates/pika-relay-profiles
               ./crates/pika-managed-agent-contract
-              ./crates/pika-marmot-runtime
               ./crates/hypernote-protocol
               ./crates/pika-media
               ./crates/pika-nse

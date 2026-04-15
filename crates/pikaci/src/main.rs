@@ -857,12 +857,6 @@ mod tests {
             target
                 .filters
                 .iter()
-                .any(|pattern| pattern == "crates/pika-marmot-runtime/**")
-        );
-        assert!(
-            target
-                .filters
-                .iter()
                 .any(|pattern| pattern == "crates/pika-media/**")
         );
         assert!(

@@ -28,7 +28,6 @@ nostr-connect = { workspace = true }
 nostr-blossom = { workspace = true }
 pika-managed-agent-contract = { workspace = true }
 pika-chat-server = { path = "../crates/pika-chat-server" }
-pika-marmot-runtime = { path = "../crates/pika-marmot-runtime" }
 pika-relay-profiles = { path = "../crates/pika-relay-profiles" }
 pika-media = { path = "../crates/pika-media", features = ["network"] }
 pika-tls = { path = "../crates/pika-tls" }

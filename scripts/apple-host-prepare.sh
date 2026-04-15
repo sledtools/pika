@@ -115,11 +115,6 @@ case "$profile" in
 esac
 
 if [[ "$profile" == "bundle" ]]; then
-  record_phase shared-runtime-runtime-no-run \
-    ./scripts/apple-host-record-prepared-entry \
-    --manifest "$manifest_file" \
-    --entry "pika-marmot-runtime-package-tests" \
-    -- cargo test -p pika-marmot-runtime --no-run --message-format=json
   record_phase shared-runtime-core-no-run \
     ./scripts/apple-host-record-prepared-entry \
     --manifest "$manifest_file" \

@@ -12,7 +12,6 @@ members = [
   "crates/pika-managed-agent-contract",
   "crates/pika-cloud",
   "crates/pika-relay-profiles",
-  "crates/pika-marmot-runtime",
   "crates/hypernote-protocol",
   "crates/pikachat-sidecar",
   "crates/pika-desktop",

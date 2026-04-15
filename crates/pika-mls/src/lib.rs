@@ -41,6 +41,17 @@ impl PikaMls {
             .create_group(creator_public_key, member_key_package_events, config)
     }
 
+    pub fn create_key_package_for_event<I>(
+        &self,
+        public_key: &PublicKey,
+        relays: I,
+    ) -> std::result::Result<(String, Vec<nostr::Tag>, Vec<u8>), prelude::Error>
+    where
+        I: IntoIterator<Item = RelayUrl>,
+    {
+        self.inner.create_key_package_for_event(public_key, relays)
+    }
+
     pub fn add_members(
         &self,
         group_id: &storage_traits::GroupId,
@@ -151,6 +162,14 @@ impl PikaMls {
         self.inner.get_message(group_id, message_id)
     }
 
+    pub fn get_messages(
+        &self,
+        group_id: &storage_traits::GroupId,
+        pagination: Option<storage_traits::groups::Pagination>,
+    ) -> std::result::Result<Vec<storage_traits::messages::types::Message>, prelude::Error> {
+        self.inner.get_messages(group_id, pagination)
+    }
+
     pub fn get_pending_welcomes(
         &self,
         pagination: Option<storage_traits::welcomes::Pagination>,
@@ -173,14 +192,6 @@ impl PikaMls {
 impl std::fmt::Debug for PikaMls {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PikaMls").finish_non_exhaustive()
-    }
-}
-
-impl std::ops::Deref for PikaMls {
-    type Target = RawMls;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
     }
 }
 

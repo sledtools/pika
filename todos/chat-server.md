@@ -136,8 +136,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `crates/pika-mls/src/membership.rs` now owns membership-evolution prep/finalize types and logic, `pika_core` and `pikachat-sidecar` only keep thin wrapper traits for their local publish outcomes, and the app now routes remove-member / leave-group prep through that same shared boundary instead of calling raw MDK directly in `core/mod.rs`.
 - [x] Collapse the first remaining raw `PikaMdk` mutation helpers behind that shared boundary:
   key-package validation, group-data update prep, and stale pending-commit cleanup now route through `crates/pika-mls/src/membership.rs`, so `pika_core` no longer calls `parse_key_package`, `update_group_data`, or `clear_pending_commit` directly in its main private-chat flows.
+- [x] Remove the hidden raw-MDK `Deref` escape hatch from `PikaMls`:
+  explicit wrappers now cover key-package creation and message pagination, and the few MDK APIs that still require a raw engine reference now call `as_raw()` deliberately instead of relying on implicit method resolution.
 - Next seam:
-  keep shrinking the raw `PikaMdk` surface from inside `pika-mls`, starting with the remaining message/welcome escape hatches and any direct MDK consumers outside app/sidecar.
+  keep shrinking the raw `PikaMdk` surface from inside `pika-mls`, starting with the remaining message/welcome escape hatches and the direct wrapper consumers in CLI/NSE.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
 
@@ -244,6 +246,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   The next useful deletions are the smaller raw mutation helpers still called straight off `PikaMdk`, especially rename/update-group-data, stale pending-commit cleanup, and stray key-package validation paths.
 - Those raw helper paths are gone from the app now.
   The remaining honest seam is the still-thin wrapper around MDK inside `pika-mls` plus the few direct wrapper consumers like CLI/NSE.
+- The wrapper surface is explicit now too.
+  `PikaMls` no longer silently dereferences into MDK; any remaining raw dependency has to show up as an explicit wrapper method or an explicit `as_raw()` call.
 - The highest-value simplification after the current transport slices is not "replace MDK all at once."
   It is deleting `pika_core`'s dependency on the `pika-marmot-runtime` facade so the remaining MLS surface is smaller and more honest before the OpenMLS runtime cut.
 - That facade cut can land incrementally.

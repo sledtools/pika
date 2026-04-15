@@ -270,7 +270,7 @@ fn derive_track_keys(
     let root_filename = format!("call/{}/{track}/group-root", ctx.call_id);
 
     let tx_base = *derive_encryption_key(
-        ctx.mdk,
+        ctx.mdk.as_raw(),
         ctx.mls_group_id,
         DEFAULT_SCHEME_VERSION,
         &tx_hash,
@@ -280,7 +280,7 @@ fn derive_track_keys(
     .map_err(|e| format!("derive tx media key for {track} failed: {e}"))?;
 
     let rx_base = *derive_encryption_key(
-        ctx.mdk,
+        ctx.mdk.as_raw(),
         ctx.mls_group_id,
         DEFAULT_SCHEME_VERSION,
         &rx_hash,
@@ -290,7 +290,7 @@ fn derive_track_keys(
     .map_err(|e| format!("derive rx media key for {track} failed: {e}"))?;
 
     let group_root = *derive_encryption_key(
-        ctx.mdk,
+        ctx.mdk.as_raw(),
         ctx.mls_group_id,
         DEFAULT_SCHEME_VERSION,
         &root_hash,
@@ -362,7 +362,7 @@ pub fn derive_relay_auth_token(ctx: &CallCryptoDeriveContext<'_>) -> Result<Stri
         ctx.call_id.as_bytes(),
     ]);
     let auth_key = *derive_encryption_key(
-        ctx.mdk,
+        ctx.mdk.as_raw(),
         ctx.mls_group_id,
         DEFAULT_SCHEME_VERSION,
         &auth_hash,

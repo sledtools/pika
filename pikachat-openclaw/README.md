@@ -34,7 +34,7 @@ pikachat --state-dir ~/.openclaw/.pikachat-state init --nsec <nsec1...or-hex>
 
 This writes `identity.json` into the state directory. Accepts both bech32 (`nsec1...`) and hex formats.
 
-If `identity.json` already exists with a different key, `init` warns you. If `mdk.sqlite` exists (MLS state from a previous identity), it warns about that too. If the key already matches, it's a no-op.
+If `identity.json` already exists with a different key, `init` warns you. If local chat state exists from a previous identity, it warns about that too. If the key already matches, it's a no-op.
 
 You can also create `identity.json` manually if you prefer:
 
@@ -130,27 +130,27 @@ You should see: `Pikachat | ON | OK | configured`
 
 Use [Pika](https://pika.team) (or another compatible client) to create a group and invite the bot's pubkey. With `autoAcceptWelcomes: true`, the bot joins automatically and starts responding.
 
-### Migration from `@justinmoon/marmot`
+### Migration from the old plugin
 
-If you were previously using the `@justinmoon/marmot` plugin:
+If you were previously using the old plugin:
 
-1. **Back up your config** — save your current `channels.marmot` and `plugins.entries.marmot` settings
+1. **Back up your config** — save your current old channel and plugin settings
 2. **Uninstall the old plugin:**
    ```bash
-   openclaw plugins uninstall marmot
+   openclaw plugins uninstall pikachat
    ```
-   > If this fails with a validation error, manually remove the `channels.marmot`, `plugins.entries.marmot`, `plugins.allow` (marmot entry), and `plugins.installs.marmot` sections from `~/.openclaw/openclaw.json`
+   > If this fails with a validation error, manually remove the old channel and plugin sections from `~/.openclaw/openclaw.json`
 3. **Install the new plugin:**
    ```bash
    openclaw plugins install pikachat-openclaw
    ```
-4. **Migrate your config** — move your settings from `channels.marmot` to `channels.pikachat-openclaw`. The config schema is identical; only the key name changes.
+4. **Migrate your config** — move your settings to `channels.pikachat-openclaw`.
 5. **Restart:**
    ```bash
    openclaw gateway restart
    ```
 
-Your existing MLS state directory (e.g. `~/.openclaw/.marmot-state`) can be reused as-is — just point `stateDir` to it in the new config.
+Your existing Pika state directory can be reused as-is by pointing `stateDir` to it in the new config.
 
 ### Gotchas
 

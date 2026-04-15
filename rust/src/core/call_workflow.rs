@@ -1,4 +1,4 @@
-use crate::mdk_support::PikaMdk;
+use crate::mls_support::PikaMls;
 use pika_mls::conversation::ConversationQueries;
 use pika_mls::storage_traits::GroupId;
 
@@ -90,7 +90,7 @@ pub(crate) enum InboundCallSignalOutcome {
 }
 
 pub(crate) struct CallWorkflowRuntime<'a> {
-    mdk: &'a PikaMdk,
+    mls: &'a PikaMls,
 }
 
 #[derive(Clone, Copy)]
@@ -109,8 +109,8 @@ pub(crate) struct InboundSignalContext<'a> {
 }
 
 impl<'a> CallWorkflowRuntime<'a> {
-    pub(crate) fn new(mdk: &'a PikaMdk) -> Self {
-        Self { mdk }
+    pub(crate) fn new(mls: &'a PikaMls) -> Self {
+        Self { mls }
     }
 
     pub(crate) fn prepare_outgoing_invite(
@@ -300,7 +300,7 @@ impl<'a> CallWorkflowRuntime<'a> {
         peer_pubkey_hex: &str,
     ) -> Result<(), String> {
         let derive_ctx = CallCryptoDeriveContext {
-            mdk: self.mdk,
+            mls: self.mls,
             mls_group_id: group.mls_group_id,
             group_epoch: 0,
             call_id,
@@ -318,13 +318,13 @@ impl<'a> CallWorkflowRuntime<'a> {
         session: &CallSessionParams,
         peer_pubkey_hex: &str,
     ) -> Result<CallMediaCryptoContext, String> {
-        let group_epoch = ConversationQueries::new(self.mdk)
+        let group_epoch = ConversationQueries::new(self.mls)
             .get_group(group.mls_group_id)
             .map_err(|e| format!("load mls group failed: {e}"))?
             .ok_or_else(|| "mls group not found".to_string())?
             .epoch;
         let derive_ctx = CallCryptoDeriveContext {
-            mdk: self.mdk,
+            mls: self.mls,
             mls_group_id: group.mls_group_id,
             group_epoch,
             call_id,

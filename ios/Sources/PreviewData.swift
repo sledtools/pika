@@ -747,7 +747,7 @@ enum PreviewAppState {
     static let sampleThirdPubkey = "1f7f5f6d64e8de7184f4ad14a2fdbef674e7dc86d51a0d65704fbfdbb6c42cb7"
     static let sampleProfile = MyProfileState(
         name: "Paul Miller",
-        about: "Building Marmot over Nostr.",
+        about: "Building Pika chat.",
         pictureUrl: "https://blossom.nostr.pub/8dbc6f42ea8bf53f4af89af87eb0d9110fcaf4d263f7d2cb9f29d68f95f6f8ce",
         profileCode: sampleNpub
     )

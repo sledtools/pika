@@ -2,7 +2,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use crate::mdk_util::{PikaMdk, load_or_create_keys, new_mdk};
+use crate::mls_util::{PikaMls, load_or_create_keys, new_mls};
 use anyhow::{Context, anyhow};
 use clap::Subcommand;
 use nostr_blossom::client::BlossomClient;
@@ -22,32 +22,32 @@ use crate::Cli;
 const NOSTR_PER_MESSAGE_TIMEOUT: Duration = Duration::from_secs(1);
 
 fn create_group_message(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     mls_group_id: &GroupId,
     rumor: UnsignedEvent,
 ) -> anyhow::Result<Event> {
-    Ok(wrap_rumor(mdk, mls_group_id, rumor)
+    Ok(wrap_rumor(mls, mls_group_id, rumor)
         .context("create_message")?
         .wrapper)
 }
 
-fn process_group_message(mdk: &PikaMdk, event: &Event) -> anyhow::Result<MessageProcessingResult> {
-    process_group_message_event(mdk, event)?
+fn process_group_message(mls: &PikaMls, event: &Event) -> anyhow::Result<MessageProcessingResult> {
+    process_group_message_event(mls, event)?
         .ok_or_else(|| anyhow!("expected MLS group message wrapper"))
 }
 
 fn list_joined_groups(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
 ) -> anyhow::Result<Vec<pika_mls::conversation::JoinedGroupSnapshot>> {
-    ConversationQueries::new(mdk)
+    ConversationQueries::new(mls)
         .list_joined_group_snapshots()
         .context("get_groups")
 }
 
 fn list_pending_welcomes(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
 ) -> anyhow::Result<Vec<pika_mls::storage_traits::welcomes::types::Welcome>> {
-    WelcomeQueries::new(mdk)
+    WelcomeQueries::new(mls)
         .list_pending_welcomes()
         .context("get_pending_welcomes")
 }
@@ -216,13 +216,13 @@ async fn scenario_invite_and_chat_peer(
     );
 
     let a_client = connect_client(&a_keys, relay).await?;
-    let a_mdk = new_mdk(&a_state, "a")?;
+    let a_mls = new_mls(&a_state, "a")?;
 
     // Publish A keypackage too; not strictly required but keeps alignment with Phase 1/2.
-    let _a_kp = publish_key_package(&a_client, &a_mdk, &a_keys, relay_url.clone()).await?;
+    let _a_kp = publish_key_package(&a_client, &a_mls, &a_keys, relay_url.clone()).await?;
 
     // Fetch peer keypackage from the relay (kind 443).
-    let peer_kp = fetch_latest_key_package_for_mdk(&a_client, &peer_pubkey, relay_url.clone())
+    let peer_kp = fetch_latest_key_package_for_mls(&a_client, &peer_pubkey, relay_url.clone())
         .await
         .context("fetch peer keypackage")?;
     info!(
@@ -242,7 +242,7 @@ async fn scenario_invite_and_chat_peer(
         vec![a_keys.public_key()],
     );
 
-    let group_result = a_mdk
+    let group_result = a_mls
         .create_group(&a_keys.public_key(), vec![peer_kp.clone()], group_config)
         .context("create_group")?;
 
@@ -286,7 +286,7 @@ async fn scenario_invite_and_chat_peer(
     publish_and_confirm(&a_client, relay_url.clone(), &giftwrap, "welcome_giftwrap").await?;
 
     // Subscribe for group messages and send the tokenized prompt.
-    ingest_group_backlog(&a_mdk, &a_client, relay_url.clone(), &nostr_group_id_hex).await?;
+    ingest_group_backlog(&a_mls, &a_client, relay_url.clone(), &nostr_group_id_hex).await?;
 
     let mut a_rx = a_client.notifications();
     let a_sub = subscribe_group_msgs(&a_client, &nostr_group_id_hex).await?;
@@ -298,12 +298,12 @@ async fn scenario_invite_and_chat_peer(
 
     let a_rumor = EventBuilder::new(Kind::ChatMessage, prompt).build(a_keys.public_key());
     let a_msg_event =
-        create_group_message(&a_mdk, &mls_group_id, a_rumor).context("A create_message")?;
+        create_group_message(&a_mls, &mls_group_id, a_rumor).context("A create_message")?;
     publish_and_confirm(&a_client, relay_url.clone(), &a_msg_event, "a_to_peer").await?;
 
     let peer_received = wait_for_exact_application(
         "a_wait_peer_reply",
-        &a_mdk,
+        &a_mls,
         &mut a_rx,
         &a_sub,
         &peer_pubkey,
@@ -360,16 +360,16 @@ async fn scenario_invite_and_chat(
     let a_client = connect_client(&a_keys, relay).await?;
     let b_client = connect_client(&b_keys, relay).await?;
 
-    let a_mdk = new_mdk(&a_state, "a")?;
-    let b_mdk = new_mdk(&b_state, "b")?;
+    let a_mls = new_mls(&a_state, "a")?;
+    let b_mls = new_mls(&b_state, "b")?;
 
     // 1) Publish key packages (kind 443)
-    let _a_kp = publish_key_package(&a_client, &a_mdk, &a_keys, relay_url.clone()).await?;
-    let b_kp = publish_key_package(&b_client, &b_mdk, &b_keys, relay_url.clone()).await?;
+    let _a_kp = publish_key_package(&a_client, &a_mls, &a_keys, relay_url.clone()).await?;
+    let b_kp = publish_key_package(&b_client, &b_mls, &b_keys, relay_url.clone()).await?;
 
     // 2) Client A fetches B's key package from the relay (avoid "passed by reference" false pass)
     let fetched_b_kp =
-        fetch_latest_key_package_for_mdk(&a_client, &b_keys.public_key(), relay_url.clone())
+        fetch_latest_key_package_for_mls(&a_client, &b_keys.public_key(), relay_url.clone())
             .await
             .context("fetch B keypackage")?;
     if fetched_b_kp.id != b_kp.id {
@@ -391,7 +391,7 @@ async fn scenario_invite_and_chat(
         vec![a_keys.public_key()],
     );
 
-    let group_result = a_mdk
+    let group_result = a_mls
         .create_group(
             &a_keys.public_key(),
             vec![fetched_b_kp.clone()],
@@ -450,16 +450,16 @@ async fn scenario_invite_and_chat(
         unwrapped_rumor.pubkey.to_hex().to_lowercase()
     );
 
-    stage_pending_welcome(&b_mdk, &wrapper_event_id, &unwrapped_rumor)
-        .context("mdk process_welcome")?;
+    stage_pending_welcome(&b_mls, &wrapper_event_id, &unwrapped_rumor)
+        .context("mls process_welcome")?;
 
-    let pending = list_pending_welcomes(&b_mdk)?;
+    let pending = list_pending_welcomes(&b_mls)?;
     if pending.len() != 1 {
         return Err(anyhow!("expected 1 pending welcome, got {}", pending.len()));
     }
-    accept_pending_welcome(&b_mdk, &pending[0]).context("accept_welcome")?;
+    accept_pending_welcome(&b_mls, &pending[0]).context("accept_welcome")?;
 
-    let b_groups = list_joined_groups(&b_mdk).context("b get_groups")?;
+    let b_groups = list_joined_groups(&b_mls).context("b get_groups")?;
     if b_groups.len() != 1 {
         return Err(anyhow!(
             "expected B to have 1 group, got {}",
@@ -479,8 +479,8 @@ async fn scenario_invite_and_chat(
 
     // 6) Both sides ingest group backlog (kind 445, #h=<groupId>)
     // (New group should be empty, but do it anyway for correctness.)
-    ingest_group_backlog(&a_mdk, &a_client, relay_url.clone(), &nostr_group_id_hex).await?;
-    ingest_group_backlog(&b_mdk, &b_client, relay_url.clone(), &nostr_group_id_hex).await?;
+    ingest_group_backlog(&a_mls, &a_client, relay_url.clone(), &nostr_group_id_hex).await?;
+    ingest_group_backlog(&b_mls, &b_client, relay_url.clone(), &nostr_group_id_hex).await?;
 
     // 7) A -> B application message, strict match
     let token = random_token();
@@ -495,12 +495,12 @@ async fn scenario_invite_and_chat(
 
     let a_rumor = EventBuilder::new(Kind::ChatMessage, a_to_b.clone()).build(a_keys.public_key());
     let a_msg_event =
-        create_group_message(&a_mdk, &mls_group_id, a_rumor).context("A create_message")?;
+        create_group_message(&a_mls, &mls_group_id, a_rumor).context("A create_message")?;
     publish_and_confirm(&a_client, relay_url.clone(), &a_msg_event, "a_to_b").await?;
 
     let b_received = wait_for_exact_application(
         "b_wait_a_to_b",
-        &b_mdk,
+        &b_mls,
         &mut b_rx,
         &b_sub,
         &a_keys.public_key(),
@@ -516,12 +516,12 @@ async fn scenario_invite_and_chat(
 
     let b_rumor = EventBuilder::new(Kind::ChatMessage, b_to_a.clone()).build(b_keys.public_key());
     let b_msg_event =
-        create_group_message(&b_mdk, &mls_group_id, b_rumor).context("B create_message")?;
+        create_group_message(&b_mls, &mls_group_id, b_rumor).context("B create_message")?;
     publish_and_confirm(&b_client, relay_url.clone(), &b_msg_event, "b_to_a").await?;
 
     let a_received = wait_for_exact_application(
         "a_wait_b_to_a",
-        &a_mdk,
+        &a_mls,
         &mut a_rx,
         &a_sub,
         &b_keys.public_key(),
@@ -586,13 +586,13 @@ async fn scenario_invite_and_chat_rustbot(
     );
 
     let a_client = connect_client(&a_keys, relay).await?;
-    let a_mdk = new_mdk(&a_state, "a")?;
+    let a_mls = new_mls(&a_state, "a")?;
 
     // Publish A keypackage too; it isn't strictly required for this scenario but keeps us aligned with Phase 1.
-    let _a_kp = publish_key_package(&a_client, &a_mdk, &a_keys, relay_url.clone()).await?;
+    let _a_kp = publish_key_package(&a_client, &a_mls, &a_keys, relay_url.clone()).await?;
 
     // Fetch bot keypackage from the relay (stronger than trusting bot stdout).
-    let bot_kp = fetch_latest_key_package_for_mdk(&a_client, &bot_pubkey, relay_url.clone())
+    let bot_kp = fetch_latest_key_package_for_mls(&a_client, &bot_pubkey, relay_url.clone())
         .await
         .context("fetch bot keypackage")?;
     info!(
@@ -612,7 +612,7 @@ async fn scenario_invite_and_chat_rustbot(
         vec![a_keys.public_key()],
     );
 
-    let group_result = a_mdk
+    let group_result = a_mls
         .create_group(&a_keys.public_key(), vec![bot_kp.clone()], group_config)
         .context("create_group")?;
 
@@ -664,7 +664,7 @@ async fn scenario_invite_and_chat_rustbot(
     publish_and_confirm(&a_client, relay_url.clone(), &giftwrap, "welcome_giftwrap").await?;
 
     // Subscribe for group messages and send the tokenized prompt.
-    ingest_group_backlog(&a_mdk, &a_client, relay_url.clone(), &nostr_group_id_hex).await?;
+    ingest_group_backlog(&a_mls, &a_client, relay_url.clone(), &nostr_group_id_hex).await?;
 
     let mut a_rx = a_client.notifications();
     let a_sub = subscribe_group_msgs(&a_client, &nostr_group_id_hex).await?;
@@ -676,12 +676,12 @@ async fn scenario_invite_and_chat_rustbot(
 
     let a_rumor = EventBuilder::new(Kind::ChatMessage, prompt).build(a_keys.public_key());
     let a_msg_event =
-        create_group_message(&a_mdk, &mls_group_id, a_rumor).context("A create_message")?;
+        create_group_message(&a_mls, &mls_group_id, a_rumor).context("A create_message")?;
     publish_and_confirm(&a_client, relay_url.clone(), &a_msg_event, "a_to_bot").await?;
 
     let bot_received = wait_for_exact_application(
         "a_wait_bot_reply",
-        &a_mdk,
+        &a_mls,
         &mut a_rx,
         &a_sub,
         &bot_pubkey,
@@ -854,10 +854,10 @@ async fn scenario_invite_and_chat_daemon(
 
     // Now run the same Rust->invite flow from A, but accept/join via daemon commands.
     let a_client = connect_client(&a_keys, relay).await?;
-    let a_mdk = new_mdk(&a_state, "a")?;
+    let a_mls = new_mls(&a_state, "a")?;
 
-    let _a_kp = publish_key_package(&a_client, &a_mdk, &a_keys, relay_url.clone()).await?;
-    let daemon_kp = fetch_latest_key_package_for_mdk(&a_client, &daemon_pubkey, relay_url.clone())
+    let _a_kp = publish_key_package(&a_client, &a_mls, &a_keys, relay_url.clone()).await?;
+    let daemon_kp = fetch_latest_key_package_for_mls(&a_client, &daemon_pubkey, relay_url.clone())
         .await
         .context("fetch daemon keypackage")?;
 
@@ -870,7 +870,7 @@ async fn scenario_invite_and_chat_daemon(
         vec![relay_url.clone()],
         vec![a_keys.public_key()],
     );
-    let group_result = a_mdk
+    let group_result = a_mls
         .create_group(&a_keys.public_key(), vec![daemon_kp.clone()], group_config)
         .context("create_group")?;
 
@@ -914,7 +914,7 @@ async fn scenario_invite_and_chat_daemon(
     })
     .await?;
 
-    ingest_group_backlog(&a_mdk, &a_client, relay_url.clone(), &nostr_group_id_hex).await?;
+    ingest_group_backlog(&a_mls, &a_client, relay_url.clone(), &nostr_group_id_hex).await?;
     let mut a_rx = a_client.notifications();
     let a_sub = subscribe_group_msgs(&a_client, &nostr_group_id_hex).await?;
 
@@ -925,7 +925,7 @@ async fn scenario_invite_and_chat_daemon(
 
     let a_rumor = EventBuilder::new(Kind::ChatMessage, prompt.clone()).build(a_keys.public_key());
     let a_msg_event =
-        create_group_message(&a_mdk, &mls_group_id, a_rumor).context("A create_message")?;
+        create_group_message(&a_mls, &mls_group_id, a_rumor).context("A create_message")?;
     publish_and_confirm(&a_client, relay_url.clone(), &a_msg_event, "a_to_daemon").await?;
 
     // When daemon reports it received the prompt, command it to send the reply.
@@ -950,7 +950,7 @@ async fn scenario_invite_and_chat_daemon(
 
     let received = wait_for_exact_application(
         "a_wait_daemon_reply",
-        &a_mdk,
+        &a_mls,
         &mut a_rx,
         &a_sub,
         &daemon_pubkey,
@@ -1010,9 +1010,9 @@ async fn bot_main(
     );
 
     let client = connect_client(&keys, relay).await?;
-    let mdk = new_mdk(state_dir, "bot")?;
+    let mls = new_mls(state_dir, "bot")?;
 
-    let kp_event = publish_key_package(&client, &mdk, &keys, relay_url.clone()).await?;
+    let kp_event = publish_key_package(&client, &mls, &keys, relay_url.clone()).await?;
     println!(
         "[openclaw_bot] published kind={} id={} ok=true",
         kp_event.kind.as_u16(),
@@ -1054,15 +1054,15 @@ async fn bot_main(
         unwrapped_rumor.pubkey.to_hex().to_lowercase()
     );
 
-    stage_pending_welcome(&mdk, &wrapper_event_id, &unwrapped_rumor)
-        .context("mdk process_welcome")?;
-    let pending = list_pending_welcomes(&mdk)?;
+    stage_pending_welcome(&mls, &wrapper_event_id, &unwrapped_rumor)
+        .context("mls process_welcome")?;
+    let pending = list_pending_welcomes(&mls)?;
     if pending.len() != 1 {
         return Err(anyhow!("expected 1 pending welcome, got {}", pending.len()));
     }
-    accept_pending_welcome(&mdk, &pending[0]).context("accept_welcome")?;
+    accept_pending_welcome(&mls, &pending[0]).context("accept_welcome")?;
 
-    let groups = list_joined_groups(&mdk)?;
+    let groups = list_joined_groups(&mls)?;
     if groups.is_empty() {
         return Err(anyhow!("expected bot to have at least 1 group, got 0"));
     }
@@ -1151,7 +1151,7 @@ async fn bot_main(
                 rumor.pubkey.to_hex().to_lowercase()
             );
 
-            if let Err(err) = stage_pending_welcome(&mdk, &ev.id, &rumor) {
+            if let Err(err) = stage_pending_welcome(&mls, &ev.id, &rumor) {
                 warn!(
                     "[openclaw_bot] process_welcome failed wrapper_id={} err={err}",
                     ev.id.to_hex()
@@ -1159,7 +1159,7 @@ async fn bot_main(
                 continue;
             }
 
-            let pending = match list_pending_welcomes(&mdk) {
+            let pending = match list_pending_welcomes(&mls) {
                 Ok(v) => v,
                 Err(err) => {
                     warn!("[openclaw_bot] get_pending_welcomes failed err={err}");
@@ -1167,12 +1167,12 @@ async fn bot_main(
                 }
             };
             for welcome in pending {
-                if let Err(err) = accept_pending_welcome(&mdk, &welcome) {
+                if let Err(err) = accept_pending_welcome(&mls, &welcome) {
                     warn!("[openclaw_bot] accept_welcome failed err={err}");
                 }
             }
 
-            let groups = match list_joined_groups(&mdk) {
+            let groups = match list_joined_groups(&mls) {
                 Ok(v) => v,
                 Err(err) => {
                     warn!("[openclaw_bot] get_groups failed err={err}");
@@ -1211,7 +1211,7 @@ async fn bot_main(
             continue;
         }
 
-        match process_group_message(&mdk, &ev) {
+        match process_group_message(&mls, &ev) {
             Ok(MessageProcessingResult::ApplicationMessage(msg)) => {
                 let from = msg.pubkey;
                 println!(
@@ -1240,7 +1240,7 @@ async fn bot_main(
                         &hn_reply,
                     )
                     .build(keys.public_key());
-                    let hn_event = create_group_message(&mdk, &msg.mls_group_id, hn_rumor)
+                    let hn_event = create_group_message(&mls, &msg.mls_group_id, hn_rumor)
                         .context("bot create_message (hypernote)")?;
                     publish_and_confirm(&client, relay_url.clone(), &hn_event, "bot_hypernote")
                         .await?;
@@ -1255,7 +1255,7 @@ async fn bot_main(
                         msg.content.trim()
                     );
                     match send_test_media_batch(
-                        &mdk,
+                        &mls,
                         &keys,
                         &client,
                         relay_url.clone(),
@@ -1278,7 +1278,7 @@ async fn bot_main(
                             )
                             .build(keys.public_key());
                             let err_event =
-                                create_group_message(&mdk, &msg.mls_group_id, err_rumor)
+                                create_group_message(&mls, &msg.mls_group_id, err_rumor)
                                     .context("bot create_message (media_batch_error)")?;
                             publish_and_confirm(
                                 &client,
@@ -1299,7 +1299,7 @@ async fn bot_main(
                 println!("[openclaw_bot] replying content={reply}");
                 let reply_rumor =
                     EventBuilder::new(Kind::ChatMessage, reply.clone()).build(keys.public_key());
-                let reply_event = create_group_message(&mdk, &msg.mls_group_id, reply_rumor)
+                let reply_event = create_group_message(&mls, &msg.mls_group_id, reply_rumor)
                     .context("bot create_message")?;
                 publish_and_confirm(&client, relay_url.clone(), &reply_event, "bot_reply").await?;
                 println!("[openclaw_bot] ok replied={reply}");
@@ -1453,7 +1453,7 @@ const TEST_IMAGE_NAMES: &[&str] = &[
 /// Read test images from `fixtures/test-images/`, encrypt, upload to blossom,
 /// and send as a multi-media chat message.
 async fn send_test_media_batch(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     keys: &Keys,
     client: &Client,
     relay_url: RelayUrl,
@@ -1467,7 +1467,7 @@ async fn send_test_media_batch(
         .join("fixtures/test-images");
 
     let upload_servers = pika_relay_profiles::blossom_servers_or_default(&[]);
-    let manager = mdk.media_manager(mls_group_id.clone());
+    let manager = mls.media_manager(mls_group_id.clone());
     let mut imeta_tags = Vec::new();
 
     for i in 0..count {
@@ -1542,7 +1542,7 @@ async fn send_test_media_batch(
         builder = builder.tag(tag.clone());
     }
     let rumor = builder.build(keys.public_key());
-    let event = create_group_message(mdk, mls_group_id, rumor)
+    let event = create_group_message(mls, mls_group_id, rumor)
         .context("bot create_message (media_batch)")?;
     publish_and_confirm(client, relay_url, &event, "bot_media_batch").await?;
     Ok(event.id.to_hex())
@@ -1557,12 +1557,12 @@ async fn connect_client(keys: &Keys, relay: &str) -> anyhow::Result<Client> {
 
 async fn publish_key_package(
     client: &Client,
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     keys: &Keys,
     relay_url: RelayUrl,
 ) -> anyhow::Result<Event> {
     let (kp_content, kp_tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
-        mdk,
+        mls,
         &keys.public_key(),
         vec![relay_url.clone()],
     )
@@ -1627,12 +1627,12 @@ async fn publish_and_confirm(
     Ok(())
 }
 
-async fn fetch_latest_key_package_for_mdk(
+async fn fetch_latest_key_package_for_mls(
     client: &Client,
     author: &PublicKey,
     relay_url: RelayUrl,
 ) -> anyhow::Result<Event> {
-    pikachat_sidecar::relay::fetch_latest_key_package_for_mdk(
+    pikachat_sidecar::relay::fetch_latest_key_package_for_mls(
         client,
         author,
         &[relay_url],
@@ -1823,7 +1823,7 @@ async fn subscribe_group_msgs(
 }
 
 async fn ingest_group_backlog(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     client: &Client,
     relay_url: RelayUrl,
     nostr_group_id_hex: &str,
@@ -1839,7 +1839,7 @@ async fn ingest_group_backlog(
         .context("fetch group backlog")?;
 
     for ev in events.iter() {
-        match process_group_message(mdk, ev) {
+        match process_group_message(mls, ev) {
             Ok(res) => info!(
                 "[phase1] ingest kind=445 id={} result={:?}",
                 ev.id.to_hex(),
@@ -1858,7 +1858,7 @@ async fn ingest_group_backlog(
 
 async fn wait_for_exact_application(
     label: &str,
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     rx: &mut tokio::sync::broadcast::Receiver<RelayPoolNotification>,
     subscription_id: &SubscriptionId,
     expected_peer: &PublicKey,
@@ -1897,7 +1897,7 @@ async fn wait_for_exact_application(
             continue;
         }
 
-        match process_group_message(mdk, &ev) {
+        match process_group_message(mls, &ev) {
             Ok(MessageProcessingResult::ApplicationMessage(msg)) => {
                 info!(
                     "[phase1] inbound kind=445 id={} decrypt=ok rumor_pubkey={} rumor_kind={} content_len={}",

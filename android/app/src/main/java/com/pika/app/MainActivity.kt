@@ -18,8 +18,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Required by spec-v2: initialize Android keystore-backed keyring store once per process
-        // before Rust constructs MDK encrypted SQLite storage.
+        // Initialize Android process context before Rust opens local chat state.
         Keyring.init(applicationContext)
 
         manager = AppManager.getInstance(applicationContext)

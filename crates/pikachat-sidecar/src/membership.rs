@@ -17,15 +17,15 @@ impl pika_mls::membership::IntoEvolutionPublishStatus for PublishOutcome {
 mod tests {
     use super::*;
 
-    use crate::{PikaMdk, open_mdk};
+    use crate::{PikaMls, open_mls};
     use nostr_sdk::prelude::{Event, EventBuilder, Keys, Kind, RelayUrl};
     use pika_mls::prelude::NostrGroupConfigData;
     use pika_mls::storage_traits::GroupId;
 
-    fn make_key_package_event(mdk: &PikaMdk, keys: &Keys) -> Event {
+    fn make_key_package_event(mls: &PikaMls, keys: &Keys) -> Event {
         let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
         let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
-            mdk,
+            mls,
             &keys.public_key(),
             vec![relay],
         )
@@ -36,15 +36,15 @@ mod tests {
             .expect("sign key package")
     }
 
-    fn create_base_group() -> (tempfile::TempDir, tempfile::TempDir, PikaMdk, GroupId, Keys) {
+    fn create_base_group() -> (tempfile::TempDir, tempfile::TempDir, PikaMls, GroupId, Keys) {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Membership runtime".to_string(),
             String::new(),
@@ -54,17 +54,17 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
 
         (
             inviter_dir,
             invitee_dir,
-            inviter_mdk,
+            inviter_mls,
             created.group.mls_group_id,
             inviter_keys,
         )
@@ -72,13 +72,13 @@ mod tests {
 
     #[test]
     fn prepare_add_members_validates_and_returns_welcome_plan() {
-        let (_inviter_dir, _invitee_dir, inviter_mdk, group_id, _keys) = create_base_group();
+        let (_inviter_dir, _invitee_dir, inviter_mls, group_id, _keys) = create_base_group();
         let peer_dir = tempfile::tempdir().expect("peer tempdir");
         let peer_keys = Keys::generate();
-        let peer_mdk = open_mdk(peer_dir.path()).expect("open peer mdk");
-        let peer_kp = make_key_package_event(&peer_mdk, &peer_keys);
+        let peer_mls = open_mls(peer_dir.path()).expect("open peer mls");
+        let peer_kp = make_key_package_event(&peer_mls, &peer_keys);
 
-        let prepared = MembershipRuntime::new(&inviter_mdk)
+        let prepared = MembershipRuntime::new(&inviter_mls)
             .prepare_add_members(&group_id, &[peer_kp])
             .expect("prepare add members");
 
@@ -87,7 +87,7 @@ mod tests {
         assert_eq!(prepared.evolution_event.kind, Kind::MlsGroupMessage);
         assert_eq!(
             prepared.expected_epoch,
-            pika_mls::conversation::ConversationQueries::new(&inviter_mdk)
+            pika_mls::conversation::ConversationQueries::new(&inviter_mls)
                 .get_group(&group_id)
                 .expect("get group")
                 .expect("group")
@@ -97,25 +97,25 @@ mod tests {
 
     #[test]
     fn finalize_published_evolution_merges_and_returns_welcome_delivery() {
-        let (_inviter_dir, _invitee_dir, inviter_mdk, group_id, _keys) = create_base_group();
+        let (_inviter_dir, _invitee_dir, inviter_mls, group_id, _keys) = create_base_group();
         let peer_dir = tempfile::tempdir().expect("peer tempdir");
         let peer_keys = Keys::generate();
-        let peer_mdk = open_mdk(peer_dir.path()).expect("open peer mdk");
-        let peer_kp = make_key_package_event(&peer_mdk, &peer_keys);
-        let runtime = MembershipRuntime::new(&inviter_mdk);
+        let peer_mls = open_mls(peer_dir.path()).expect("open peer mls");
+        let peer_kp = make_key_package_event(&peer_mls, &peer_keys);
+        let runtime = MembershipRuntime::new(&inviter_mls);
 
         let prepared = runtime
             .prepare_add_members(&group_id, &[peer_kp])
             .expect("prepare add members");
 
-        let before_merge = pika_mls::conversation::ConversationQueries::new(&inviter_mdk)
+        let before_merge = pika_mls::conversation::ConversationQueries::new(&inviter_mls)
             .get_members(&group_id)
             .expect("members before merge")
             .len();
 
         let finalized = runtime.finalize_published_evolution(prepared);
 
-        let after_merge = pika_mls::conversation::ConversationQueries::new(&inviter_mdk)
+        let after_merge = pika_mls::conversation::ConversationQueries::new(&inviter_mls)
             .get_members(&group_id)
             .expect("members after merge")
             .len();
@@ -133,8 +133,8 @@ mod tests {
 
     #[test]
     fn prepare_remove_members_returns_publishable_evolution_without_welcomes() {
-        let (_inviter_dir, _invitee_dir, inviter_mdk, group_id, inviter_keys) = create_base_group();
-        let members = pika_mls::conversation::ConversationQueries::new(&inviter_mdk)
+        let (_inviter_dir, _invitee_dir, inviter_mls, group_id, inviter_keys) = create_base_group();
+        let members = pika_mls::conversation::ConversationQueries::new(&inviter_mls)
             .get_members(&group_id)
             .expect("get members before removal");
         let peer_pubkey = members
@@ -142,7 +142,7 @@ mod tests {
             .find(|pubkey| *pubkey != inviter_keys.public_key())
             .expect("invitee pubkey");
 
-        let prepared = MembershipRuntime::new(&inviter_mdk)
+        let prepared = MembershipRuntime::new(&inviter_mls)
             .prepare_remove_members(&group_id, &[peer_pubkey])
             .expect("prepare remove members");
 
@@ -155,9 +155,9 @@ mod tests {
 
     #[test]
     fn prepare_leave_group_returns_publishable_evolution_without_welcomes() {
-        let (_inviter_dir, _invitee_dir, inviter_mdk, group_id, _keys) = create_base_group();
+        let (_inviter_dir, _invitee_dir, inviter_mls, group_id, _keys) = create_base_group();
 
-        let prepared = MembershipRuntime::new(&inviter_mdk)
+        let prepared = MembershipRuntime::new(&inviter_mls)
             .prepare_leave_group(&group_id)
             .expect("prepare leave group");
 
@@ -170,13 +170,13 @@ mod tests {
 
     #[tokio::test]
     async fn prepared_evolution_publish_status_tracks_shared_publish_outcome() {
-        let (_inviter_dir, _invitee_dir, inviter_mdk, group_id, _keys) = create_base_group();
+        let (_inviter_dir, _invitee_dir, inviter_mls, group_id, _keys) = create_base_group();
         let peer_dir = tempfile::tempdir().expect("peer tempdir");
         let peer_keys = Keys::generate();
-        let peer_mdk = open_mdk(peer_dir.path()).expect("open peer mdk");
-        let peer_kp = make_key_package_event(&peer_mdk, &peer_keys);
+        let peer_mls = open_mls(peer_dir.path()).expect("open peer mls");
+        let peer_kp = make_key_package_event(&peer_mls, &peer_keys);
 
-        let prepared = MembershipRuntime::new(&inviter_mdk)
+        let prepared = MembershipRuntime::new(&inviter_mls)
             .prepare_add_members(&group_id, &[peer_kp])
             .expect("prepare add members");
 

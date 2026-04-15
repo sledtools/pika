@@ -621,7 +621,7 @@ mod tests {
         let data_dir = temp.path().join("desktop-recovery-clear");
         std::fs::create_dir_all(data_dir.join("mls/test")).expect("create mls");
         std::fs::write(data_dir.join("desktop_nsec.txt"), "nsec1test").expect("write nsec");
-        std::fs::write(data_dir.join("mls/test/mdk.sqlite3"), b"stub").expect("write mls db");
+        std::fs::write(data_dir.join("mls/test/mls.sqlite3"), b"stub").expect("write mls db");
 
         let manager = AppManager::new_with_data_dir(data_dir.clone()).expect("manager");
         manager.clear_local_session_for_recovery();

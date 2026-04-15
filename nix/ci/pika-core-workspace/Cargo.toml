@@ -5,7 +5,11 @@ members = [
   "rust",
   "crates/hypernote-protocol",
   "crates/pika-agent-protocol",
+  "crates/pika-chat-server",
   "crates/pika-cloud",
+  "crates/pika-desktop",
+  "crates/pika-incus-guest-role",
+  "crates/pika-managed-agent-contract",
   "crates/pika-mls",
   "crates/pika-media",
   "crates/pika-relay-profiles",
@@ -17,11 +21,10 @@ members = [
 ]
 
 [workspace.dependencies]
-mdk-core = { git = "https://github.com/marmot-protocol/mdk", rev = "ca0663ee332958aa92efadf916d19c6e1b1f99c7", features = ["mip04"] }
-mdk-sqlite-storage = { git = "https://github.com/marmot-protocol/mdk", rev = "ca0663ee332958aa92efadf916d19c6e1b1f99c7" }
-mdk-storage-traits = { git = "https://github.com/marmot-protocol/mdk", rev = "ca0663ee332958aa92efadf916d19c6e1b1f99c7" }
 hypernote-mdx = { git = "https://github.com/futurepaul/hypernote-mdx", rev = "db23b3d72e81389247716c5a59174cc4f4d55a34", version = "0.3.0" }
 hypernote-protocol = { path = "crates/hypernote-protocol" }
+pika-incus-guest-role = { path = "crates/pika-incus-guest-role" }
+pika-managed-agent-contract = { path = "crates/pika-managed-agent-contract" }
 pika-mls = { path = "crates/pika-mls" }
 
 anyhow = "1"

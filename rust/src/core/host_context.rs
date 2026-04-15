@@ -64,7 +64,7 @@ impl<'a> AppHostContext<'a> {
         &self,
         chat_id: &str,
     ) -> anyhow::Result<super::conversation_support::JoinedGroupSnapshot> {
-        super::conversation_support::lookup_joined_group_snapshot(&self.session.mdk, chat_id)
+        super::conversation_support::lookup_joined_group_snapshot(&self.session.mls, chat_id)
     }
 
     pub(super) fn current_pubkey_hex(&self) -> String {
@@ -74,7 +74,7 @@ impl<'a> AppHostContext<'a> {
     pub(super) fn list_joined_group_snapshots(
         &self,
     ) -> anyhow::Result<Vec<super::conversation_support::JoinedGroupSnapshot>> {
-        super::conversation_support::list_joined_group_snapshots(&self.session.mdk)
+        super::conversation_support::list_joined_group_snapshots(&self.session.mls)
     }
 
     pub(super) fn load_message_page(
@@ -82,21 +82,21 @@ impl<'a> AppHostContext<'a> {
         chat_id: &str,
         query: super::conversation_support::MessagePageQuery,
     ) -> anyhow::Result<super::conversation_support::MessagePage> {
-        super::conversation_support::load_message_page(&self.session.mdk, chat_id, query)
+        super::conversation_support::load_message_page(&self.session.mls, chat_id, query)
     }
 
     #[cfg(test)]
     pub(super) fn list_pending_welcome_snapshots(
         &self,
     ) -> anyhow::Result<Vec<super::welcome_support::PendingWelcomeSnapshot>> {
-        super::welcome_support::list_pending_welcome_snapshots(&self.session.mdk)
+        super::welcome_support::list_pending_welcome_snapshots(&self.session.mls)
     }
 
     pub(super) fn lookup_pending_welcome(
         &self,
         target: &EventId,
     ) -> anyhow::Result<Option<pika_mls::storage_traits::welcomes::types::Welcome>> {
-        super::welcome_support::lookup_pending_welcome(&self.session.mdk, target)
+        super::welcome_support::lookup_pending_welcome(&self.session.mls, target)
     }
 
     pub(super) fn prepare_outbound_action_for_chat(
@@ -105,7 +105,7 @@ impl<'a> AppHostContext<'a> {
         action: OutboundConversationAction,
     ) -> anyhow::Result<PreparedConversationAction> {
         super::outbound_support::prepare_action(
-            &self.session.mdk,
+            &self.session.mls,
             self.session.pubkey,
             chat_id,
             action,
@@ -119,7 +119,7 @@ impl<'a> AppHostContext<'a> {
         action: OutboundConversationAction,
     ) -> anyhow::Result<PreparedConversationAction> {
         super::outbound_support::prepare_action_for_group_ids(
-            &self.session.mdk,
+            &self.session.mls,
             self.session.pubkey,
             mls_group_id,
             nostr_group_id_hex,
@@ -168,9 +168,9 @@ impl<'a> AppHostContext<'a> {
         key_package_events: &[Event],
     ) -> anyhow::Result<PreparedMembershipEvolution> {
         let snapshot =
-            super::conversation_support::lookup_joined_group_snapshot(&self.session.mdk, chat_id)?;
+            super::conversation_support::lookup_joined_group_snapshot(&self.session.mls, chat_id)?;
         super::membership_support::prepare_add_members(
-            &self.session.mdk,
+            &self.session.mls,
             &snapshot.mls_group_id,
             key_package_events,
         )
@@ -182,7 +182,7 @@ impl<'a> AppHostContext<'a> {
         removed_pubkeys: &[PublicKey],
     ) -> anyhow::Result<PreparedMembershipEvolution> {
         super::membership_support::prepare_remove_members(
-            &self.session.mdk,
+            &self.session.mls,
             mls_group_id,
             removed_pubkeys,
         )
@@ -192,7 +192,7 @@ impl<'a> AppHostContext<'a> {
         &self,
         mls_group_id: &GroupId,
     ) -> anyhow::Result<PreparedMembershipEvolution> {
-        super::membership_support::prepare_leave_group(&self.session.mdk, mls_group_id)
+        super::membership_support::prepare_leave_group(&self.session.mls, mls_group_id)
     }
 
     pub(super) fn prepare_group_data_update(
@@ -201,7 +201,7 @@ impl<'a> AppHostContext<'a> {
         update: pika_mls::prelude::NostrGroupDataUpdate,
     ) -> anyhow::Result<PreparedMembershipEvolution> {
         super::membership_support::prepare_group_data_update(
-            &self.session.mdk,
+            &self.session.mls,
             mls_group_id,
             update,
         )
@@ -215,7 +215,7 @@ impl<'a> AppHostContext<'a> {
         match publish_status {
             EvolutionPublishStatus::Published => {
                 Ok(super::membership_support::finalize_published_evolution(
-                    &self.session.mdk,
+                    &self.session.mls,
                     prepared,
                 ))
             }
@@ -227,7 +227,7 @@ impl<'a> AppHostContext<'a> {
         &self,
         event: Event,
     ) -> anyhow::Result<Option<ConversationEvent>> {
-        super::conversation_support::process_event(&self.session.mdk, &event)
+        super::conversation_support::process_event(&self.session.mls, &event)
     }
 
     pub(super) fn interpret_application_message(
@@ -296,7 +296,7 @@ impl<'a> AppHostContext<'a> {
         &self,
         result: MessageProcessingResult,
     ) -> Option<ConversationEvent> {
-        super::conversation_support::interpret_processing_result(&self.session.mdk, result)
+        super::conversation_support::interpret_processing_result(&self.session.mls, result)
     }
 
     pub(super) fn prepare_upload(
@@ -307,7 +307,7 @@ impl<'a> AppHostContext<'a> {
         filename: Option<&str>,
     ) -> anyhow::Result<super::media_support::PreparedMediaUpload> {
         super::media_support::prepare_upload(
-            &self.session.mdk,
+            &self.session.mls,
             mls_group_id,
             bytes,
             mime_type,
@@ -324,7 +324,7 @@ impl<'a> AppHostContext<'a> {
         match status {
             ChatMediaUploadStatus::Uploaded(uploaded_blob) => {
                 Ok(super::media_support::finish_upload(
-                    &self.session.mdk,
+                    &self.session.mls,
                     mls_group_id,
                     upload,
                     uploaded_blob,
@@ -342,7 +342,7 @@ impl<'a> AppHostContext<'a> {
         expected_encrypted_hash_hex: Option<&str>,
     ) -> anyhow::Result<super::media_support::DownloadedMedia> {
         super::media_support::decrypt_downloaded_media(
-            &self.session.mdk,
+            &self.session.mls,
             mls_group_id,
             reference,
             encrypted_data,
@@ -363,7 +363,7 @@ impl<'a> AppHostContext<'a> {
         ),
         String,
     > {
-        super::call_workflow::CallWorkflowRuntime::new(&self.session.mdk).prepare_outgoing_invite(
+        super::call_workflow::CallWorkflowRuntime::new(&self.session.mls).prepare_outgoing_invite(
             target_id,
             peer_pubkey_hex,
             call_id,
@@ -376,7 +376,7 @@ impl<'a> AppHostContext<'a> {
         incoming: &super::call_workflow::PendingIncomingCall,
         group: GroupCallContext<'_>,
     ) -> Result<PreparedAcceptedCall, String> {
-        super::call_workflow::CallWorkflowRuntime::new(&self.session.mdk)
+        super::call_workflow::CallWorkflowRuntime::new(&self.session.mls)
             .prepare_accept_incoming(incoming, group)
     }
 
@@ -385,7 +385,7 @@ impl<'a> AppHostContext<'a> {
         call_id: &str,
         reason: &str,
     ) -> Result<super::call_workflow::PreparedCallSignal, String> {
-        super::call_workflow::CallWorkflowRuntime::new(&self.session.mdk)
+        super::call_workflow::CallWorkflowRuntime::new(&self.session.mls)
             .prepare_reject_signal(call_id, reason)
     }
 
@@ -394,7 +394,7 @@ impl<'a> AppHostContext<'a> {
         call_id: &str,
         reason: &str,
     ) -> Result<super::call_workflow::PreparedCallSignal, String> {
-        super::call_workflow::CallWorkflowRuntime::new(&self.session.mdk)
+        super::call_workflow::CallWorkflowRuntime::new(&self.session.mls)
             .prepare_end_signal(call_id, reason)
     }
 
@@ -403,7 +403,7 @@ impl<'a> AppHostContext<'a> {
         ctx: InboundSignalContext<'_>,
         signal: ParsedCallSignal,
     ) -> InboundCallSignalOutcome {
-        super::call_workflow::CallWorkflowRuntime::new(&self.session.mdk)
+        super::call_workflow::CallWorkflowRuntime::new(&self.session.mls)
             .handle_inbound_signal(ctx, signal)
     }
 }

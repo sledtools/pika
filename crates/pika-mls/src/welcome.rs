@@ -6,7 +6,7 @@ use nostr::{
     UnsignedEvent,
 };
 
-use crate::PikaMdk;
+use crate::PikaMls;
 use crate::prelude::NostrGroupConfigData;
 use crate::storage_traits::groups::types::Group;
 use crate::storage_traits::welcomes::types::Welcome;
@@ -98,12 +98,12 @@ pub fn take_pending_welcome(welcomes: &mut Vec<Welcome>, target: &EventId) -> Op
     find_pending_welcome_index(welcomes, target).map(|idx| welcomes.swap_remove(idx))
 }
 
-pub fn accept_pending_welcome(mdk: &PikaMdk, welcome: &Welcome) -> Result<()> {
-    mdk.inner.accept_welcome(welcome).context("accept welcome")
+pub fn accept_pending_welcome(mls: &PikaMls, welcome: &Welcome) -> Result<()> {
+    mls.inner.accept_welcome(welcome).context("accept welcome")
 }
 
 pub fn stage_pending_welcome(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     wrapper_event_id: &EventId,
     rumor: &UnsignedEvent,
 ) -> Result<Welcome> {
@@ -111,17 +111,17 @@ pub fn stage_pending_welcome(
         return Err(anyhow!("rumor is not an MLS welcome"));
     }
 
-    mdk.inner
+    mls.inner
         .process_welcome(wrapper_event_id, rumor)
         .context("process welcome rumor")?;
 
-    WelcomeQueries::new(mdk)
+    WelcomeQueries::new(mls)
         .lookup_pending_welcome(wrapper_event_id)?
         .ok_or_else(|| anyhow!("pending welcome missing after process"))
 }
 
 pub fn ingest_unwrapped_welcome<F>(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     wrapper_event_id: &EventId,
     sender: PublicKey,
     rumor: &UnsignedEvent,
@@ -139,7 +139,7 @@ where
         return Ok(None);
     }
 
-    let stored = stage_pending_welcome(mdk, wrapper_event_id, rumor)?;
+    let stored = stage_pending_welcome(mls, wrapper_event_id, rumor)?;
     let nostr_group_id_hex = hex::encode(stored.nostr_group_id);
     let group_name = stored.group_name;
 
@@ -154,7 +154,7 @@ where
 }
 
 pub async fn ingest_welcome_from_giftwrap<F>(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     keys: &Keys,
     event: &Event,
     sender_allowed: F,
@@ -170,7 +170,7 @@ where
         .await
         .context("unwrap giftwrap rumor")?;
     ingest_unwrapped_welcome(
-        mdk,
+        mls,
         &event.id,
         unwrapped.sender,
         &unwrapped.rumor,
@@ -225,7 +225,7 @@ where
 
 pub fn create_group_and_plan_welcome_delivery(
     creator_pubkey: &PublicKey,
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     peer_key_packages: Vec<Event>,
     config: NostrGroupConfigData,
     recipients: &[PublicKey],
@@ -238,7 +238,7 @@ pub fn create_group_and_plan_welcome_delivery(
         );
     }
 
-    let result = mdk
+    let result = mls
         .create_group(creator_pubkey, peer_key_packages, config)
         .context("create group")?;
 
@@ -259,7 +259,7 @@ pub fn create_group_and_plan_welcome_delivery(
 
 pub async fn create_group_and_publish_welcomes<F, Fut>(
     keys: &Keys,
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     peer_key_packages: Vec<Event>,
     config: NostrGroupConfigData,
     recipients: &[PublicKey],
@@ -273,7 +273,7 @@ where
     let creator_pubkey = keys.public_key();
     let planned = create_group_and_plan_welcome_delivery(
         &creator_pubkey,
-        mdk,
+        mls,
         peer_key_packages,
         config,
         recipients,
@@ -299,16 +299,16 @@ where
 }
 
 pub struct WelcomeQueries<'a> {
-    mdk: &'a PikaMdk,
+    mls: &'a PikaMls,
 }
 
 impl<'a> WelcomeQueries<'a> {
-    pub fn new(mdk: &'a PikaMdk) -> Self {
-        Self { mdk }
+    pub fn new(mls: &'a PikaMls) -> Self {
+        Self { mls }
     }
 
     pub fn list_pending_welcomes(&self) -> Result<Vec<Welcome>> {
-        self.mdk
+        self.mls
             .inner
             .get_pending_welcomes(None)
             .context("get pending welcomes")

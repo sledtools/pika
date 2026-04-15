@@ -5,7 +5,7 @@ mod core;
 mod external_signer;
 mod hypernote;
 mod logging;
-mod mdk_support;
+mod mls_support;
 mod route_projection;
 mod state;
 mod tls;
@@ -37,7 +37,7 @@ pub use route_projection::*;
 pub use state::*;
 pub use updates::*;
 
-pub use core::normalize_peer_key_package_event_for_mdk;
+pub use core::normalize_peer_key_package_event_for_mls;
 
 // Not exposed over UniFFI; used by binaries/tests to avoid rustls provider ambiguity when
 // multiple crypto backends are enabled in the dependency graph.

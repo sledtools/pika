@@ -208,10 +208,10 @@ impl AppCore {
                 .map(super::GroupMember::to_member_info)
                 .collect();
 
-            // Do not rely on `last_message_id` being populated in all MDK flows.
+            // Do not rely on `last_message_id` being populated in all MLS flows.
             // For MVP scale, fetching the newest message per group is cheap and robust.
             // Signal/control messages share the MLS app-message path; skip them in chat previews.
-            let newest = pika_mls::conversation::ConversationQueries::new(&sess.mdk)
+            let newest = pika_mls::conversation::ConversationQueries::new(&sess.mls)
                 .get_messages(
                     &snapshot.nostr_group_id_hex,
                     Some(Pagination::new(Some(20), Some(0))),
@@ -503,7 +503,7 @@ impl AppCore {
                         }
                     });
                 cm.media = self.chat_media_attachments_fast(
-                    &sess.mdk,
+                    &sess.mls,
                     &entry.mls_group_id,
                     chat_id,
                     &my_pubkey_hex,
@@ -518,7 +518,7 @@ impl AppCore {
         {
             let media_cache_entry = self.media_cache.entry(chat_id.to_string()).or_default();
             for m in &visible_messages {
-                let manager = sess.mdk.media_manager(entry.mls_group_id.clone());
+                let manager = sess.mls.media_manager(entry.mls_group_id.clone());
                 for tag in m.tags.iter() {
                     if !super::chat_media::is_imeta_tag(tag) {
                         continue;
@@ -927,7 +927,7 @@ impl AppCore {
                         }
                     });
                 cm.media = self.chat_media_attachments_for_tags(
-                    &sess.mdk,
+                    &sess.mls,
                     &entry.mls_group_id,
                     chat_id,
                     &my_pubkey_hex,
@@ -2233,7 +2233,7 @@ mod tests {
 
     #[test]
     fn separate_messages_deduplicates_reactions_per_sender_newest_first() {
-        // MDK returns messages newest-first; the newer reaction should win.
+        // MLS returns messages newest-first; the newer reaction should win.
         let mut tags = Tags::new();
         tags.push(Tag::parse(vec!["e", "msg1"]).unwrap());
         let msgs = vec![
@@ -2474,7 +2474,7 @@ mod tests {
 
         // Now simulate a refresh_current_chat rebuilding with chat_media_attachments_fast.
         // The attachment should pick up the cached local_path.
-        // We can't easily call chat_media_attachments_fast without MDK, but we can verify
+        // We can't easily call chat_media_attachments_fast without MLS, but we can verify
         // the cache persists across state mutations.
         core.state.current_chat = Some(make_chat_view(
             "chat1",

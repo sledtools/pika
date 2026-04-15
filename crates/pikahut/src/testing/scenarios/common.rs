@@ -101,70 +101,6 @@ pub(crate) fn extract_udid(output: &str) -> Option<String> {
     None
 }
 
-fn parse_mdk_rev_from_toml(
-    text: &str,
-    dependencies_path: &[&str],
-    context: &str,
-) -> Result<Option<String>> {
-    let parsed: toml::Value = toml::from_str(text).with_context(|| format!("parse {context}"))?;
-    let mut cursor = &parsed;
-    for key in dependencies_path {
-        let Some(next) = cursor.get(*key) else {
-            return Ok(None);
-        };
-        cursor = next;
-    }
-    let rev = cursor
-        .get("mdk-core")
-        .and_then(|dep| dep.get("rev"))
-        .and_then(toml::Value::as_str)
-        .filter(|rev| rev.len() == 40 && rev.chars().all(|c| c.is_ascii_hexdigit()))
-        .map(str::to_string);
-    Ok(rev)
-}
-
-fn workspace_mdk_rev(workspace_root: &Path) -> Result<Option<String>> {
-    let workspace_cargo = workspace_root.join("Cargo.toml");
-    let workspace_text = fs::read_to_string(&workspace_cargo)
-        .with_context(|| format!("read {}", workspace_cargo.display()))?;
-    parse_mdk_rev_from_toml(
-        &workspace_text,
-        &["workspace", "dependencies"],
-        &workspace_cargo.display().to_string(),
-    )
-}
-
-fn harness_mdk_rev(rust_interop_dir: &Path) -> Result<Option<String>> {
-    let harness_cargo = rust_interop_dir.join("rust_harness/Cargo.toml");
-    let harness_text = fs::read_to_string(&harness_cargo)
-        .with_context(|| format!("read {}", harness_cargo.display()))?;
-    parse_mdk_rev_from_toml(
-        &harness_text,
-        &["dependencies"],
-        &harness_cargo.display().to_string(),
-    )
-}
-
-pub(crate) fn check_mdk_skew(workspace_root: &Path, rust_interop_dir: &Path) -> Result<()> {
-    let Some(workspace_rev) = workspace_mdk_rev(workspace_root)? else {
-        return Ok(());
-    };
-    let Some(harness_rev) = harness_mdk_rev(rust_interop_dir)? else {
-        return Ok(());
-    };
-
-    if workspace_rev != harness_rev {
-        bail!(
-            "MDK version skew detected\n  pika workspace pins MDK rev: {}\n  rust harness pins MDK rev: {}\nfix: align one side before interop conclusions",
-            workspace_rev,
-            harness_rev,
-        );
-    }
-
-    println!("ok: MDK rev aligned: {workspace_rev}");
-    Ok(())
-}
-
 pub(crate) fn extract_field(line: &str, key: &str) -> Option<String> {
     let value = line.split(key).nth(1)?;
     Some(value.split_whitespace().next()?.to_string())
@@ -175,45 +111,8 @@ mod tests {
     use std::io::Write;
 
     use super::{
-        extract_udid, generate_ephemeral_nsec, parse_mdk_rev_from_toml, parse_url_port,
-        pick_free_port, tail_lines,
+        extract_udid, generate_ephemeral_nsec, parse_url_port, pick_free_port, tail_lines,
     };
-
-    #[test]
-    fn parse_mdk_rev_from_workspace_dependencies() {
-        let text = r#"
-[workspace]
-[workspace.dependencies]
-mdk-core = { git = "https://github.com/marmot-protocol/mdk", rev = "d9f372743625de17f6fcd81eecd5084917a8ebb1" }
-"#;
-        let rev = parse_mdk_rev_from_toml(text, &["workspace", "dependencies"], "workspace")
-            .expect("parse should succeed")
-            .expect("rev should exist");
-        assert_eq!(rev, "d9f372743625de17f6fcd81eecd5084917a8ebb1");
-    }
-
-    #[test]
-    fn parse_mdk_rev_returns_none_when_missing() {
-        let text = r#"
-[workspace]
-[workspace.dependencies]
-tokio = "1"
-"#;
-        let rev = parse_mdk_rev_from_toml(text, &["workspace", "dependencies"], "workspace")
-            .expect("parse should succeed");
-        assert!(rev.is_none());
-    }
-
-    #[test]
-    fn parse_mdk_rev_filters_invalid_hashes() {
-        let text = r#"
-[dependencies]
-mdk-core = { git = "https://github.com/marmot-protocol/mdk", rev = "not-a-sha" }
-"#;
-        let rev = parse_mdk_rev_from_toml(text, &["dependencies"], "harness")
-            .expect("parse should succeed");
-        assert!(rev.is_none());
-    }
 
     #[test]
     fn parse_url_port_extracts_port() {

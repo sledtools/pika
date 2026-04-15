@@ -3,7 +3,7 @@ use nostr_sdk::prelude::{Event, EventId, Kind, PublicKey, Tag, TagKind, Timestam
 use pika_mls::conversation::wrap_rumor;
 use pika_mls::storage_traits::GroupId;
 
-use crate::mdk_support::PikaMdk;
+use crate::mls_support::PikaMls;
 
 use super::message_support::TYPING_INDICATOR_KIND;
 
@@ -58,24 +58,24 @@ pub(crate) enum OutboundConversationPublishStatus {
 }
 
 pub(crate) fn prepare_action(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     sender: PublicKey,
     nostr_group_id_hex: &str,
     action: OutboundConversationAction,
 ) -> Result<PreparedConversationAction> {
-    let target = resolve_target(mdk, nostr_group_id_hex)?;
-    prepare_action_for_target(mdk, sender, target, action)
+    let target = resolve_target(mls, nostr_group_id_hex)?;
+    prepare_action_for_target(mls, sender, target, action)
 }
 
 pub(crate) fn prepare_action_for_group_ids(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     sender: PublicKey,
     mls_group_id: GroupId,
     nostr_group_id_hex: String,
     action: OutboundConversationAction,
 ) -> Result<PreparedConversationAction> {
     prepare_action_for_target(
-        mdk,
+        mls,
         sender,
         ResolvedConversationTarget {
             mls_group_id,
@@ -85,20 +85,20 @@ pub(crate) fn prepare_action_for_group_ids(
     )
 }
 
-fn resolve_target(mdk: &PikaMdk, nostr_group_id_hex: &str) -> Result<ResolvedConversationTarget> {
+fn resolve_target(mls: &PikaMls, nostr_group_id_hex: &str) -> Result<ResolvedConversationTarget> {
     Ok(ResolvedConversationTarget::from_joined_group_snapshot(
-        super::conversation_support::lookup_joined_group_snapshot(mdk, nostr_group_id_hex)?,
+        super::conversation_support::lookup_joined_group_snapshot(mls, nostr_group_id_hex)?,
     ))
 }
 
 fn prepare_action_for_target(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     sender: PublicKey,
     target: ResolvedConversationTarget,
     action: OutboundConversationAction,
 ) -> Result<PreparedConversationAction> {
     let wrapped = wrap_rumor(
-        mdk,
+        mls,
         &target.mls_group_id,
         build_unsigned_action(sender, action),
     )?;

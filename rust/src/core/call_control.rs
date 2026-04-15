@@ -221,7 +221,7 @@ impl AppCore {
             .as_ref()
             .ok_or_else(|| "no active session".to_string())?;
         let derive_ctx = CallCryptoDeriveContext {
-            mdk: &sess.mdk,
+            mls: &sess.mls,
             mls_group_id: &group.mls_group_id,
             group_epoch: 0,
             call_id,
@@ -295,7 +295,7 @@ impl AppCore {
                 signal.payload_json.clone(),
             );
 
-            let wrapper = pika_mls::conversation::wrap_rumor(&sess.mdk, &group.mls_group_id, rumor)
+            let wrapper = pika_mls::conversation::wrap_rumor(&sess.mls, &group.mls_group_id, rumor)
                 .map(|wrapped| wrapped.wrapper)
                 .map_err(|e| format!("encrypt call signal failed: {e}"))?;
 
@@ -303,7 +303,7 @@ impl AppCore {
             let relays: Vec<RelayUrl> = if room_binding.is_some() || !network_enabled {
                 Vec::new()
             } else {
-                pika_mls::conversation::ConversationQueries::new(&sess.mdk)
+                pika_mls::conversation::ConversationQueries::new(&sess.mls)
                     .get_relays(&group.mls_group_id)
                     .ok()
                     .map(|s| s.into_iter().collect())

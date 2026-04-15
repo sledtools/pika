@@ -39,9 +39,9 @@ pub fn extract_relays_from_key_package_relays_event(event: &Event) -> Vec<RelayU
 // - ciphersuite "1" instead of "0x0001"
 // - missing encoding tag + hex-encoded content instead of base64
 //
-// This does NOT re-sign the event; MDK doesn't require Nostr signature verification for
+// This does NOT re-sign the event; MLS doesn't require Nostr signature verification for
 // keypackage parsing, but it does validate the credential identity matches `event.pubkey`.
-pub fn normalize_peer_key_package_event_for_mdk(event: &Event) -> Event {
+pub fn normalize_peer_key_package_event_for_mls(event: &Event) -> Event {
     let mut out = event.clone();
 
     // Determine if content looks like hex. Some interop stacks omit the encoding tag and use hex.
@@ -102,7 +102,7 @@ pub fn normalize_peer_key_package_event_for_mdk(event: &Event) -> Event {
             tags.push(Tag::custom(TagKind::Custom("encoding".into()), ["base64"]));
         }
     } else if !saw_encoding {
-        // MDK requires an explicit encoding tag; default to base64 for modern clients.
+        // MLS requires an explicit encoding tag; default to base64 for modern clients.
         tags.push(Tag::custom(TagKind::Custom("encoding".into()), ["base64"]));
     }
 
@@ -140,7 +140,7 @@ mod tests {
             ],
         );
 
-        let normalized = normalize_peer_key_package_event_for_mdk(&event);
+        let normalized = normalize_peer_key_package_event_for_mls(&event);
 
         assert_eq!(normalized.content, "aGVsbG8=");
         assert_eq!(
@@ -164,7 +164,7 @@ mod tests {
             vec![Tag::custom(TagKind::Custom("encoding".into()), ["hex"])],
         );
 
-        let normalized = normalize_peer_key_package_event_for_mdk(&event);
+        let normalized = normalize_peer_key_package_event_for_mls(&event);
 
         assert_eq!(normalized.content, "aGVsbG8=");
         assert_eq!(
@@ -177,7 +177,7 @@ mod tests {
     fn normalize_adds_default_base64_encoding_for_modern_key_packages() {
         let event = key_package_event("aGVsbG8=", vec![]);
 
-        let normalized = normalize_peer_key_package_event_for_mdk(&event);
+        let normalized = normalize_peer_key_package_event_for_mls(&event);
 
         assert_eq!(normalized.content, "aGVsbG8=");
         assert_eq!(

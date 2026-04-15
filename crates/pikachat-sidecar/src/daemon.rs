@@ -44,7 +44,7 @@ use pika_media::session::{
     InMemoryRelay, MediaFrame, MediaSession, MediaSessionError, SessionConfig,
 };
 use pika_media::tracks::{TrackAddress, broadcast_path};
-use pika_mls::PikaMdk;
+use pika_mls::PikaMls;
 use pika_mls::prelude::*;
 
 use serde::Deserialize;
@@ -109,7 +109,7 @@ fn bootstrap_runtime_for_daemon(
     bootstrap_runtime_session(
         keys.public_key(),
         signer,
-        || crate::new_mdk(state_dir, "daemon"),
+        || crate::new_mls(state_dir, "daemon"),
         daemon_open_request(Vec::new(), relay_urls, giftwrap_lookback_sec),
     )
 }
@@ -226,7 +226,7 @@ async fn execute_daemon_base_session_sync(
 }
 
 async fn accept_welcome_with_backfill<F, Fut>(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     client: &Client,
     relay_urls: &[RelayUrl],
     welcome: &pika_mls::storage_traits::welcomes::types::Welcome,
@@ -239,7 +239,7 @@ where
 {
     let backlog_relays: Vec<RelayUrl> = relay_urls.first().cloned().into_iter().collect();
     accept_welcome_and_catch_up(
-        mdk,
+        mls,
         client,
         &backlog_relays,
         welcome,
@@ -252,7 +252,7 @@ where
 
 async fn create_group_and_publish_welcomes_for_init_group<F, Fut>(
     keys: &Keys,
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     peer_kp: Event,
     peer_pubkey: PublicKey,
     config: NostrGroupConfigData,
@@ -267,7 +267,7 @@ where
         Timestamp::from_secs(Timestamp::now().as_secs() + INIT_GROUP_WELCOME_EXPIRATION_SECS);
     create_group_and_publish_welcomes(
         keys,
-        mdk,
+        mls,
         vec![peer_kp],
         config,
         &[peer_pubkey],
@@ -286,7 +286,7 @@ where
 
 async fn create_group_and_publish_welcomes_for_init_group_with_confirm(
     keys: &Keys,
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     client: &Client,
     relay_urls: &[RelayUrl],
     peer_kp: Event,
@@ -296,7 +296,7 @@ async fn create_group_and_publish_welcomes_for_init_group_with_confirm(
     const INIT_GROUP_PUBLISH_WELCOME_MARKER: &str = "init_group_publish_welcome";
     create_group_and_publish_welcomes_for_init_group(
         keys,
-        mdk,
+        mls,
         peer_kp,
         peer_pubkey,
         config,
@@ -321,7 +321,7 @@ fn map_init_group_error(err: &anyhow::Error) -> (&'static str, String) {
     {
         ("publish_failed", format!("{err:#}"))
     } else {
-        ("mdk_error", format!("create_group: {err:#}"))
+        ("mls_error", format!("create_group: {err:#}"))
     }
 }
 
@@ -347,12 +347,12 @@ fn accept_welcome_not_found_message() -> String {
     )
 }
 
-use crate::key_package::normalize_peer_key_package_event_for_mdk;
+use crate::key_package::normalize_peer_key_package_event_for_mls;
 use crate::media::{
     MAX_CHAT_MEDIA_BYTES, ParsedMediaAttachment, PreparedMediaUpload, RuntimeMediaAttachment,
     UploadedBlob, resolve_upload_metadata, upload_encrypted_blob,
 };
-use crate::relay::{fetch_latest_key_package_for_mdk, publish_and_confirm};
+use crate::relay::{fetch_latest_key_package_for_mls, publish_and_confirm};
 
 fn blossom_servers_or_default(values: &[String]) -> Vec<String> {
     pika_relay_profiles::blossom_servers_or_default(values)
@@ -450,9 +450,9 @@ impl DaemonMembershipWorkflowError {
         }
     }
 
-    fn mdk(err: anyhow::Error) -> Self {
+    fn mls(err: anyhow::Error) -> Self {
         Self {
-            code: "mdk_error",
+            code: "mls_error",
             message: format!("{err:#}"),
         }
     }
@@ -509,7 +509,7 @@ impl DaemonGroupProfileWorkflowError {
 
     fn prepare(err: anyhow::Error) -> Self {
         Self {
-            code: "mdk_error",
+            code: "mls_error",
             message: format!("{err:#}"),
         }
     }
@@ -606,7 +606,7 @@ where
                 return out_error(request_id, mapped.code, mapped.message);
             }
         };
-        key_package_events.push(normalize_peer_key_package_event_for_mdk(&key_package));
+        key_package_events.push(normalize_peer_key_package_event_for_mls(&key_package));
     }
 
     let prepared = match host.prepare_add_members(nostr_group_id, &key_package_events) {
@@ -616,7 +616,7 @@ where
             return out_error(request_id, mapped.code, mapped.message);
         }
         Err(DaemonPrepareError::Prepare(err)) => {
-            let mapped = DaemonMembershipWorkflowError::mdk(err);
+            let mapped = DaemonMembershipWorkflowError::mls(err);
             return out_error(request_id, mapped.code, mapped.message);
         }
     };
@@ -721,7 +721,7 @@ async fn handle_add_members_request(
             let client = client.clone();
             let relay_urls = relay_urls.to_vec();
             async move {
-                fetch_latest_key_package_for_mdk(
+                fetch_latest_key_package_for_mls(
                     &client,
                     &peer_pubkey,
                     &relay_urls,
@@ -807,7 +807,7 @@ where
             return out_error(request_id, mapped.code, mapped.message);
         }
         Err(DaemonPrepareError::Prepare(err)) => {
-            let mapped = DaemonMembershipWorkflowError::mdk(err);
+            let mapped = DaemonMembershipWorkflowError::mls(err);
             return out_error(request_id, mapped.code, mapped.message);
         }
     };
@@ -913,7 +913,7 @@ where
             return Err(DaemonMembershipWorkflowError::bad_group(format!("{err:#}")));
         }
         Err(DaemonPrepareError::Prepare(err)) => {
-            return Err(DaemonMembershipWorkflowError::mdk(err));
+            return Err(DaemonMembershipWorkflowError::mls(err));
         }
     };
 
@@ -3562,7 +3562,7 @@ pub async fn daemon_main(
     )
     .await?
     .welcome_inbox_sub;
-    let mdk = runtime_session.mdk;
+    let mls = runtime_session.mls;
 
     // Track inbound relay events we've already processed. Seed from bootstrapped
     // startup state so reconnects do not immediately replay known wrappers.
@@ -3779,13 +3779,13 @@ pub async fn daemon_main(
 
                         let (kp_content, kp_tags, _hash_ref) =
                             match pika_mls::key_package::create_key_package_for_event(
-                                &mdk,
+                                &mls,
                                 &keys.public_key(),
                                 selected.clone(),
                             ) {
                             Ok(v) => v,
                             Err(e) => {
-                                reply_tx.send(out_error(request_id, "mdk_error", format!("{e:#}"))).ok();
+                                reply_tx.send(out_error(request_id, "mls_error", format!("{e:#}"))).ok();
                                 continue;
                             }
                         };
@@ -3836,7 +3836,7 @@ pub async fn daemon_main(
                     }
                     InCmd::ListPendingWelcomes { request_id } => {
                         let host =
-                            DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                            DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         match host.list_pending_welcome_snapshots() {
                             Ok(list) => {
                                 let out = list
@@ -3854,7 +3854,7 @@ pub async fn daemon_main(
                                 let _ = reply_tx.send(out_ok(request_id, Some(json!({ "welcomes": out }))));
                             }
                             Err(e) => {
-                                let _ = reply_tx.send(out_error(request_id, "mdk_error", format!("{e:#}")));
+                                let _ = reply_tx.send(out_error(request_id, "mls_error", format!("{e:#}")));
                             }
                         }
                     }
@@ -3873,14 +3873,14 @@ pub async fn daemon_main(
                             }
                         };
                         let host =
-                            DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                            DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         match host.lookup_pending_welcome(&wrapper) {
                             Ok(Some(w)) => {
                                 let subscribed_group =
                                     Arc::new(Mutex::new(None::<(SubscriptionId, String)>));
                                 let accept_client = client.clone();
                                 match accept_welcome_with_backfill(
-                                    &mdk,
+                                    &mls,
                                     &client,
                                     &relay_urls,
                                     &w,
@@ -3918,7 +3918,7 @@ pub async fn daemon_main(
                                         let host = DaemonHostContext::new(
                                             &client,
                                             &relay_urls,
-                                            &mdk,
+                                            &mls,
                                             &keys,
                                             &pubkey_hex,
                                         );
@@ -3963,7 +3963,7 @@ pub async fn daemon_main(
                                             "mls_group_id": mls_group_id_hex,
                                         })))).ok();
                                         let member_count =
-                                            pika_mls::conversation::ConversationQueries::new(&mdk)
+                                            pika_mls::conversation::ConversationQueries::new(&mls)
                                                 .get_members(&accepted.mls_group_id)
                                                 .map(|members| members.len() as u32)
                                                 .unwrap_or(0);
@@ -3974,7 +3974,7 @@ pub async fn daemon_main(
                                         }).ok();
                                     }
                                     Err(e) => {
-                                        reply_tx.send(out_error(request_id, "mdk_error", format!("{e:#}"))).ok();
+                                        reply_tx.send(out_error(request_id, "mls_error", format!("{e:#}"))).ok();
                                     }
                                 }
                             }
@@ -3988,12 +3988,12 @@ pub async fn daemon_main(
                                     .ok();
                             }
                             Err(e) => {
-                                let _ = reply_tx.send(out_error(request_id, "mdk_error", format!("{e:#}")));
+                                let _ = reply_tx.send(out_error(request_id, "mls_error", format!("{e:#}")));
                             }
                         }
                     }
                     InCmd::ListGroups { request_id } => {
-                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         match host.list_groups() {
                             Ok(groups) => {
                                 let out = groups
@@ -4013,7 +4013,7 @@ pub async fn daemon_main(
                             }
                             Err(e) => {
                                 let _ = reply_tx
-                                    .send(out_error(request_id, "mdk_error", format!("{e:#}")));
+                                    .send(out_error(request_id, "mls_error", format!("{e:#}")));
                             }
                         }
                     }
@@ -4023,7 +4023,7 @@ pub async fn daemon_main(
                         peer_pubkeys,
                     } => {
                         let host =
-                            DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                            DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         let reply = handle_add_members_request(
                             request_id,
                             &host,
@@ -4053,7 +4053,7 @@ pub async fn daemon_main(
                         nostr_group_id,
                     } => {
                         let host =
-                            DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                            DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         let _ = reply_tx
                             .send(handle_list_members_request(request_id, &host, &nostr_group_id));
                     }
@@ -4063,7 +4063,7 @@ pub async fn daemon_main(
                         peer_pubkeys,
                     } => {
                         let host =
-                            DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                            DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         let reply = handle_remove_members_request(
                             request_id,
                             &host,
@@ -4092,7 +4092,7 @@ pub async fn daemon_main(
                         nostr_group_id,
                     } => {
                         let host =
-                            DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                            DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         let reply = handle_leave_group_request(
                             request_id,
                             &host,
@@ -4118,7 +4118,7 @@ pub async fn daemon_main(
                         about,
                     } => {
                         let host =
-                            DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                            DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         let reply = handle_update_group_profile_request(
                             request_id,
                             &host,
@@ -4147,7 +4147,7 @@ pub async fn daemon_main(
                         nostr_group_id,
                     } => {
                         let host =
-                            DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                            DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         let reply = handle_get_group_profile_request(
                             request_id,
                             &host,
@@ -4163,7 +4163,7 @@ pub async fn daemon_main(
                         mime_type,
                     } => {
                         let host =
-                            DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                            DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         let reply = handle_upload_group_profile_image_request(
                             request_id,
                             &host,
@@ -4189,7 +4189,7 @@ pub async fn daemon_main(
                         let _ = reply_tx.send(reply);
                     }
                     InCmd::GetMessages { request_id, nostr_group_id, limit } => {
-                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         let query =
                             crate::conversation::RuntimeMessagePageQuery::new(limit, 0);
                         match host.load_message_page(&nostr_group_id, query) {
@@ -4205,7 +4205,7 @@ pub async fn daemon_main(
                                 let _ = reply_tx.send(out_ok(request_id, Some(json!({"messages": out}))));
                             }
                             Err(e) => {
-                                let _ = reply_tx.send(out_error(request_id, "mdk_error", format!("{e:#}")));
+                                let _ = reply_tx.send(out_error(request_id, "mls_error", format!("{e:#}")));
                             }
                         }
                     }
@@ -4215,7 +4215,7 @@ pub async fn daemon_main(
                         }))));
                     }
                     InCmd::SendMessage { request_id, nostr_group_id, content } => {
-                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         let prepared = match host.prepare_outbound_action(
                             &nostr_group_id,
                             OutboundConversationAction::Message {
@@ -4296,7 +4296,7 @@ pub async fn daemon_main(
                         title,
                         state,
                     } => {
-                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         let prepared = match host.prepare_outbound_action(
                             &nostr_group_id,
                             OutboundConversationAction::Hypernote {
@@ -4355,7 +4355,7 @@ pub async fn daemon_main(
                                 .ok();
                             continue;
                         }
-                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         let prepared = match host.prepare_outbound_action(
                             &nostr_group_id,
                             OutboundConversationAction::Reaction {
@@ -4423,7 +4423,7 @@ pub async fn daemon_main(
                             continue;
                         }
                         let payload = hn::build_action_response_payload(action, &form).to_string();
-                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         let prepared = match host.prepare_outbound_action(
                             &nostr_group_id,
                             OutboundConversationAction::Message {
@@ -4472,7 +4472,7 @@ pub async fn daemon_main(
                         caption,
                         blossom_servers,
                     } => {
-                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         let reply = handle_send_media_request(
                             request_id,
                             &host,
@@ -4497,7 +4497,7 @@ pub async fn daemon_main(
                         caption,
                         blossom_servers,
                     } => {
-                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         let mls_group_id = match host.resolve_group(&nostr_group_id) {
                             Ok(id) => id,
                             Err(e) => {
@@ -4571,7 +4571,7 @@ pub async fn daemon_main(
                     }
                     InCmd::SendTyping { request_id, nostr_group_id } => {
                         let expires_at = Timestamp::from_secs(Timestamp::now().as_secs() + 10);
-                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         let prepared = match host.prepare_outbound_action(
                             &nostr_group_id,
                             OutboundConversationAction::Typing {
@@ -4585,7 +4585,7 @@ pub async fn daemon_main(
                                 continue;
                             }
                             Err(DaemonPrepareError::Prepare(e)) => {
-                                reply_tx.send(out_error(request_id, "mdk_error", format!("{e:#}"))).ok();
+                                reply_tx.send(out_error(request_id, "mls_error", format!("{e:#}"))).ok();
                                 continue;
                             }
                         };
@@ -4624,7 +4624,7 @@ pub async fn daemon_main(
                             let _ = reply_tx.send(out_error(request_id, "busy", "call already active"));
                             continue;
                         }
-                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         let reply = handle_invite_call_request(
                             request_id,
                             &host,
@@ -4648,7 +4648,7 @@ pub async fn daemon_main(
                             let _ = reply_tx.send(out_error(request_id, "busy", "call already active"));
                             continue;
                         }
-                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         let Some(invite) = pending_call_invites.remove(&call_id) else {
                             let _ = reply_tx.send(out_error(request_id, "not_found", "pending call invite not found"));
                             continue;
@@ -4803,7 +4803,7 @@ pub async fn daemon_main(
                         call_id,
                         reason,
                     } => {
-                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         let Some(invite) = pending_call_invites.remove(&call_id) else {
                             let _ = reply_tx.send(out_error(request_id, "not_found", "pending call invite not found"));
                             continue;
@@ -4857,7 +4857,7 @@ pub async fn daemon_main(
                         call_id,
                         reason,
                     } => {
-                        let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                        let host = DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         let Some(current) = active_call.take() else {
                             let _ = reply_tx.send(out_error(request_id, "not_found", "active call not found"));
                             continue;
@@ -5134,7 +5134,7 @@ pub async fn daemon_main(
                             continue;
                         }
 
-                        let peer_kp = match fetch_latest_key_package_for_mdk(
+                        let peer_kp = match fetch_latest_key_package_for_mls(
                             &client,
                             &peer_pubkey,
                             &relay_urls,
@@ -5151,7 +5151,7 @@ pub async fn daemon_main(
                                 continue;
                             }
                         };
-                        let peer_kp = normalize_peer_key_package_event_for_mdk(&peer_kp);
+                        let peer_kp = normalize_peer_key_package_event_for_mls(&peer_kp);
 
                         // Create group.
                         let config = NostrGroupConfigData::new(
@@ -5166,7 +5166,7 @@ pub async fn daemon_main(
 
                         let created = match create_group_and_publish_welcomes_for_init_group_with_confirm(
                             &keys,
-                            &mdk,
+                            &mls,
                             &client,
                             &relay_urls,
                             peer_kp,
@@ -5191,7 +5191,7 @@ pub async fn daemon_main(
                         // reporting success to the host protocol.
 
                         let host =
-                            DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                            DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                         let refreshed = match host.refresh_session_state(
                             group_subs.values().cloned().collect(),
                             giftwrap_lookback_sec,
@@ -5241,7 +5241,7 @@ pub async fn daemon_main(
                             "peer_pubkey": peer_pubkey.to_hex(),
                         })))).ok();
                         let member_count =
-                            pika_mls::conversation::ConversationQueries::new(&mdk)
+                            pika_mls::conversation::ConversationQueries::new(&mls)
                                 .get_members(&created.group.mls_group_id)
                                 .map(|members| members.len() as u32)
                                 .unwrap_or(0);
@@ -5369,7 +5369,7 @@ pub async fn daemon_main(
                     };
 
                     let welcome = match ingest_unwrapped_welcome(
-                        &mdk,
+                        &mls,
                         &wrapper.id,
                         sender,
                         &rumor,
@@ -5411,7 +5411,7 @@ pub async fn daemon_main(
                     continue;
                 }
 
-                let host = DaemonHostContext::new(&client, &relay_urls, &mdk, &keys, &pubkey_hex);
+                let host = DaemonHostContext::new(&client, &relay_urls, &mls, &keys, &pubkey_hex);
                 let Some(subscribed_group_id) = group_subs.get(&subscription_id).cloned() else {
                     continue;
                 };
@@ -5751,10 +5751,10 @@ mod tests {
         EventId::from_hex(hex).expect("valid event id")
     }
 
-    fn make_key_package_event(mdk: &crate::PikaMdk, keys: &Keys) -> Event {
+    fn make_key_package_event(mls: &crate::PikaMls, keys: &Keys) -> Event {
         let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
         let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
-            mdk,
+            mls,
             &keys.public_key(),
             vec![relay],
         )
@@ -5766,12 +5766,12 @@ mod tests {
     }
 
     fn test_host<'a>(
-        mdk: &'a crate::PikaMdk,
+        mls: &'a crate::PikaMls,
         keys: &'a Keys,
         client: &'a Client,
         relay_urls: &'a [RelayUrl],
     ) -> DaemonHostContext<'a> {
-        DaemonHostContext::new(client, relay_urls, mdk, keys, keys.public_key().to_hex())
+        DaemonHostContext::new(client, relay_urls, mls, keys, keys.public_key().to_hex())
     }
 
     fn expect_group_updated(event: OutMsg) -> GroupUpdatedOut {
@@ -5806,7 +5806,7 @@ mod tests {
     }
 
     fn make_group_message_event(
-        mdk: &crate::PikaMdk,
+        mls: &crate::PikaMls,
         keys: &Keys,
         mls_group_id: &GroupId,
         kind: Kind,
@@ -5816,24 +5816,24 @@ mod tests {
         let rumor = EventBuilder::new(kind, content)
             .tags(tags)
             .build(keys.public_key());
-        wrap_group_rumor_for_test(mdk, mls_group_id, rumor)
+        wrap_group_rumor_for_test(mls, mls_group_id, rumor)
     }
 
     fn wrap_group_rumor_for_test(
-        mdk: &crate::PikaMdk,
+        mls: &crate::PikaMls,
         mls_group_id: &GroupId,
         rumor: UnsignedEvent,
     ) -> Event {
-        pika_mls::conversation::wrap_rumor(mdk, mls_group_id, rumor)
+        pika_mls::conversation::wrap_rumor(mls, mls_group_id, rumor)
             .map(|wrapped| wrapped.wrapper)
             .expect("create group message event")
     }
 
     fn process_group_message_for_test(
-        mdk: &crate::PikaMdk,
+        mls: &crate::PikaMls,
         event: &Event,
     ) -> MessageProcessingResult {
-        pika_mls::conversation::process_group_message_event(mdk, event)
+        pika_mls::conversation::process_group_message_event(mls, event)
             .expect("process group message")
             .expect("event should be a group message")
     }
@@ -5902,10 +5902,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Daemon pending welcome query".to_string(),
             "Shared pending welcome snapshot".to_string(),
@@ -5915,7 +5915,7 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let group_result = inviter_mdk
+        let group_result = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
         let mut welcome_rumor = group_result
@@ -5936,13 +5936,13 @@ mod tests {
                 .await
                 .expect("build giftwrap")
             });
-        crate::welcome::stage_pending_welcome(&invitee_mdk, &wrapper.id, &welcome_rumor)
+        crate::welcome::stage_pending_welcome(&invitee_mls, &wrapper.id, &welcome_rumor)
             .expect("process welcome");
 
         let signer: Arc<dyn NostrSigner> = Arc::new(invitee_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&invitee_mdk, &invitee_keys, &client, &relay_urls);
+        let host = test_host(&invitee_mls, &invitee_keys, &client, &relay_urls);
 
         let snapshots = host
             .list_pending_welcome_snapshots()
@@ -5970,10 +5970,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Daemon conversation lookup".to_string(),
             String::new(),
@@ -5983,14 +5983,14 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let snapshot = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls)
+        let snapshot = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls)
             .lookup_joined_group_snapshot(&hex::encode(created.group.nostr_group_id))
             .expect("lookup joined group snapshot");
         assert_eq!(snapshot.mls_group_id, created.group.mls_group_id);
@@ -6004,10 +6004,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Daemon list groups".to_string(),
             "Shared snapshot projection".to_string(),
@@ -6017,14 +6017,14 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
 
         let snapshots = host
             .list_joined_group_snapshots()
@@ -6064,10 +6064,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Daemon message history".to_string(),
             String::new(),
@@ -6077,28 +6077,28 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge pending commit");
         for content in ["one", "two", "three"] {
             let event = make_group_message_event(
-                &inviter_mdk,
+                &inviter_mls,
                 &inviter_keys,
                 &created.group.mls_group_id,
                 Kind::ChatMessage,
                 content,
                 Tags::new(),
             );
-            process_group_message_for_test(&inviter_mdk, &event);
+            process_group_message_for_test(&inviter_mls, &event);
         }
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
         let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
 
         let first_page = host
@@ -6131,10 +6131,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Daemon outbound".to_string(),
             String::new(),
@@ -6144,14 +6144,14 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let prepared = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls)
+        let prepared = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls)
             .prepare_outbound_action(
                 &hex::encode(created.group.nostr_group_id),
                 OutboundConversationAction::Reaction {
@@ -6176,10 +6176,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Daemon outbound publish".to_string(),
             String::new(),
@@ -6189,14 +6189,14 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
         let prepared = host
             .prepare_outbound_action(
                 &hex::encode(created.group.nostr_group_id),
@@ -6232,12 +6232,12 @@ mod tests {
     #[test]
     fn daemon_call_signal_publish_operation_result_uses_shared_runtime_event_boundary() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mdk = crate::open_mdk(dir.path()).expect("open mdk");
+        let mls = crate::open_mls(dir.path()).expect("open mls");
         let keys = Keys::generate();
         let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&mdk, &keys, &client, &relay_urls);
+        let host = test_host(&mls, &keys, &client, &relay_urls);
         let wrapper_event_id =
             EventId::from_hex("3333333333333333333333333333333333333333333333333333333333333333")
                 .expect("event id");
@@ -6269,12 +6269,12 @@ mod tests {
     #[test]
     fn daemon_call_signal_publish_failure_uses_shared_runtime_event_boundary() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mdk = crate::open_mdk(dir.path()).expect("open mdk");
+        let mls = crate::open_mls(dir.path()).expect("open mls");
         let keys = Keys::generate();
         let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&mdk, &keys, &client, &relay_urls);
+        let host = test_host(&mls, &keys, &client, &relay_urls);
         let wrapper_event_id =
             EventId::from_hex("4444444444444444444444444444444444444444444444444444444444444444")
                 .expect("event id");
@@ -6305,12 +6305,12 @@ mod tests {
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
         let peer_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
-        let peer_mdk = crate::open_mdk(peer_dir.path()).expect("open peer mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
+        let peer_mls = crate::open_mls(peer_dir.path()).expect("open peer mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let peer_kp = make_key_package_event(&peer_mdk, &peer_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let peer_kp = make_key_package_event(&peer_mls, &peer_keys);
         let config = NostrGroupConfigData::new(
             "Daemon membership boundary".to_string(),
             String::new(),
@@ -6320,18 +6320,18 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
-        let before_merge = pika_mls::conversation::ConversationQueries::new(&inviter_mdk)
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
+        let before_merge = pika_mls::conversation::ConversationQueries::new(&inviter_mls)
             .get_members(&created.group.mls_group_id)
             .expect("members before merge")
             .len();
@@ -6341,7 +6341,7 @@ mod tests {
             .expect("prepare add members");
         let finalized = host.finalize_published_evolution(prepared);
 
-        let after_merge = pika_mls::conversation::ConversationQueries::new(&inviter_mdk)
+        let after_merge = pika_mls::conversation::ConversationQueries::new(&inviter_mls)
             .get_members(&created.group.mls_group_id)
             .expect("members after merge")
             .len();
@@ -6365,12 +6365,12 @@ mod tests {
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
         let peer_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
-        let peer_mdk = crate::open_mdk(peer_dir.path()).expect("open peer mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
+        let peer_mls = crate::open_mls(peer_dir.path()).expect("open peer mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let peer_kp = make_key_package_event(&peer_mdk, &peer_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let peer_kp = make_key_package_event(&peer_mls, &peer_keys);
         let config = NostrGroupConfigData::new(
             "Daemon membership operation".to_string(),
             String::new(),
@@ -6380,17 +6380,17 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
         let prepared = host
             .prepare_add_members(&hex::encode(created.group.nostr_group_id), &[peer_kp])
             .expect("prepare add members");
@@ -6430,12 +6430,12 @@ mod tests {
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
         let peer_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
-        let peer_mdk = crate::open_mdk(peer_dir.path()).expect("open peer mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
+        let peer_mls = crate::open_mls(peer_dir.path()).expect("open peer mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let peer_kp = make_key_package_event(&peer_mdk, &peer_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let peer_kp = make_key_package_event(&peer_mls, &peer_keys);
         let config = NostrGroupConfigData::new(
             "Daemon add members request".to_string(),
             String::new(),
@@ -6445,17 +6445,17 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
 
         let reply = handle_add_members_request_with(
             Some("req-1".to_string()),
@@ -6497,10 +6497,10 @@ mod tests {
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
         let missing_peer_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Daemon add members missing kp".to_string(),
             String::new(),
@@ -6510,17 +6510,17 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
         let missing_pubkey = missing_peer_keys.public_key();
 
         let reply =
@@ -6558,12 +6558,12 @@ mod tests {
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
         let peer_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
-        let peer_mdk = crate::open_mdk(peer_dir.path()).expect("open peer mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
+        let peer_mls = crate::open_mls(peer_dir.path()).expect("open peer mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let peer_kp = make_key_package_event(&peer_mdk, &peer_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let peer_kp = make_key_package_event(&peer_mls, &peer_keys);
         let config = NostrGroupConfigData::new(
             "Daemon add-members event".to_string(),
             "Shared event snapshot".to_string(),
@@ -6573,17 +6573,17 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
         let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
 
         let reply = handle_add_members_request_with(
@@ -6597,10 +6597,10 @@ mod tests {
                 async move { Ok(peer_kp) }
             },
             |event, label| {
-                let mdk = &inviter_mdk;
+                let mls = &inviter_mls;
                 async move {
                     if label == "add_members" {
-                        process_group_message_for_test(mdk, &event);
+                        process_group_message_for_test(mls, &event);
                     }
                     Ok(())
                 }
@@ -6640,10 +6640,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Daemon list members request".to_string(),
             String::new(),
@@ -6653,17 +6653,17 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
 
         let reply = handle_list_members_request(
             Some("req-3".to_string()),
@@ -6707,8 +6707,8 @@ mod tests {
         let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let mdk = crate::open_mdk(dir.path()).expect("open mdk");
-        let host = test_host(&mdk, &keys, &client, &relay_urls);
+        let mls = crate::open_mls(dir.path()).expect("open mls");
+        let host = test_host(&mls, &keys, &client, &relay_urls);
 
         let reply = handle_list_members_request(Some("req-4".to_string()), &host, "deadbeef");
 
@@ -6731,10 +6731,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Daemon remove members request".to_string(),
             String::new(),
@@ -6744,17 +6744,17 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
 
         let reply = handle_remove_members_request_with(
             Some("req-remove".to_string()),
@@ -6793,8 +6793,8 @@ mod tests {
         let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let mdk = crate::open_mdk(dir.path()).expect("open mdk");
-        let host = test_host(&mdk, &keys, &client, &relay_urls);
+        let mls = crate::open_mls(dir.path()).expect("open mls");
+        let host = test_host(&mls, &keys, &client, &relay_urls);
 
         let reply = handle_remove_members_request_with(
             Some("req-remove-bad".to_string()),
@@ -6824,10 +6824,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Daemon remove-members event".to_string(),
             "Shared event snapshot".to_string(),
@@ -6837,17 +6837,17 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
         let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
 
         let reply = handle_remove_members_request_with(
@@ -6856,9 +6856,9 @@ mod tests {
             &nostr_group_id_hex,
             &[invitee_keys.public_key().to_hex()],
             |event, _label| {
-                let mdk = &inviter_mdk;
+                let mls = &inviter_mls;
                 async move {
-                    process_group_message_for_test(mdk, &event);
+                    process_group_message_for_test(mls, &event);
                     Ok(())
                 }
             },
@@ -6896,10 +6896,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Daemon leave group request".to_string(),
             String::new(),
@@ -6909,17 +6909,17 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
 
         let result = leave_group_result_with(
             &host,
@@ -6942,8 +6942,8 @@ mod tests {
         let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let mdk = crate::open_mdk(dir.path()).expect("open mdk");
-        let host = test_host(&mdk, &keys, &client, &relay_urls);
+        let mls = crate::open_mls(dir.path()).expect("open mls");
+        let host = test_host(&mls, &keys, &client, &relay_urls);
 
         let err =
             leave_group_result_with(&host, "deadbeef", |_event, _label| async move { Ok(()) })
@@ -6960,10 +6960,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Daemon update group profile request".to_string(),
             String::new(),
@@ -6973,10 +6973,10 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
 
@@ -6988,13 +6988,13 @@ mod tests {
             r#"{"display_name":"Old Name","picture":"https://example.com/group.jpg"}"#,
         );
         let existing_wrapper =
-            wrap_group_rumor_for_test(&inviter_mdk, &created.group.mls_group_id, existing_profile);
-        process_group_message_for_test(&inviter_mdk, &existing_wrapper);
+            wrap_group_rumor_for_test(&inviter_mls, &created.group.mls_group_id, existing_profile);
+        process_group_message_for_test(&inviter_mls, &existing_wrapper);
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
 
         let reply = handle_update_group_profile_request_with(
             Some("req-profile".to_string()),
@@ -7004,9 +7004,9 @@ mod tests {
             "New Name",
             "New About",
             |prepared| {
-                let mdk = &inviter_mdk;
+                let mls = &inviter_mls;
                 async move {
-                    let processed = process_group_message_for_test(mdk, &prepared.wrapper);
+                    let processed = process_group_message_for_test(mls, &prepared.wrapper);
                     match processed {
                         MessageProcessingResult::ApplicationMessage(message) => {
                             let metadata: Metadata =
@@ -7056,10 +7056,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Daemon empty group profile".to_string(),
             String::new(),
@@ -7069,17 +7069,17 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
 
         let reply = handle_update_group_profile_request_with(
             Some("req-profile-empty".to_string()),
@@ -7111,10 +7111,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Daemon profile event".to_string(),
             String::new(),
@@ -7124,10 +7124,10 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
 
@@ -7139,13 +7139,13 @@ mod tests {
             r#"{"display_name":"Old Name","picture":"https://example.com/group.jpg"}"#,
         );
         let existing_wrapper =
-            wrap_group_rumor_for_test(&inviter_mdk, &created.group.mls_group_id, existing_profile);
-        process_group_message_for_test(&inviter_mdk, &existing_wrapper);
+            wrap_group_rumor_for_test(&inviter_mls, &created.group.mls_group_id, existing_profile);
+        process_group_message_for_test(&inviter_mls, &existing_wrapper);
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
         let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
 
         let reply = handle_update_group_profile_request_with(
@@ -7156,9 +7156,9 @@ mod tests {
             "Updated Name",
             "Updated About",
             |prepared| {
-                let mdk = &inviter_mdk;
+                let mls = &inviter_mls;
                 async move {
-                    process_group_message_for_test(mdk, &prepared.wrapper);
+                    process_group_message_for_test(mls, &prepared.wrapper);
                     Ok(EventId::all_zeros())
                 }
             },
@@ -7201,13 +7201,13 @@ mod tests {
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
         let peer_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
-        let peer_mdk = crate::open_mdk(peer_dir.path()).expect("open peer mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
+        let peer_mls = crate::open_mls(peer_dir.path()).expect("open peer mls");
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let created = inviter_mdk
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -7222,7 +7222,7 @@ mod tests {
                 ),
             )
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
 
@@ -7235,19 +7235,19 @@ mod tests {
             EventBuilder::gift_wrap(&inviter_keys, &invitee_keys.public_key(), welcome_rumor, [])
                 .await
                 .expect("build giftwrap");
-        crate::ingest_welcome_from_giftwrap(&invitee_mdk, &invitee_keys, &wrapper, |_| true)
+        crate::ingest_welcome_from_giftwrap(&invitee_mls, &invitee_keys, &wrapper, |_| true)
             .await
             .expect("ingest welcome")
             .expect("welcome should ingest");
 
         let invitee_client = Client::builder().signer(invitee_keys.clone()).build();
-        let pending = pika_mls::welcome::WelcomeQueries::new(&invitee_mdk)
+        let pending = pika_mls::welcome::WelcomeQueries::new(&invitee_mls)
             .list_pending_welcomes()
             .expect("get pending welcomes");
         let welcome = pending.first().expect("pending welcome");
         let mut seen_group_events = HashSet::new();
         let accepted = accept_welcome_with_backfill(
-            &invitee_mdk,
+            &invitee_mls,
             &invitee_client,
             &[],
             welcome,
@@ -7257,10 +7257,10 @@ mod tests {
         .await
         .expect("accept welcome");
 
-        let invitee_host = test_host(&invitee_mdk, &invitee_keys, &invitee_client, &relay_urls);
+        let invitee_host = test_host(&invitee_mls, &invitee_keys, &invitee_client, &relay_urls);
         let inviter_client = Client::builder().signer(inviter_keys.clone()).build();
-        let inviter_host = test_host(&inviter_mdk, &inviter_keys, &inviter_client, &relay_urls);
-        let peer_kp = make_key_package_event(&peer_mdk, &peer_keys);
+        let inviter_host = test_host(&inviter_mls, &inviter_keys, &inviter_client, &relay_urls);
+        let peer_kp = make_key_package_event(&peer_mls, &peer_keys);
         let prepared = inviter_host
             .prepare_add_members(&accepted.nostr_group_id_hex, &[peer_kp])
             .expect("prepare add members");
@@ -7313,12 +7313,12 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let created = inviter_mdk
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -7333,7 +7333,7 @@ mod tests {
                 ),
             )
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
 
@@ -7346,19 +7346,19 @@ mod tests {
             EventBuilder::gift_wrap(&inviter_keys, &invitee_keys.public_key(), welcome_rumor, [])
                 .await
                 .expect("build giftwrap");
-        crate::ingest_welcome_from_giftwrap(&invitee_mdk, &invitee_keys, &wrapper, |_| true)
+        crate::ingest_welcome_from_giftwrap(&invitee_mls, &invitee_keys, &wrapper, |_| true)
             .await
             .expect("ingest welcome")
             .expect("welcome should ingest");
 
         let invitee_client = Client::builder().signer(invitee_keys.clone()).build();
-        let pending = pika_mls::welcome::WelcomeQueries::new(&invitee_mdk)
+        let pending = pika_mls::welcome::WelcomeQueries::new(&invitee_mls)
             .list_pending_welcomes()
             .expect("get pending welcomes");
         let welcome = pending.first().expect("pending welcome");
         let mut seen_group_events = HashSet::new();
         let accepted = accept_welcome_with_backfill(
-            &invitee_mdk,
+            &invitee_mls,
             &invitee_client,
             &[],
             welcome,
@@ -7369,14 +7369,14 @@ mod tests {
         .expect("accept welcome");
 
         let profile_event = make_group_message_event(
-            &inviter_mdk,
+            &inviter_mls,
             &inviter_keys,
             &created.group.mls_group_id,
             Kind::Metadata,
             r#"{"display_name":"Remote Name","about":"Remote About","picture":"https://example.com/remote.png"}"#,
             Tags::new(),
         );
-        let invitee_host = test_host(&invitee_mdk, &invitee_keys, &invitee_client, &relay_urls);
+        let invitee_host = test_host(&invitee_mls, &invitee_keys, &invitee_client, &relay_urls);
         let processed = invitee_host
             .process_classified_inbound_group_message(InboundRelayEvent::GroupMessage {
                 event: profile_event,
@@ -7484,10 +7484,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Daemon get group profile".to_string(),
             "Fallback description".to_string(),
@@ -7497,10 +7497,10 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
 
@@ -7511,13 +7511,13 @@ mod tests {
             Tags::new(),
             r#"{"display_name":"Latest Name","about":"Latest About","picture":"https://example.com/group.png"}"#,
         );
-        let wrapper = wrap_group_rumor_for_test(&inviter_mdk, &created.group.mls_group_id, profile);
-        process_group_message_for_test(&inviter_mdk, &wrapper);
+        let wrapper = wrap_group_rumor_for_test(&inviter_mls, &created.group.mls_group_id, profile);
+        process_group_message_for_test(&inviter_mls, &wrapper);
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
 
         let reply = handle_get_group_profile_request(
             Some("req-get-profile".to_string()),
@@ -7556,8 +7556,8 @@ mod tests {
         let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let mdk = crate::open_mdk(dir.path()).expect("open mdk");
-        let host = test_host(&mdk, &keys, &client, &relay_urls);
+        let mls = crate::open_mls(dir.path()).expect("open mls");
+        let host = test_host(&mls, &keys, &client, &relay_urls);
 
         let reply = handle_get_group_profile_request(
             Some("req-get-missing".to_string()),
@@ -7585,10 +7585,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Daemon image profile".to_string(),
             "Fallback about".to_string(),
@@ -7598,10 +7598,10 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
 
@@ -7613,13 +7613,13 @@ mod tests {
             r#"{"display_name":"Profile Name","about":"Profile About"}"#,
         );
         let existing_wrapper =
-            wrap_group_rumor_for_test(&inviter_mdk, &created.group.mls_group_id, existing_profile);
-        process_group_message_for_test(&inviter_mdk, &existing_wrapper);
+            wrap_group_rumor_for_test(&inviter_mls, &created.group.mls_group_id, existing_profile);
+        process_group_message_for_test(&inviter_mls, &existing_wrapper);
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
         let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
         let uploaded_url = "https://blossom.example.com/group-profile.jpg";
         let image_base64 = base64::engine::general_purpose::STANDARD
@@ -7643,9 +7643,9 @@ mod tests {
                 })
             },
             |prepared| {
-                let mdk = &inviter_mdk;
+                let mls = &inviter_mls;
                 async move {
-                    let processed = process_group_message_for_test(mdk, &prepared.wrapper);
+                    let processed = process_group_message_for_test(mls, &prepared.wrapper);
                     match processed {
                         MessageProcessingResult::ApplicationMessage(message) => {
                             let metadata: Metadata =
@@ -7690,10 +7690,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Daemon invalid profile image".to_string(),
             String::new(),
@@ -7703,17 +7703,17 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
         let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
         let image_base64 = base64::engine::general_purpose::STANDARD
             .encode(include_bytes!("../../../fixtures/test-images/red.jpg"));
@@ -7755,11 +7755,11 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
         let invitee_client = Client::builder().signer(invitee_keys.clone()).build();
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Daemon accept test".to_string(),
             String::new(),
@@ -7769,7 +7769,7 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let group_result = inviter_mdk
+        let group_result = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
         let welcome_rumor = group_result
@@ -7782,18 +7782,18 @@ mod tests {
                 .await
                 .expect("build giftwrap");
 
-        crate::ingest_welcome_from_giftwrap(&invitee_mdk, &invitee_keys, &wrapper, |_| true)
+        crate::ingest_welcome_from_giftwrap(&invitee_mls, &invitee_keys, &wrapper, |_| true)
             .await
             .expect("ingest welcome")
             .expect("welcome should ingest");
 
-        let pending = pika_mls::welcome::WelcomeQueries::new(&invitee_mdk)
+        let pending = pika_mls::welcome::WelcomeQueries::new(&invitee_mls)
             .list_pending_welcomes()
             .expect("get pending welcomes");
         let welcome = pending.first().expect("pending welcome");
         let mut seen_group_events = HashSet::new();
         let accepted = accept_welcome_with_backfill(
-            &invitee_mdk,
+            &invitee_mls,
             &invitee_client,
             &[],
             welcome,
@@ -7813,7 +7813,7 @@ mod tests {
             "empty relay list should keep daemon wrapper catch-up narrow in tests"
         );
         assert!(
-            pika_mls::welcome::WelcomeQueries::new(&invitee_mdk)
+            pika_mls::welcome::WelcomeQueries::new(&invitee_mls)
                 .list_pending_welcomes()
                 .expect("get pending welcomes")
                 .is_empty(),
@@ -7828,7 +7828,7 @@ mod tests {
         let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
         let client = Client::new(signer);
         let relay_urls: Vec<RelayUrl> = Vec::new();
-        let mdk = crate::open_mdk(tempdir.path()).expect("open mdk");
+        let mls = crate::open_mls(tempdir.path()).expect("open mls");
         let config = NostrGroupConfigData::new(
             "daemon inbound group message".to_string(),
             String::new(),
@@ -7838,20 +7838,20 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![keys.public_key()],
         );
-        let created = mdk
+        let created = mls
             .create_group(&keys.public_key(), vec![], config)
             .expect("create group");
-        mdk.merge_pending_commit(&created.group.mls_group_id)
+        mls.merge_pending_commit(&created.group.mls_group_id)
             .expect("merge pending commit");
         let event = make_group_message_event(
-            &mdk,
+            &mls,
             &keys,
             &created.group.mls_group_id,
             Kind::ChatMessage,
             "hello through daemon helper",
             Tags::new(),
         );
-        let host = test_host(&mdk, &keys, &client, &relay_urls);
+        let host = test_host(&mls, &keys, &client, &relay_urls);
 
         let processed = host
             .process_classified_inbound_group_message(InboundRelayEvent::GroupMessage {
@@ -7881,7 +7881,7 @@ mod tests {
         let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
         let client = Client::new(signer);
         let relay_urls: Vec<RelayUrl> = Vec::new();
-        let mdk = crate::open_mdk(tempdir.path()).expect("open mdk");
+        let mls = crate::open_mls(tempdir.path()).expect("open mls");
         let content = serde_json::json!({
             "v": 1,
             "ns": "pika.call",
@@ -7910,7 +7910,7 @@ mod tests {
             message: msg,
         };
 
-        let interpreted = test_host(&mdk, &keys, &client, &relay_urls)
+        let interpreted = test_host(&mls, &keys, &client, &relay_urls)
             .interpret_runtime_application_message(runtime_msg);
 
         match interpreted {
@@ -7929,8 +7929,8 @@ mod tests {
         let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
         let client = Client::new(signer);
         let relay_urls: Vec<RelayUrl> = Vec::new();
-        let mdk = crate::open_mdk(tempdir.path()).expect("open mdk");
-        let host = test_host(&mdk, &keys, &client, &relay_urls);
+        let mls = crate::open_mls(tempdir.path()).expect("open mls");
+        let host = test_host(&mls, &keys, &client, &relay_urls);
         let group_id = GroupId::from_slice(&[7, 7, 7]);
         let commit = ConversationEvent::GroupUpdate(RuntimeGroupUpdate {
             mls_group_id: group_id.clone(),
@@ -7976,10 +7976,10 @@ mod tests {
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let created = inviter_mdk
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -7995,7 +7995,7 @@ mod tests {
             )
             .expect("create group");
         let expected_group_id = hex::encode(created.group.nostr_group_id);
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
 
         let plan = plan_daemon_group_subscriptions(&host, vec!["stale-group".to_string()])
             .expect("plan daemon group subscriptions");
@@ -8018,10 +8018,10 @@ mod tests {
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://message-1.example").expect("relay url")];
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let created = inviter_mdk
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -8037,7 +8037,7 @@ mod tests {
             )
             .expect("create group");
         let expected_group_id = hex::encode(created.group.nostr_group_id);
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
 
         let sync_plan = host
             .refresh_session_state(vec!["stale-group".to_string()], 90)
@@ -8072,10 +8072,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        inviter_mdk
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -8123,10 +8123,10 @@ mod tests {
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://message-1.example").expect("relay url")];
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let created = inviter_mdk
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -8141,7 +8141,7 @@ mod tests {
                 ),
             )
             .expect("create group");
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
 
         let refreshed = host
             .refresh_session_state(vec!["stale-group".to_string()], 90)
@@ -8165,10 +8165,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Daemon runtime bootstrap".to_string(),
             String::new(),
@@ -8178,7 +8178,7 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
 
@@ -8233,10 +8233,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Daemon init_group test".to_string(),
             String::new(),
@@ -8252,7 +8252,7 @@ mod tests {
 
         let created = create_group_and_publish_welcomes_for_init_group(
             &inviter_keys,
-            &inviter_mdk,
+            &inviter_mls,
             invitee_kp,
             invitee_keys.public_key(),
             config,
@@ -8293,10 +8293,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Daemon init_group refresh".to_string(),
             String::new(),
@@ -8309,7 +8309,7 @@ mod tests {
 
         let created = create_group_and_publish_welcomes_for_init_group(
             &inviter_keys,
-            &inviter_mdk,
+            &inviter_mls,
             invitee_kp,
             invitee_keys.public_key(),
             config,
@@ -8321,7 +8321,7 @@ mod tests {
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
         let refreshed = host
             .refresh_session_state(Vec::new(), 90)
             .expect("refresh daemon session state");
@@ -8514,7 +8514,7 @@ mod tests {
     #[test]
     fn daemon_prepare_call_invite_uses_shared_command_boundary() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mdk = crate::open_mdk(dir.path()).expect("open mdk");
+        let mls = crate::open_mls(dir.path()).expect("open mls");
         let keys = Keys::generate();
         let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
         let client = Client::new(signer);
@@ -8522,7 +8522,7 @@ mod tests {
         let peer = Keys::generate();
         let session = default_audio_call_session("550e8400-e29b-41d4-a716-446655440010");
 
-        let (pending, prepared) = test_host(&mdk, &keys, &client, &relay_urls)
+        let (pending, prepared) = test_host(&mls, &keys, &client, &relay_urls)
             .prepare_call_invite(
                 "deadbeef",
                 &peer.public_key().to_hex(),
@@ -8542,9 +8542,9 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "daemon invite call".to_string(),
             String::new(),
@@ -8554,17 +8554,17 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
         let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
         let mut pending_outgoing_call_invites = HashMap::new();
 
@@ -8625,10 +8625,10 @@ mod tests {
     #[test]
     fn daemon_prepare_accept_call_uses_shared_command_boundary() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mdk = crate::open_mdk(dir.path()).expect("open mdk");
+        let mls = crate::open_mls(dir.path()).expect("open mls");
         let keys = Keys::generate();
         let peer = Keys::generate();
-        let created = mdk
+        let created = mls
             .create_group(
                 &keys.public_key(),
                 vec![],
@@ -8643,13 +8643,13 @@ mod tests {
                 ),
             )
             .expect("create group");
-        mdk.merge_pending_commit(&created.group.mls_group_id)
+        mls.merge_pending_commit(&created.group.mls_group_id)
             .expect("merge pending commit");
 
         let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&mdk, &keys, &client, &relay_urls);
+        let host = test_host(&mls, &keys, &client, &relay_urls);
         let chat_id = hex::encode(created.group.nostr_group_id);
         let call_id = "550e8400-e29b-41d4-a716-446655440011";
         let peer_pubkey_hex = peer.public_key().to_hex();
@@ -8880,9 +8880,9 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "daemon media".to_string(),
             String::new(),
@@ -8892,13 +8892,13 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls: Vec<RelayUrl> = Vec::new();
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
         let prepared = host
             .prepare_upload(
                 &created.group.mls_group_id,
@@ -8939,9 +8939,9 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "daemon media batch".to_string(),
             String::new(),
@@ -8951,13 +8951,13 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls: Vec<RelayUrl> = Vec::new();
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
         let first = host
             .prepare_upload(
                 &created.group.mls_group_id,
@@ -9028,9 +9028,9 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "daemon media op".to_string(),
             String::new(),
@@ -9040,13 +9040,13 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls: Vec<RelayUrl> = Vec::new();
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
         let prepared = host
             .prepare_upload(
                 &created.group.mls_group_id,
@@ -9086,9 +9086,9 @@ mod tests {
         let upload_dir = tempfile::tempdir().expect("upload tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "daemon media failure".to_string(),
             String::new(),
@@ -9098,13 +9098,13 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls: Vec<RelayUrl> = Vec::new();
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
         let file_path = upload_dir.path().join("daemon-media.txt");
         std::fs::write(&file_path, b"daemon media workflow").expect("write media file");
 
@@ -9141,9 +9141,9 @@ mod tests {
         let upload_dir = tempfile::tempdir().expect("upload tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = crate::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = crate::open_mdk(invitee_dir.path()).expect("open invitee mdk");
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = crate::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = crate::open_mls(invitee_dir.path()).expect("open invitee mls");
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "daemon send media".to_string(),
             String::new(),
@@ -9153,17 +9153,17 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
+        let host = test_host(&inviter_mls, &inviter_keys, &client, &relay_urls);
         let file_path = upload_dir.path().join("daemon-send-media.txt");
         std::fs::write(&file_path, b"daemon send media payload").expect("write media file");
         let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);

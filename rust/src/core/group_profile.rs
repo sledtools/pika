@@ -183,7 +183,7 @@ impl AppCore {
         };
 
         // Create imeta tag from the upload + URL.
-        let manager = sess.mdk.media_manager(group.mls_group_id.clone());
+        let manager = sess.mls.media_manager(group.mls_group_id.clone());
         let imeta_tag = manager.create_imeta_tag(&upload, &uploaded_url);
 
         // Publish kind-0 with picture URL and imeta tag.
@@ -239,7 +239,7 @@ impl AppCore {
             metadata_json.to_string(),
         );
 
-        let wrapper = match pika_mls::conversation::wrap_rumor(&sess.mdk, mls_group_id, rumor) {
+        let wrapper = match pika_mls::conversation::wrap_rumor(&sess.mls, mls_group_id, rumor) {
             Ok(wrapped) => wrapped.wrapper,
             Err(e) => {
                 tracing::warn!(err = %e, %chat_id, "group profile create_message failed");
@@ -302,7 +302,7 @@ impl AppCore {
             return;
         }
 
-        let relays: Vec<RelayUrl> = pika_mls::conversation::ConversationQueries::new(&sess.mdk)
+        let relays: Vec<RelayUrl> = pika_mls::conversation::ConversationQueries::new(&sess.mls)
             .get_relays(mls_group_id)
             .ok()
             .map(|s| s.into_iter().collect())

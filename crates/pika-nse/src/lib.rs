@@ -1,4 +1,4 @@
-mod mdk_support;
+mod mls_support;
 
 use nostr::{Event, Kind, TagKind};
 use pika_mls::conversation::{process_group_message_event, ConversationQueries};
@@ -74,11 +74,11 @@ pub fn decrypt_push_notification(
     };
     let pubkey = keys.public_key();
 
-    let mdk = match mdk_support::open_mdk(&data_dir, &pubkey, &keychain_group) {
+    let mls = match mls_support::open_mls(&data_dir, &pubkey, &keychain_group) {
         Ok(m) => m,
         Err(e) => {
             return Some(PushNotificationResult::Error {
-                message: format!("failed to open mdk: {e}"),
+                message: format!("failed to open mls: {e}"),
             })
         }
     };
@@ -92,7 +92,7 @@ pub fn decrypt_push_notification(
         }
     };
 
-    let result = match process_group_message_event(&mdk, &event) {
+    let result = match process_group_message_event(&mls, &event) {
         Ok(Some(r)) => r,
         Ok(None) => return None,
         Err(e) => {
@@ -106,7 +106,7 @@ pub fn decrypt_push_notification(
         MessageProcessingResult::ApplicationMessage(msg) => msg,
         _ => return None,
     };
-    let queries = ConversationQueries::new(&mdk);
+    let queries = ConversationQueries::new(&mls);
 
     // Don't notify for self-messages.
     if msg.pubkey == pubkey {
@@ -163,7 +163,7 @@ pub fn decrypt_push_notification(
             // Try to download and decrypt the image for rich notification thumbnails.
             let image_data = media
                 .filter(|m| m.kind == NotifMediaKind::Image)
-                .and_then(|m| download_and_decrypt_image(&mdk, &msg.mls_group_id, m.tag));
+                .and_then(|m| download_and_decrypt_image(&mls, &msg.mls_group_id, m.tag));
 
             let group_name = if group.name != "DM" && !group.name.is_empty() {
                 Some(group.name.clone())
@@ -295,14 +295,14 @@ fn notif_media(tags: &nostr::Tags) -> Option<NotifMedia<'_>> {
 /// Max encrypted download size for NSE image thumbnails (10 MB).
 const MAX_NSE_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
 
-/// Download encrypted image from the URL in the imeta tag and decrypt it via MDK.
+/// Download encrypted image from the URL in the imeta tag and decrypt it via MLS.
 /// Returns `None` on any failure so the notification still shows with text only.
 fn download_and_decrypt_image(
-    mdk: &mdk_support::PikaMdk,
+    mls: &mls_support::PikaMls,
     mls_group_id: &pika_mls::storage_traits::GroupId,
     imeta_tag: &nostr::Tag,
 ) -> Option<Vec<u8>> {
-    let manager = mdk.media_manager(mls_group_id.clone());
+    let manager = mls.media_manager(mls_group_id.clone());
     let reference = manager.parse_imeta_tag(imeta_tag).ok()?;
 
     let agent = ureq::Agent::config_builder()

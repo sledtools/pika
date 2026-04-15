@@ -245,7 +245,7 @@ pub(crate) enum InternalEvent {
         pubkey: String,
     },
 
-    // Encrypted group profile picture downloaded — needs sync decryption via MDK.
+    // Encrypted group profile picture downloaded — needs sync decryption via MLS.
     GroupProfilePicDownloaded {
         chat_id: String,
         pubkey: String,

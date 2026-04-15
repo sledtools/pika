@@ -45,7 +45,7 @@ use crate::external_signer::{
     ExternalSignerBridgeSigner, ExternalSignerErrorKind, ExternalSignerHandshakeResult,
     SharedExternalSignerBridge,
 };
-use crate::mdk_support::{open_mdk, PikaMdk};
+use crate::mls_support::{open_mls, PikaMls};
 use crate::state::now_seconds;
 use crate::state::{
     AuthMode, AuthState, BusyState, CallDebugStats, CallStatus, ChatMediaAttachment, ChatMessage,
@@ -134,7 +134,7 @@ pub(crate) fn relay_reset_config_json(existing_json: Option<&str>) -> String {
 }
 use nostr_sdk::prelude::*;
 
-pub use interop::normalize_peer_key_package_event_for_mdk;
+pub use interop::normalize_peer_key_package_event_for_mls;
 use interop::{
     extract_relays_from_key_package_event, extract_relays_from_key_package_relays_event,
     referenced_key_package_event_id,
@@ -767,7 +767,7 @@ impl SessionAuthMode {
 struct Session {
     pubkey: PublicKey,
     local_keys: Option<Keys>,
-    mdk: PikaMdk,
+    mls: PikaMls,
     client: Client,
     alive: Arc<AtomicBool>,
 
@@ -856,7 +856,7 @@ pub struct AppCore {
     delivery_overrides: HashMap<String, HashMap<String, MessageDeliveryState>>, // chat_id -> message_id -> delivery
     pending_sends: PendingSends,
     failed_sends: FailedSends,
-    // When MDK storage is eventually consistent, keep a local optimistic outbox so UI can render
+    // When MLS storage is eventually consistent, keep a local optimistic outbox so UI can render
     // immediately and reliably (e.g., offline note-to-self).
     local_outbox: HashMap<String, HashMap<String, LocalOutgoing>>, // chat_id -> message_id -> message
 
@@ -879,7 +879,7 @@ pub struct AppCore {
     http_client: reqwest::Client,
     pfp_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
 
-    // Archived chat IDs -- hidden from the chat list but data stays in MDK.
+    // Archived chat IDs -- hidden from the chat list but data stays in MLS.
     archived_chats: HashSet<String>,
 
     // Push notification state.
@@ -1601,7 +1601,7 @@ impl AppCore {
         profile_pics::ensure_group_dir(&data_dir, &chat_id);
 
         if let Some((nonce_hex, original_hash_hex, scheme_version)) = encrypted {
-            // Encrypted: download raw bytes, send back for sync decryption via MDK.
+            // Encrypted: download raw bytes, send back for sync decryption via MLS.
             self.runtime.spawn(async move {
                 let _permit = match semaphore.acquire().await {
                     Ok(p) => p,
@@ -1710,7 +1710,7 @@ impl AppCore {
             dimensions: None,
         };
 
-        let manager = sess.mdk.media_manager(group.mls_group_id.clone());
+        let manager = sess.mls.media_manager(group.mls_group_id.clone());
         let decrypted = match manager.decrypt_from_download(encrypted_data, &reference) {
             Ok(data) => data,
             Err(e) => {
@@ -2376,12 +2376,12 @@ impl AppCore {
     }
 
     fn nostr_connect_keyring_entry(&self, account: &str) -> Option<keyring_core::Entry> {
-        if let Err(e) = crate::mdk_support::init_keyring_once(&self.keychain_group) {
+        if let Err(e) = crate::mls_support::init_keyring_once(&self.keychain_group) {
             tracing::warn!(%e, "nostr_connect: keyring init failed");
             return None;
         }
         let scoped_account = self.nostr_connect_scoped_keyring_account(account);
-        match keyring_core::Entry::new(crate::mdk_support::SERVICE_ID, &scoped_account) {
+        match keyring_core::Entry::new(crate::mls_support::SERVICE_ID, &scoped_account) {
             Ok(entry) => Some(entry),
             Err(e) => {
                 tracing::warn!(%e, account, scoped_account, "nostr_connect: keyring entry unavailable");
@@ -4087,12 +4087,12 @@ impl AppCore {
             let message = if self.private_chat_server_url().is_some() {
                 "Could not find peer key package on the chat server. The peer must sign in and publish a key package first.".to_string()
             } else {
-                "Could not find peer key package (kind 443). The peer must run Pika/MDK once (publish a key package) and you must share at least one relay.".to_string()
+                "Could not find peer key package (kind 443). The peer must run Pika/MLS once (publish a key package) and you must share at least one relay.".to_string()
             };
             self.fail_direct_chat_creation(message);
             return;
         };
-        let kp_event = normalize_peer_key_package_event_for_mdk(&kp_event);
+        let kp_event = normalize_peer_key_package_event_for_mls(&kp_event);
 
         let mut group_relays = self.private_chat_bootstrap_relays();
         if self.private_chat_server_url().is_none() {
@@ -4112,11 +4112,11 @@ impl AppCore {
 
             // Validate peer key package before use (spec-v2).
             if let Err(e) = membership_support::validate_key_package_events(
-                &sess.mdk,
+                &sess.mls,
                 std::slice::from_ref(&kp_event),
             ) {
                 self.fail_direct_chat_creation(format!(
-                    "Invalid peer key package: {e}. If this is a Marmot/WhiteNoise interop peer, ensure it publishes MIP-00 compliant tags (mls_protocol_version=1.0, encoding=base64)."
+                    "Invalid peer key package: {e}. Ask the peer to republish a current Pika key package."
                 ));
                 return;
             }
@@ -4135,7 +4135,7 @@ impl AppCore {
 
             match create_group_and_plan_welcome_delivery(
                 &sess.pubkey,
-                &sess.mdk,
+                &sess.mls,
                 vec![kp_event.clone()],
                 config,
                 &[peer_pubkey],
@@ -4201,7 +4201,7 @@ impl AppCore {
                         .map(|npub| npub.to_lowercase())
                 })
                 .collect::<Vec<_>>();
-            let epoch = match pika_mls::conversation::ConversationQueries::new(&sess.mdk)
+            let epoch = match pika_mls::conversation::ConversationQueries::new(&sess.mls)
                 .get_group(&snapshot.mls_group_id)
             {
                 Ok(Some(group)) => group.epoch,
@@ -4429,7 +4429,7 @@ impl AppCore {
             return;
         }
 
-        let welcome = match pika_mls::welcome::stage_pending_welcome(&sess.mdk, &wrapper.id, &rumor)
+        let welcome = match pika_mls::welcome::stage_pending_welcome(&sess.mls, &wrapper.id, &rumor)
         {
             Ok(w) => w,
             Err(e) => {
@@ -4442,14 +4442,14 @@ impl AppCore {
         // from relays after an app restart).  Reprocessing the Welcome
         // would reset the MLS ratchet state and break message decryption.
         let nostr_group_hex = hex::encode(welcome.nostr_group_id);
-        // Check both the in-memory index and MDK storage to catch
+        // Check both the in-memory index and MLS storage to catch
         // duplicates even before refresh_all_from_storage() runs.
         // Only skip if the group is Active (fully joined). Pending
         // groups from a prior process_welcome haven't been accepted
         // yet and should not block the accept flow.
         let already_joined = sess.groups.contains_key(&nostr_group_hex)
             || matches!(
-                pika_mls::conversation::ConversationQueries::new(&sess.mdk)
+                pika_mls::conversation::ConversationQueries::new(&sess.mls)
                     .find_group(&nostr_group_hex),
                 Ok(group)
                     if group.state
@@ -4497,7 +4497,7 @@ impl AppCore {
         // and no backlog catch-up in this path.
         let accept_result = self.runtime.block_on(async {
             accept_welcome_and_catch_up(
-                &sess.mdk,
+                &sess.mls,
                 &client,
                 &[],
                 &staged_welcome,
@@ -4602,7 +4602,7 @@ impl AppCore {
         if let Some(chat_id) = existing_chat_id {
             let kp_events: Vec<Event> = key_package_events
                 .iter()
-                .map(normalize_peer_key_package_event_for_mdk)
+                .map(normalize_peer_key_package_event_for_mls)
                 .collect();
 
             let prepared = match self.prepare_membership_evolution_for_chat(&chat_id, &kp_events) {
@@ -4627,7 +4627,7 @@ impl AppCore {
             // Create new group chat.
             let kp_events: Vec<Event> = key_package_events
                 .iter()
-                .map(normalize_peer_key_package_event_for_mdk)
+                .map(normalize_peer_key_package_event_for_mls)
                 .collect();
 
             let use_relay_metadata = self.private_chat_server_url().is_none();
@@ -4658,7 +4658,7 @@ impl AppCore {
                 return;
             };
 
-            if let Err(e) = membership_support::validate_key_package_events(&sess.mdk, &kp_events) {
+            if let Err(e) = membership_support::validate_key_package_events(&sess.mls, &kp_events) {
                 self.set_busy(|b| b.creating_chat = false);
                 self.toast(format!("Invalid key package: {e}"));
                 return;
@@ -4678,7 +4678,7 @@ impl AppCore {
 
             let group_result = match create_group_and_plan_welcome_delivery(
                 &sess.pubkey,
-                &sess.mdk,
+                &sess.mls,
                 kp_events.clone(),
                 config,
                 &peer_pubkeys,
@@ -4715,7 +4715,7 @@ impl AppCore {
             if prepared.stale_epoch_conflict || Self::is_chat_server_epoch_conflict(error) {
                 if let Some(sess) = self.session.as_ref() {
                     if let Err(clear_err) =
-                        membership_support::clear_pending_commit(&sess.mdk, &prepared.mls_group_id)
+                        membership_support::clear_pending_commit(&sess.mls, &prepared.mls_group_id)
                     {
                         tracing::warn!(
                             error = %clear_err,
@@ -4772,7 +4772,7 @@ impl AppCore {
                 };
                 let fallback_relays = self.default_relays();
                 let relays: Vec<RelayUrl> =
-                    pika_mls::conversation::ConversationQueries::new(&sess.mdk)
+                    pika_mls::conversation::ConversationQueries::new(&sess.mls)
                         .get_relays(&result.mls_group_id)
                         .ok()
                         .map(|s| s.into_iter().collect())
@@ -5412,7 +5412,7 @@ impl AppCore {
                         let manager = self
                             .session
                             .as_ref()?
-                            .mdk
+                            .mls
                             .media_manager(group.mls_group_id.clone());
                         msg.tags
                             .iter()
@@ -5554,11 +5554,11 @@ impl AppCore {
                 // ratchet state doesn't persist across logins.
                 if let Some(sess) = self.session.as_ref() {
                     let db_path =
-                        crate::mdk_support::mdk_db_path(&self.data_dir, &sess.pubkey.to_hex());
+                        crate::mls_support::mls_state_path(&self.data_dir, &sess.pubkey.to_hex());
                     if let Err(e) = std::fs::remove_file(&db_path) {
-                        tracing::warn!(%e, path = %db_path.display(), "failed to delete mdk db on logout");
+                        tracing::warn!(%e, path = %db_path.display(), "failed to delete mls db on logout");
                     } else {
-                        tracing::info!(path = %db_path.display(), "deleted mdk db on logout");
+                        tracing::info!(path = %db_path.display(), "deleted mls db on logout");
                     }
                 }
                 self.clear_push_subscriptions();
@@ -5835,7 +5835,7 @@ impl AppCore {
                     self.check_min_version();
                 }
                 if self.is_logged_in() {
-                    self.reopen_mdk(); // Pick up NSE's ratchet changes
+                    self.reopen_mls(); // Pick up NSE's ratchet changes
 
                     // After a long background sleep, WebSocket connections may be stale but
                     // still appear connected to the relay pool. Force a full disconnect so
@@ -6114,7 +6114,7 @@ impl AppCore {
 
                     let planned = match create_group_and_plan_welcome_delivery(
                         &sess.pubkey,
-                        &sess.mdk,
+                        &sess.mls,
                         vec![],
                         config,
                         &[],
@@ -6218,7 +6218,7 @@ impl AppCore {
                         let reply_event_id = EventId::parse(reply_to_id).ok()?;
                         let group = sess.groups.get(&chat_id)?;
                         let reply_target =
-                            pika_mls::conversation::ConversationQueries::new(&sess.mdk)
+                            pika_mls::conversation::ConversationQueries::new(&sess.mls)
                                 .get_message(&group.mls_group_id, &reply_event_id)
                                 .ok()
                                 .flatten()?;
@@ -6305,7 +6305,7 @@ impl AppCore {
                             return;
                         };
                         let relays: Vec<RelayUrl> =
-                            pika_mls::conversation::ConversationQueries::new(&sess.mdk)
+                            pika_mls::conversation::ConversationQueries::new(&sess.mls)
                                 .get_relays(&group.mls_group_id)
                                 .ok()
                                 .map(|s| s.into_iter().collect())
@@ -6730,7 +6730,7 @@ impl AppCore {
         let relays: Vec<RelayUrl> = if room_binding.is_some() {
             Vec::new()
         } else {
-            pika_mls::conversation::ConversationQueries::new(&sess.mdk)
+            pika_mls::conversation::ConversationQueries::new(&sess.mls)
                 .get_relays(&prepared.mls_group_id)
                 .ok()
                 .map(|s| s.into_iter().collect())
@@ -7421,14 +7421,14 @@ mod tests {
         use crate::core::outbound_support::{
             OutboundConversationAction, OutboundConversationPublishStatus,
         };
-        use crate::mdk_support::open_mdk;
+        use crate::mls_support::open_mls;
         use crate::state::ChatViewState;
         use nostr_sdk::prelude::*;
         use pika_mls::prelude::{
             message_types, GroupId, MessageProcessingResult, NostrGroupConfigData,
         };
 
-        /// Creates a core with a real MDK session and a group in storage.
+        /// Creates a core with a real MLS session and a group in storage.
         /// Returns (core, chat_id_hex, creator_keys, group_id).
         fn make_core_with_group() -> (AppCore, String, Keys, GroupId) {
             let tempdir = tempfile::tempdir().expect("tempdir");
@@ -7439,7 +7439,7 @@ mod tests {
             let creator = Keys::generate();
             let pubkey = creator.public_key();
 
-            let mdk = open_mdk(&data_dir, &pubkey, "").expect("open_mdk");
+            let mls = open_mls(&data_dir, &pubkey, "").expect("open_mls");
 
             // Create a solo group (no other members).
             let config = NostrGroupConfigData::new(
@@ -7451,12 +7451,12 @@ mod tests {
                 vec![RelayUrl::parse("wss://test.relay").unwrap()],
                 vec![pubkey],
             );
-            let result = mdk
+            let result = mls
                 .create_group(&pubkey, vec![], config)
                 .expect("create_group");
             let group_id = result.group.mls_group_id.clone();
             let chat_id = hex::encode(result.group.nostr_group_id);
-            mdk.merge_pending_commit(&group_id)
+            mls.merge_pending_commit(&group_id)
                 .expect("merge_pending_commit");
 
             let mut core = make_core(data_dir);
@@ -7465,7 +7465,7 @@ mod tests {
             core.session = Some(super::super::Session {
                 pubkey,
                 local_keys: Some(creator.clone()),
-                mdk,
+                mls,
                 client,
                 alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 giftwrap_sub: None,
@@ -7564,7 +7564,7 @@ mod tests {
             let rumor = EventBuilder::new(kind, content)
                 .tags(tags)
                 .build(session.pubkey);
-            pika_mls::conversation::wrap_rumor(&session.mdk, mls_group_id, rumor)
+            pika_mls::conversation::wrap_rumor(&session.mls, mls_group_id, rumor)
                 .map(|wrapped| wrapped.wrapper)
                 .expect("create group message event")
         }
@@ -7578,7 +7578,7 @@ mod tests {
                 Tags::new(),
             );
             let session = core.session.as_ref().expect("session");
-            pika_mls::conversation::process_group_message_event(&session.mdk, &event)
+            pika_mls::conversation::process_group_message_event(&session.mls, &event)
                 .expect("process group message")
                 .expect("event should be a group message");
         }
@@ -8909,7 +8909,7 @@ mod tests {
         fn unknown_group_id_does_not_panic() {
             let (mut core, _chat_id, _keys, _group_id) = make_core_with_group();
             let bogus_group_id = GroupId::from_slice(&[0xde, 0xad, 0xbe, 0xef]);
-            // Commit with an mls_group_id that doesn't exist in MDK storage.
+            // Commit with an mls_group_id that doesn't exist in MLS storage.
             // Should fall back to refresh_all, not panic.
             core.handle_message_processing_result(MessageProcessingResult::Commit {
                 mls_group_id: bogus_group_id,
@@ -8996,12 +8996,12 @@ mod tests {
         };
         use crate::core::welcome_support::create_group_and_plan_welcome_delivery;
         use crate::core::DEFAULT_GROUP_DESCRIPTION;
-        use crate::mdk_support::open_mdk;
+        use crate::mls_support::open_mls;
         use crate::updates::InternalEvent;
         use nostr_sdk::prelude::*;
         use pika_mls::prelude::{GroupId, NostrGroupConfigData};
 
-        /// Creates a core with a real MDK session and a group already in storage,
+        /// Creates a core with a real MLS session and a group already in storage,
         /// with the group registered in session.groups so add-members can find it.
         fn make_core_with_group() -> (AppCore, String, Keys, GroupId) {
             let tempdir = tempfile::tempdir().expect("tempdir");
@@ -9011,7 +9011,7 @@ mod tests {
             let creator = Keys::generate();
             let pubkey = creator.public_key();
 
-            let mdk = open_mdk(&data_dir, &pubkey, "").expect("open_mdk");
+            let mls = open_mls(&data_dir, &pubkey, "").expect("open_mls");
 
             let config = NostrGroupConfigData::new(
                 "Test Group".to_string(),
@@ -9022,12 +9022,12 @@ mod tests {
                 vec![RelayUrl::parse("wss://test.relay").unwrap()],
                 vec![pubkey],
             );
-            let result = mdk
+            let result = mls
                 .create_group(&pubkey, vec![], config)
                 .expect("create_group");
             let group_id = result.group.mls_group_id.clone();
             let chat_id = hex::encode(result.group.nostr_group_id);
-            mdk.merge_pending_commit(&group_id)
+            mls.merge_pending_commit(&group_id)
                 .expect("merge_pending_commit");
 
             let mut core = make_core(data_dir);
@@ -9047,7 +9047,7 @@ mod tests {
             core.session = Some(super::super::Session {
                 pubkey,
                 local_keys: Some(creator.clone()),
-                mdk,
+                mls,
                 client,
                 alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 giftwrap_sub: None,
@@ -9058,7 +9058,7 @@ mod tests {
             (core, chat_id, creator, group_id)
         }
 
-        /// Create a separate MDK instance for a peer and generate a signed
+        /// Create a separate MLS instance for a peer and generate a signed
         /// key package event from it.
         fn make_peer_key_package(peer_keys: &Keys) -> Event {
             make_peer_key_package_with_relay(peer_keys, "wss://test.relay")
@@ -9068,10 +9068,10 @@ mod tests {
             let tempdir = tempfile::tempdir().expect("tempdir");
             let peer_dir = tempdir.path().to_string_lossy().into_owned();
 
-            let peer_mdk = open_mdk(&peer_dir, &peer_keys.public_key(), "").expect("open peer mdk");
+            let peer_mls = open_mls(&peer_dir, &peer_keys.public_key(), "").expect("open peer mls");
             let relay = RelayUrl::parse(relay).unwrap();
             let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
-                &peer_mdk,
+                &peer_mls,
                 &peer_keys.public_key(),
                 vec![relay],
             )
@@ -9200,7 +9200,7 @@ mod tests {
                 .values()
                 .find(|group| group.group_name.as_deref() == Some("Server Ordered Group"))
                 .expect("created group");
-            let relays = pika_mls::conversation::ConversationQueries::new(&session.mdk)
+            let relays = pika_mls::conversation::ConversationQueries::new(&session.mls)
                 .get_relays(&created.mls_group_id)
                 .expect("group relays");
 
@@ -9232,7 +9232,7 @@ mod tests {
                 };
                 create_group_and_plan_welcome_delivery(
                     &sess.pubkey,
-                    &sess.mdk,
+                    &sess.mls,
                     vec![kp_event],
                     config,
                     &[peer.public_key()],
@@ -9340,7 +9340,7 @@ mod tests {
             let kp_event = make_peer_key_package(&peer);
 
             let initial_members = pika_mls::conversation::ConversationQueries::new(
-                &core.session.as_ref().expect("session").mdk,
+                &core.session.as_ref().expect("session").mls,
             )
             .get_members(&gid)
             .expect("get initial members")
@@ -9356,7 +9356,7 @@ mod tests {
             });
 
             let before_merge = pika_mls::conversation::ConversationQueries::new(
-                &core.session.as_ref().expect("session").mdk,
+                &core.session.as_ref().expect("session").mls,
             )
             .get_members(&gid)
             .expect("get members before merge")
@@ -9396,7 +9396,7 @@ mod tests {
             core.handle_membership_evolution_result(chat_id.clone(), operation);
 
             let after_merge = pika_mls::conversation::ConversationQueries::new(
-                &core.session.as_ref().expect("session").mdk,
+                &core.session.as_ref().expect("session").mls,
             )
             .get_members(&gid)
             .expect("get members after merge")
@@ -9415,7 +9415,7 @@ mod tests {
             let peer = Keys::generate();
             let kp_event = make_peer_key_package(&peer);
             let initial_members = pika_mls::conversation::ConversationQueries::new(
-                &core.session.as_ref().expect("session").mdk,
+                &core.session.as_ref().expect("session").mls,
             )
             .get_members(&gid)
             .expect("get initial members")
@@ -9429,7 +9429,7 @@ mod tests {
             core.handle_group_evolution_published(prepared, EvolutionPublishStatus::Published);
 
             let after_merge = pika_mls::conversation::ConversationQueries::new(
-                &core.session.as_ref().expect("session").mdk,
+                &core.session.as_ref().expect("session").mls,
             )
             .get_members(&gid)
             .expect("get members after merge")
@@ -9446,7 +9446,7 @@ mod tests {
             let kp_event = make_peer_key_package(&peer);
 
             let initial_members = pika_mls::conversation::ConversationQueries::new(
-                &core.session.as_ref().expect("session").mdk,
+                &core.session.as_ref().expect("session").mls,
             )
             .get_members(&gid)
             .expect("get initial members")
@@ -9494,7 +9494,7 @@ mod tests {
             core.handle_membership_evolution_result(chat_id.clone(), operation);
 
             let members_after_failure = pika_mls::conversation::ConversationQueries::new(
-                &core.session.as_ref().expect("session").mdk,
+                &core.session.as_ref().expect("session").mls,
             )
             .get_members(&gid)
             .expect("get members after failed publish")
@@ -9534,7 +9534,7 @@ mod tests {
             );
 
             let members = pika_mls::conversation::ConversationQueries::new(
-                &core.session.as_ref().expect("session").mdk,
+                &core.session.as_ref().expect("session").mls,
             )
             .get_members(&gid)
             .expect("get members after stale conflict");
@@ -9548,7 +9548,7 @@ mod tests {
 
     mod group_profile_tests {
         use super::*;
-        use crate::mdk_support::open_mdk;
+        use crate::mls_support::open_mls;
         use nostr_sdk::prelude::*;
         use pika_mls::prelude::{message_types, GroupId, NostrGroupConfigData};
 
@@ -9559,7 +9559,7 @@ mod tests {
 
             let creator = Keys::generate();
             let pubkey = creator.public_key();
-            let mdk = open_mdk(&data_dir, &pubkey, "").expect("open_mdk");
+            let mls = open_mls(&data_dir, &pubkey, "").expect("open_mls");
 
             let config = NostrGroupConfigData::new(
                 "Test".to_string(),
@@ -9570,12 +9570,12 @@ mod tests {
                 vec![RelayUrl::parse("wss://test.relay").unwrap()],
                 vec![pubkey],
             );
-            let result = mdk
+            let result = mls
                 .create_group(&pubkey, vec![], config)
                 .expect("create_group");
             let group_id = result.group.mls_group_id.clone();
             let chat_id = hex::encode(result.group.nostr_group_id);
-            mdk.merge_pending_commit(&group_id)
+            mls.merge_pending_commit(&group_id)
                 .expect("merge_pending_commit");
 
             let mut core = make_core(data_dir);
@@ -9583,7 +9583,7 @@ mod tests {
             core.session = Some(super::super::Session {
                 pubkey,
                 local_keys: Some(creator.clone()),
-                mdk,
+                mls,
                 client,
                 alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 giftwrap_sub: None,
@@ -9824,12 +9824,12 @@ mod tests {
             let data_dir = tmp.path().to_string_lossy().into_owned();
             let mut core = make_core(data_dir.clone());
             let keys = nostr_sdk::Keys::generate();
-            let mdk = crate::mdk_support::open_mdk(&data_dir, &keys.public_key(), "").unwrap();
+            let mls = crate::mls_support::open_mls(&data_dir, &keys.public_key(), "").unwrap();
             let client = nostr_sdk::Client::builder().signer(keys.clone()).build();
             core.session = Some(super::super::Session {
                 pubkey: keys.public_key(),
                 local_keys: Some(keys),
-                mdk,
+                mls,
                 client,
                 alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 giftwrap_sub: None,
@@ -9917,7 +9917,7 @@ mod tests {
         use crate::core::membership_support::{
             EvolutionPublishStatus, PreparedMembershipEvolution,
         };
-        use crate::mdk_support::open_mdk;
+        use crate::mls_support::open_mls;
         use crate::state::{AuthMode, AuthState};
         use crate::updates::InternalEvent;
         use nostr_sdk::{Client, Event, EventBuilder, Keys, Kind, RelayUrl, ToBech32};
@@ -9931,12 +9931,12 @@ mod tests {
             let data_dir = tmp.path().to_string_lossy().into_owned();
             let mut core = make_core(data_dir.clone());
             let keys = nostr_sdk::Keys::generate();
-            let mdk = crate::mdk_support::open_mdk(&data_dir, &keys.public_key(), "").unwrap();
+            let mls = crate::mls_support::open_mls(&data_dir, &keys.public_key(), "").unwrap();
             let client = nostr_sdk::Client::builder().signer(keys.clone()).build();
             core.session = Some(super::super::Session {
                 pubkey: keys.public_key(),
                 local_keys: Some(keys),
-                mdk,
+                mls,
                 client,
                 alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 giftwrap_sub: None,
@@ -9949,10 +9949,10 @@ mod tests {
         fn make_peer_key_package_with_relay(peer_keys: &Keys, relay: &str) -> Event {
             let peer_tmp = tempfile::tempdir().expect("peer tempdir");
             let peer_dir = peer_tmp.path().to_string_lossy().into_owned();
-            let peer_mdk = open_mdk(&peer_dir, &peer_keys.public_key(), "").expect("open peer mdk");
+            let peer_mls = open_mls(&peer_dir, &peer_keys.public_key(), "").expect("open peer mls");
             let relay = RelayUrl::parse(relay).expect("relay url");
             let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
-                &peer_mdk,
+                &peer_mls,
                 &peer_keys.public_key(),
                 vec![relay],
             )
@@ -10250,7 +10250,7 @@ mod tests {
             let session = core.session.as_ref().expect("session");
             assert_eq!(session.groups.len(), 1);
             let created = session.groups.values().next().expect("created chat");
-            let relays = pika_mls::conversation::ConversationQueries::new(&session.mdk)
+            let relays = pika_mls::conversation::ConversationQueries::new(&session.mls)
                 .get_relays(&created.mls_group_id)
                 .expect("group relays");
 
@@ -10801,13 +10801,13 @@ mod tests {
             let data_dir = tmp.path().to_string_lossy().into_owned();
             let mut core = make_core(data_dir.clone());
             let keys = Keys::generate();
-            let mdk = crate::mdk_support::open_mdk(&data_dir, &keys.public_key(), "")
-                .expect("open invitee mdk");
+            let mls = crate::mls_support::open_mls(&data_dir, &keys.public_key(), "")
+                .expect("open invitee mls");
             let client = Client::builder().signer(keys.clone()).build();
             core.session = Some(super::super::Session {
                 pubkey: keys.public_key(),
                 local_keys: Some(keys.clone()),
-                mdk,
+                mls,
                 client,
                 alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 giftwrap_sub: None,
@@ -10817,10 +10817,10 @@ mod tests {
             (core, tmp, keys)
         }
 
-        fn make_key_package_event(mdk: &crate::mdk_support::PikaMdk, keys: &Keys) -> Event {
+        fn make_key_package_event(mls: &crate::mls_support::PikaMls, keys: &Keys) -> Event {
             let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
             let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
-                mdk,
+                mls,
                 &keys.public_key(),
                 vec![relay],
             )
@@ -10835,15 +10835,15 @@ mod tests {
         fn gift_wrap_received_accepts_immediately_and_skips_duplicate_pending_state() {
             let (mut core, inviter_dir, invitee_keys) = make_logged_in_core();
             let inviter_keys = Keys::generate();
-            let inviter_mdk = crate::mdk_support::open_mdk(
+            let inviter_mls = crate::mls_support::open_mls(
                 &inviter_dir.path().join("inviter").to_string_lossy(),
                 &inviter_keys.public_key(),
                 "",
             )
-            .expect("open inviter mdk");
+            .expect("open inviter mls");
             let invitee_kp = {
-                let invitee_mdk = &core.session.as_ref().expect("session").mdk;
-                make_key_package_event(invitee_mdk, &invitee_keys)
+                let invitee_mls = &core.session.as_ref().expect("session").mls;
+                make_key_package_event(invitee_mls, &invitee_keys)
             };
             let config = NostrGroupConfigData::new(
                 "App welcome test".to_string(),
@@ -10854,7 +10854,7 @@ mod tests {
                 vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
                 vec![inviter_keys.public_key(), invitee_keys.public_key()],
             );
-            let group_result = inviter_mdk
+            let group_result = inviter_mls
                 .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
                 .expect("create group");
             let welcome_rumor = group_result
@@ -10881,7 +10881,7 @@ mod tests {
             });
 
             let groups = pika_mls::conversation::ConversationQueries::new(
-                &core.session.as_ref().expect("session").mdk,
+                &core.session.as_ref().expect("session").mls,
             )
             .list_joined_group_snapshots()
             .expect("get groups");
@@ -10892,7 +10892,7 @@ mod tests {
             );
             assert!(
                 pika_mls::welcome::WelcomeQueries::new(
-                    &core.session.as_ref().expect("session").mdk
+                    &core.session.as_ref().expect("session").mls
                 )
                 .list_pending_welcomes()
                 .expect("pending welcomes")
@@ -10906,7 +10906,7 @@ mod tests {
             });
 
             let groups_after_redelivery = pika_mls::conversation::ConversationQueries::new(
-                &core.session.as_ref().expect("session").mdk,
+                &core.session.as_ref().expect("session").mls,
             )
             .list_joined_group_snapshots()
             .expect("get groups");
@@ -10917,7 +10917,7 @@ mod tests {
             );
             assert!(
                 pika_mls::welcome::WelcomeQueries::new(
-                    &core.session.as_ref().expect("session").mdk
+                    &core.session.as_ref().expect("session").mls
                 )
                 .list_pending_welcomes()
                 .expect("pending welcomes")
@@ -10930,15 +10930,15 @@ mod tests {
         fn chat_server_claimed_welcome_persists_room_binding_on_accept() {
             let (mut core, inviter_dir, invitee_keys) = make_logged_in_core();
             let inviter_keys = Keys::generate();
-            let inviter_mdk = crate::mdk_support::open_mdk(
+            let inviter_mls = crate::mls_support::open_mls(
                 &inviter_dir.path().join("inviter").to_string_lossy(),
                 &inviter_keys.public_key(),
                 "",
             )
-            .expect("open inviter mdk");
+            .expect("open inviter mls");
             let invitee_kp = {
-                let invitee_mdk = &core.session.as_ref().expect("session").mdk;
-                make_key_package_event(invitee_mdk, &invitee_keys)
+                let invitee_mls = &core.session.as_ref().expect("session").mls;
+                make_key_package_event(invitee_mls, &invitee_keys)
             };
             let config = NostrGroupConfigData::new(
                 "Chat server welcome binding test".to_string(),
@@ -10949,7 +10949,7 @@ mod tests {
                 vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
                 vec![inviter_keys.public_key(), invitee_keys.public_key()],
             );
-            let group_result = inviter_mdk
+            let group_result = inviter_mls
                 .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
                 .expect("create group");
             let chat_id = hex::encode(group_result.group.nostr_group_id);
@@ -11005,15 +11005,15 @@ mod tests {
         fn app_pending_welcome_queries_use_shared_runtime_helper() {
             let (core, inviter_dir, invitee_keys) = make_logged_in_core();
             let inviter_keys = Keys::generate();
-            let inviter_mdk = crate::mdk_support::open_mdk(
+            let inviter_mls = crate::mls_support::open_mls(
                 &inviter_dir.path().join("inviter").to_string_lossy(),
                 &inviter_keys.public_key(),
                 "",
             )
-            .expect("open inviter mdk");
+            .expect("open inviter mls");
             let invitee_kp = {
-                let invitee_mdk = &core.session.as_ref().expect("session").mdk;
-                make_key_package_event(invitee_mdk, &invitee_keys)
+                let invitee_mls = &core.session.as_ref().expect("session").mls;
+                make_key_package_event(invitee_mls, &invitee_keys)
             };
             let config = NostrGroupConfigData::new(
                 "App pending welcome query".to_string(),
@@ -11024,7 +11024,7 @@ mod tests {
                 vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
                 vec![inviter_keys.public_key(), invitee_keys.public_key()],
             );
-            let group_result = inviter_mdk
+            let group_result = inviter_mls
                 .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
                 .expect("create group");
             let mut welcome_rumor = group_result
@@ -11047,7 +11047,7 @@ mod tests {
                 });
 
             let session = core.session.as_ref().expect("session");
-            pika_mls::welcome::stage_pending_welcome(&session.mdk, &wrapper.id, &welcome_rumor)
+            pika_mls::welcome::stage_pending_welcome(&session.mls, &wrapper.id, &welcome_rumor)
                 .expect("process welcome");
 
             let host = core.host_context().expect("host context");
@@ -11088,10 +11088,10 @@ mod tests {
                 vec![pubkey],
             );
             let created = sess
-                .mdk
+                .mls
                 .create_group(&pubkey, vec![], config)
                 .expect("create group");
-            sess.mdk
+            sess.mls
                 .merge_pending_commit(&created.group.mls_group_id)
                 .expect("merge pending commit");
             let chat_id = hex::encode(created.group.nostr_group_id);
@@ -11164,10 +11164,10 @@ mod tests {
                 vec![pubkey],
             );
             let created = sess
-                .mdk
+                .mls
                 .create_group(&pubkey, vec![], config)
                 .expect("create group");
-            sess.mdk
+            sess.mls
                 .merge_pending_commit(&created.group.mls_group_id)
                 .expect("merge pending commit");
             let chat_id = hex::encode(created.group.nostr_group_id);
@@ -11341,11 +11341,11 @@ mod tests {
         core.profiles.insert(pk.clone(), cached);
 
         // Set up a minimal session so apply_my_profile_metadata can find the pubkey.
-        let mdk = crate::mdk_support::open_mdk(&data_dir, &keys.public_key(), "").unwrap();
+        let mls = crate::mls_support::open_mls(&data_dir, &keys.public_key(), "").unwrap();
         core.session = Some(super::Session {
             pubkey: keys.public_key(),
             local_keys: Some(keys),
-            mdk,
+            mls,
             client: nostr_sdk::Client::default(),
             alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             giftwrap_sub: None,
@@ -11376,11 +11376,11 @@ mod tests {
         let mut core = make_core(data_dir.clone());
         let keys = nostr_sdk::prelude::Keys::generate();
         let npub = keys.public_key().to_bech32().expect("npub");
-        let mdk = crate::mdk_support::open_mdk(&data_dir, &keys.public_key(), "").unwrap();
+        let mls = crate::mls_support::open_mls(&data_dir, &keys.public_key(), "").unwrap();
         core.session = Some(super::Session {
             pubkey: keys.public_key(),
             local_keys: Some(keys),
-            mdk,
+            mls,
             client: nostr_sdk::Client::default(),
             alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             giftwrap_sub: None,
@@ -11413,12 +11413,12 @@ mod tests {
         let peer_pubkey_hex = peer_keys.public_key().to_hex();
         let peer_npub = peer_keys.public_key().to_bech32().expect("npub");
         let self_npub = keys.public_key().to_bech32().expect("npub");
-        let mdk = crate::mdk_support::open_mdk(&data_dir, &keys.public_key(), "").unwrap();
+        let mls = crate::mls_support::open_mls(&data_dir, &keys.public_key(), "").unwrap();
 
         core.session = Some(super::Session {
             pubkey: keys.public_key(),
             local_keys: Some(keys),
-            mdk,
+            mls,
             client: nostr_sdk::Client::default(),
             alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             giftwrap_sub: None,
@@ -11549,12 +11549,12 @@ mod tests {
                 let data_dir = tmp.path().to_string_lossy().into_owned();
                 let mut core = make_core(data_dir.clone());
                 let keys = nostr_sdk::Keys::generate();
-                let mdk = crate::mdk_support::open_mdk(&data_dir, &keys.public_key(), "").unwrap();
+                let mls = crate::mls_support::open_mls(&data_dir, &keys.public_key(), "").unwrap();
                 let client = nostr_sdk::Client::builder().signer(keys.clone()).build();
                 core.session = Some(super::super::super::Session {
                     pubkey: keys.public_key(),
                     local_keys: Some(keys),
-                    mdk,
+                    mls,
                     client,
                     alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     giftwrap_sub: None,

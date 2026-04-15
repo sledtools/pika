@@ -331,7 +331,7 @@ fn resolve_interop_rust_dir() -> PathBuf {
     if let Some(path) = non_empty_env_path("PIKACHAT_INTEROP_RUST_DIR") {
         return path;
     }
-    default_code_checkout_dir("marmot-interop-lab-rust")
+    default_code_checkout_dir("pika-interop-lab-rust")
 }
 
 fn resolve_primal_repo_dir() -> PathBuf {

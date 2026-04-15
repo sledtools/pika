@@ -154,8 +154,11 @@
         rm -f "$out/rust/.pikaci-review-trigger"
         cp -R ${./crates/hypernote-protocol} "$out/crates/hypernote-protocol"
         cp -R ${./crates/pika-agent-protocol} "$out/crates/pika-agent-protocol"
+        cp -R ${./crates/pika-chat-server} "$out/crates/pika-chat-server"
         cp -R ${./crates/pika-cloud} "$out/crates/pika-cloud"
         cp -R ${./crates/pika-desktop} "$out/crates/pika-desktop"
+        cp -R ${./crates/pika-incus-guest-role} "$out/crates/pika-incus-guest-role"
+        cp -R ${./crates/pika-managed-agent-contract} "$out/crates/pika-managed-agent-contract"
         cp -R ${./crates/pika-mls} "$out/crates/pika-mls"
         cp -R ${./crates/pika-media} "$out/crates/pika-media"
         cp -R ${./crates/pika-relay-profiles} "$out/crates/pika-relay-profiles"
@@ -212,7 +215,6 @@
             lockFile = ./Cargo.lock;
             outputHashes = {
               "hypernote-mdx-0.3.0" = "sha256-SBhXVXPyCvxs+VudVLYitaioS8jwYSsE0k2SwPU+9GY=";
-              "mdk-core-0.7.1" = "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
               "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
             };
           };
@@ -233,7 +235,6 @@
             lockFile = ./Cargo.lock;
             outputHashes = {
               "hypernote-mdx-0.3.0" = "sha256-SBhXVXPyCvxs+VudVLYitaioS8jwYSsE0k2SwPU+9GY=";
-              "mdk-core-0.7.1" = "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
               "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
             };
           };
@@ -269,7 +270,6 @@
         cargoLock = {
           lockFile = ./Cargo.lock;
           outputHashes = {
-            "mdk-core-0.7.1" = "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
             "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
             "hypernote-mdx-0.3.0" = "sha256-SBhXVXPyCvxs+VudVLYitaioS8jwYSsE0k2SwPU+9GY=";
           };
@@ -287,7 +287,6 @@
         cargoLock = {
           lockFile = ./Cargo.lock;
           outputHashes = {
-            "mdk-core-0.7.1" = "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
             "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
             "hypernote-mdx-0.3.0" = "sha256-SBhXVXPyCvxs+VudVLYitaioS8jwYSsE0k2SwPU+9GY=";
           };
@@ -305,7 +304,6 @@
         cargoLock = {
           lockFile = ./Cargo.lock;
           outputHashes = {
-            "mdk-core-0.7.1" = "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
             "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
             "hypernote-mdx-0.3.0" = "sha256-SBhXVXPyCvxs+VudVLYitaioS8jwYSsE0k2SwPU+9GY=";
           };
@@ -535,8 +533,6 @@
           outputHashes = {
             "git+https://github.com/futurepaul/hypernote-mdx?rev=db23b3d72e81389247716c5a59174cc4f4d55a34#db23b3d72e81389247716c5a59174cc4f4d55a34" =
               "sha256-SBhXVXPyCvxs+VudVLYitaioS8jwYSsE0k2SwPU+9GY=";
-            "git+https://github.com/marmot-protocol/mdk?rev=ca0663ee332958aa92efadf916d19c6e1b1f99c7#ca0663ee332958aa92efadf916d19c6e1b1f99c7" =
-              "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
             "git+https://github.com/kixelated/moq?rev=5ad5c064875d11d22f31779537fc0e541d792717#5ad5c064875d11d22f31779537fc0e541d792717" =
               "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
           };
@@ -1045,8 +1041,6 @@ EOF
             outputHashes = {
               "git+https://github.com/futurepaul/hypernote-mdx?rev=db23b3d72e81389247716c5a59174cc4f4d55a34#db23b3d72e81389247716c5a59174cc4f4d55a34" =
                 "sha256-SBhXVXPyCvxs+VudVLYitaioS8jwYSsE0k2SwPU+9GY=";
-              "git+https://github.com/marmot-protocol/mdk?rev=ca0663ee332958aa92efadf916d19c6e1b1f99c7#ca0663ee332958aa92efadf916d19c6e1b1f99c7" =
-                "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
               "git+https://github.com/kixelated/moq?rev=5ad5c064875d11d22f31779537fc0e541d792717#5ad5c064875d11d22f31779537fc0e541d792717" =
                 "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
             };
@@ -1117,8 +1111,6 @@ EOF
         outputHashes = {
           "git+https://github.com/futurepaul/hypernote-mdx?rev=db23b3d72e81389247716c5a59174cc4f4d55a34#db23b3d72e81389247716c5a59174cc4f4d55a34" =
             "sha256-SBhXVXPyCvxs+VudVLYitaioS8jwYSsE0k2SwPU+9GY=";
-          "git+https://github.com/marmot-protocol/mdk?rev=ca0663ee332958aa92efadf916d19c6e1b1f99c7#ca0663ee332958aa92efadf916d19c6e1b1f99c7" =
-            "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
           "git+https://github.com/kixelated/moq?rev=5ad5c064875d11d22f31779537fc0e541d792717#5ad5c064875d11d22f31779537fc0e541d792717" =
             "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
         };

@@ -5,7 +5,6 @@ let
     lockFile = src + "/Cargo.lock";
     outputHashes = {
       "hypernote-mdx-0.3.0" = "sha256-SBhXVXPyCvxs+VudVLYitaioS8jwYSsE0k2SwPU+9GY=";
-      "mdk-core-0.7.1" = "sha256-miLjRESuTN2Je1wIaTUbEEDQ69jeJI3bKdX15Sjw63Q=";
       "moq-lite-0.14.0" = "sha256-CVoVjbuezyC21gl/pEnU/S/2oRaDlvn2st7WBoUnWo8=";
     };
   };

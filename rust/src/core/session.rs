@@ -120,15 +120,15 @@ impl AppSessionOpenState {
 
 struct BootstrappedAppSession {
     client: Client,
-    mdk: PikaMdk,
+    mls: PikaMls,
     open: AppSessionOpenState,
 }
 
-fn app_group_subscription_state_from_mdk(
-    mdk: &PikaMdk,
+fn app_group_subscription_state_from_mls(
+    mls: &PikaMls,
 ) -> anyhow::Result<AppGroupSubscriptionState> {
     let groups =
-        pika_mls::conversation::ConversationQueries::new(mdk).list_joined_group_snapshots()?;
+        pika_mls::conversation::ConversationQueries::new(mls).list_joined_group_snapshots()?;
     let mut target_group_ids = BTreeSet::new();
     let mut relay_urls = BTreeSet::new();
     for group in groups {
@@ -141,11 +141,11 @@ fn app_group_subscription_state_from_mdk(
     })
 }
 
-fn plan_app_group_subscriptions_from_mdk(
-    mdk: &PikaMdk,
+fn plan_app_group_subscriptions_from_mls(
+    mls: &PikaMls,
     subscribed_group_ids: Vec<String>,
 ) -> anyhow::Result<AppGroupSubscriptionPlan> {
-    let current = app_group_subscription_state_from_mdk(mdk)?;
+    let current = app_group_subscription_state_from_mls(mls)?;
     let subscribed_group_ids: BTreeSet<String> = subscribed_group_ids.into_iter().collect();
     let current_group_ids: BTreeSet<String> = current.target_group_ids.iter().cloned().collect();
     Ok(AppGroupSubscriptionPlan {
@@ -161,13 +161,13 @@ fn plan_app_group_subscriptions_from_mdk(
     })
 }
 
-fn plan_app_session_sync_from_mdk(
-    mdk: &PikaMdk,
+fn plan_app_session_sync_from_mls(
+    mls: &PikaMls,
     subscribed_group_ids: Vec<String>,
     long_lived_session_relays: Vec<RelayUrl>,
     temporary_key_package_relays: Vec<RelayUrl>,
 ) -> anyhow::Result<AppSessionSyncPlan> {
-    let group_subscriptions = plan_app_group_subscriptions_from_mdk(mdk, subscribed_group_ids)?;
+    let group_subscriptions = plan_app_group_subscriptions_from_mls(mls, subscribed_group_ids)?;
     let relay_roles = plan_relay_roles(
         long_lived_session_relays,
         group_subscriptions.current.relay_urls.clone(),
@@ -181,16 +181,16 @@ fn plan_app_session_sync_from_mdk(
 }
 
 fn refresh_app_session_open_state(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     subscribed_group_ids: Vec<String>,
     long_lived_session_relays: Vec<RelayUrl>,
     temporary_key_package_relays: Vec<RelayUrl>,
 ) -> anyhow::Result<AppSessionOpenState> {
     Ok(AppSessionOpenState {
-        joined_group_snapshots: super::conversation_support::list_joined_group_snapshots(mdk)?,
-        pending_welcome_snapshots: list_pending_welcome_snapshots(mdk)?,
-        sync_plan: plan_app_session_sync_from_mdk(
-            mdk,
+        joined_group_snapshots: super::conversation_support::list_joined_group_snapshots(mls)?,
+        pending_welcome_snapshots: list_pending_welcome_snapshots(mls)?,
+        sync_plan: plan_app_session_sync_from_mls(
+            mls,
             subscribed_group_ids,
             long_lived_session_relays,
             temporary_key_package_relays,
@@ -206,15 +206,15 @@ fn bootstrap_app_session(
     long_lived_session_relays: Vec<RelayUrl>,
     temporary_key_package_relays: Vec<RelayUrl>,
 ) -> anyhow::Result<BootstrappedAppSession> {
-    let mdk = open_mdk(data_dir, &pubkey, keychain_group)?;
+    let mls = open_mls(data_dir, &pubkey, keychain_group)?;
     let client = Client::new(signer);
     let open = refresh_app_session_open_state(
-        &mdk,
+        &mls,
         Vec::new(),
         long_lived_session_relays,
         temporary_key_package_relays,
     )?;
-    Ok(BootstrappedAppSession { client, mdk, open })
+    Ok(BootstrappedAppSession { client, mls, open })
 }
 
 async fn classify_app_notification_event(
@@ -263,7 +263,7 @@ async fn classify_app_inbound_relay_event(
 
 #[cfg(test)]
 fn plan_app_group_subscriptions(sess: &Session) -> anyhow::Result<AppGroupSubscriptionPlan> {
-    plan_app_group_subscriptions_from_mdk(&sess.mdk, sess.groups.keys().cloned().collect())
+    plan_app_group_subscriptions_from_mls(&sess.mls, sess.groups.keys().cloned().collect())
 }
 
 fn app_welcome_inbox_intent() -> AppWelcomeInboxIntent {
@@ -314,7 +314,7 @@ fn refresh_app_session_state(
     sess: &Session,
 ) -> anyhow::Result<AppSessionOpenState> {
     refresh_app_session_open_state(
-        &sess.mdk,
+        &sess.mls,
         sess.groups.keys().cloned().collect(),
         core.long_lived_session_relays(),
         core.temporary_key_package_relays(),
@@ -434,10 +434,10 @@ impl AppCore {
             self.long_lived_session_relays(),
             self.temporary_key_package_relays(),
         )?;
-        tracing::info!("mdk opened");
+        tracing::info!("mls opened");
         let BootstrappedAppSession {
             client,
-            mdk,
+            mls,
             open: initial_open,
         } = bootstrapped;
         let initial_groups =
@@ -463,7 +463,7 @@ impl AppCore {
         let sess = Session {
             pubkey,
             local_keys,
-            mdk,
+            mls,
             client,
             alive: Arc::new(AtomicBool::new(true)),
             giftwrap_sub: None,
@@ -509,18 +509,18 @@ impl AppCore {
         Ok(())
     }
 
-    /// Re-open the MDK database to pick up any ratchet state changes made by the
+    /// Re-open the MLS database to pick up any ratchet state changes made by the
     /// Notification Service Extension while the app was in the background.
-    pub(super) fn reopen_mdk(&mut self) {
+    pub(super) fn reopen_mls(&mut self) {
         let Some(sess) = self.session.as_mut() else {
             return;
         };
-        match open_mdk(&self.data_dir, &sess.pubkey, &self.keychain_group) {
-            Ok(new_mdk) => {
-                sess.mdk = new_mdk;
+        match open_mls(&self.data_dir, &sess.pubkey, &self.keychain_group) {
+            Ok(new_mls) => {
+                sess.mls = new_mls;
             }
             Err(e) => {
-                tracing::warn!(%e, "failed to reopen mdk");
+                tracing::warn!(%e, "failed to reopen mls");
             }
         }
     }
@@ -621,7 +621,7 @@ impl AppCore {
 
             let (content, tags, _hash_ref) =
                 match pika_mls::key_package::create_key_package_for_event(
-                    &sess.mdk,
+                    &sess.mls,
                     &sess.pubkey,
                     relays_for_tags,
                 ) {
@@ -704,7 +704,7 @@ impl AppCore {
         let token = self.key_package_publish_token;
         self.local_key_package_published = false;
         let (content, tags, _hash_ref) = match pika_mls::key_package::create_key_package_for_event(
-            &sess.mdk,
+            &sess.mls,
             &sess.pubkey,
             relays_for_tags,
         ) {
@@ -1535,19 +1535,19 @@ mod tests {
     use crate::core::config::CHAT_SERVER_MLS_COMPAT_RELAY;
     use crate::core::extract_relays_from_key_package_event;
 
-    fn open_test_mdk(dir: &tempfile::TempDir, keys: &Keys) -> PikaMdk {
-        crate::mdk_support::open_mdk(
+    fn open_test_mls(dir: &tempfile::TempDir, keys: &Keys) -> PikaMls {
+        crate::mls_support::open_mls(
             dir.path().to_str().expect("tempdir path"),
             &keys.public_key(),
             "test.keychain.group",
         )
-        .expect("open test mdk")
+        .expect("open test mls")
     }
 
-    fn make_key_package_event(mdk: &PikaMdk, keys: &Keys) -> Event {
+    fn make_key_package_event(mls: &PikaMls, keys: &Keys) -> Event {
         let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
         let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
-            mdk,
+            mls,
             &keys.public_key(),
             vec![relay],
         )
@@ -1559,7 +1559,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_server_key_packages_use_compatibility_relay_for_mdk() {
+    fn chat_server_key_packages_use_compatibility_relay_for_mls() {
         let (mut core, _tmp) = make_core_with_config(crate::core::config::AppConfig {
             private_chat_server_url: Some("https://chat.example".to_string()),
             relay_urls: Some(vec!["wss://message-1.example".to_string()]),
@@ -1567,11 +1567,11 @@ mod tests {
         });
         let session_dir = tempfile::tempdir().expect("session tempdir");
         let keys = Keys::generate();
-        let mdk = open_test_mdk(&session_dir, &keys);
+        let mls = open_test_mls(&session_dir, &keys);
         core.session = Some(crate::core::Session {
             pubkey: keys.public_key(),
             local_keys: Some(keys.clone()),
-            mdk,
+            mls,
             client: Client::default(),
             alive: Arc::new(AtomicBool::new(true)),
             giftwrap_sub: None,
@@ -1581,7 +1581,7 @@ mod tests {
 
         let sess = core.session.as_ref().expect("session");
         let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
-            &sess.mdk,
+            &sess.mls,
             &sess.pubkey,
             core.private_chat_bootstrap_relays(),
         )
@@ -1595,9 +1595,9 @@ mod tests {
             relays,
             vec![RelayUrl::parse(CHAT_SERVER_MLS_COMPAT_RELAY).expect("compat relay")]
         );
-        let normalized = crate::normalize_peer_key_package_event_for_mdk(&event);
+        let normalized = crate::normalize_peer_key_package_event_for_mls(&event);
 
-        pika_mls::key_package::parse_key_package(&sess.mdk, &normalized)
+        pika_mls::key_package::parse_key_package(&sess.mls, &normalized)
             .expect("chat-server key package should stay parseable");
     }
 
@@ -1624,10 +1624,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir, &inviter_keys);
-        let invitee_mdk = open_test_mdk(&invitee_dir, &invitee_keys);
+        let inviter_mls = open_test_mls(&inviter_dir, &inviter_keys);
+        let invitee_mls = open_test_mls(&invitee_dir, &invitee_keys);
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData {
             name: "App runtime bootstrap".to_string(),
             description: String::new(),
@@ -1637,7 +1637,7 @@ mod tests {
             relays: vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             admins: vec![inviter_keys.public_key()],
         };
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
 
@@ -1697,10 +1697,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir, &inviter_keys);
-        let invitee_mdk = open_test_mdk(&invitee_dir, &invitee_keys);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let created = inviter_mdk
+        let inviter_mls = open_test_mls(&inviter_dir, &inviter_keys);
+        let invitee_mls = open_test_mls(&invitee_dir, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -1729,7 +1729,7 @@ mod tests {
         let session = Session {
             pubkey: inviter_keys.public_key(),
             local_keys: Some(inviter_keys.clone()),
-            mdk: inviter_mdk,
+            mls: inviter_mls,
             client: Client::default(),
             alive: Arc::new(AtomicBool::new(true)),
             giftwrap_sub: None,
@@ -1757,11 +1757,11 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir, &inviter_keys);
-        let invitee_mdk = open_test_mdk(&invitee_dir, &invitee_keys);
+        let inviter_mls = open_test_mls(&inviter_dir, &inviter_keys);
+        let invitee_mls = open_test_mls(&invitee_dir, &invitee_keys);
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let created = inviter_mdk
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -1791,7 +1791,7 @@ mod tests {
         let session = Session {
             pubkey: inviter_keys.public_key(),
             local_keys: Some(inviter_keys.clone()),
-            mdk: inviter_mdk,
+            mls: inviter_mls,
             client: Client::default(),
             alive: Arc::new(AtomicBool::new(true)),
             giftwrap_sub: None,
@@ -1823,10 +1823,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir, &inviter_keys);
-        let invitee_mdk = open_test_mdk(&invitee_dir, &invitee_keys);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let created = inviter_mdk
+        let inviter_mls = open_test_mls(&inviter_dir, &inviter_keys);
+        let invitee_mls = open_test_mls(&invitee_dir, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -1856,7 +1856,7 @@ mod tests {
         let session = Session {
             pubkey: inviter_keys.public_key(),
             local_keys: Some(inviter_keys.clone()),
-            mdk: inviter_mdk,
+            mls: inviter_mls,
             client: Client::default(),
             alive: Arc::new(AtomicBool::new(true)),
             giftwrap_sub: None,
@@ -1900,10 +1900,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir, &inviter_keys);
-        let invitee_mdk = open_test_mdk(&invitee_dir, &invitee_keys);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        inviter_mdk
+        let inviter_mls = open_test_mls(&inviter_dir, &inviter_keys);
+        let invitee_mls = open_test_mls(&invitee_dir, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -1922,7 +1922,7 @@ mod tests {
         let session = Session {
             pubkey: inviter_keys.public_key(),
             local_keys: Some(inviter_keys.clone()),
-            mdk: inviter_mdk,
+            mls: inviter_mls,
             client: Client::new(signer),
             alive: Arc::new(AtomicBool::new(true)),
             giftwrap_sub: None,
@@ -1953,11 +1953,11 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir, &inviter_keys);
-        let invitee_mdk = open_test_mdk(&invitee_dir, &invitee_keys);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = open_test_mls(&inviter_dir, &inviter_keys);
+        let invitee_mls = open_test_mls(&invitee_dir, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let group_relay = RelayUrl::parse("wss://group-1.example").expect("group relay");
-        inviter_mdk
+        inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -1975,7 +1975,7 @@ mod tests {
         let session = Session {
             pubkey: inviter_keys.public_key(),
             local_keys: Some(inviter_keys.clone()),
-            mdk: inviter_mdk,
+            mls: inviter_mls,
             client: Client::default(),
             alive: Arc::new(AtomicBool::new(true)),
             giftwrap_sub: None,
@@ -2009,12 +2009,12 @@ mod tests {
         let inviter_keys = Keys::generate();
         let bob_keys = Keys::generate();
         let charlie_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir, &inviter_keys);
-        let bob_mdk = open_test_mdk(&bob_dir, &bob_keys);
-        let charlie_mdk = open_test_mdk(&charlie_dir, &charlie_keys);
+        let inviter_mls = open_test_mls(&inviter_dir, &inviter_keys);
+        let bob_mls = open_test_mls(&bob_dir, &bob_keys);
+        let charlie_mls = open_test_mls(&charlie_dir, &charlie_keys);
 
-        let bob_kp = make_key_package_event(&bob_mdk, &bob_keys);
-        let charlie_kp = make_key_package_event(&charlie_mdk, &charlie_keys);
+        let bob_kp = make_key_package_event(&bob_mls, &bob_keys);
+        let charlie_kp = make_key_package_event(&charlie_mls, &charlie_keys);
         let config = NostrGroupConfigData {
             name: "App publish test".to_string(),
             description: String::new(),
@@ -2024,7 +2024,7 @@ mod tests {
             relays: vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             admins: vec![inviter_keys.public_key()],
         };
-        let group_result = inviter_mdk
+        let group_result = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![bob_kp, charlie_kp], config)
             .expect("create group");
 
@@ -2057,7 +2057,7 @@ mod tests {
             match receiver {
                 receiver if receiver == bob_keys.public_key() => {
                     let ingested = super::welcome_support::ingest_welcome_from_giftwrap(
-                        &bob_mdk,
+                        &bob_mls,
                         &bob_keys,
                         &wrapper,
                         |_| true,
@@ -2068,7 +2068,7 @@ mod tests {
                 }
                 receiver if receiver == charlie_keys.public_key() => {
                     let ingested = super::welcome_support::ingest_welcome_from_giftwrap(
-                        &charlie_mdk,
+                        &charlie_mls,
                         &charlie_keys,
                         &wrapper,
                         |_| true,

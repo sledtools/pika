@@ -6,7 +6,7 @@ use pika_mls::encrypted_media::types::{
 };
 use sha2::{Digest, Sha256};
 
-use crate::mdk_support::PikaMdk;
+use crate::mls_support::PikaMls;
 use pika_mls::storage_traits::GroupId;
 
 pub(crate) const MAX_CHAT_MEDIA_BYTES: usize = 32 * 1024 * 1024;
@@ -51,7 +51,7 @@ pub(crate) struct DownloadedMedia {
 }
 
 pub(crate) fn prepare_upload(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     mls_group_id: &GroupId,
     bytes: &[u8],
     mime_type: Option<&str>,
@@ -75,7 +75,7 @@ pub(crate) fn prepare_upload(
             .unwrap_or("application/octet-stream"),
     );
 
-    let manager = mdk.media_manager(mls_group_id.clone());
+    let manager = mls.media_manager(mls_group_id.clone());
     let mut upload = manager
         .encrypt_for_upload_with_options(
             bytes,
@@ -93,12 +93,12 @@ pub(crate) fn prepare_upload(
 }
 
 pub(crate) fn finish_upload(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     mls_group_id: &GroupId,
     upload: &EncryptedMediaUpload,
     uploaded_blob: UploadedBlob,
 ) -> MediaUploadResult {
-    let manager = mdk.media_manager(mls_group_id.clone());
+    let manager = mls.media_manager(mls_group_id.clone());
     let imeta_tag = manager.create_imeta_tag(upload, &uploaded_blob.uploaded_url);
     let reference = manager.create_media_reference(upload, uploaded_blob.uploaded_url.clone());
     let attachment =
@@ -113,7 +113,7 @@ pub(crate) fn finish_upload(
 }
 
 pub(crate) fn decrypt_downloaded_media(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     mls_group_id: &GroupId,
     reference: &MediaReference,
     encrypted_data: &[u8],
@@ -128,7 +128,7 @@ pub(crate) fn decrypt_downloaded_media(
         }
     }
 
-    let manager = mdk.media_manager(mls_group_id.clone());
+    let manager = mls.media_manager(mls_group_id.clone());
     let decrypted_data = manager
         .decrypt_from_download(encrypted_data, reference)
         .context("decrypt downloaded media")?;

@@ -1,6 +1,6 @@
 mod agent;
 mod harness;
-mod mdk_util;
+mod mls_util;
 mod relay_util;
 mod remote;
 
@@ -20,7 +20,7 @@ use pika_mls::welcome::WelcomeQueries;
 use pika_relay_profiles::{
     default_key_package_relays, default_message_relays, default_primary_blossom_server,
 };
-use pikachat_sidecar::key_package::normalize_peer_key_package_event_for_mdk;
+use pikachat_sidecar::key_package::normalize_peer_key_package_event_for_mls;
 use pikachat_sidecar::outbound::{OutboundConversationAction, PreparedConversationAction};
 use pikachat_sidecar::runtime::PikaRuntime;
 use pikachat_sidecar::welcome::{
@@ -777,10 +777,10 @@ async fn main() -> anyhow::Result<()> {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-fn open(cli: &Cli) -> anyhow::Result<(Keys, mdk_util::PikaMdk)> {
-    let keys = mdk_util::load_or_create_keys(&cli.state_dir.join("identity.json"))?;
-    let mdk = mdk_util::open_mdk(&cli.state_dir)?;
-    Ok((keys, mdk))
+fn open(cli: &Cli) -> anyhow::Result<(Keys, mls_util::PikaMls)> {
+    let keys = mls_util::load_or_create_keys(&cli.state_dir.join("identity.json"))?;
+    let mls = mls_util::open_mls(&cli.state_dir)?;
+    Ok((keys, mls))
 }
 
 /// Resolve message relay URLs: use --relay if provided, otherwise defaults.
@@ -824,10 +824,10 @@ async fn client_all(cli: &Cli, keys: &Keys) -> anyhow::Result<Client> {
 }
 
 fn find_group(
-    mdk: &mdk_util::PikaMdk,
+    mls: &mls_util::PikaMls,
     nostr_group_id_hex: &str,
 ) -> anyhow::Result<pika_mls::storage_traits::groups::types::Group> {
-    PikaRuntime::new(mdk)
+    PikaRuntime::new(mls)
         .find_group(nostr_group_id_hex)
         .with_context(|| {
             format!(
@@ -837,12 +837,12 @@ fn find_group(
 }
 
 fn prepare_cli_outbound_action(
-    mdk: &mdk_util::PikaMdk,
+    mls: &mls_util::PikaMls,
     sender: PublicKey,
     group: pika_mls::storage_traits::groups::types::Group,
     action: OutboundConversationAction,
 ) -> anyhow::Result<PreparedConversationAction> {
-    PikaRuntime::new(mdk).prepare_outbound_action_for_group(sender, group, action)
+    PikaRuntime::new(mls).prepare_outbound_action_for_group(sender, group, action)
 }
 
 fn print(v: serde_json::Value) {
@@ -853,14 +853,14 @@ fn print(v: serde_json::Value) {
 /// `ingest_application_message` so the local MLS epoch is up-to-date
 /// before we attempt to create a new message.
 async fn ingest_group_backlog(
-    mdk: &mdk_util::PikaMdk,
+    mls: &mls_util::PikaMls,
     client: &Client,
     relay_urls: &[RelayUrl],
     nostr_group_id_hex: &str,
     seen_mls_event_ids: &mut HashSet<EventId>,
 ) -> anyhow::Result<()> {
     pikachat_sidecar::ingest_group_backlog(
-        mdk,
+        mls,
         client,
         relay_urls,
         nostr_group_id_hex,
@@ -878,11 +878,11 @@ fn blossom_servers_or_default(values: &[String]) -> Vec<String> {
 }
 
 fn message_media_refs(
-    mdk: &mdk_util::PikaMdk,
+    mls: &mls_util::PikaMls,
     group_id: &GroupId,
     tags: &Tags,
 ) -> Vec<serde_json::Value> {
-    PikaRuntime::new(mdk)
+    PikaRuntime::new(mls)
         .media()
         .parse_attachments_from_tags(group_id, tags.iter())
         .into_iter()
@@ -925,7 +925,7 @@ fn media_upload_json(
 
 async fn cmd_init(cli: &Cli, nsec: Option<&str>) -> anyhow::Result<()> {
     let identity_path = cli.state_dir.join("identity.json");
-    let db_path = cli.state_dir.join("mdk.sqlite");
+    let state_path = cli.state_dir.join("pika-mls.json");
 
     // Resolve or generate keys.
     let keys = match nsec {
@@ -941,7 +941,7 @@ async fn cmd_init(cli: &Cli, nsec: Option<&str>) -> anyhow::Result<()> {
 
     if identity_path.exists() {
         let raw = std::fs::read_to_string(&identity_path).context("read existing identity.json")?;
-        let existing: mdk_util::IdentityFile =
+        let existing: mls_util::IdentityFile =
             serde_json::from_str(&raw).context("parse existing identity.json")?;
 
         if existing.public_key_hex == new_pubkey {
@@ -955,11 +955,11 @@ async fn cmd_init(cli: &Cli, nsec: Option<&str>) -> anyhow::Result<()> {
         }
     }
 
-    if db_path.exists() {
+    if state_path.exists() {
         warnings.push(format!(
-            "mdk.sqlite exists at {}; it may contain MLS state from a previous identity. \
+            "pika-mls.json exists at {}; it may contain chat state from a previous identity. \
              Consider removing it if you are switching keys.",
-            db_path.display(),
+            state_path.display(),
         ));
     }
 
@@ -979,7 +979,7 @@ async fn cmd_init(cli: &Cli, nsec: Option<&str>) -> anyhow::Result<()> {
     }
 
     // Write identity.json.
-    let id_file = mdk_util::IdentityFile {
+    let id_file = mls_util::IdentityFile {
         secret_key_hex: keys.secret_key().to_secret_hex(),
         public_key_hex: new_pubkey.clone(),
     };
@@ -990,13 +990,13 @@ async fn cmd_init(cli: &Cli, nsec: Option<&str>) -> anyhow::Result<()> {
     .context("write identity.json")?;
 
     // Publish a key package so the user is immediately invitable.
-    let mdk = mdk_util::open_mdk(&cli.state_dir)?;
+    let mls = mls_util::open_mls(&cli.state_dir)?;
     let kp_relays_str = resolve_kp_relays(cli);
     let kp_relays = relay_util::parse_relay_urls(&kp_relays_str)?;
     let client = relay_util::connect_client(&keys, &kp_relays_str).await?;
 
     let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
-        &mdk,
+        &mls,
         &keys.public_key(),
         kp_relays.clone(),
     )
@@ -1024,7 +1024,7 @@ async fn cmd_init(cli: &Cli, nsec: Option<&str>) -> anyhow::Result<()> {
 }
 
 fn cmd_identity(cli: &Cli) -> anyhow::Result<()> {
-    let keys = mdk_util::load_or_create_keys(&cli.state_dir.join("identity.json"))?;
+    let keys = mls_util::load_or_create_keys(&cli.state_dir.join("identity.json"))?;
     print(json!({
         "pubkey": keys.public_key().to_hex(),
         "npub": keys.public_key().to_bech32().unwrap_or_default(),
@@ -1038,7 +1038,7 @@ fn cmd_qr(
     scheme_override: Option<&str>,
     server_url: Option<&str>,
 ) -> anyhow::Result<()> {
-    let keys = mdk_util::load_or_create_keys(&cli.state_dir.join("identity.json"))?;
+    let keys = mls_util::load_or_create_keys(&cli.state_dir.join("identity.json"))?;
     let npub = keys.public_key().to_bech32().context("encode npub")?;
     let scheme = resolve_qr_scheme(channel, scheme_override)?;
     let deep_link = build_qr_profile_code(&scheme, &npub, server_url)?;
@@ -1104,13 +1104,13 @@ fn resolve_qr_scheme(channel: QrChannel, scheme_override: Option<&str>) -> anyho
 }
 
 async fn cmd_publish_kp(cli: &Cli) -> anyhow::Result<()> {
-    let (keys, mdk) = open(cli)?;
+    let (keys, mls) = open(cli)?;
     let kp_relays_str = resolve_kp_relays(cli);
     let client = relay_util::connect_client(&keys, &kp_relays_str).await?;
     let relays = relay_util::parse_relay_urls(&kp_relays_str)?;
 
     let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
-        &mdk,
+        &mls,
         &keys.public_key(),
         relays.clone(),
     )
@@ -1138,7 +1138,7 @@ async fn cmd_publish_kp(cli: &Cli) -> anyhow::Result<()> {
 }
 
 async fn cmd_invite(cli: &Cli, peer_str: &str, group_name: &str) -> anyhow::Result<()> {
-    let (keys, mdk) = open(cli)?;
+    let (keys, mls) = open(cli)?;
     let client = client_all(cli, &keys).await?;
     let relays = relay_util::parse_relay_urls(&resolve_relays(cli))?;
     let kp_relays = relay_util::parse_relay_urls(&resolve_kp_relays(cli))?;
@@ -1147,7 +1147,7 @@ async fn cmd_invite(cli: &Cli, peer_str: &str, group_name: &str) -> anyhow::Resu
         PublicKey::parse(peer_str.trim()).with_context(|| format!("parse peer key: {peer_str}"))?;
 
     // Fetch peer key package from key-package relays.
-    let peer_kp = relay_util::fetch_latest_key_package_for_mdk(
+    let peer_kp = relay_util::fetch_latest_key_package_for_mls(
         &client,
         &peer_pubkey,
         &kp_relays,
@@ -1155,7 +1155,7 @@ async fn cmd_invite(cli: &Cli, peer_str: &str, group_name: &str) -> anyhow::Resu
     )
     .await
     .context("fetch peer key package — has the peer run `publish-kp`?")?;
-    let peer_kp = normalize_peer_key_package_event_for_mdk(&peer_kp);
+    let peer_kp = normalize_peer_key_package_event_for_mls(&peer_kp);
 
     // Create group.
     let config = NostrGroupConfigData::new(
@@ -1172,7 +1172,7 @@ async fn cmd_invite(cli: &Cli, peer_str: &str, group_name: &str) -> anyhow::Resu
     // subscribe or backfill here; later commands do catch-up on demand.
     let created = create_group_and_publish_welcomes_for_invite(
         &keys,
-        &mdk,
+        &mls,
         &client,
         &relays,
         peer_kp,
@@ -1195,7 +1195,7 @@ async fn cmd_invite(cli: &Cli, peer_str: &str, group_name: &str) -> anyhow::Resu
 
 async fn create_group_and_publish_welcomes_for_invite(
     keys: &Keys,
-    mdk: &mdk_util::PikaMdk,
+    mls: &mls_util::PikaMls,
     client: &Client,
     relays: &[RelayUrl],
     peer_kp: Event,
@@ -1204,7 +1204,7 @@ async fn create_group_and_publish_welcomes_for_invite(
 ) -> anyhow::Result<CreatedGroup> {
     create_group_and_publish_welcomes_for_invite_with_publisher(
         keys,
-        mdk,
+        mls,
         peer_kp,
         peer_pubkey,
         config,
@@ -1219,7 +1219,7 @@ async fn create_group_and_publish_welcomes_for_invite(
 
 async fn create_group_and_publish_welcomes_for_invite_with_publisher<F, Fut>(
     keys: &Keys,
-    mdk: &mdk_util::PikaMdk,
+    mls: &mls_util::PikaMls,
     peer_kp: Event,
     peer_pubkey: PublicKey,
     config: NostrGroupConfigData,
@@ -1231,7 +1231,7 @@ where
 {
     create_group_and_publish_welcomes(
         keys,
-        mdk,
+        mls,
         vec![peer_kp],
         config,
         &[peer_pubkey],
@@ -1243,19 +1243,19 @@ where
 }
 
 fn cmd_welcomes(cli: &Cli) -> anyhow::Result<()> {
-    let (_keys, mdk) = open(cli)?;
-    let pending = WelcomeQueries::new(&mdk).list_pending_welcomes()?;
+    let (_keys, mls) = open(cli)?;
+    let pending = WelcomeQueries::new(&mls).list_pending_welcomes()?;
     let out: Vec<serde_json::Value> = pending.iter().map(pending_welcome_json).collect();
     print(json!({ "welcomes": out }));
     Ok(())
 }
 
 fn cmd_accept_welcome(cli: &Cli, wrapper_event_id_hex: &str) -> anyhow::Result<()> {
-    let (_keys, mdk) = open(cli)?;
+    let (_keys, mls) = open(cli)?;
     let target_id =
         EventId::from_hex(wrapper_event_id_hex).context("parse pending welcome event id")?;
 
-    let pending = WelcomeQueries::new(&mdk).list_pending_welcomes()?;
+    let pending = WelcomeQueries::new(&mls).list_pending_welcomes()?;
     let welcome = find_pending_welcome_for_accept(&pending, &target_id)
         .ok_or_else(|| {
             anyhow!(
@@ -1266,7 +1266,7 @@ fn cmd_accept_welcome(cli: &Cli, wrapper_event_id_hex: &str) -> anyhow::Result<(
     let ngid = hex::encode(welcome.nostr_group_id);
     let mls_gid = hex::encode(welcome.mls_group_id.as_slice());
 
-    accept_pending_welcome(&mdk, welcome)?;
+    accept_pending_welcome(&mls, welcome)?;
 
     // CLI accept is intentionally narrow today: it joins locally but does not
     // subscribe or backfill here. Later `messages`, `send`, and listener flows
@@ -1299,8 +1299,8 @@ fn pending_welcome_json(
 }
 
 fn cmd_groups(cli: &Cli) -> anyhow::Result<()> {
-    let (_keys, mdk) = open(cli)?;
-    let groups = PikaRuntime::new(&mdk).list_groups().context("get groups")?;
+    let (_keys, mls) = open(cli)?;
+    let groups = PikaRuntime::new(&mls).list_groups().context("get groups")?;
     let out: Vec<serde_json::Value> = groups
         .iter()
         .map(|g| {
@@ -1319,7 +1319,7 @@ fn cmd_groups(cli: &Cli) -> anyhow::Result<()> {
 /// Encrypt and upload a media file to Blossom, returning the imeta tag.
 async fn upload_media(
     keys: &Keys,
-    mdk: &mdk_util::PikaMdk,
+    mls: &mls_util::PikaMls,
     mls_group_id: &GroupId,
     file: &Path,
     mime_type: Option<&str>,
@@ -1330,7 +1330,7 @@ async fn upload_media(
         std::fs::read(file).with_context(|| format!("read media file {}", file.display()))?;
     let resolved = resolve_upload_metadata(file, mime_type, filename);
     let upload_servers = blossom_servers_or_default(blossom_servers);
-    let result = PikaRuntime::new(mdk)
+    let result = PikaRuntime::new(mls)
         .media()
         .upload_media(
             keys,
@@ -1366,8 +1366,8 @@ async fn cmd_send(
         anyhow::bail!("--content is required (or use --media to send a file)");
     }
 
-    let (keys, mdk) = open(cli)?;
-    let mut seen_mls_event_ids = mdk_util::load_processed_mls_event_ids(&cli.state_dir);
+    let (keys, mls) = open(cli)?;
+    let mut seen_mls_event_ids = mls_util::load_processed_mls_event_ids(&cli.state_dir);
 
     // ── Resolve target group ────────────────────────────────────────────
     struct ResolvedTarget {
@@ -1379,7 +1379,7 @@ async fn cmd_send(
 
     let (resolved, client) = match (group_hex, to_str) {
         (Some(gid), _) => {
-            let group = find_group(&mdk, gid)?;
+            let group = find_group(&mls, gid)?;
             let c = client(cli, &keys).await?;
             (
                 ResolvedTarget {
@@ -1395,7 +1395,7 @@ async fn cmd_send(
             let my_pubkey = keys.public_key();
 
             // Search for an existing 1:1 DM with this peer.
-            let found = find_direct_group_with_peer(&mdk, &my_pubkey, &peer_pubkey)?;
+            let found = find_direct_group_with_peer(&mls, &my_pubkey, &peer_pubkey)?;
 
             if let Some(group) = found {
                 let c = client(cli, &keys).await?;
@@ -1410,7 +1410,7 @@ async fn cmd_send(
                 // Auto-create a DM group.
                 let c = client_all(cli, &keys).await?;
                 let kp_relays = relay_util::parse_relay_urls(&resolve_kp_relays(cli))?;
-                let peer_kp = match relay_util::fetch_latest_key_package_for_mdk(
+                let peer_kp = match relay_util::fetch_latest_key_package_for_mls(
                     &c,
                     &peer_pubkey,
                     &kp_relays,
@@ -1422,7 +1422,7 @@ async fn cmd_send(
                     Err(primary_err) => {
                         // If kp relays are defaults, retry on active message relays.
                         if cli.kp_relay.is_empty() && kp_relays != relays {
-                            relay_util::fetch_latest_key_package_for_mdk(
+                            relay_util::fetch_latest_key_package_for_mls(
                                 &c,
                                 &peer_pubkey,
                                 &relays,
@@ -1441,7 +1441,7 @@ async fn cmd_send(
                         }
                     }
                 };
-                let peer_kp = normalize_peer_key_package_event_for_mdk(&peer_kp);
+                let peer_kp = normalize_peer_key_package_event_for_mls(&peer_kp);
                 let config = NostrGroupConfigData::new(
                     "DM".to_string(),
                     String::new(),
@@ -1452,7 +1452,7 @@ async fn cmd_send(
                     vec![my_pubkey, peer_pubkey],
                 );
 
-                let result = mdk
+                let result = mls
                     .create_group(&my_pubkey, vec![peer_kp], config)
                     .context("create group")?;
 
@@ -1481,7 +1481,7 @@ async fn cmd_send(
     // Without this, sending twice without running `listen` in between can
     // leave the local MLS epoch stale, producing ciphertext that peers
     // (who are on a newer epoch) cannot decrypt.
-    ingest_group_backlog(&mdk, &client, &relays, &ngid, &mut seen_mls_event_ids).await?;
+    ingest_group_backlog(&mls, &client, &relays, &ngid, &mut seen_mls_event_ids).await?;
 
     // ── Upload media (if any) ───────────────────────────────────────────
     let mut tags: Vec<Tag> = Vec::new();
@@ -1490,7 +1490,7 @@ async fn cmd_send(
     if let Some(file) = media {
         let (imeta_tag, mj) = upload_media(
             &keys,
-            &mdk,
+            &mls,
             &resolved.group.mls_group_id,
             file,
             mime_type,
@@ -1504,7 +1504,7 @@ async fn cmd_send(
 
     // ── Build and send MLS message ──────────────────────────────────────
     let prepared = prepare_cli_outbound_action(
-        &mdk,
+        &mls,
         keys.public_key(),
         resolved.group.clone(),
         OutboundConversationAction::Message {
@@ -1515,11 +1515,11 @@ async fn cmd_send(
         },
     )
     .context("create message")?;
-    PikaRuntime::with_client(&mdk, &client)
+    PikaRuntime::with_client(&mls, &client)
         .publish_prepared_action(&relays, &prepared, "send_message")
         .await?;
     client.shutdown().await;
-    mdk_util::persist_processed_mls_event_ids(&cli.state_dir, &seen_mls_event_ids)?;
+    mls_util::persist_processed_mls_event_ids(&cli.state_dir, &seen_mls_event_ids)?;
 
     let mut out = json!({
         "event_id": prepared.wrapper.id.to_hex(),
@@ -1593,14 +1593,14 @@ async fn cmd_send_hypernote(
         anyhow::bail!("--content is required");
     }
 
-    let (keys, mdk) = open(cli)?;
-    let mut seen_mls_event_ids = mdk_util::load_processed_mls_event_ids(&cli.state_dir);
+    let (keys, mls) = open(cli)?;
+    let mut seen_mls_event_ids = mls_util::load_processed_mls_event_ids(&cli.state_dir);
     let relays = relay_util::parse_relay_urls(&resolve_relays(cli))?;
 
     // Resolve target group (reuse the same logic as cmd_send for --group / --to).
     let (group, client) = match (group_hex, to_str) {
         (Some(gid), _) => {
-            let group = find_group(&mdk, gid)?;
+            let group = find_group(&mls, gid)?;
             let c = client(cli, &keys).await?;
             (group, c)
         }
@@ -1608,14 +1608,14 @@ async fn cmd_send_hypernote(
             let peer_pubkey = PublicKey::parse(peer_str.trim())
                 .with_context(|| format!("parse peer key: {peer_str}"))?;
             let my_pubkey = keys.public_key();
-            let found = find_direct_group_with_peer(&mdk, &my_pubkey, &peer_pubkey)?;
+            let found = find_direct_group_with_peer(&mls, &my_pubkey, &peer_pubkey)?;
             if let Some(group) = found {
                 let c = client(cli, &keys).await?;
                 (group, c)
             } else {
                 let c = client_all(cli, &keys).await?;
                 let kp_relays = relay_util::parse_relay_urls(&resolve_kp_relays(cli))?;
-                let peer_kp = match relay_util::fetch_latest_key_package_for_mdk(
+                let peer_kp = match relay_util::fetch_latest_key_package_for_mls(
                     &c,
                     &peer_pubkey,
                     &kp_relays,
@@ -1626,7 +1626,7 @@ async fn cmd_send_hypernote(
                     Ok(kp) => kp,
                     Err(primary_err) => {
                         if cli.kp_relay.is_empty() && kp_relays != relays {
-                            relay_util::fetch_latest_key_package_for_mdk(
+                            relay_util::fetch_latest_key_package_for_mls(
                                 &c,
                                 &peer_pubkey,
                                 &relays,
@@ -1645,7 +1645,7 @@ async fn cmd_send_hypernote(
                         }
                     }
                 };
-                let peer_kp = normalize_peer_key_package_event_for_mdk(&peer_kp);
+                let peer_kp = normalize_peer_key_package_event_for_mls(&peer_kp);
                 let config = NostrGroupConfigData::new(
                     "DM".to_string(),
                     String::new(),
@@ -1655,7 +1655,7 @@ async fn cmd_send_hypernote(
                     relays.clone(),
                     vec![my_pubkey, peer_pubkey],
                 );
-                let result = mdk
+                let result = mls
                     .create_group(&my_pubkey, vec![peer_kp], config)
                     .context("create group")?;
                 for rumor in result.welcome_rumors {
@@ -1671,11 +1671,11 @@ async fn cmd_send_hypernote(
     };
 
     let ngid = hex::encode(group.nostr_group_id);
-    ingest_group_backlog(&mdk, &client, &relays, &ngid, &mut seen_mls_event_ids).await?;
+    ingest_group_backlog(&mls, &client, &relays, &ngid, &mut seen_mls_event_ids).await?;
 
     // Build tags.
     let prepared = prepare_cli_outbound_action(
-        &mdk,
+        &mls,
         keys.public_key(),
         group.clone(),
         OutboundConversationAction::Hypernote {
@@ -1686,11 +1686,11 @@ async fn cmd_send_hypernote(
         },
     )
     .context("create message")?;
-    PikaRuntime::with_client(&mdk, &client)
+    PikaRuntime::with_client(&mls, &client)
         .publish_prepared_action(&relays, &prepared, "send_hypernote")
         .await?;
     client.shutdown().await;
-    mdk_util::persist_processed_mls_event_ids(&cli.state_dir, &seen_mls_event_ids)?;
+    mls_util::persist_processed_mls_event_ids(&cli.state_dir, &seen_mls_event_ids)?;
 
     print(json!({
         "event_id": prepared.wrapper.id.to_hex(),
@@ -1713,16 +1713,16 @@ async fn cmd_download_media(
     message_id_hex: &str,
     output_path: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let (_keys, mdk) = open(cli)?;
+    let (_keys, mls) = open(cli)?;
     let message_id = EventId::from_hex(message_id_hex.trim()).context("parse message id")?;
 
-    let found = ConversationQueries::new(&mdk)
+    let found = ConversationQueries::new(&mls)
         .find_message_across_groups(&message_id)
         .context("scan groups for message")?;
     let (mls_group_id, message) =
         found.ok_or_else(|| anyhow!("message {message_id_hex} not found in any group"))?;
 
-    let runtime = PikaRuntime::new(&mdk);
+    let runtime = PikaRuntime::new(&mls);
     let media = runtime
         .parse_message_attachments(&message)
         .into_iter()
@@ -1955,11 +1955,11 @@ struct ListenSummary {
 }
 
 fn find_direct_group_with_peer(
-    mdk: &mdk_util::PikaMdk,
+    mls: &mls_util::PikaMls,
     my_pubkey: &PublicKey,
     peer_pubkey: &PublicKey,
 ) -> anyhow::Result<Option<pika_mls::storage_traits::groups::types::Group>> {
-    ConversationQueries::new(mdk)
+    ConversationQueries::new(mls)
         .find_direct_message_group(my_pubkey, peer_pubkey)
         .context("find direct group with peer")
 }
@@ -1983,10 +1983,10 @@ async fn send_to_agent_and_optionally_listen(
     )
     .await?;
     if listen_timeout > 0 {
-        let (keys, mdk) = open(chat_cli)?;
+        let (keys, mls) = open(chat_cli)?;
         let agent_pubkey = PublicKey::parse(agent_npub).context("parse agent npub")?;
         let expected_group_id =
-            find_direct_group_with_peer(&mdk, &keys.public_key(), &agent_pubkey)?
+            find_direct_group_with_peer(&mls, &keys.public_key(), &agent_pubkey)?
                 .map(|group| hex::encode(group.nostr_group_id));
         let summary = listen_for_incoming(
             chat_cli,
@@ -2020,7 +2020,7 @@ fn ensure_identity_for_state_dir(state_dir: &Path, keys: &Keys) -> anyhow::Resul
     std::fs::create_dir_all(state_dir)
         .with_context(|| format!("create state dir {}", state_dir.display()))?;
     let identity_path = state_dir.join("identity.json");
-    let identity = mdk_util::IdentityFile {
+    let identity = mls_util::IdentityFile {
         secret_key_hex: keys.secret_key().to_secret_hex(),
         public_key_hex: keys.public_key().to_hex(),
     };
@@ -2029,7 +2029,7 @@ fn ensure_identity_for_state_dir(state_dir: &Path, keys: &Keys) -> anyhow::Resul
         format!("{}\n", serde_json::to_string_pretty(&identity)?),
     )
     .with_context(|| format!("write {}", identity_path.display()))?;
-    let _ = mdk_util::open_mdk(state_dir)?;
+    let _ = mls_util::open_mls(state_dir)?;
     Ok(())
 }
 
@@ -2257,11 +2257,11 @@ fn agent_api_http_error(
 }
 
 fn cmd_messages(cli: &Cli, nostr_group_id_hex: &str, limit: usize) -> anyhow::Result<()> {
-    let (_keys, mdk) = open(cli)?;
-    let group = find_group(&mdk, nostr_group_id_hex)?;
+    let (_keys, mls) = open(cli)?;
+    let group = find_group(&mls, nostr_group_id_hex)?;
 
     let pagination = pika_mls::storage_traits::groups::Pagination::new(Some(limit), None);
-    let msgs = PikaRuntime::new(&mdk)
+    let msgs = PikaRuntime::new(&mls)
         .get_messages(nostr_group_id_hex, Some(pagination))
         .context("get messages")?;
 
@@ -2273,7 +2273,7 @@ fn cmd_messages(cli: &Cli, nostr_group_id_hex: &str, limit: usize) -> anyhow::Re
                 "from_pubkey": m.pubkey.to_hex(),
                 "content": m.content,
                 "created_at": m.created_at.as_secs(),
-                "media": message_media_refs(&mdk, &group.mls_group_id, &m.tags),
+                "media": message_media_refs(&mls, &group.mls_group_id, &m.tags),
             })
         })
         .collect();
@@ -2284,7 +2284,7 @@ fn cmd_messages(cli: &Cli, nostr_group_id_hex: &str, limit: usize) -> anyhow::Re
 const MAX_PROFILE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
 async fn cmd_profile(cli: &Cli) -> anyhow::Result<()> {
-    let (keys, _mdk) = open(cli)?;
+    let (keys, _mls) = open(cli)?;
     let client = client(cli, &keys).await?;
 
     client.wait_for_connection(Duration::from_secs(4)).await;
@@ -2318,7 +2318,7 @@ async fn cmd_update_profile(
         );
     }
 
-    let (keys, _mdk) = open(cli)?;
+    let (keys, _mls) = open(cli)?;
     let client = client(cli, &keys).await?;
 
     // Fetch current metadata to preserve fields we don't edit.
@@ -2403,8 +2403,8 @@ async fn cmd_update_group_profile(
         anyhow::bail!("at least one of --name or --about is required");
     }
 
-    let (keys, mdk) = open(cli)?;
-    let group = find_group(&mdk, group_hex)?;
+    let (keys, mls) = open(cli)?;
+    let group = find_group(&mls, group_hex)?;
     let relays = relay_util::parse_relay_urls(&resolve_relays(cli))?;
     let client = client(cli, &keys).await?;
 
@@ -2428,7 +2428,7 @@ async fn cmd_update_group_profile(
 
     // Build kind-0 rumor and encrypt via MLS.
     let rumor = EventBuilder::new(Kind::Metadata, &metadata_json).build(keys.public_key());
-    let msg_event = wrap_rumor(&mdk, &group.mls_group_id, rumor)
+    let msg_event = wrap_rumor(&mls, &group.mls_group_id, rumor)
         .context("create group profile message")?
         .wrapper;
     relay_util::publish_and_confirm(&client, &relays, &msg_event, "update_group_profile").await?;
@@ -2452,7 +2452,7 @@ async fn listen_for_incoming(
     expected_group_id_hex: Option<&str>,
     min_created_at: Option<u64>,
 ) -> anyhow::Result<ListenSummary> {
-    let (keys, mdk) = open(cli)?;
+    let (keys, mls) = open(cli)?;
     let client = client(cli, &keys).await?;
 
     let mut rx = client.notifications();
@@ -2476,7 +2476,7 @@ async fn listen_for_incoming(
 
     // Subscribe to all known groups.
     let mut group_subs = std::collections::HashMap::<SubscriptionId, (String, GroupId)>::new();
-    if let Ok(groups) = PikaRuntime::new(&mdk).list_joined_group_snapshots() {
+    if let Ok(groups) = PikaRuntime::new(&mls).list_joined_group_snapshots() {
         for g in &groups {
             let ngid = g.nostr_group_id_hex.clone();
             let filter = Filter::new()
@@ -2536,7 +2536,7 @@ async fn listen_for_incoming(
         // Welcome.
         if subscription_id == gift_sub.val && event.kind == Kind::GiftWrap {
             let Some(welcome) =
-                mdk_util::ingest_welcome_from_giftwrap(&mdk, &keys, &event, |_| true)
+                mls_util::ingest_welcome_from_giftwrap(&mls, &keys, &event, |_| true)
                     .await
                     .unwrap_or_default()
             else {
@@ -2556,7 +2556,7 @@ async fn listen_for_incoming(
         // Group message.
         if event.kind == Kind::MlsGroupMessage
             && group_subs.contains_key(&subscription_id)
-            && let Ok(Some(msg)) = mdk_util::ingest_application_message(&mdk, &event)
+            && let Ok(Some(msg)) = mls_util::ingest_application_message(&mls, &event)
         {
             let Some((ngid, mls_group_id)) = group_subs.get(&subscription_id).cloned() else {
                 continue;
@@ -2569,7 +2569,7 @@ async fn listen_for_incoming(
                 "content": msg.content,
                 "created_at": msg.created_at.as_secs(),
                 "message_id": msg.id.to_hex(),
-                "media": message_media_refs(&mdk, &mls_group_id, &msg.tags),
+                "media": message_media_refs(&mls, &mls_group_id, &msg.tags),
             });
             println!("{}", serde_json::to_string(&line).unwrap());
             let sender_matches = expected_sender.is_none_or(|sender| msg.pubkey == sender);
@@ -2682,10 +2682,10 @@ mod tests {
         }
     }
 
-    fn make_key_package_event(mdk: &mdk_util::PikaMdk, keys: &Keys) -> Event {
+    fn make_key_package_event(mls: &mls_util::PikaMls, keys: &Keys) -> Event {
         let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
         let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
-            mdk,
+            mls,
             &keys.public_key(),
             vec![relay],
         )
@@ -3136,9 +3136,9 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = mdk_util::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = mdk_util::open_mdk(invitee_dir.path()).expect("open invitee mdk");
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = mls_util::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = mls_util::open_mls(invitee_dir.path()).expect("open invitee mls");
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "CLI media".to_string(),
             String::new(),
@@ -3148,10 +3148,10 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        let runtime = PikaRuntime::new(&inviter_mdk);
+        let runtime = PikaRuntime::new(&inviter_mls);
         let prepared = runtime
             .prepare_upload(
                 &created.group.mls_group_id,
@@ -3171,7 +3171,7 @@ mod tests {
         );
 
         let media = message_media_refs(
-            &inviter_mdk,
+            &inviter_mls,
             &created.group.mls_group_id,
             &Tags::from_list(vec![completed.imeta_tag]),
         );
@@ -3226,9 +3226,9 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = mdk_util::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = mdk_util::open_mdk(invitee_dir.path()).expect("open invitee mdk");
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = mls_util::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = mls_util::open_mls(invitee_dir.path()).expect("open invitee mls");
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "CLI outbound".to_string(),
             String::new(),
@@ -3238,12 +3238,12 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
 
         let prepared = prepare_cli_outbound_action(
-            &inviter_mdk,
+            &inviter_mls,
             inviter_keys.public_key(),
             created.group.clone(),
             OutboundConversationAction::Hypernote {
@@ -3269,10 +3269,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = mdk_util::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = mdk_util::open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = mls_util::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = mls_util::open_mls(invitee_dir.path()).expect("open invitee mls");
         let relays = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
-        let peer_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let peer_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "CLI test".to_string(),
             String::new(),
@@ -3287,7 +3287,7 @@ mod tests {
 
         let created = create_group_and_publish_welcomes_for_invite_with_publisher(
             &inviter_keys,
-            &inviter_mdk,
+            &inviter_mls,
             peer_kp,
             invitee_keys.public_key(),
             config,

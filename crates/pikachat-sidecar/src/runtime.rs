@@ -9,7 +9,7 @@ use pika_mls::prelude::{GroupId, MessageProcessingResult};
 use pika_mls::storage_traits::groups::{Pagination, types::Group};
 use pika_mls::storage_traits::messages::types::Message;
 
-use crate::PikaMdk;
+use crate::PikaMls;
 use crate::call::{CallSessionParams, ParsedCallSignal, parse_call_signal};
 use crate::call_runtime::{
     CallWorkflowRuntime, GroupCallContext, InboundCallSignalOutcome, InboundSignalContext,
@@ -579,7 +579,7 @@ pub async fn classify_inbound_relay_event(
 pub struct RuntimeSession {
     pub pubkey: PublicKey,
     pub client: Client,
-    pub mdk: PikaMdk,
+    pub mls: PikaMls,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -679,13 +679,13 @@ pub struct BootstrappedRuntimeSession {
 }
 
 pub struct PikaRuntime<'a> {
-    mdk: &'a PikaMdk,
+    mls: &'a PikaMls,
     client: Option<&'a Client>,
 }
 
 impl RuntimeSession {
     pub fn runtime(&self) -> PikaRuntime<'_> {
-        PikaRuntime::with_client(&self.mdk, &self.client)
+        PikaRuntime::with_client(&self.mls, &self.client)
     }
 
     pub async fn connect_relays(
@@ -731,16 +731,16 @@ impl RuntimeSession {
     pub async fn subscribe_existing_groups_individual(
         &self,
     ) -> Result<HashMap<SubscriptionId, String>> {
-        let state = group_subscription_state_from_mdk(&self.mdk)?;
+        let state = group_subscription_state_from_mls(&self.mls)?;
         subscribe_group_messages_individual(&self.client, &state.target_group_ids).await
     }
 
     pub fn existing_group_ids(&self) -> Result<Vec<String>> {
-        Ok(group_subscription_state_from_mdk(&self.mdk)?.target_group_ids)
+        Ok(group_subscription_state_from_mls(&self.mls)?.target_group_ids)
     }
 
     pub fn group_subscription_state(&self) -> Result<RuntimeGroupSubscriptionState> {
-        group_subscription_state_from_mdk(&self.mdk)
+        group_subscription_state_from_mls(&self.mls)
     }
 
     pub fn plan_group_subscriptions<I>(
@@ -750,7 +750,7 @@ impl RuntimeSession {
     where
         I: IntoIterator<Item = String>,
     {
-        plan_group_subscriptions_from_mdk(&self.mdk, subscribed_group_ids)
+        plan_group_subscriptions_from_mls(&self.mls, subscribed_group_ids)
     }
 
     pub fn plan_session_sync<I, J, K>(
@@ -765,8 +765,8 @@ impl RuntimeSession {
         J: IntoIterator<Item = RelayUrl>,
         K: IntoIterator<Item = RelayUrl>,
     {
-        plan_runtime_session_sync_from_mdk(
-            &self.mdk,
+        plan_runtime_session_sync_from_mls(
+            &self.mls,
             subscribed_group_ids,
             long_lived_session_relays,
             temporary_key_package_relays,
@@ -799,13 +799,13 @@ impl BootstrappedRuntimeSession {
 }
 
 impl<'a> PikaRuntime<'a> {
-    pub fn new(mdk: &'a PikaMdk) -> Self {
-        Self { mdk, client: None }
+    pub fn new(mls: &'a PikaMls) -> Self {
+        Self { mls, client: None }
     }
 
-    pub fn with_client(mdk: &'a PikaMdk, client: &'a Client) -> Self {
+    pub fn with_client(mls: &'a PikaMls, client: &'a Client) -> Self {
         Self {
-            mdk,
+            mls,
             client: Some(client),
         }
     }
@@ -814,8 +814,8 @@ impl<'a> PikaRuntime<'a> {
         session.runtime()
     }
 
-    pub fn mdk(&self) -> &'a PikaMdk {
-        self.mdk
+    pub fn mls(&self) -> &'a PikaMls {
+        self.mls
     }
 
     pub fn client(&self) -> Option<&'a Client> {
@@ -827,27 +827,27 @@ impl<'a> PikaRuntime<'a> {
         pubkey: PublicKey,
         open_request: RuntimeSessionOpenRequest,
     ) -> Result<RuntimeSessionOpenState> {
-        refresh_runtime_session_open_state(self.mdk, pubkey, open_request)
+        refresh_runtime_session_open_state(self.mls, pubkey, open_request)
     }
 
     pub fn conversation(&self) -> ConversationRuntime<'a> {
-        ConversationRuntime::new(self.mdk)
+        ConversationRuntime::new(self.mls)
     }
 
     pub fn outbound(&self) -> OutboundConversationRuntime<'a> {
-        OutboundConversationRuntime::new(self.mdk)
+        OutboundConversationRuntime::new(self.mls)
     }
 
     pub fn media(&self) -> MediaRuntime<'a> {
-        MediaRuntime::new(self.mdk)
+        MediaRuntime::new(self.mls)
     }
 
     pub fn membership(&self) -> MembershipRuntime<'a> {
-        MembershipRuntime::new(self.mdk)
+        MembershipRuntime::new(self.mls)
     }
 
     pub fn calls(&self) -> CallWorkflowRuntime<'a> {
-        CallWorkflowRuntime::new(self.mdk)
+        CallWorkflowRuntime::new(self.mls)
     }
 
     pub fn process_event(&self, event: &Event) -> Result<Option<ConversationEvent>> {
@@ -939,7 +939,7 @@ impl<'a> PikaRuntime<'a> {
     }
 
     pub fn group_subscription_state(&self) -> Result<RuntimeGroupSubscriptionState> {
-        group_subscription_state_from_mdk(self.mdk)
+        group_subscription_state_from_mls(self.mls)
     }
 
     pub fn plan_group_subscriptions<I>(
@@ -949,7 +949,7 @@ impl<'a> PikaRuntime<'a> {
     where
         I: IntoIterator<Item = String>,
     {
-        plan_group_subscriptions_from_mdk(self.mdk, subscribed_group_ids)
+        plan_group_subscriptions_from_mls(self.mls, subscribed_group_ids)
     }
 
     pub fn plan_session_sync<I, J, K>(
@@ -964,8 +964,8 @@ impl<'a> PikaRuntime<'a> {
         J: IntoIterator<Item = RelayUrl>,
         K: IntoIterator<Item = RelayUrl>,
     {
-        plan_runtime_session_sync_from_mdk(
-            self.mdk,
+        plan_runtime_session_sync_from_mls(
+            self.mls,
             subscribed_group_ids,
             long_lived_session_relays,
             temporary_key_package_relays,
@@ -1033,14 +1033,14 @@ impl<'a> PikaRuntime<'a> {
     }
 
     pub fn list_pending_welcome_snapshots(&self) -> Result<Vec<PendingWelcomeSnapshot>> {
-        list_pending_welcome_snapshots(self.mdk)
+        list_pending_welcome_snapshots(self.mls)
     }
 
     pub fn lookup_pending_welcome(
         &self,
         target: &EventId,
     ) -> Result<Option<pika_mls::storage_traits::welcomes::types::Welcome>> {
-        lookup_pending_welcome(self.mdk, target)
+        lookup_pending_welcome(self.mls, target)
     }
 
     pub fn get_messages(
@@ -1463,9 +1463,9 @@ pub async fn subscribe_group_messages_combined(
 
 pub async fn subscribe_existing_groups_individual(
     client: &Client,
-    mdk: &PikaMdk,
+    mls: &PikaMls,
 ) -> Result<HashMap<SubscriptionId, String>> {
-    let state = group_subscription_state_from_mdk(mdk)?;
+    let state = group_subscription_state_from_mls(mls)?;
     subscribe_group_messages_individual(client, &state.target_group_ids).await
 }
 
@@ -1491,8 +1491,8 @@ pub async fn subscribe_group_messages_individual(
     Ok(out)
 }
 
-pub fn group_subscription_state_from_mdk(mdk: &PikaMdk) -> Result<RuntimeGroupSubscriptionState> {
-    let groups = MlsConversationQueries::new(mdk).list_joined_group_snapshots()?;
+pub fn group_subscription_state_from_mls(mls: &PikaMls) -> Result<RuntimeGroupSubscriptionState> {
+    let groups = MlsConversationQueries::new(mls).list_joined_group_snapshots()?;
     let mut target_group_ids = BTreeSet::new();
     let mut relay_urls = BTreeSet::new();
     for group in groups {
@@ -1505,14 +1505,14 @@ pub fn group_subscription_state_from_mdk(mdk: &PikaMdk) -> Result<RuntimeGroupSu
     })
 }
 
-pub fn plan_group_subscriptions_from_mdk<I>(
-    mdk: &PikaMdk,
+pub fn plan_group_subscriptions_from_mls<I>(
+    mls: &PikaMls,
     subscribed_group_ids: I,
 ) -> Result<RuntimeGroupSubscriptionPlan>
 where
     I: IntoIterator<Item = String>,
 {
-    let current = group_subscription_state_from_mdk(mdk)?;
+    let current = group_subscription_state_from_mls(mls)?;
     let subscribed_group_ids: BTreeSet<String> = subscribed_group_ids.into_iter().collect();
     let current_group_ids: BTreeSet<String> = current.target_group_ids.iter().cloned().collect();
     Ok(RuntimeGroupSubscriptionPlan {
@@ -1559,8 +1559,8 @@ where
     }
 }
 
-pub fn plan_runtime_session_sync_from_mdk<I, J, K>(
-    mdk: &PikaMdk,
+pub fn plan_runtime_session_sync_from_mls<I, J, K>(
+    mls: &PikaMls,
     subscribed_group_ids: I,
     long_lived_session_relays: J,
     temporary_key_package_relays: K,
@@ -1571,7 +1571,7 @@ where
     J: IntoIterator<Item = RelayUrl>,
     K: IntoIterator<Item = RelayUrl>,
 {
-    let group_subscriptions = plan_group_subscriptions_from_mdk(mdk, subscribed_group_ids)?;
+    let group_subscriptions = plan_group_subscriptions_from_mls(mls, subscribed_group_ids)?;
     let relay_roles = plan_runtime_relay_roles(
         long_lived_session_relays,
         group_subscriptions.current.relay_urls.clone(),
@@ -1585,17 +1585,17 @@ where
 }
 
 pub fn refresh_runtime_session_open_state(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     pubkey: PublicKey,
     open_request: RuntimeSessionOpenRequest,
 ) -> Result<RuntimeSessionOpenState> {
     Ok(RuntimeSessionOpenState {
         pubkey,
         pubkey_hex: pubkey.to_hex(),
-        joined_group_snapshots: ConversationRuntime::new(mdk).list_joined_group_snapshots()?,
-        pending_welcome_snapshots: list_pending_welcome_snapshots(mdk)?,
-        sync_plan: plan_runtime_session_sync_from_mdk(
-            mdk,
+        joined_group_snapshots: ConversationRuntime::new(mls).list_joined_group_snapshots()?,
+        pending_welcome_snapshots: list_pending_welcome_snapshots(mls)?,
+        sync_plan: plan_runtime_session_sync_from_mls(
+            mls,
             open_request.subscribed_group_ids,
             open_request.long_lived_session_relays,
             open_request.temporary_key_package_relays,
@@ -1607,18 +1607,18 @@ pub fn refresh_runtime_session_open_state(
 pub fn bootstrap_runtime_session<F>(
     pubkey: PublicKey,
     signer: Arc<dyn NostrSigner>,
-    open_mdk: F,
+    open_mls: F,
     open_request: RuntimeSessionOpenRequest,
 ) -> Result<BootstrappedRuntimeSession>
 where
-    F: FnOnce() -> Result<PikaMdk>,
+    F: FnOnce() -> Result<PikaMls>,
 {
-    let mdk = open_mdk()?;
+    let mls = open_mls()?;
     let client = Client::new(signer);
     let session = RuntimeSession {
         pubkey,
         client,
-        mdk,
+        mls,
     };
     let open = session.refresh_open_state(open_request)?;
     Ok(BootstrappedRuntimeSession { session, open })
@@ -1632,8 +1632,8 @@ mod tests {
     use crate::welcome::ingest_welcome_from_giftwrap;
     use pika_mls::prelude::NostrGroupConfigData;
 
-    fn open_test_mdk(dir: &tempfile::TempDir) -> PikaMdk {
-        crate::open_mdk(dir.path()).expect("open test mdk")
+    fn open_test_mls(dir: &tempfile::TempDir) -> PikaMls {
+        crate::open_mls(dir.path()).expect("open test mls")
     }
 
     fn default_open_request() -> RuntimeSessionOpenRequest {
@@ -1652,10 +1652,10 @@ mod tests {
         }
     }
 
-    fn make_key_package_event(mdk: &PikaMdk, keys: &Keys) -> Event {
+    fn make_key_package_event(mls: &PikaMls, keys: &Keys) -> Event {
         let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
         let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
-            mdk,
+            mls,
             &keys.public_key(),
             vec![relay],
         )
@@ -1667,7 +1667,7 @@ mod tests {
     }
 
     fn make_group_message_event(
-        mdk: &PikaMdk,
+        mls: &PikaMls,
         keys: &Keys,
         mls_group_id: &GroupId,
         kind: Kind,
@@ -1677,7 +1677,7 @@ mod tests {
         let rumor = EventBuilder::new(kind, content)
             .tags(tags)
             .build(keys.public_key());
-        pika_mls::conversation::wrap_rumor(mdk, mls_group_id, rumor)
+        pika_mls::conversation::wrap_rumor(mls, mls_group_id, rumor)
             .map(|wrapped| wrapped.wrapper)
             .expect("create group message event")
     }
@@ -1782,7 +1782,7 @@ mod tests {
     fn process_classified_inbound_group_message_returns_processed_application_outcome() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let keys = Keys::generate();
-        let mdk = open_test_mdk(&tempdir);
+        let mls = open_test_mls(&tempdir);
         let config = NostrGroupConfigData::new(
             "runtime inbound group message".to_string(),
             String::new(),
@@ -1792,20 +1792,20 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![keys.public_key()],
         );
-        let created = mdk
+        let created = mls
             .create_group(&keys.public_key(), vec![], config)
             .expect("create group");
-        mdk.merge_pending_commit(&created.group.mls_group_id)
+        mls.merge_pending_commit(&created.group.mls_group_id)
             .expect("merge pending commit");
         let event = make_group_message_event(
-            &mdk,
+            &mls,
             &keys,
             &created.group.mls_group_id,
             Kind::ChatMessage,
             "hello through shared runtime",
             Tags::new(),
         );
-        let runtime = PikaRuntime::new(&mdk);
+        let runtime = PikaRuntime::new(&mls);
 
         let processed = runtime
             .process_classified_inbound_group_message(InboundRelayEvent::GroupMessage {
@@ -1838,8 +1838,8 @@ mod tests {
     fn process_group_message_event_ignores_non_group_events() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let keys = Keys::generate();
-        let mdk = open_test_mdk(&tempdir);
-        let runtime = PikaRuntime::new(&mdk);
+        let mls = open_test_mls(&tempdir);
+        let runtime = PikaRuntime::new(&mls);
         let event = EventBuilder::new(Kind::TextNote, "not a group message")
             .sign_with_keys(&keys)
             .expect("sign text note");
@@ -1859,8 +1859,8 @@ mod tests {
     #[test]
     fn interpret_runtime_application_message_parses_shared_call_signal() {
         let tempdir = tempfile::tempdir().expect("tempdir");
-        let mdk = open_test_mdk(&tempdir);
-        let runtime = PikaRuntime::new(&mdk);
+        let mls = open_test_mls(&tempdir);
+        let runtime = PikaRuntime::new(&mls);
         let call_id = "550e8400-e29b-41d4-a716-446655440000";
         let session = CallSessionParams {
             moq_url: "https://moq.example.com/anon".to_string(),
@@ -1897,8 +1897,8 @@ mod tests {
     #[test]
     fn interpret_runtime_application_message_marks_typing_content_and_group_profile() {
         let tempdir = tempfile::tempdir().expect("tempdir");
-        let mdk = open_test_mdk(&tempdir);
-        let runtime = PikaRuntime::new(&mdk);
+        let mls = open_test_mls(&tempdir);
+        let runtime = PikaRuntime::new(&mls);
         let typing = make_runtime_application_message(
             crate::message::MessageClassification::TypingIndicator,
             crate::message::TYPING_INDICATOR_KIND,
@@ -1932,8 +1932,8 @@ mod tests {
     #[test]
     fn interpret_conversation_event_surfaces_group_update_commit_state() {
         let tempdir = tempfile::tempdir().expect("tempdir");
-        let mdk = open_test_mdk(&tempdir);
-        let runtime = PikaRuntime::new(&mdk);
+        let mls = open_test_mls(&tempdir);
+        let runtime = PikaRuntime::new(&mls);
         let update = crate::conversation::RuntimeGroupUpdate {
             mls_group_id: GroupId::from_slice(&[1, 2, 3]),
             nostr_group_id_hex: "deadbeef".to_string(),
@@ -1962,8 +1962,8 @@ mod tests {
     #[test]
     fn interpret_conversation_event_surfaces_refresh_reasons() {
         let tempdir = tempfile::tempdir().expect("tempdir");
-        let mdk = open_test_mdk(&tempdir);
-        let runtime = PikaRuntime::new(&mdk);
+        let mls = open_test_mls(&tempdir);
+        let runtime = PikaRuntime::new(&mls);
         let group_id = GroupId::from_slice(&[9, 9, 9]);
 
         let unresolved = runtime.interpret_conversation_event(ConversationEvent::UnresolvedGroup {
@@ -1991,9 +1991,9 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let relay_url = RelayUrl::parse("wss://test.relay").expect("relay url");
         let config = NostrGroupConfigData::new(
             "runtime subscription plan test".to_string(),
@@ -2004,11 +2004,11 @@ mod tests {
             vec![relay_url.clone()],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
         let expected_group_id = hex::encode(created.group.nostr_group_id);
-        let runtime = PikaRuntime::new(&inviter_mdk);
+        let runtime = PikaRuntime::new(&inviter_mls);
 
         let plan = runtime
             .plan_group_subscriptions(vec!["stale-group".to_string()])
@@ -2085,11 +2085,11 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let group_relay = RelayUrl::parse("wss://group-1.example").expect("group relay");
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -2105,7 +2105,7 @@ mod tests {
             )
             .expect("create group");
         let expected_group_id = hex::encode(created.group.nostr_group_id);
-        let runtime = PikaRuntime::new(&inviter_mdk);
+        let runtime = PikaRuntime::new(&inviter_mls);
         let welcome_inbox = RuntimeWelcomeInboxSubscriptionIntent {
             lookback: Some(Duration::from_secs(30)),
             limit: Some(25),
@@ -2188,9 +2188,9 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "runtime bootstrap test".to_string(),
             String::new(),
@@ -2200,7 +2200,7 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
         let expected_group_id = hex::encode(created.group.nostr_group_id);
@@ -2209,7 +2209,7 @@ mod tests {
         let bootstrapped = bootstrap_runtime_session(
             inviter_keys.public_key(),
             Arc::new(inviter_keys.clone()),
-            || Ok(inviter_mdk),
+            || Ok(inviter_mls),
             open_request.clone(),
         )
         .expect("bootstrap runtime session");
@@ -2269,10 +2269,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let created = inviter_mdk
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -2288,7 +2288,7 @@ mod tests {
             )
             .expect("create group");
         let refreshed = refresh_runtime_session_open_state(
-            &inviter_mdk,
+            &inviter_mls,
             inviter_keys.public_key(),
             RuntimeSessionOpenRequest {
                 subscribed_group_ids: vec!["stale-group".to_string()],
@@ -2322,10 +2322,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let created = inviter_mdk
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -2341,7 +2341,7 @@ mod tests {
             )
             .expect("create group");
         let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
-        let queries = PikaRuntime::new(&inviter_mdk);
+        let queries = PikaRuntime::new(&inviter_mls);
 
         let refreshed = queries
             .refresh_session_open_state(inviter_keys.public_key(), default_open_request())
@@ -2373,10 +2373,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let created = inviter_mdk
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -2393,7 +2393,7 @@ mod tests {
             .expect("create group");
         let chat_id = hex::encode(created.group.nostr_group_id);
 
-        let prepared = PikaRuntime::new(&inviter_mdk)
+        let prepared = PikaRuntime::new(&inviter_mls)
             .prepare_outbound_action(
                 inviter_keys.public_key(),
                 &chat_id,
@@ -2415,10 +2415,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let created = inviter_mdk
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -2434,7 +2434,7 @@ mod tests {
             )
             .expect("create group");
         let chat_id = hex::encode(created.group.nostr_group_id);
-        let commands = PikaRuntime::new(&inviter_mdk);
+        let commands = PikaRuntime::new(&inviter_mls);
         let prepared = commands
             .prepare_outbound_action(
                 inviter_keys.public_key(),
@@ -2467,10 +2467,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let created = inviter_mdk
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -2486,7 +2486,7 @@ mod tests {
             )
             .expect("create group");
         let chat_id = hex::encode(created.group.nostr_group_id);
-        let commands = PikaRuntime::new(&inviter_mdk);
+        let commands = PikaRuntime::new(&inviter_mls);
         let prepared = commands
             .prepare_outbound_action(
                 inviter_keys.public_key(),
@@ -2519,9 +2519,9 @@ mod tests {
     #[test]
     fn pika_runtime_prepare_outgoing_call_invite_through_explicit_boundary() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mdk = open_test_mdk(&dir);
+        let mls = open_test_mls(&dir);
         let peer = Keys::generate();
-        let commands = PikaRuntime::new(&mdk);
+        let commands = PikaRuntime::new(&mls);
         let session = CallSessionParams {
             moq_url: "https://moq.local/anon".to_string(),
             broadcast_base: "pika/calls/550e8400-e29b-41d4-a716-446655440010".to_string(),
@@ -2547,10 +2547,10 @@ mod tests {
     #[test]
     fn pika_runtime_prepare_accept_incoming_call_through_explicit_boundary() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mdk = open_test_mdk(&dir);
+        let mls = open_test_mls(&dir);
         let local = Keys::generate();
         let peer = Keys::generate();
-        let created = mdk
+        let created = mls
             .create_group(
                 &local.public_key(),
                 vec![],
@@ -2565,7 +2565,7 @@ mod tests {
                 ),
             )
             .expect("create group");
-        mdk.merge_pending_commit(&created.group.mls_group_id)
+        mls.merge_pending_commit(&created.group.mls_group_id)
             .expect("merge pending commit");
 
         let call_id = "550e8400-e29b-41d4-a716-446655440011";
@@ -2579,7 +2579,7 @@ mod tests {
         };
         session.relay_auth =
             crate::call::derive_relay_auth_token(&crate::call::CallCryptoDeriveContext {
-                mdk: &mdk,
+                mls: &mls,
                 mls_group_id: &created.group.mls_group_id,
                 group_epoch: 0,
                 call_id,
@@ -2589,7 +2589,7 @@ mod tests {
             })
             .expect("derive relay auth");
 
-        let prepared = PikaRuntime::new(&mdk)
+        let prepared = PikaRuntime::new(&mls)
             .prepare_accept_incoming_call(
                 &PendingIncomingCall {
                     call_id: call_id.to_string(),
@@ -2613,9 +2613,9 @@ mod tests {
     #[test]
     fn pika_runtime_prepare_reject_call_signal_through_explicit_boundary() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mdk = open_test_mdk(&dir);
+        let mls = open_test_mls(&dir);
 
-        let prepared = PikaRuntime::new(&mdk)
+        let prepared = PikaRuntime::new(&mls)
             .prepare_reject_call_signal("550e8400-e29b-41d4-a716-446655440012", "busy")
             .expect("prepare reject call signal");
 
@@ -2627,9 +2627,9 @@ mod tests {
     #[test]
     fn pika_runtime_prepare_end_call_signal_through_explicit_boundary() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mdk = open_test_mdk(&dir);
+        let mls = open_test_mls(&dir);
 
-        let prepared = PikaRuntime::new(&mdk)
+        let prepared = PikaRuntime::new(&mls)
             .prepare_end_call_signal("550e8400-e29b-41d4-a716-446655440013", "user_hangup")
             .expect("prepare end call signal");
 
@@ -2641,8 +2641,8 @@ mod tests {
     #[test]
     fn pika_runtime_complete_call_signal_publish_operation_returns_completed_event() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mdk = open_test_mdk(&dir);
-        let operation = PikaRuntime::new(&mdk).complete_call_signal_publish_operation(
+        let mls = open_test_mls(&dir);
+        let operation = PikaRuntime::new(&mls).complete_call_signal_publish_operation(
             CallSignalPublishKind::Invite,
             "deadbeef".to_string(),
             PreparedCallSignal {
@@ -2668,11 +2668,11 @@ mod tests {
     #[test]
     fn pika_runtime_complete_call_signal_publish_operation_returns_failed_event() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mdk = open_test_mdk(&dir);
+        let mls = open_test_mls(&dir);
         let wrapper_event_id =
             EventId::from_hex("1111111111111111111111111111111111111111111111111111111111111111")
                 .expect("event id");
-        let operation = PikaRuntime::new(&mdk).complete_call_signal_publish_operation(
+        let operation = PikaRuntime::new(&mls).complete_call_signal_publish_operation(
             CallSignalPublishKind::Invite,
             "deadbeef".to_string(),
             PreparedCallSignal {
@@ -2706,10 +2706,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let created = inviter_mdk
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -2725,7 +2725,7 @@ mod tests {
             )
             .expect("create group");
 
-        let commands = PikaRuntime::new(&inviter_mdk);
+        let commands = PikaRuntime::new(&inviter_mls);
         let prepared = commands
             .prepare_upload(
                 &created.group.mls_group_id,
@@ -2759,10 +2759,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let created = inviter_mdk
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -2777,7 +2777,7 @@ mod tests {
                 ),
             )
             .expect("create group");
-        let commands = PikaRuntime::new(&inviter_mdk);
+        let commands = PikaRuntime::new(&inviter_mls);
         let prepared = commands
             .prepare_upload(
                 &created.group.mls_group_id,
@@ -2820,10 +2820,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let created = inviter_mdk
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -2838,7 +2838,7 @@ mod tests {
                 ),
             )
             .expect("create group");
-        let commands = PikaRuntime::new(&inviter_mdk);
+        let commands = PikaRuntime::new(&inviter_mls);
         let prepared = commands
             .prepare_upload(
                 &created.group.mls_group_id,
@@ -2882,12 +2882,12 @@ mod tests {
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
         let peer_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let peer_mdk = open_test_mdk(&peer_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let peer_kp = make_key_package_event(&peer_mdk, &peer_keys);
-        let created = inviter_mdk
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let peer_mls = open_test_mls(&peer_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let peer_kp = make_key_package_event(&peer_mls, &peer_keys);
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -2902,22 +2902,22 @@ mod tests {
                 ),
             )
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
-        let commands = PikaRuntime::new(&inviter_mdk);
+        let commands = PikaRuntime::new(&inviter_mls);
 
         let prepared = commands
             .prepare_add_members(&created.group.mls_group_id, &[peer_kp])
             .expect("prepare add members");
-        let before_merge = pika_mls::conversation::ConversationQueries::new(&inviter_mdk)
+        let before_merge = pika_mls::conversation::ConversationQueries::new(&inviter_mls)
             .get_members(&created.group.mls_group_id)
             .expect("members before merge")
             .len();
 
         let finalized = commands.finalize_published_evolution(prepared);
 
-        let after_merge = pika_mls::conversation::ConversationQueries::new(&inviter_mdk)
+        let after_merge = pika_mls::conversation::ConversationQueries::new(&inviter_mls)
             .get_members(&created.group.mls_group_id)
             .expect("members after merge")
             .len();
@@ -2939,10 +2939,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let created = inviter_mdk
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -2957,10 +2957,10 @@ mod tests {
                 ),
             )
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
-        let commands = PikaRuntime::new(&inviter_mdk);
+        let commands = PikaRuntime::new(&inviter_mls);
 
         let prepared = commands
             .prepare_remove_members(&created.group.mls_group_id, &[invitee_keys.public_key()])
@@ -2980,10 +2980,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let created = inviter_mdk
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -2998,10 +2998,10 @@ mod tests {
                 ),
             )
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
-        let commands = PikaRuntime::new(&inviter_mdk);
+        let commands = PikaRuntime::new(&inviter_mls);
 
         let prepared = commands
             .prepare_leave_group(&created.group.mls_group_id)
@@ -3023,12 +3023,12 @@ mod tests {
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
         let peer_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let peer_mdk = open_test_mdk(&peer_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let peer_kp = make_key_package_event(&peer_mdk, &peer_keys);
-        let created = inviter_mdk
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let peer_mls = open_test_mls(&peer_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let peer_kp = make_key_package_event(&peer_mls, &peer_keys);
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -3043,10 +3043,10 @@ mod tests {
                 ),
             )
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
-        let commands = PikaRuntime::new(&inviter_mdk);
+        let commands = PikaRuntime::new(&inviter_mls);
         let prepared = commands
             .prepare_add_members(&created.group.mls_group_id, &[peer_kp])
             .expect("prepare add members");
@@ -3076,12 +3076,12 @@ mod tests {
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
         let peer_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let peer_mdk = open_test_mdk(&peer_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let peer_kp = make_key_package_event(&peer_mdk, &peer_keys);
-        let created = inviter_mdk
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let peer_mls = open_test_mls(&peer_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
+        let peer_kp = make_key_package_event(&peer_mls, &peer_keys);
+        let created = inviter_mls
             .create_group(
                 &inviter_keys.public_key(),
                 vec![invitee_kp],
@@ -3096,10 +3096,10 @@ mod tests {
                 ),
             )
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
-        let commands = PikaRuntime::new(&inviter_mdk);
+        let commands = PikaRuntime::new(&inviter_mls);
         let prepared = commands
             .prepare_add_members(&created.group.mls_group_id, &[peer_kp])
             .expect("prepare add members");
@@ -3129,9 +3129,9 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "runtime pending welcome bootstrap".to_string(),
             "shared bootstrap open state".to_string(),
@@ -3141,7 +3141,7 @@ mod tests {
             vec![RelayUrl::parse("wss://group-1.example").expect("group relay")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
         let welcome_rumor = created
@@ -3164,7 +3164,7 @@ mod tests {
         tokio::runtime::Runtime::new()
             .expect("tokio runtime")
             .block_on(async {
-                ingest_welcome_from_giftwrap(&invitee_mdk, &invitee_keys, &wrapper, |_| true)
+                ingest_welcome_from_giftwrap(&invitee_mls, &invitee_keys, &wrapper, |_| true)
                     .await
                     .expect("ingest welcome")
                     .expect("welcome should ingest");
@@ -3173,7 +3173,7 @@ mod tests {
         let bootstrapped = bootstrap_runtime_session(
             invitee_keys.public_key(),
             Arc::new(invitee_keys.clone()),
-            || Ok(invitee_mdk),
+            || Ok(invitee_mls),
             default_open_request(),
         )
         .expect("bootstrap runtime session");
@@ -3206,9 +3206,9 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "runtime facade test".to_string(),
             String::new(),
@@ -3218,13 +3218,13 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        inviter_mdk
+        inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
         let bootstrapped = bootstrap_runtime_session(
             inviter_keys.public_key(),
             Arc::new(inviter_keys.clone()),
-            || Ok(inviter_mdk),
+            || Ok(inviter_mls),
             default_open_request(),
         )
         .expect("bootstrap runtime session");

@@ -18,7 +18,7 @@ use pika_mls::storage_traits::{
     messages::types::Message,
 };
 
-use crate::PikaMdk;
+use crate::PikaMls;
 use crate::message::{MessageClassification, classify_message};
 
 #[derive(Debug, Clone)]
@@ -73,16 +73,16 @@ pub struct RuntimeGroupProfileSnapshot {
 }
 
 pub struct ConversationRuntime<'a> {
-    mdk: &'a PikaMdk,
+    mls: &'a PikaMls,
 }
 
 impl<'a> ConversationRuntime<'a> {
-    pub fn new(mdk: &'a PikaMdk) -> Self {
-        Self { mdk }
+    pub fn new(mls: &'a PikaMls) -> Self {
+        Self { mls }
     }
 
     pub fn process_event(&self, event: &Event) -> Result<Option<ConversationEvent>> {
-        let Some(result) = process_group_message_event(self.mdk, event)? else {
+        let Some(result) = process_group_message_event(self.mls, event)? else {
             return Ok(None);
         };
         Ok(self.interpret_processing_result(result))
@@ -133,22 +133,22 @@ impl<'a> ConversationRuntime<'a> {
     }
 
     pub fn find_group(&self, nostr_group_id_hex: &str) -> Result<Group> {
-        ConversationQueries::new(self.mdk).find_group(nostr_group_id_hex)
+        ConversationQueries::new(self.mls).find_group(nostr_group_id_hex)
     }
 
     pub fn mls_group_id_for_nostr_group_id(&self, nostr_group_id_hex: &str) -> Result<GroupId> {
-        ConversationQueries::new(self.mdk).mls_group_id_for_nostr_group_id(nostr_group_id_hex)
+        ConversationQueries::new(self.mls).mls_group_id_for_nostr_group_id(nostr_group_id_hex)
     }
 
     pub fn lookup_joined_group_snapshot(
         &self,
         nostr_group_id_hex: &str,
     ) -> Result<RuntimeJoinedGroupSnapshot> {
-        ConversationQueries::new(self.mdk).lookup_joined_group_snapshot(nostr_group_id_hex)
+        ConversationQueries::new(self.mls).lookup_joined_group_snapshot(nostr_group_id_hex)
     }
 
     pub fn list_joined_group_snapshots(&self) -> Result<Vec<RuntimeJoinedGroupSnapshot>> {
-        ConversationQueries::new(self.mdk).list_joined_group_snapshots()
+        ConversationQueries::new(self.mls).list_joined_group_snapshots()
     }
 
     pub fn list_groups(&self) -> Result<Vec<RuntimeGroupSummary>> {
@@ -173,7 +173,7 @@ impl<'a> ConversationRuntime<'a> {
         nostr_group_id_hex: &str,
         pagination: Option<Pagination>,
     ) -> Result<Vec<Message>> {
-        ConversationQueries::new(self.mdk).get_messages(nostr_group_id_hex, pagination)
+        ConversationQueries::new(self.mls).get_messages(nostr_group_id_hex, pagination)
     }
 
     pub fn load_message_page(
@@ -181,7 +181,7 @@ impl<'a> ConversationRuntime<'a> {
         nostr_group_id_hex: &str,
         query: RuntimeMessagePageQuery,
     ) -> Result<RuntimeMessagePage> {
-        ConversationQueries::new(self.mdk).load_message_page(nostr_group_id_hex, query)
+        ConversationQueries::new(self.mls).load_message_page(nostr_group_id_hex, query)
     }
 
     pub fn lookup_group_profile_snapshot(
@@ -295,7 +295,7 @@ impl<'a> ConversationRuntime<'a> {
     }
 
     fn nostr_group_id_hex(&self, mls_group_id: &GroupId) -> Result<Option<String>> {
-        ConversationQueries::new(self.mdk).nostr_group_id_hex(mls_group_id)
+        ConversationQueries::new(self.mls).nostr_group_id_hex(mls_group_id)
     }
 }
 
@@ -306,14 +306,14 @@ mod tests {
     use nostr_sdk::prelude::{Keys, RelayUrl, TagKind, Tags, Timestamp};
     use pika_mls::prelude::NostrGroupConfigData;
 
-    fn open_test_mdk(dir: &tempfile::TempDir) -> PikaMdk {
-        crate::open_mdk(dir.path()).expect("open test mdk")
+    fn open_test_mls(dir: &tempfile::TempDir) -> PikaMls {
+        crate::open_mls(dir.path()).expect("open test mls")
     }
 
-    fn make_key_package_event(mdk: &PikaMdk, keys: &Keys) -> Event {
+    fn make_key_package_event(mls: &PikaMls, keys: &Keys) -> Event {
         let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
         let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
-            mdk,
+            mls,
             &keys.public_key(),
             vec![relay],
         )
@@ -355,17 +355,17 @@ mod tests {
     }
 
     fn store_group_message(
-        mdk: &PikaMdk,
+        mls: &PikaMls,
         keys: &Keys,
         mls_group_id: &GroupId,
         kind: Kind,
         content: &str,
     ) -> Event {
-        store_group_message_at(mdk, keys, mls_group_id, kind, content, Timestamp::now())
+        store_group_message_at(mls, keys, mls_group_id, kind, content, Timestamp::now())
     }
 
     fn store_group_message_at(
-        mdk: &PikaMdk,
+        mls: &PikaMls,
         keys: &Keys,
         mls_group_id: &GroupId,
         kind: Kind,
@@ -375,10 +375,10 @@ mod tests {
         let rumor = nostr_sdk::prelude::EventBuilder::new(kind, content)
             .custom_created_at(created_at)
             .build(keys.public_key());
-        let event = pika_mls::conversation::wrap_rumor(mdk, mls_group_id, rumor)
+        let event = pika_mls::conversation::wrap_rumor(mls, mls_group_id, rumor)
             .map(|wrapped| wrapped.wrapper)
             .expect("create group message");
-        process_group_message_event(mdk, &event)
+        process_group_message_event(mls, &event)
             .expect("process group message")
             .expect("event should be a group message");
         event
@@ -390,9 +390,9 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "conversation runtime test".to_string(),
             String::new(),
@@ -402,10 +402,10 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        let runtime = ConversationRuntime::new(&inviter_mdk);
+        let runtime = ConversationRuntime::new(&inviter_mls);
         let tags: Tags = vec![nostr_sdk::prelude::Tag::custom(TagKind::d(), ["pika"])]
             .into_iter()
             .collect();
@@ -439,9 +439,9 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "list groups test".to_string(),
             String::new(),
@@ -451,10 +451,10 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        let runtime = ConversationRuntime::new(&inviter_mdk);
+        let runtime = ConversationRuntime::new(&inviter_mls);
 
         let snapshots = runtime
             .list_joined_group_snapshots()
@@ -518,11 +518,11 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
         let relay_a = RelayUrl::parse("wss://relay-a.test").expect("relay a");
         let relay_b = RelayUrl::parse("wss://relay-b.test").expect("relay b");
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "lookup group context".to_string(),
             "shared workflow context".to_string(),
@@ -532,10 +532,10 @@ mod tests {
             vec![relay_a.clone(), relay_b.clone()],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        let runtime = ConversationRuntime::new(&inviter_mdk);
+        let runtime = ConversationRuntime::new(&inviter_mls);
         let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
 
         let snapshot = runtime
@@ -560,9 +560,9 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "message page test".to_string(),
             String::new(),
@@ -572,28 +572,28 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge pending commit");
         let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
         store_group_message(
-            &inviter_mdk,
+            &inviter_mls,
             &inviter_keys,
             &created.group.mls_group_id,
             Kind::ChatMessage,
             "first",
         );
         store_group_message(
-            &inviter_mdk,
+            &inviter_mls,
             &inviter_keys,
             &created.group.mls_group_id,
             Kind::ChatMessage,
             "second",
         );
-        let runtime = ConversationRuntime::new(&inviter_mdk);
+        let runtime = ConversationRuntime::new(&inviter_mls);
 
         let first_page = runtime
             .load_message_page(&nostr_group_id_hex, RuntimeMessagePageQuery::new(1, 0))
@@ -625,9 +625,9 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "list groups test".to_string(),
             String::new(),
@@ -637,10 +637,10 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        let runtime = ConversationRuntime::new(&inviter_mdk);
+        let runtime = ConversationRuntime::new(&inviter_mls);
 
         let groups = runtime.list_groups().expect("list groups");
         assert_eq!(groups.len(), 1);
@@ -670,9 +670,9 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "group profile snapshot".to_string(),
             String::new(),
@@ -682,16 +682,16 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge pending commit");
         let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
 
         store_group_message_at(
-            &inviter_mdk,
+            &inviter_mls,
             &inviter_keys,
             &created.group.mls_group_id,
             Kind::Metadata,
@@ -699,7 +699,7 @@ mod tests {
             Timestamp::from_secs(10),
         );
         store_group_message_at(
-            &inviter_mdk,
+            &inviter_mls,
             &invitee_keys,
             &created.group.mls_group_id,
             Kind::Metadata,
@@ -707,7 +707,7 @@ mod tests {
             Timestamp::from_secs(30),
         );
         store_group_message_at(
-            &inviter_mdk,
+            &inviter_mls,
             &inviter_keys,
             &created.group.mls_group_id,
             Kind::Metadata,
@@ -715,7 +715,7 @@ mod tests {
             Timestamp::from_secs(20),
         );
 
-        let snapshot = ConversationRuntime::new(&inviter_mdk)
+        let snapshot = ConversationRuntime::new(&inviter_mls)
             .lookup_group_profile_snapshot(&nostr_group_id_hex, &inviter_keys.public_key())
             .expect("lookup group profile snapshot")
             .expect("group profile snapshot");
@@ -738,10 +738,10 @@ mod tests {
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
         let peer_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
-        let _peer_mdk = open_test_mdk(&peer_dir);
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
+        let _peer_mls = open_test_mls(&peer_dir);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "group profile snapshot owners".to_string(),
             String::new(),
@@ -751,16 +751,16 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge pending commit");
         let nostr_group_id_hex = hex::encode(created.group.nostr_group_id);
 
         store_group_message_at(
-            &inviter_mdk,
+            &inviter_mls,
             &inviter_keys,
             &created.group.mls_group_id,
             Kind::Metadata,
@@ -768,7 +768,7 @@ mod tests {
             Timestamp::from_secs(10),
         );
         store_group_message_at(
-            &inviter_mdk,
+            &inviter_mls,
             &peer_keys,
             &created.group.mls_group_id,
             Kind::Metadata,
@@ -776,7 +776,7 @@ mod tests {
             Timestamp::from_secs(20),
         );
         store_group_message_at(
-            &inviter_mdk,
+            &inviter_mls,
             &invitee_keys,
             &created.group.mls_group_id,
             Kind::Metadata,
@@ -784,7 +784,7 @@ mod tests {
             Timestamp::from_secs(30),
         );
 
-        let snapshot = ConversationRuntime::new(&inviter_mdk)
+        let snapshot = ConversationRuntime::new(&inviter_mls)
             .lookup_group_profile_snapshot_for_owners(
                 &nostr_group_id_hex,
                 &[inviter_keys.public_key(), invitee_keys.public_key()],

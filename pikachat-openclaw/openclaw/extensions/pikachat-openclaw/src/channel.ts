@@ -340,7 +340,7 @@ function isOneOnOneGroup(nostrGroupId: string): boolean {
 }
 
 /**
- * Query the pikachat sqlite DB for distinct member pubkeys in a group.
+ * Group member lookup is owned by the sidecar/runtime.
  * Returns an array of { pubkey, npub, name } for each member.
  */
 async function getGroupMembers(
@@ -348,33 +348,10 @@ async function getGroupMembers(
   stateDir: string,
   cfg: any,
 ): Promise<Array<{ pubkey: string; npub: string; name: string }>> {
-  try {
-    const dbPath = path.join(stateDir, "mdk.sqlite");
-    const safeGroupId = nostrGroupId.replace(/[^0-9a-fA-F]/g, "");
-    if (!safeGroupId) return [];
-    const { DatabaseSync } = await import("node:sqlite");
-    const db = new DatabaseSync(dbPath, { open: true, readOnly: true });
-    try {
-      const stmt = db.prepare(
-        `SELECT DISTINCT hex(m.pubkey) as pk
-         FROM messages m
-         JOIN groups g ON m.mls_group_id = g.mls_group_id
-         WHERE g.nostr_group_id = x'${safeGroupId}'
-         ORDER BY pk`,
-      );
-      const rows = stmt.all() as Array<{ pk: string }>;
-      return rows.map((row) => {
-        const pk = row.pk.trim().toLowerCase();
-        const npub = hexToNpub(pk);
-        const name = resolveMemberName(pk, cfg);
-        return { pubkey: pk, npub, name };
-      });
-    } finally {
-      db.close();
-    }
-  } catch {
-    return [];
-  }
+  void nostrGroupId;
+  void stateDir;
+  void cfg;
+  return [];
 }
 
 type GroupConfig = {

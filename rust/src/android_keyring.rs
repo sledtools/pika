@@ -1,9 +1,8 @@
 //! Android-only early init hook for keyring-core and ndk-context.
 //!
 //! This project uses UniFFI via JNA on Android, so we don't get `ndk-glue` to
-//! initialize `ndk-context`. MDK's encrypted SQLite backend needs `keyring-core`
-//! to have an Android keystore-backed default store and (for that crate) an
-//! initialized ndk-context.
+//! initialize `ndk-context`. Keep this hook so Android process context is
+//! available before Rust opens local chat state.
 //!
 //! Kotlin calls `com.pika.app.Keyring.init(Context)` very early in `MainActivity`.
 
@@ -50,7 +49,6 @@ pub extern "system" fn Java_com_pika_app_Keyring_init(
     // Leak the global ref to keep the raw pointer valid for the rest of the process.
     std::mem::forget(global_ctx);
 
-    // Initialize keyring-core default store for encrypted MDK sqlite.
     // Android doesn't use keychain access groups, so pass an empty string.
-    let _ = crate::mdk_support::init_keyring_once("");
+    let _ = crate::mls_support::init_keyring_once("");
 }

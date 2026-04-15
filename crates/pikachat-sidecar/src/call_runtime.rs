@@ -1,4 +1,4 @@
-use crate::PikaMdk;
+use crate::PikaMls;
 use crate::call::{
     CallCryptoDeriveContext, CallMediaCryptoContext, CallSessionParams, OutgoingCallSignal,
     ParsedCallSignal, build_call_signal_json, derive_call_media_crypto_context,
@@ -89,7 +89,7 @@ pub enum InboundCallSignalOutcome {
 }
 
 pub struct CallWorkflowRuntime<'a> {
-    mdk: &'a PikaMdk,
+    mls: &'a PikaMls,
 }
 
 #[derive(Clone, Copy)]
@@ -108,8 +108,8 @@ pub struct InboundSignalContext<'a> {
 }
 
 impl<'a> CallWorkflowRuntime<'a> {
-    pub fn new(mdk: &'a PikaMdk) -> Self {
-        Self { mdk }
+    pub fn new(mls: &'a PikaMls) -> Self {
+        Self { mls }
     }
 
     pub fn prepare_outgoing_invite(
@@ -299,7 +299,7 @@ impl<'a> CallWorkflowRuntime<'a> {
         peer_pubkey_hex: &str,
     ) -> Result<(), String> {
         let derive_ctx = CallCryptoDeriveContext {
-            mdk: self.mdk,
+            mls: self.mls,
             mls_group_id: group.mls_group_id,
             group_epoch: 0,
             call_id,
@@ -317,13 +317,13 @@ impl<'a> CallWorkflowRuntime<'a> {
         session: &CallSessionParams,
         peer_pubkey_hex: &str,
     ) -> Result<CallMediaCryptoContext, String> {
-        let group_epoch = ConversationQueries::new(self.mdk)
+        let group_epoch = ConversationQueries::new(self.mls)
             .get_group(group.mls_group_id)
             .map_err(|e| format!("load mls group failed: {e}"))?
             .ok_or_else(|| "mls group not found".to_string())?
             .epoch;
         let derive_ctx = CallCryptoDeriveContext {
-            mdk: self.mdk,
+            mls: self.mls,
             mls_group_id: group.mls_group_id,
             group_epoch,
             call_id,
@@ -345,14 +345,14 @@ mod tests {
     use super::*;
     use crate::call::{CallTrackSpec, derive_relay_auth_token};
     use crate::membership::MembershipRuntime;
-    use crate::open_mdk;
+    use crate::open_mls;
     use nostr_sdk::prelude::{Event, EventBuilder, Keys, Kind, RelayUrl};
     use pika_mls::prelude::NostrGroupConfigData;
 
-    fn make_key_package_event(mdk: &PikaMdk, keys: &Keys) -> Event {
+    fn make_key_package_event(mls: &PikaMls, keys: &Keys) -> Event {
         let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
         let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
-            mdk,
+            mls,
             &keys.public_key(),
             vec![relay],
         )
@@ -364,8 +364,8 @@ mod tests {
     }
 
     fn make_group() -> (
-        &'static PikaMdk,
-        &'static PikaMdk,
+        &'static PikaMls,
+        &'static PikaMls,
         GroupId,
         Keys,
         Keys,
@@ -376,10 +376,10 @@ mod tests {
         let invitee_dir = Box::leak(Box::new(tempfile::tempdir().expect("invitee tempdir")));
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Call runtime test".to_string(),
             String::new(),
@@ -389,10 +389,10 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge initial commit");
         let welcome_rumor = created
@@ -416,7 +416,7 @@ mod tests {
             .expect("tokio runtime")
             .block_on(async {
                 crate::welcome::ingest_welcome_from_giftwrap(
-                    &invitee_mdk,
+                    &invitee_mls,
                     &invitee_keys,
                     &wrapper,
                     |_| true,
@@ -425,11 +425,11 @@ mod tests {
                 .expect("ingest welcome")
                 .expect("welcome should ingest");
             });
-        let pending = pika_mls::welcome::WelcomeQueries::new(&invitee_mdk)
+        let pending = pika_mls::welcome::WelcomeQueries::new(&invitee_mls)
             .list_pending_welcomes()
             .expect("get pending welcomes");
         pika_mls::welcome::accept_pending_welcome(
-            &invitee_mdk,
+            &invitee_mls,
             pending.first().expect("pending welcome"),
         )
         .expect("accept welcome");
@@ -442,7 +442,7 @@ mod tests {
             tracks: vec![CallTrackSpec::audio0_opus_default()],
         };
         let relay_auth = derive_relay_auth_token(&CallCryptoDeriveContext {
-            mdk: &inviter_mdk,
+            mls: &inviter_mls,
             mls_group_id: &created.group.mls_group_id,
             group_epoch: 0,
             call_id,
@@ -453,47 +453,47 @@ mod tests {
         .expect("derive relay auth");
         session.relay_auth = relay_auth;
 
-        let leaked_inviter_mdk = Box::leak(Box::new(inviter_mdk));
-        let leaked_mdk = Box::leak(Box::new(invitee_mdk));
+        let leaked_inviter_mls = Box::leak(Box::new(inviter_mls));
+        let leaked_mls = Box::leak(Box::new(invitee_mls));
         (
-            leaked_inviter_mdk,
-            leaked_mdk,
+            leaked_inviter_mls,
+            leaked_mls,
             created.group.mls_group_id,
             inviter_keys,
             invitee_keys,
             session,
-            CallWorkflowRuntime::new(leaked_mdk),
+            CallWorkflowRuntime::new(leaked_mls),
         )
     }
 
     #[test]
     fn prepare_accept_incoming_validates_and_derives_media_crypto() {
-        let (inviter_mdk, invitee_mdk, group_id, inviter_keys, invitee_keys, mut session, runtime) =
+        let (inviter_mls, invitee_mls, group_id, inviter_keys, invitee_keys, mut session, runtime) =
             make_group();
         let peer_dir = tempfile::tempdir().expect("peer tempdir");
         let peer_keys = Keys::generate();
-        let peer_mdk = open_mdk(peer_dir.path()).expect("open peer mdk");
-        let peer_kp = make_key_package_event(&peer_mdk, &peer_keys);
-        let prepared_evolution = MembershipRuntime::new(inviter_mdk)
+        let peer_mls = open_mls(peer_dir.path()).expect("open peer mls");
+        let peer_kp = make_key_package_event(&peer_mls, &peer_keys);
+        let prepared_evolution = MembershipRuntime::new(inviter_mls)
             .prepare_add_members(&group_id, &[peer_kp])
             .expect("prepare add member");
-        inviter_mdk
+        inviter_mls
             .merge_pending_commit(&group_id)
             .expect("merge pending commit");
         pika_mls::conversation::process_group_message_event(
-            invitee_mdk,
+            invitee_mls,
             &prepared_evolution.evolution_event,
         )
         .expect("process evolution")
         .expect("evolution should be a group message");
-        let group_epoch = ConversationQueries::new(invitee_mdk)
+        let group_epoch = ConversationQueries::new(invitee_mls)
             .get_group(&group_id)
             .expect("load group")
             .expect("group should exist")
             .epoch;
         assert!(group_epoch > 0, "test should exercise non-zero group epoch");
         session.relay_auth = derive_relay_auth_token(&CallCryptoDeriveContext {
-            mdk: invitee_mdk,
+            mls: invitee_mls,
             mls_group_id: &group_id,
             group_epoch: 0,
             call_id: "call-runtime-test",
@@ -529,7 +529,7 @@ mod tests {
 
     #[test]
     fn handle_inbound_signal_rejects_video_when_policy_disabled() {
-        let (_inviter_mdk, _mdk, group_id, inviter_keys, invitee_keys, mut session, runtime) =
+        let (_inviter_mls, _mls, group_id, inviter_keys, invitee_keys, mut session, runtime) =
             make_group();
         session.tracks.push(CallTrackSpec::video0_h264_default());
         let outcome = runtime.handle_inbound_signal(
@@ -563,7 +563,7 @@ mod tests {
 
     #[test]
     fn handle_inbound_signal_accepts_matching_pending_outgoing() {
-        let (_inviter_mdk, _mdk, group_id, inviter_keys, invitee_keys, session, runtime) =
+        let (_inviter_mls, _mls, group_id, inviter_keys, invitee_keys, session, runtime) =
             make_group();
         let pending = PendingOutgoingCall {
             call_id: "call-runtime-test".to_string(),

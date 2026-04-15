@@ -422,9 +422,9 @@ fn wipe_local_data_removes_persistent_files() {
         _ => panic!("expected logged in"),
     };
 
-    let mdk_path = data_dir.join("mls").join(&pubkey).join("mdk.sqlite3");
-    wait_until("mdk db created", Duration::from_secs(10), || {
-        mdk_path.exists()
+    let mls_path = data_dir.join("mls").join(&pubkey).join("pika-mls.json");
+    wait_until("mls state created", Duration::from_secs(10), || {
+        mls_path.exists()
     });
 
     let profile_db_path = data_dir.join("profiles.sqlite3");
@@ -453,7 +453,7 @@ fn wipe_local_data_removes_persistent_files() {
         push_device_id_path.exists()
     });
 
-    assert!(!mdk_path.exists());
+    assert!(!mls_path.exists());
     assert!(!data_dir.join("dev_wipe_marker.txt").exists());
     assert!(migration_sentinel.exists());
     assert!(profile_db_path.exists());

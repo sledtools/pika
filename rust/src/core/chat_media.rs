@@ -20,7 +20,7 @@ const RESIZE_MAX_DIMENSION: u32 = 1600;
 /// Returns `Some((jpeg_bytes, width, height))` when the image was resized.
 /// Returns `None` for: non-image types, GIF/WebP (may be animated), images that
 /// already fit within the limit, or decode errors — the caller should pass the
-/// original data through to MDK unchanged.
+/// original data through to MLS unchanged.
 fn maybe_resize_image(data: &[u8], mime_type: &str) -> Option<(Vec<u8>, u32, u32, &'static str)> {
     let normalized = mime_type.trim().to_ascii_lowercase();
     let is_png = match normalized.as_str() {
@@ -194,13 +194,13 @@ pub(super) async fn send_event_first_ack(
     (false, first_error)
 }
 
-/// Map file extension to a MIME type that MDK's encrypted-media allowlist
-/// accepts.  Types not on MDK's `SUPPORTED_MIME_TYPES` list must map to
-/// `application/octet-stream` (MDK's escape-hatch type) so that arbitrary
+/// Map file extension to a MIME type that MLS's encrypted-media allowlist
+/// accepts.  Types not on MLS's `SUPPORTED_MIME_TYPES` list must map to
+/// `application/octet-stream` (MLS's escape-hatch type) so that arbitrary
 /// files can be uploaded without validation errors.
 fn mime_type_for_extension(ext: &str) -> &'static str {
     match ext.to_ascii_lowercase().as_str() {
-        // Image types (on MDK allowlist)
+        // Image types (on MLS allowlist)
         "jpg" | "jpeg" => "image/jpeg",
         "png" => "image/png",
         "gif" => "image/gif",
@@ -209,23 +209,23 @@ fn mime_type_for_extension(ext: &str) -> &'static str {
         "ico" => "image/x-icon",
         "tiff" | "tif" => "image/tiff",
         "avif" => "image/avif",
-        // Video types (on MDK allowlist)
+        // Video types (on MLS allowlist)
         "mp4" => "video/mp4",
         "mov" => "video/quicktime",
         "mkv" => "video/x-matroska",
         "webm" => "video/webm",
         "avi" => "video/x-msvideo",
-        // Audio types (on MDK allowlist)
+        // Audio types (on MLS allowlist)
         "ogg" => "audio/ogg",
         "flac" => "audio/flac",
         "aac" => "audio/aac",
         "m4a" => "audio/mp4",
         "mp3" => "audio/mpeg",
         "wav" => "audio/wav",
-        // Document types (on MDK allowlist)
+        // Document types (on MLS allowlist)
         "pdf" => "application/pdf",
         "txt" => "text/plain",
-        // Everything else → octet-stream (MDK escape hatch, skips validation)
+        // Everything else → octet-stream (MLS escape hatch, skips validation)
         _ => "application/octet-stream",
     }
 }
@@ -353,25 +353,25 @@ fn validate_uploaded_blob_hash(
 
 #[cfg(test)]
 fn prepare_chat_media_upload(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     group_id: &GroupId,
     bytes: &[u8],
     mime_type: &str,
     filename: &str,
 ) -> anyhow::Result<media_support::PreparedMediaUpload> {
-    media_support::prepare_upload(mdk, group_id, bytes, Some(mime_type), Some(filename))
+    media_support::prepare_upload(mls, group_id, bytes, Some(mime_type), Some(filename))
 }
 
 #[cfg(test)]
 fn finalize_chat_media_upload(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     group_id: &GroupId,
     upload: &EncryptedMediaUpload,
     uploaded_url: String,
     descriptor_sha256_hex: String,
 ) -> MediaUploadResult {
     media_support::finish_upload(
-        mdk,
+        mls,
         group_id,
         upload,
         UploadedBlob {
@@ -383,14 +383,14 @@ fn finalize_chat_media_upload(
 
 #[cfg(test)]
 fn decrypt_chat_media_download(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     group_id: &GroupId,
     reference: &MediaReference,
     encrypted_data: &[u8],
     expected_encrypted_hash_hex: Option<&str>,
 ) -> anyhow::Result<media_support::DownloadedMedia> {
     media_support::decrypt_downloaded_media(
-        mdk,
+        mls,
         group_id,
         reference,
         encrypted_data,
@@ -653,13 +653,13 @@ impl AppCore {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn chat_media_attachments_fast(
         &self,
-        mdk: &PikaMdk,
+        mls: &PikaMls,
         group_id: &GroupId,
         chat_id: &str,
         account_pubkey: &str,
         tags: &Tags,
     ) -> Vec<ChatMediaAttachment> {
-        let manager = mdk.media_manager(group_id.clone());
+        let manager = mls.media_manager(group_id.clone());
         let path_cache = self.local_path_cache.get(chat_id);
         let mut out = Vec::new();
         for tag in tags.iter() {
@@ -699,7 +699,7 @@ impl AppCore {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn chat_media_attachments_for_tags(
         &self,
-        mdk: &PikaMdk,
+        mls: &PikaMls,
         group_id: &GroupId,
         chat_id: &str,
         account_pubkey: &str,
@@ -707,7 +707,7 @@ impl AppCore {
         created_at: i64,
         media_cache: &mut HashMap<String, ChatMediaRecord>,
     ) -> Vec<ChatMediaAttachment> {
-        let manager = mdk.media_manager(group_id.clone());
+        let manager = mls.media_manager(group_id.clone());
         let mut out = Vec::new();
 
         for tag in tags.iter() {
@@ -982,7 +982,7 @@ impl AppCore {
             (group, local_keys)
         };
 
-        // --- Encrypt (still on main thread — needs MDK) ---
+        // --- Encrypt (still on main thread — needs MLS) ---
         let (request_id, blossom_servers) = {
             let sess = self.session.as_mut().unwrap();
             let prepared = match sess.host_context().prepare_upload(
@@ -1002,7 +1002,7 @@ impl AppCore {
 
             let original_hash_hex = hex::encode(upload.original_hash);
 
-            // If MDK re-encoded, the hash may differ. Update the outbox entry.
+            // If MLS re-encoded, the hash may differ. Update the outbox entry.
             if original_hash_hex != pre_hash_hex {
                 let final_local_path = media_file_path(
                     &self.data_dir,
@@ -1407,7 +1407,7 @@ impl AppCore {
 
                 let original_hash_hex = hex::encode(upload.original_hash);
 
-                // If MDK re-encoded, copy to new hash path.
+                // If MLS re-encoded, copy to new hash path.
                 if original_hash_hex != pp.pre_hash_hex {
                     let final_local_path = media_file_path(
                         &self.data_dir,
@@ -1909,7 +1909,7 @@ impl AppCore {
             let relays: Vec<RelayUrl> = if room_binding.is_some() || !network_enabled {
                 Vec::new()
             } else {
-                pika_mls::conversation::ConversationQueries::new(&sess.mdk)
+                pika_mls::conversation::ConversationQueries::new(&sess.mls)
                     .get_relays(&group.mls_group_id)
                     .ok()
                     .map(|s| s.into_iter().collect())
@@ -2076,7 +2076,7 @@ impl AppCore {
                 }
             };
 
-            let message = match pika_mls::conversation::ConversationQueries::new(&sess.mdk)
+            let message = match pika_mls::conversation::ConversationQueries::new(&sess.mls)
                 .get_message(&group.mls_group_id, &message_event_id)
             {
                 Ok(Some(message)) => message,
@@ -2090,7 +2090,7 @@ impl AppCore {
                 }
             };
 
-            let manager = sess.mdk.media_manager(group.mls_group_id.clone());
+            let manager = sess.mls.media_manager(group.mls_group_id.clone());
             let Some(reference) = message
                 .tags
                 .iter()
@@ -2303,10 +2303,10 @@ mod tests {
     use nostr_sdk::prelude::{Event, EventBuilder, Keys, Kind, RelayUrl};
     use pika_mls::prelude::NostrGroupConfigData;
 
-    fn make_key_package_event(mdk: &PikaMdk, keys: &Keys) -> Event {
+    fn make_key_package_event(mls: &PikaMls, keys: &Keys) -> Event {
         let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
         let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
-            mdk,
+            mls,
             &keys.public_key(),
             vec![relay],
         )
@@ -2774,13 +2774,13 @@ mod tests {
         let invitee_keys = Keys::generate();
         let inviter_dir_str = inviter_dir.path().to_string_lossy().to_string();
         let invitee_dir_str = invitee_dir.path().to_string_lossy().to_string();
-        let inviter_mdk =
-            crate::mdk_support::open_mdk(&inviter_dir_str, &inviter_keys.public_key(), "")
-                .expect("open inviter mdk");
-        let invitee_mdk =
-            crate::mdk_support::open_mdk(&invitee_dir_str, &invitee_keys.public_key(), "")
-                .expect("open invitee mdk");
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls =
+            crate::mls_support::open_mls(&inviter_dir_str, &inviter_keys.public_key(), "")
+                .expect("open inviter mls");
+        let invitee_mls =
+            crate::mls_support::open_mls(&invitee_dir_str, &invitee_keys.public_key(), "")
+                .expect("open invitee mls");
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "app media runtime".to_string(),
             String::new(),
@@ -2790,12 +2790,12 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
 
         let prepared = prepare_chat_media_upload(
-            &inviter_mdk,
+            &inviter_mls,
             &created.group.mls_group_id,
             b"hello from app media",
             "text/plain",
@@ -2803,10 +2803,10 @@ mod tests {
         )
         .expect("prepare upload");
         let downloaded = decrypt_chat_media_download(
-            &inviter_mdk,
+            &inviter_mls,
             &created.group.mls_group_id,
             &finalize_chat_media_upload(
-                &inviter_mdk,
+                &inviter_mls,
                 &created.group.mls_group_id,
                 &prepared.upload,
                 "https://example.com/blob".to_string(),

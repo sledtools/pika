@@ -18,9 +18,7 @@ pub fn init_logging(#[allow(unused)] data_dir: &str) {
         // Also write to a file inside the app data dir for easy retrieval.
         let log_path = std::path::Path::new(data_dir).join("pika.log");
         let _ = std::fs::create_dir_all(data_dir);
-        let env_filter = tracing_subscriber::EnvFilter::new(
-            "pika_core=debug,mdk_core=info,openmls=warn,nostr_relay_pool=info,info",
-        );
+        let env_filter = tracing_subscriber::EnvFilter::new("pika_core=debug,pika_mls=info,info");
 
         let file_layer = if let Ok(file) = std::fs::OpenOptions::new()
             .create(true)
@@ -48,10 +46,9 @@ pub fn init_logging(#[allow(unused)] data_dir: &str) {
     {
         use tracing_subscriber::prelude::*;
 
-        let android_layer =
-            paranoid_android::layer("pika").with_filter(tracing_subscriber::EnvFilter::new(
-                "pika_core=debug,mdk_core=info,openmls=warn,nostr_relay_pool=info,info",
-            ));
+        let android_layer = paranoid_android::layer("pika").with_filter(
+            tracing_subscriber::EnvFilter::new("pika_core=debug,pika_mls=info,info"),
+        );
 
         let _ = tracing_subscriber::registry()
             .with(android_layer)

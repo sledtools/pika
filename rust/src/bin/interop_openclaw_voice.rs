@@ -1,7 +1,7 @@
 //! Laptop-to-deployed-bot call smoke test.
 //!
 //! Purpose: validate MLS/Nostr signaling + real MOQ media transport end-to-end against the
-//! deployed OpenClaw Marmot bot, without requiring a microphone (uses synthetic audio).
+//! deployed OpenClaw voice bot, without requiring a microphone (uses synthetic audio).
 //!
 //! Usage:
 //!   cargo run -p pika_core --bin interop_openclaw_voice -- <bot_npub>

@@ -34,7 +34,7 @@ pub(super) fn extract_relays_from_key_package_relays_event(event: &Event) -> Vec
     out
 }
 
-pub fn normalize_peer_key_package_event_for_mdk(event: &Event) -> Event {
+pub fn normalize_peer_key_package_event_for_mls(event: &Event) -> Event {
     let mut out = event.clone();
 
     let content_is_hex = {
@@ -135,7 +135,7 @@ mod tests {
             ],
         );
 
-        let normalized = normalize_peer_key_package_event_for_mdk(&event);
+        let normalized = normalize_peer_key_package_event_for_mls(&event);
 
         assert_eq!(normalized.content, "aGVsbG8=");
         assert_eq!(
@@ -159,7 +159,7 @@ mod tests {
             vec![Tag::custom(TagKind::Custom("encoding".into()), ["hex"])],
         );
 
-        let normalized = normalize_peer_key_package_event_for_mdk(&event);
+        let normalized = normalize_peer_key_package_event_for_mls(&event);
 
         assert_eq!(normalized.content, "aGVsbG8=");
         assert_eq!(
@@ -172,7 +172,7 @@ mod tests {
     fn normalize_adds_default_base64_encoding_for_modern_key_packages() {
         let event = key_package_event("aGVsbG8=", vec![]);
 
-        let normalized = normalize_peer_key_package_event_for_mdk(&event);
+        let normalized = normalize_peer_key_package_event_for_mls(&event);
 
         assert_eq!(normalized.content, "aGVsbG8=");
         assert_eq!(

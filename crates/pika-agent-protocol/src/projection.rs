@@ -1,4 +1,4 @@
-use crate::{MarmotRpcPayload, decode_prefixed_envelope};
+use crate::{AgentRpcPayload, decode_prefixed_envelope};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProjectionMode {
@@ -33,19 +33,19 @@ pub fn project_message(content: &str, mode: ProjectionMode) -> ProjectedContent 
     };
 
     match (&envelope.payload, mode) {
-        (MarmotRpcPayload::AssistantText { text }, _) => ProjectedContent::Text(text.clone()),
+        (AgentRpcPayload::AssistantText { text }, _) => ProjectedContent::Text(text.clone()),
 
-        (MarmotRpcPayload::TextDelta { delta }, _) => ProjectedContent::Text(delta.clone()),
+        (AgentRpcPayload::TextDelta { delta }, _) => ProjectedContent::Text(delta.clone()),
 
-        (MarmotRpcPayload::Error { message }, _) => {
+        (AgentRpcPayload::Error { message }, _) => {
             ProjectedContent::Text(format!("[error] {message}"))
         }
 
-        (MarmotRpcPayload::ToolCall { tool_name, .. }, ProjectionMode::Coding) => {
+        (AgentRpcPayload::ToolCall { tool_name, .. }, ProjectionMode::Coding) => {
             ProjectedContent::Status(format!("[tool] {tool_name}"))
         }
         (
-            MarmotRpcPayload::ToolCall {
+            AgentRpcPayload::ToolCall {
                 tool_name,
                 call_id,
                 input,
@@ -54,16 +54,16 @@ pub fn project_message(content: &str, mode: ProjectionMode) -> ProjectedContent 
         ) => ProjectedContent::Text(format!(
             "[tool_call] {tool_name} id={call_id} input={input}"
         )),
-        (MarmotRpcPayload::ToolCall { .. }, ProjectionMode::Chat) => ProjectedContent::Hidden,
+        (AgentRpcPayload::ToolCall { .. }, ProjectionMode::Chat) => ProjectedContent::Hidden,
 
         (
-            MarmotRpcPayload::ToolCallUpdate {
+            AgentRpcPayload::ToolCallUpdate {
                 status, call_id, ..
             },
             ProjectionMode::Coding,
         ) => ProjectedContent::Status(format!("[tool:{call_id}] {status}")),
         (
-            MarmotRpcPayload::ToolCallUpdate {
+            AgentRpcPayload::ToolCallUpdate {
                 call_id,
                 status,
                 output,
@@ -75,23 +75,23 @@ pub fn project_message(content: &str, mode: ProjectionMode) -> ProjectedContent 
                 "[tool_update] id={call_id} status={status} output={out}"
             ))
         }
-        (MarmotRpcPayload::ToolCallUpdate { .. }, ProjectionMode::Chat) => ProjectedContent::Hidden,
+        (AgentRpcPayload::ToolCallUpdate { .. }, ProjectionMode::Chat) => ProjectedContent::Hidden,
 
-        (MarmotRpcPayload::Capability { capabilities }, ProjectionMode::Debug) => {
+        (AgentRpcPayload::Capability { capabilities }, ProjectionMode::Debug) => {
             ProjectedContent::Status(format!("[capabilities] {}", capabilities.join(", ")))
         }
-        (MarmotRpcPayload::Capability { .. }, _) => ProjectedContent::Hidden,
+        (AgentRpcPayload::Capability { .. }, _) => ProjectedContent::Hidden,
 
-        (MarmotRpcPayload::Done, ProjectionMode::Debug) => {
+        (AgentRpcPayload::Done, ProjectionMode::Debug) => {
             ProjectedContent::Status("[done]".to_string())
         }
-        (MarmotRpcPayload::Done, _) => ProjectedContent::Hidden,
+        (AgentRpcPayload::Done, _) => ProjectedContent::Hidden,
 
         // User-originated payloads echoed back should be hidden
-        (MarmotRpcPayload::Prompt { .. }, _)
-        | (MarmotRpcPayload::Steer { .. }, _)
-        | (MarmotRpcPayload::FollowUp { .. }, _)
-        | (MarmotRpcPayload::Abort, _) => ProjectedContent::Hidden,
+        (AgentRpcPayload::Prompt { .. }, _)
+        | (AgentRpcPayload::Steer { .. }, _)
+        | (AgentRpcPayload::FollowUp { .. }, _)
+        | (AgentRpcPayload::Abort, _) => ProjectedContent::Hidden,
 
         // Catch-all for Raw mode was handled above
         (_, ProjectionMode::Raw) => unreachable!(),
@@ -101,11 +101,11 @@ pub fn project_message(content: &str, mode: ProjectionMode) -> ProjectedContent 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MARMOT_RPC_VERSION, MarmotRpcEnvelope, encode_prefixed_envelope};
+    use crate::{AGENT_RPC_VERSION, AgentRpcEnvelope, encode_prefixed_envelope};
 
-    fn make_envelope(payload: MarmotRpcPayload) -> String {
-        let envelope = MarmotRpcEnvelope {
-            v: MARMOT_RPC_VERSION,
+    fn make_envelope(payload: AgentRpcPayload) -> String {
+        let envelope = AgentRpcEnvelope {
+            v: AGENT_RPC_VERSION,
             protocol: crate::AgentProtocol::Acp,
             session_id: "test".to_string(),
             idempotency_key: None,
@@ -116,7 +116,7 @@ mod tests {
 
     #[test]
     fn raw_mode_passes_through() {
-        let content = make_envelope(MarmotRpcPayload::Done);
+        let content = make_envelope(AgentRpcPayload::Done);
         assert!(matches!(
             project_message(&content, ProjectionMode::Raw),
             ProjectedContent::Text(_)
@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn assistant_text_visible_in_all_modes() {
-        let content = make_envelope(MarmotRpcPayload::AssistantText {
+        let content = make_envelope(AgentRpcPayload::AssistantText {
             text: "hi".to_string(),
         });
         for mode in [
@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn tool_call_hidden_in_chat_status_in_coding_full_in_debug() {
-        let content = make_envelope(MarmotRpcPayload::ToolCall {
+        let content = make_envelope(AgentRpcPayload::ToolCall {
             call_id: "c1".to_string(),
             tool_name: "read_file".to_string(),
             input: serde_json::json!({"path": "/tmp"}),
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn done_hidden_in_chat_and_coding_status_in_debug() {
-        let content = make_envelope(MarmotRpcPayload::Done);
+        let content = make_envelope(AgentRpcPayload::Done);
         assert_eq!(
             project_message(&content, ProjectionMode::Chat),
             ProjectedContent::Hidden
@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn error_visible_in_all_modes() {
-        let content = make_envelope(MarmotRpcPayload::Error {
+        let content = make_envelope(AgentRpcPayload::Error {
             message: "timeout".to_string(),
         });
         for mode in [
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn user_payloads_hidden_in_all_modes() {
-        let content = make_envelope(MarmotRpcPayload::Prompt {
+        let content = make_envelope(AgentRpcPayload::Prompt {
             message: "hello".to_string(),
         });
         for mode in [

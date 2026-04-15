@@ -237,8 +237,8 @@ maybe_setup_adb_reverse
 
 maybe_write_config() {
   # Dev-friendly defaults:
-  # - If no relay env vars are provided, we write a default relay config that works with
-  #   the deployed OpenClaw/Marmot bot (public relays + separate key-package relays).
+  # - If no relay env vars are provided, we write a default relay config for public profile,
+  #   media, and relay-compatible development flows.
   #
   # Override:
   #   PIKA_RELAY_URLS="ws://10.0.2.2:18080" just run-android

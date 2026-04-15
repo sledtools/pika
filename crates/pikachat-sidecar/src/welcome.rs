@@ -18,7 +18,7 @@ use pika_mls::welcome::{
     publish_welcome_rumors as shared_publish_welcome_rumors,
 };
 
-use crate::{PikaMdk, ingest_group_backlog};
+use crate::{PikaMls, ingest_group_backlog};
 
 #[derive(Debug, Clone)]
 pub struct AcceptedWelcome {
@@ -30,19 +30,19 @@ pub struct AcceptedWelcome {
     pub ingested_messages: Vec<pika_mls::storage_traits::messages::types::Message>,
 }
 
-pub fn list_pending_welcome_snapshots(mdk: &PikaMdk) -> Result<Vec<PendingWelcomeSnapshot>> {
-    WelcomeQueries::new(mdk).list_pending_welcome_snapshots()
+pub fn list_pending_welcome_snapshots(mls: &PikaMls) -> Result<Vec<PendingWelcomeSnapshot>> {
+    WelcomeQueries::new(mls).list_pending_welcome_snapshots()
 }
 
 pub fn lookup_pending_welcome(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     target: &EventId,
 ) -> Result<Option<pika_mls::storage_traits::welcomes::types::Welcome>> {
-    WelcomeQueries::new(mdk).lookup_pending_welcome(target)
+    WelcomeQueries::new(mls).lookup_pending_welcome(target)
 }
 
 pub fn ingest_unwrapped_welcome<F>(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     wrapper_event_id: &EventId,
     sender: PublicKey,
     rumor: &UnsignedEvent,
@@ -51,15 +51,15 @@ pub fn ingest_unwrapped_welcome<F>(
 where
     F: Fn(&str) -> bool,
 {
-    shared_ingest_unwrapped_welcome(mdk, wrapper_event_id, sender, rumor, sender_allowed)
+    shared_ingest_unwrapped_welcome(mls, wrapper_event_id, sender, rumor, sender_allowed)
 }
 
-/// Unwrap and process a gift-wrapped MLS welcome into MDK pending-welcome
+/// Unwrap and process a gift-wrapped MLS welcome into MLS pending-welcome
 /// storage. This intentionally does not accept the welcome; hosts decide
-/// whether to stage, auto-accept, subscribe, or backfill after ingest. MDK may
+/// whether to stage, auto-accept, subscribe, or backfill after ingest. MLS may
 /// already expose a pending group row before accept.
 pub async fn ingest_welcome_from_giftwrap<F>(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     keys: &Keys,
     event: &Event,
     sender_allowed: F,
@@ -67,7 +67,7 @@ pub async fn ingest_welcome_from_giftwrap<F>(
 where
     F: Fn(&str) -> bool,
 {
-    shared_ingest_welcome_from_giftwrap(mdk, keys, event, sender_allowed).await
+    shared_ingest_welcome_from_giftwrap(mls, keys, event, sender_allowed).await
 }
 
 /// Accept a known pending welcome, optionally let the host run a narrow
@@ -78,7 +78,7 @@ where
 /// for catch-up, and what to do in the `after_accept` hook (for example daemon
 /// subscription bookkeeping before backlog fetch).
 pub async fn accept_welcome_and_catch_up<F, Fut>(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     client: &nostr_sdk::Client,
     relay_urls: &[nostr_sdk::RelayUrl],
     welcome: &pika_mls::storage_traits::welcomes::types::Welcome,
@@ -99,12 +99,12 @@ where
         ingested_messages: Vec::new(),
     };
 
-    shared_accept_pending_welcome(mdk, welcome)?;
+    shared_accept_pending_welcome(mls, welcome)?;
     after_accept(&accepted).await?;
 
     if !relay_urls.is_empty() {
         accepted.ingested_messages = ingest_group_backlog(
-            mdk,
+            mls,
             client,
             relay_urls,
             &accepted.nostr_group_id_hex,
@@ -141,14 +141,14 @@ where
 
 pub fn create_group_and_plan_welcome_delivery(
     creator_pubkey: &PublicKey,
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     peer_key_packages: Vec<Event>,
     config: NostrGroupConfigData,
     recipients: &[PublicKey],
 ) -> Result<PlannedGroupCreation> {
     shared_create_group_and_plan_welcome_delivery(
         creator_pubkey,
-        mdk,
+        mls,
         peer_key_packages,
         config,
         recipients,
@@ -157,7 +157,7 @@ pub fn create_group_and_plan_welcome_delivery(
 
 pub async fn create_group_and_publish_welcomes<F, Fut>(
     keys: &Keys,
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     peer_key_packages: Vec<Event>,
     config: NostrGroupConfigData,
     recipients: &[PublicKey],
@@ -170,7 +170,7 @@ where
 {
     shared_create_group_and_publish_welcomes(
         keys,
-        mdk,
+        mls,
         peer_key_packages,
         config,
         recipients,
@@ -184,13 +184,13 @@ where
 mod tests {
     use super::*;
 
-    use crate::open_mdk;
+    use crate::open_mls;
     use nostr_sdk::prelude::{EventBuilder, Kind, RelayUrl};
 
-    fn make_key_package_event(mdk: &PikaMdk, keys: &Keys) -> Event {
+    fn make_key_package_event(mls: &PikaMls, keys: &Keys) -> Event {
         let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
         let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
-            mdk,
+            mls,
             &keys.public_key(),
             vec![relay],
         )
@@ -207,10 +207,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Runtime pending welcome test".to_string(),
             String::new(),
@@ -220,7 +220,7 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let group_result = inviter_mdk
+        let group_result = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
         let mut welcome_rumor = group_result
@@ -246,13 +246,13 @@ mod tests {
         tokio::runtime::Runtime::new()
             .expect("tokio runtime")
             .block_on(async {
-                ingest_welcome_from_giftwrap(&invitee_mdk, &invitee_keys, &wrapper, |_| true)
+                ingest_welcome_from_giftwrap(&invitee_mls, &invitee_keys, &wrapper, |_| true)
                     .await
                     .expect("ingest welcome")
                     .expect("welcome should ingest");
             });
 
-        let mut pending = WelcomeQueries::new(&invitee_mdk)
+        let mut pending = WelcomeQueries::new(&invitee_mls)
             .list_pending_welcomes()
             .expect("get pending welcomes");
 
@@ -262,7 +262,7 @@ mod tests {
         let by_welcome =
             find_pending_welcome(&pending, &welcome_event_id).expect("match welcome id");
         assert_eq!(by_welcome.id, welcome_event_id);
-        let looked_up = lookup_pending_welcome(&invitee_mdk, &welcome_event_id)
+        let looked_up = lookup_pending_welcome(&invitee_mls, &welcome_event_id)
             .expect("lookup pending welcome")
             .expect("pending welcome should exist");
         assert_eq!(looked_up.id, welcome_event_id);
@@ -282,11 +282,11 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = open_mls(invitee_dir.path()).expect("open invitee mls");
 
         let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Runtime pending welcome snapshot".to_string(),
             "Shared pending welcome query".to_string(),
@@ -296,7 +296,7 @@ mod tests {
             vec![relay.clone()],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let group_result = inviter_mdk
+        let group_result = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
         let mut welcome_rumor = group_result
@@ -321,14 +321,14 @@ mod tests {
         tokio::runtime::Runtime::new()
             .expect("tokio runtime")
             .block_on(async {
-                ingest_welcome_from_giftwrap(&invitee_mdk, &invitee_keys, &wrapper, |_| true)
+                ingest_welcome_from_giftwrap(&invitee_mls, &invitee_keys, &wrapper, |_| true)
                     .await
                     .expect("ingest welcome")
                     .expect("welcome should ingest");
             });
 
         let snapshots =
-            list_pending_welcome_snapshots(&invitee_mdk).expect("list pending welcome snapshots");
+            list_pending_welcome_snapshots(&invitee_mls).expect("list pending welcome snapshots");
         assert_eq!(snapshots.len(), 1);
         let snapshot = &snapshots[0];
         assert_eq!(snapshot.wrapper_event_id, wrapper.id);
@@ -352,13 +352,13 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = open_mls(invitee_dir.path()).expect("open invitee mls");
         let invitee_client = nostr_sdk::Client::builder()
             .signer(invitee_keys.clone())
             .build();
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Runtime accept test".to_string(),
             String::new(),
@@ -368,7 +368,7 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let group_result = inviter_mdk
+        let group_result = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
         let welcome_rumor = group_result
@@ -392,13 +392,13 @@ mod tests {
         tokio::runtime::Runtime::new()
             .expect("tokio runtime")
             .block_on(async {
-                ingest_welcome_from_giftwrap(&invitee_mdk, &invitee_keys, &wrapper, |_| true)
+                ingest_welcome_from_giftwrap(&invitee_mls, &invitee_keys, &wrapper, |_| true)
                     .await
                     .expect("ingest welcome")
                     .expect("welcome should ingest");
             });
 
-        let pending = WelcomeQueries::new(&invitee_mdk)
+        let pending = WelcomeQueries::new(&invitee_mls)
             .list_pending_welcomes()
             .expect("get pending welcomes");
         let welcome = pending.first().expect("pending welcome");
@@ -407,7 +407,7 @@ mod tests {
             .expect("tokio runtime")
             .block_on(async {
                 accept_welcome_and_catch_up(
-                    &invitee_mdk,
+                    &invitee_mls,
                     &invitee_client,
                     &[],
                     welcome,
@@ -430,7 +430,7 @@ mod tests {
             "empty relay list should preserve manual/narrow host behavior"
         );
         assert!(
-            WelcomeQueries::new(&invitee_mdk)
+            WelcomeQueries::new(&invitee_mls)
                 .list_pending_welcomes()
                 .expect("get pending welcomes")
                 .is_empty(),
@@ -444,10 +444,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Runtime ingest test".to_string(),
             String::new(),
@@ -457,7 +457,7 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let group_result = inviter_mdk
+        let group_result = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
         let mut welcome_rumor = group_result
@@ -483,7 +483,7 @@ mod tests {
         let ingested = tokio::runtime::Runtime::new()
             .expect("tokio runtime")
             .block_on(async {
-                ingest_welcome_from_giftwrap(&invitee_mdk, &invitee_keys, &wrapper, |_| true)
+                ingest_welcome_from_giftwrap(&invitee_mls, &invitee_keys, &wrapper, |_| true)
                     .await
                     .expect("ingest welcome")
                     .expect("welcome should be accepted for ingest")
@@ -497,7 +497,7 @@ mod tests {
         );
         assert_eq!(ingested.group_name, "Runtime ingest test");
 
-        let pending = WelcomeQueries::new(&invitee_mdk)
+        let pending = WelcomeQueries::new(&invitee_mls)
             .list_pending_welcomes()
             .expect("get pending welcomes");
         assert_eq!(pending.len(), 1, "ingest should stage exactly one welcome");
@@ -505,7 +505,7 @@ mod tests {
             pending[0].wrapper_event_id, wrapper.id,
             "staged welcome should keep the wrapper id for explicit accept flows"
         );
-        let groups = pika_mls::conversation::ConversationQueries::new(&invitee_mdk)
+        let groups = pika_mls::conversation::ConversationQueries::new(&invitee_mls)
             .list_joined_group_snapshots()
             .expect("get groups");
         assert_eq!(
@@ -527,12 +527,12 @@ mod tests {
         let inviter_keys = Keys::generate();
         let bob_keys = Keys::generate();
         let charlie_keys = Keys::generate();
-        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let bob_mdk = open_mdk(bob_dir.path()).expect("open bob mdk");
-        let charlie_mdk = open_mdk(charlie_dir.path()).expect("open charlie mdk");
+        let inviter_mls = open_mls(inviter_dir.path()).expect("open inviter mls");
+        let bob_mls = open_mls(bob_dir.path()).expect("open bob mls");
+        let charlie_mls = open_mls(charlie_dir.path()).expect("open charlie mls");
 
-        let bob_kp = make_key_package_event(&bob_mdk, &bob_keys);
-        let charlie_kp = make_key_package_event(&charlie_mdk, &charlie_keys);
+        let bob_kp = make_key_package_event(&bob_mls, &bob_keys);
+        let charlie_kp = make_key_package_event(&charlie_mls, &charlie_keys);
         let config = NostrGroupConfigData::new(
             "Runtime multi invite test".to_string(),
             String::new(),
@@ -550,7 +550,7 @@ mod tests {
         let published =
             std::sync::Arc::new(std::sync::Mutex::new(Vec::<(PublicKey, Event)>::new()));
         let published_capture = std::sync::Arc::clone(&published);
-        let group_result = inviter_mdk
+        let group_result = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![bob_kp, charlie_kp], config)
             .expect("create group");
         let published_welcomes = publish_welcome_rumors(
@@ -580,14 +580,14 @@ mod tests {
             match receiver {
                 receiver if receiver == bob_keys.public_key() => {
                     let ingested =
-                        ingest_welcome_from_giftwrap(&bob_mdk, &bob_keys, &wrapper, |_| true)
+                        ingest_welcome_from_giftwrap(&bob_mls, &bob_keys, &wrapper, |_| true)
                             .await
                             .expect("ingest bob welcome");
                     assert!(ingested.is_some(), "bob should ingest exactly one welcome");
                 }
                 receiver if receiver == charlie_keys.public_key() => {
                     let ingested =
-                        ingest_welcome_from_giftwrap(&charlie_mdk, &charlie_keys, &wrapper, |_| {
+                        ingest_welcome_from_giftwrap(&charlie_mls, &charlie_keys, &wrapper, |_| {
                             true
                         })
                         .await
@@ -608,10 +608,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Runtime mismatch test".to_string(),
             String::new(),
@@ -622,7 +622,7 @@ mod tests {
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
 
-        let group_result = inviter_mdk
+        let group_result = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
         let err = publish_welcome_rumors(
@@ -644,10 +644,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Runtime create plan test".to_string(),
             String::new(),
@@ -660,7 +660,7 @@ mod tests {
 
         let planned = create_group_and_plan_welcome_delivery(
             &inviter_keys.public_key(),
-            &inviter_mdk,
+            &inviter_mls,
             vec![invitee_kp],
             config,
             &[invitee_keys.public_key()],
@@ -677,7 +677,7 @@ mod tests {
     fn create_group_and_plan_welcome_delivery_returns_no_plan_without_recipients() {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let inviter_keys = Keys::generate();
-        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
+        let inviter_mls = open_mls(inviter_dir.path()).expect("open inviter mls");
 
         let config = NostrGroupConfigData::new(
             "Runtime local create plan test".to_string(),
@@ -691,7 +691,7 @@ mod tests {
 
         let planned = create_group_and_plan_welcome_delivery(
             &inviter_keys.public_key(),
-            &inviter_mdk,
+            &inviter_mls,
             vec![],
             config,
             &[],
@@ -711,10 +711,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Runtime create test".to_string(),
             String::new(),
@@ -729,7 +729,7 @@ mod tests {
         let published_capture = std::sync::Arc::clone(&published);
         let created = create_group_and_publish_welcomes(
             &inviter_keys,
-            &inviter_mdk,
+            &inviter_mls,
             vec![invitee_kp],
             config,
             &[invitee_keys.public_key()],
@@ -759,10 +759,10 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
+        let inviter_mls = open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = open_mls(invitee_dir.path()).expect("open invitee mls");
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Runtime mismatch plan test".to_string(),
             String::new(),
@@ -775,7 +775,7 @@ mod tests {
 
         let err = create_group_and_plan_welcome_delivery(
             &inviter_keys.public_key(),
-            &inviter_mdk,
+            &inviter_mls,
             vec![invitee_kp],
             config,
             &[],

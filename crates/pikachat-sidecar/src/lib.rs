@@ -30,9 +30,9 @@ pub mod runtime;
 pub mod welcome;
 
 pub use pika_mls::{
-    IdentityFile, PROCESSED_MLS_EVENT_IDS_FILE, PROCESSED_MLS_EVENT_IDS_MAX, PikaMdk,
-    load_or_create_keys, load_processed_mls_event_ids, new_unencrypted_mls as new_mdk,
-    open_unencrypted_mls as open_mdk, persist_processed_mls_event_ids,
+    IdentityFile, PROCESSED_MLS_EVENT_IDS_FILE, PROCESSED_MLS_EVENT_IDS_MAX, PikaMls,
+    load_or_create_keys, load_processed_mls_event_ids, new_unencrypted_mls as new_mls,
+    open_unencrypted_mls as open_mls, persist_processed_mls_event_ids,
     processed_mls_event_ids_path,
 };
 pub use protocol::{DaemonCmd, InCmd, OutMsg};
@@ -58,24 +58,24 @@ pub fn resolve_daemon_socket_path(state_dir: &Path) -> PathBuf {
 }
 
 pub fn ingest_application_message(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     event: &Event,
 ) -> Result<Option<pika_mls::storage_traits::messages::types::Message>> {
-    match runtime::PikaRuntime::new(mdk).process_event(event)? {
+    match runtime::PikaRuntime::new(mls).process_event(event)? {
         Some(conversation::ConversationEvent::Application(message)) => Ok(Some(message.message)),
         _ => Ok(None),
     }
 }
 
 pub async fn ingest_group_backlog(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     client: &nostr_sdk::Client,
     relay_urls: &[nostr_sdk::RelayUrl],
     nostr_group_id_hex: &str,
     seen: &mut HashSet<EventId>,
     limit: usize,
 ) -> Result<Vec<pika_mls::storage_traits::messages::types::Message>> {
-    runtime::PikaRuntime::with_client(mdk, client)
+    runtime::PikaRuntime::with_client(mls, client)
         .ingest_group_backlog(relay_urls, nostr_group_id_hex, seen, limit)
         .await
 }

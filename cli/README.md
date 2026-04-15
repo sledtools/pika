@@ -95,7 +95,7 @@ Override with `--relay` and `--kp-relay` for testing or custom setups.
 Identity and MLS state are stored under `${XDG_STATE_HOME:-$HOME/.local/state}/pikachat` by default (override with `--state-dir`). The state directory contains:
 
 - `identity.json` — your keypair (plaintext, not for production use)
-- `mdk.sqlite` — MLS group state
+- `pika-mls.json` — local chat group state
 
 ## Smart send
 

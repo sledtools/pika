@@ -11,7 +11,7 @@ use pika_mls::prelude::{GroupId, MessageProcessingResult};
 use pika_mls::storage_traits::messages::types::Message;
 
 use super::AppMessageKind;
-use crate::mdk_support::PikaMdk;
+use crate::mls_support::PikaMls;
 
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeApplicationMessage {
@@ -46,33 +46,33 @@ pub(crate) enum ConversationEvent {
 }
 
 pub(crate) fn lookup_joined_group_snapshot(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     nostr_group_id_hex: &str,
 ) -> Result<JoinedGroupSnapshot> {
-    ConversationQueries::new(mdk).lookup_joined_group_snapshot(nostr_group_id_hex)
+    ConversationQueries::new(mls).lookup_joined_group_snapshot(nostr_group_id_hex)
 }
 
-pub(crate) fn list_joined_group_snapshots(mdk: &PikaMdk) -> Result<Vec<JoinedGroupSnapshot>> {
-    ConversationQueries::new(mdk).list_joined_group_snapshots()
+pub(crate) fn list_joined_group_snapshots(mls: &PikaMls) -> Result<Vec<JoinedGroupSnapshot>> {
+    ConversationQueries::new(mls).list_joined_group_snapshots()
 }
 
 pub(crate) fn load_message_page(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     nostr_group_id_hex: &str,
     query: MessagePageQuery,
 ) -> Result<MessagePage> {
-    ConversationQueries::new(mdk).load_message_page(nostr_group_id_hex, query)
+    ConversationQueries::new(mls).load_message_page(nostr_group_id_hex, query)
 }
 
-pub(crate) fn process_event(mdk: &PikaMdk, event: &Event) -> Result<Option<ConversationEvent>> {
-    let Some(result) = process_group_message_event(mdk, event)? else {
+pub(crate) fn process_event(mls: &PikaMls, event: &Event) -> Result<Option<ConversationEvent>> {
+    let Some(result) = process_group_message_event(mls, event)? else {
         return Ok(None);
     };
-    Ok(interpret_processing_result(mdk, result))
+    Ok(interpret_processing_result(mls, result))
 }
 
 pub(crate) fn interpret_processing_result(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     result: MessageProcessingResult,
 ) -> Option<ConversationEvent> {
     match result {
@@ -82,7 +82,7 @@ pub(crate) fn interpret_processing_result(
                 &message.content,
                 message.tags.iter(),
             )?;
-            let nostr_group_id_hex = ConversationQueries::new(mdk)
+            let nostr_group_id_hex = ConversationQueries::new(mls)
                 .nostr_group_id_hex(&message.mls_group_id)
                 .ok()
                 .flatten()?;
@@ -95,33 +95,33 @@ pub(crate) fn interpret_processing_result(
             )))
         }
         MessageProcessingResult::Proposal(update) => group_update(
-            mdk,
+            mls,
             update.mls_group_id.clone(),
             RuntimeGroupUpdateKind::Proposal,
         ),
         MessageProcessingResult::PendingProposal { mls_group_id } => {
-            group_update(mdk, mls_group_id, RuntimeGroupUpdateKind::PendingProposal)
+            group_update(mls, mls_group_id, RuntimeGroupUpdateKind::PendingProposal)
         }
         MessageProcessingResult::IgnoredProposal { mls_group_id, .. } => {
-            group_update(mdk, mls_group_id, RuntimeGroupUpdateKind::IgnoredProposal)
+            group_update(mls, mls_group_id, RuntimeGroupUpdateKind::IgnoredProposal)
         }
         MessageProcessingResult::ExternalJoinProposal { mls_group_id } => group_update(
-            mdk,
+            mls,
             mls_group_id,
             RuntimeGroupUpdateKind::ExternalJoinProposal,
         ),
         MessageProcessingResult::Commit { mls_group_id } => {
-            group_update(mdk, mls_group_id, RuntimeGroupUpdateKind::Commit)
+            group_update(mls, mls_group_id, RuntimeGroupUpdateKind::Commit)
         }
         MessageProcessingResult::Unprocessable { mls_group_id } => {
-            group_update(mdk, mls_group_id, RuntimeGroupUpdateKind::Unprocessable)
+            group_update(mls, mls_group_id, RuntimeGroupUpdateKind::Unprocessable)
         }
         MessageProcessingResult::PreviouslyFailed => Some(ConversationEvent::PreviouslyFailed),
     }
 }
 
 pub(crate) async fn ingest_backlog_messages(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     client: &Client,
     relay_urls: &[RelayUrl],
     nostr_group_id_hex: &str,
@@ -143,7 +143,7 @@ pub(crate) async fn ingest_backlog_messages(
         if !seen.insert(event.id) {
             continue;
         }
-        if let Some(ConversationEvent::Application(message)) = process_event(mdk, event)? {
+        if let Some(ConversationEvent::Application(message)) = process_event(mls, event)? {
             messages.push(message.message);
         }
     }
@@ -151,18 +151,18 @@ pub(crate) async fn ingest_backlog_messages(
 }
 
 fn nostr_group_id_hex_for_mls_group_id(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     mls_group_id: &GroupId,
 ) -> Result<Option<String>> {
-    ConversationQueries::new(mdk).nostr_group_id_hex(mls_group_id)
+    ConversationQueries::new(mls).nostr_group_id_hex(mls_group_id)
 }
 
 fn group_update(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     mls_group_id: GroupId,
     kind: RuntimeGroupUpdateKind,
 ) -> Option<ConversationEvent> {
-    let Some(nostr_group_id_hex) = nostr_group_id_hex_for_mls_group_id(mdk, &mls_group_id)
+    let Some(nostr_group_id_hex) = nostr_group_id_hex_for_mls_group_id(mls, &mls_group_id)
         .ok()
         .flatten()
     else {

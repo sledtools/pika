@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use nostr_sdk::prelude::*;
-use pika_core::normalize_peer_key_package_event_for_mdk;
+use pika_core::normalize_peer_key_package_event_for_mls;
 use pika_mls::open_unencrypted_mls;
 use pika_relay_profiles::app_default_message_relays;
 
@@ -83,22 +83,21 @@ fn main() -> Result<()> {
         println!("content_prefix={:?}", prefix);
         println!("content_looks_like_hex={}", looks_like_hex(&ev.content));
 
-        // Open an MDK instance just to parse/validate the peer key package.
-        let db_path = std::path::Path::new("/tmp")
+        // Open an MLS instance just to parse/validate the peer key package.
+        let state_path = std::path::Path::new("/tmp")
             .join("pika_kp_debug")
-            .join(format!("{}.sqlite", peer_pubkey.to_hex()));
-        if let Some(p) = db_path.parent() {
+            .join(peer_pubkey.to_hex());
+        if let Some(p) = state_path.parent() {
             std::fs::create_dir_all(p).ok();
         }
-        let mdk = open_unencrypted_mls(db_path.parent().expect("db dir"))
-            .context("open unencrypted mdk sqlite storage")?;
+        let mls = open_unencrypted_mls(&state_path).context("open unencrypted MLS state")?;
 
-        let r1 = pika_mls::key_package::parse_key_package(&mdk, &ev);
-        println!("mdk.parse_key_package(raw)={}", fmt_res(&r1));
+        let r1 = pika_mls::key_package::parse_key_package(&mls, &ev);
+        println!("mls.parse_key_package(raw)={}", fmt_res(&r1));
 
-        let normalized = normalize_peer_key_package_event_for_mdk(&ev);
-        let r2 = pika_mls::key_package::parse_key_package(&mdk, &normalized);
-        println!("mdk.parse_key_package(normalized)={}", fmt_res(&r2));
+        let normalized = normalize_peer_key_package_event_for_mls(&ev);
+        let r2 = pika_mls::key_package::parse_key_package(&mls, &normalized);
+        println!("mls.parse_key_package(normalized)={}", fmt_res(&r2));
 
         Ok::<(), anyhow::Error>(())
     })?;

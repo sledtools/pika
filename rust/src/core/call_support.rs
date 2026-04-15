@@ -1,4 +1,4 @@
-use crate::mdk_support::PikaMdk;
+use crate::mls_support::PikaMls;
 use nostr_sdk::hashes::{sha256, Hash as _};
 use pika_media::crypto::{opaque_participant_label, FrameKeyMaterial};
 use pika_mls::encrypted_media::crypto::DEFAULT_SCHEME_VERSION;
@@ -88,7 +88,7 @@ pub(crate) struct CallMediaCryptoContext {
 }
 
 pub(crate) struct CallCryptoDeriveContext<'a> {
-    pub mdk: &'a PikaMdk,
+    pub mls: &'a PikaMls,
     pub mls_group_id: &'a GroupId,
     pub group_epoch: u64,
     pub call_id: &'a str,
@@ -270,7 +270,7 @@ fn derive_track_keys(
     let root_filename = format!("call/{}/{track}/group-root", ctx.call_id);
 
     let tx_base = ctx
-        .mdk
+        .mls
         .derive_media_encryption_key(
             ctx.mls_group_id,
             DEFAULT_SCHEME_VERSION,
@@ -281,7 +281,7 @@ fn derive_track_keys(
         .map_err(|e| format!("derive tx media key for {track} failed: {e}"))?;
 
     let rx_base = ctx
-        .mdk
+        .mls
         .derive_media_encryption_key(
             ctx.mls_group_id,
             DEFAULT_SCHEME_VERSION,
@@ -292,7 +292,7 @@ fn derive_track_keys(
         .map_err(|e| format!("derive rx media key for {track} failed: {e}"))?;
 
     let group_root = ctx
-        .mdk
+        .mls
         .derive_media_encryption_key(
             ctx.mls_group_id,
             DEFAULT_SCHEME_VERSION,
@@ -365,7 +365,7 @@ pub(crate) fn derive_relay_auth_token(ctx: &CallCryptoDeriveContext<'_>) -> Resu
         ctx.call_id.as_bytes(),
     ]);
     let auth_key = ctx
-        .mdk
+        .mls
         .derive_media_encryption_key(
             ctx.mls_group_id,
             DEFAULT_SCHEME_VERSION,

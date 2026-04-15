@@ -34,7 +34,7 @@ fn should_offer_recovery_controls(state: &AppState, manager: &AppManager) -> boo
         .as_deref()
         .map(|toast| {
             toast.contains("Login failed")
-                || toast.contains("open encrypted mdk sqlite db")
+                || toast.contains("open encrypted mls sqlite db")
                 || toast.contains("keyring")
         })
         .unwrap_or(false);

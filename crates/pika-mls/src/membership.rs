@@ -3,7 +3,7 @@ use std::future::Future;
 use anyhow::{Context, Result, anyhow};
 use nostr::{Event, PublicKey, UnsignedEvent};
 
-use crate::PikaMdk;
+use crate::PikaMls;
 use crate::prelude::NostrGroupDataUpdate;
 use crate::storage_traits::GroupId;
 
@@ -67,12 +67,12 @@ where
 }
 
 pub struct MembershipRuntime<'a> {
-    mdk: &'a PikaMdk,
+    mls: &'a PikaMls,
 }
 
 impl<'a> MembershipRuntime<'a> {
-    pub fn new(mdk: &'a PikaMdk) -> Self {
-        Self { mdk }
+    pub fn new(mls: &'a PikaMls) -> Self {
+        Self { mls }
     }
 
     pub fn prepare_add_members(
@@ -80,10 +80,10 @@ impl<'a> MembershipRuntime<'a> {
         mls_group_id: &GroupId,
         key_package_events: &[Event],
     ) -> Result<PreparedMembershipEvolution> {
-        validate_key_package_events(self.mdk, key_package_events)?;
+        validate_key_package_events(self.mls, key_package_events)?;
 
         let result = self
-            .mdk
+            .mls
             .add_members(mls_group_id, key_package_events)
             .context("add members")?;
         let added_pubkeys = key_package_events
@@ -105,7 +105,7 @@ impl<'a> MembershipRuntime<'a> {
         removed_pubkeys: &[PublicKey],
     ) -> Result<PreparedMembershipEvolution> {
         let result = self
-            .mdk
+            .mls
             .remove_members(mls_group_id, removed_pubkeys)
             .context("remove members")?;
 
@@ -125,7 +125,7 @@ impl<'a> MembershipRuntime<'a> {
         &self,
         mls_group_id: &GroupId,
     ) -> Result<PreparedMembershipEvolution> {
-        let result = self.mdk.leave_group(mls_group_id).context("leave group")?;
+        let result = self.mls.leave_group(mls_group_id).context("leave group")?;
 
         self.prepare_evolution(
             mls_group_id.clone(),
@@ -147,7 +147,7 @@ impl<'a> MembershipRuntime<'a> {
         added_pubkeys: Vec<PublicKey>,
     ) -> Result<PreparedMembershipEvolution> {
         let group = self
-            .mdk
+            .mls
             .inner
             .get_group(&mls_group_id)
             .context("get group for evolution")?
@@ -174,7 +174,7 @@ impl<'a> MembershipRuntime<'a> {
         update: NostrGroupDataUpdate,
     ) -> Result<PreparedMembershipEvolution> {
         let result = self
-            .mdk
+            .mls
             .update_group_data(mls_group_id, update)
             .context("update group data")?;
 
@@ -201,7 +201,7 @@ impl<'a> MembershipRuntime<'a> {
         } = prepared;
 
         let merge_error = self
-            .mdk
+            .mls
             .merge_pending_commit(&mls_group_id)
             .err()
             .map(|err| err.to_string());
@@ -228,15 +228,15 @@ impl<'a> MembershipRuntime<'a> {
     }
 }
 
-pub fn validate_key_package_events(mdk: &PikaMdk, key_package_events: &[Event]) -> Result<()> {
+pub fn validate_key_package_events(mls: &PikaMls, key_package_events: &[Event]) -> Result<()> {
     for event in key_package_events {
-        crate::key_package::parse_key_package(mdk, event)?;
+        crate::key_package::parse_key_package(mls, event)?;
     }
     Ok(())
 }
 
-pub fn clear_pending_commit(mdk: &PikaMdk, mls_group_id: &GroupId) -> Result<()> {
-    mdk.clear_pending_commit(mls_group_id)
+pub fn clear_pending_commit(mls: &PikaMls, mls_group_id: &GroupId) -> Result<()> {
+    mls.clear_pending_commit(mls_group_id)
         .context("clear pending commit")
 }
 

@@ -15,7 +15,7 @@ use tokio::io::AsyncBufReadExt;
 use pika_agent_protocol::projection::{ProjectedContent, project_message};
 
 use crate::agent::provider::{ChatLoopPlan, GroupCreatePlan, KeyPackageWaitPlan};
-use crate::{mdk_util, relay_util};
+use crate::{mls_util, relay_util};
 
 #[derive(Debug)]
 pub struct PublishedWelcome {
@@ -32,7 +32,7 @@ pub struct CreatedChatGroup {
 
 pub struct ChatLoopContext<'a> {
     pub keys: &'a Keys,
-    pub mdk: &'a mdk_util::PikaMdk,
+    pub mls: &'a mls_util::PikaMls,
     pub send_client: &'a Client,
     pub listen_client: &'a Client,
     pub relays: &'a [RelayUrl],
@@ -53,7 +53,7 @@ pub async fn wait_for_latest_key_package(
     std::io::stderr().flush().ok();
     let start = tokio::time::Instant::now();
     loop {
-        match relay_util::fetch_latest_key_package_for_mdk(
+        match relay_util::fetch_latest_key_package_for_mls(
             client,
             &bot_pubkey,
             relays,
@@ -82,7 +82,7 @@ pub async fn wait_for_latest_key_package(
 
 pub async fn create_group_and_publish_welcomes(
     keys: &Keys,
-    mdk: &mdk_util::PikaMdk,
+    mls: &mls_util::PikaMls,
     client: &Client,
     relays: &[RelayUrl],
     bot_key_package: Event,
@@ -94,7 +94,7 @@ pub async fn create_group_and_publish_welcomes(
 
     let created = create_group_and_publish_welcomes_with_publisher(
         keys,
-        mdk,
+        mls,
         relays,
         bot_key_package,
         bot_pubkey,
@@ -121,7 +121,7 @@ pub async fn create_group_and_publish_welcomes(
 
 async fn create_group_and_publish_welcomes_with_publisher<F, Fut>(
     keys: &Keys,
-    mdk: &mdk_util::PikaMdk,
+    mls: &mls_util::PikaMls,
     relays: &[RelayUrl],
     bot_key_package: Event,
     bot_pubkey: PublicKey,
@@ -143,7 +143,7 @@ where
     );
     let created = match create_group_and_publish_shared_welcomes(
         keys,
-        mdk,
+        mls,
         vec![bot_key_package],
         config,
         &[bot_pubkey],
@@ -190,7 +190,7 @@ fn map_group_create_error(err: anyhow::Error, plan: GroupCreatePlan) -> anyhow::
 
 pub async fn run_interactive_chat_loop(mut ctx: ChatLoopContext<'_>) -> anyhow::Result<()> {
     let keys = ctx.keys;
-    let mdk = ctx.mdk;
+    let mls = ctx.mls;
     let send_client = ctx.send_client;
     let listen_client = ctx.listen_client;
     let relays = ctx.relays;
@@ -236,7 +236,7 @@ pub async fn run_interactive_chat_loop(mut ctx: ChatLoopContext<'_>) -> anyhow::
                 }
 
                 let rumor = EventBuilder::new(Kind::ChatMessage, &line).build(keys.public_key());
-                let msg_event = wrap_rumor(mdk, mls_group_id, rumor)
+                let msg_event = wrap_rumor(mls, mls_group_id, rumor)
                     .context("create user chat message")?
                     .wrapper;
                 relay_util::publish_and_confirm(send_client, relays, &msg_event, plan.outbound_publish_label).await?;
@@ -267,7 +267,7 @@ pub async fn run_interactive_chat_loop(mut ctx: ChatLoopContext<'_>) -> anyhow::
                 }
                 let mut printed = false;
                 if let Ok(Some(MessageProcessingResult::ApplicationMessage(msg))) =
-                    process_group_message_event(mdk, &event)
+                    process_group_message_event(mls, &event)
                     && msg.pubkey == bot_pubkey
                 {
                     match project_message(&msg.content, plan.projection_mode) {
@@ -316,10 +316,10 @@ pub async fn run_interactive_chat_loop(mut ctx: ChatLoopContext<'_>) -> anyhow::
 mod tests {
     use super::*;
 
-    fn make_key_package_event(mdk: &mdk_util::PikaMdk, keys: &Keys) -> Event {
+    fn make_key_package_event(mls: &mls_util::PikaMls, keys: &Keys) -> Event {
         let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
         let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
-            mdk,
+            mls,
             &keys.public_key(),
             vec![relay],
         )
@@ -345,16 +345,16 @@ mod tests {
         let bot_dir = tempfile::tempdir().expect("bot tempdir");
         let inviter_keys = Keys::generate();
         let bot_keys = Keys::generate();
-        let inviter_mdk = mdk_util::open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let bot_mdk = mdk_util::open_mdk(bot_dir.path()).expect("open bot mdk");
-        let bot_kp = make_key_package_event(&bot_mdk, &bot_keys);
+        let inviter_mls = mls_util::open_mls(inviter_dir.path()).expect("open inviter mls");
+        let bot_mls = mls_util::open_mls(bot_dir.path()).expect("open bot mls");
+        let bot_kp = make_key_package_event(&bot_mls, &bot_keys);
         let relays = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
         let published = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Event>::new()));
         let published_capture = std::sync::Arc::clone(&published);
 
         let created = create_group_and_publish_welcomes_with_publisher(
             &inviter_keys,
-            &inviter_mdk,
+            &inviter_mls,
             &relays,
             bot_kp,
             bot_keys.public_key(),

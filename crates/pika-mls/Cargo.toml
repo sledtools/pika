@@ -7,20 +7,15 @@ edition = "2024"
 anyhow = { workspace = true }
 hex = { workspace = true }
 keyring-core = { workspace = true }
-mdk-core = { workspace = true }
-mdk-sqlite-storage = { workspace = true }
-mdk-storage-traits = { workspace = true }
 nostr = { workspace = true, features = ["nip59"] }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 
-[target.'cfg(not(target_os = "android"))'.dependencies]
-libsqlite3-sys = { workspace = true, features = ["bundled-sqlcipher"] }
-
 [target.'cfg(target_os = "android")'.dependencies]
-libsqlite3-sys = { workspace = true, features = ["bundled-sqlcipher-vendored-openssl"] }
 android-native-keyring-store = "0.5.0"
 jni = "0.21"
 ndk-context = "0.1.1"

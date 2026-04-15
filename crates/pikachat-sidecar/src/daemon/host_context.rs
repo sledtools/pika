@@ -13,7 +13,7 @@ pub(super) enum DaemonPrepareError {
 pub(super) struct DaemonHostContext<'a> {
     client: &'a Client,
     relay_urls: &'a [RelayUrl],
-    mdk: &'a crate::PikaMdk,
+    mls: &'a crate::PikaMls,
     keys: &'a Keys,
     pubkey_hex: String,
 }
@@ -22,21 +22,21 @@ impl<'a> DaemonHostContext<'a> {
     pub(super) fn new(
         client: &'a Client,
         relay_urls: &'a [RelayUrl],
-        mdk: &'a crate::PikaMdk,
+        mls: &'a crate::PikaMls,
         keys: &'a Keys,
         pubkey_hex: impl Into<String>,
     ) -> Self {
         Self {
             client,
             relay_urls,
-            mdk,
+            mls,
             keys,
             pubkey_hex: pubkey_hex.into(),
         }
     }
 
     fn runtime(&self) -> PikaRuntime<'a> {
-        PikaRuntime::with_client(self.mdk, self.client)
+        PikaRuntime::with_client(self.mls, self.client)
     }
 
     pub(super) fn lookup_joined_group_snapshot(
@@ -173,7 +173,7 @@ impl<'a> DaemonHostContext<'a> {
         rumor: UnsignedEvent,
         label: &str,
     ) -> anyhow::Result<Event> {
-        let msg_event = pika_mls::conversation::wrap_rumor(self.mdk, mls_group_id, rumor)
+        let msg_event = pika_mls::conversation::wrap_rumor(self.mls, mls_group_id, rumor)
             .context("create_message")?
             .wrapper;
         let signed = resign_wrapper_without_protected_tags(self.keys, &msg_event)?;
@@ -191,7 +191,7 @@ impl<'a> DaemonHostContext<'a> {
     ) -> anyhow::Result<Event> {
         let mls_group_id = self.resolve_group(nostr_group_id)?;
         let rumor = EventBuilder::new(CALL_SIGNAL_KIND, payload_json).build(self.keys.public_key());
-        let msg_event = pika_mls::conversation::wrap_rumor(self.mdk, &mls_group_id, rumor)
+        let msg_event = pika_mls::conversation::wrap_rumor(self.mls, &mls_group_id, rumor)
             .context("create_message")?
             .wrapper;
         resign_wrapper_without_protected_tags(self.keys, &msg_event)
@@ -288,7 +288,7 @@ impl<'a> DaemonHostContext<'a> {
     ) -> anyhow::Result<String> {
         let group = self.lookup_joined_group_snapshot(nostr_group_id)?;
         let derive_ctx = CallCryptoDeriveContext {
-            mdk: self.mdk,
+            mls: self.mls,
             mls_group_id: &group.mls_group_id,
             group_epoch: 0,
             call_id,

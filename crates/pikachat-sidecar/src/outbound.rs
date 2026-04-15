@@ -7,7 +7,7 @@ use pika_mls::conversation::wrap_rumor;
 use pika_mls::storage_traits::GroupId;
 use pika_mls::storage_traits::groups::types::Group;
 
-use crate::PikaMdk;
+use crate::PikaMls;
 use crate::conversation::{ConversationRuntime, RuntimeJoinedGroupSnapshot};
 use crate::relay::publish_and_confirm;
 
@@ -81,17 +81,17 @@ pub enum OutboundConversationPublishStatus {
 }
 
 pub struct OutboundConversationRuntime<'a> {
-    mdk: &'a PikaMdk,
+    mls: &'a PikaMls,
 }
 
 impl<'a> OutboundConversationRuntime<'a> {
-    pub fn new(mdk: &'a PikaMdk) -> Self {
-        Self { mdk }
+    pub fn new(mls: &'a PikaMls) -> Self {
+        Self { mls }
     }
 
     pub fn resolve_target(&self, nostr_group_id_hex: &str) -> Result<ResolvedConversationTarget> {
         Ok(ResolvedConversationTarget::from_joined_group_snapshot(
-            ConversationRuntime::new(self.mdk).lookup_joined_group_snapshot(nostr_group_id_hex)?,
+            ConversationRuntime::new(self.mls).lookup_joined_group_snapshot(nostr_group_id_hex)?,
         ))
     }
 
@@ -142,7 +142,7 @@ impl<'a> OutboundConversationRuntime<'a> {
         action: OutboundConversationAction,
     ) -> Result<PreparedConversationAction> {
         let (kind, rumor) = build_unsigned_action(sender, action);
-        let wrapped = wrap_rumor(self.mdk, &target.mls_group_id, rumor)?;
+        let wrapped = wrap_rumor(self.mls, &target.mls_group_id, rumor)?;
 
         Ok(PreparedConversationAction {
             target,
@@ -247,14 +247,14 @@ mod tests {
     use nostr_sdk::prelude::{EventBuilder, Keys, RelayUrl};
     use pika_mls::prelude::NostrGroupConfigData;
 
-    fn open_test_mdk(dir: &tempfile::TempDir) -> PikaMdk {
-        crate::open_mdk(dir.path()).expect("open test mdk")
+    fn open_test_mls(dir: &tempfile::TempDir) -> PikaMls {
+        crate::open_mls(dir.path()).expect("open test mls")
     }
 
-    fn make_key_package_event(mdk: &PikaMdk, keys: &Keys) -> Event {
+    fn make_key_package_event(mls: &PikaMls, keys: &Keys) -> Event {
         let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
         let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
-            mdk,
+            mls,
             &keys.public_key(),
             vec![relay],
         )
@@ -265,15 +265,15 @@ mod tests {
             .expect("sign key package")
     }
 
-    fn create_test_group() -> (tempfile::TempDir, tempfile::TempDir, PikaMdk, Keys, Group) {
+    fn create_test_group() -> (tempfile::TempDir, tempfile::TempDir, PikaMls, Keys, Group) {
         let inviter_dir = tempfile::tempdir().expect("inviter tempdir");
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_test_mdk(&inviter_dir);
-        let invitee_mdk = open_test_mdk(&invitee_dir);
+        let inviter_mls = open_test_mls(&inviter_dir);
+        let invitee_mls = open_test_mls(&invitee_dir);
 
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = NostrGroupConfigData::new(
             "Outbound runtime test".to_string(),
             String::new(),
@@ -283,14 +283,14 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
 
         (
             inviter_dir,
             invitee_dir,
-            inviter_mdk,
+            inviter_mls,
             inviter_keys,
             created.group,
         )
@@ -298,8 +298,8 @@ mod tests {
 
     #[test]
     fn prepare_message_action_resolves_target_and_wraps_message() {
-        let (_inviter_dir, _invitee_dir, mdk, keys, group) = create_test_group();
-        let runtime = OutboundConversationRuntime::new(&mdk);
+        let (_inviter_dir, _invitee_dir, mls, keys, group) = create_test_group();
+        let runtime = OutboundConversationRuntime::new(&mls);
 
         let prepared = runtime
             .prepare_action(
@@ -325,8 +325,8 @@ mod tests {
 
     #[test]
     fn prepare_hypernote_reaction_and_typing_actions_use_shared_kinds() {
-        let (_inviter_dir, _invitee_dir, mdk, keys, group) = create_test_group();
-        let runtime = OutboundConversationRuntime::new(&mdk);
+        let (_inviter_dir, _invitee_dir, mls, keys, group) = create_test_group();
+        let runtime = OutboundConversationRuntime::new(&mls);
         let target = ResolvedConversationTarget::from_group(group);
 
         let hypernote = runtime

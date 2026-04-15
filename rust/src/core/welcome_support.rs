@@ -19,25 +19,25 @@ pub(crate) use pika_mls::welcome::{
     GroupWelcomeDeliveryPlan, PendingWelcomeSnapshot, PlannedGroupCreation,
 };
 
-use crate::mdk_support::PikaMdk;
+use crate::mls_support::PikaMls;
 
 type StoredMessage = pika_mls::storage_traits::messages::types::Message;
 type StoredWelcome = pika_mls::storage_traits::welcomes::types::Welcome;
 
-pub(crate) fn list_pending_welcome_snapshots(mdk: &PikaMdk) -> Result<Vec<PendingWelcomeSnapshot>> {
-    WelcomeQueries::new(mdk).list_pending_welcome_snapshots()
+pub(crate) fn list_pending_welcome_snapshots(mls: &PikaMls) -> Result<Vec<PendingWelcomeSnapshot>> {
+    WelcomeQueries::new(mls).list_pending_welcome_snapshots()
 }
 
 pub(crate) fn lookup_pending_welcome(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     target: &EventId,
 ) -> Result<Option<StoredWelcome>> {
-    WelcomeQueries::new(mdk).lookup_pending_welcome(target)
+    WelcomeQueries::new(mls).lookup_pending_welcome(target)
 }
 
 #[cfg(test)]
 pub(crate) async fn ingest_welcome_from_giftwrap<F>(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     keys: &Keys,
     event: &Event,
     sender_allowed: F,
@@ -45,11 +45,11 @@ pub(crate) async fn ingest_welcome_from_giftwrap<F>(
 where
     F: Fn(&str) -> bool,
 {
-    shared_ingest_welcome_from_giftwrap(mdk, keys, event, sender_allowed).await
+    shared_ingest_welcome_from_giftwrap(mls, keys, event, sender_allowed).await
 }
 
 pub(crate) async fn accept_welcome_and_catch_up<F, Fut>(
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     client: &nostr_sdk::Client,
     relay_urls: &[nostr_sdk::RelayUrl],
     welcome: &StoredWelcome,
@@ -61,14 +61,14 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    shared_accept_pending_welcome(mdk, welcome)?;
+    shared_accept_pending_welcome(mls, welcome)?;
     after_accept().await?;
 
     if !relay_urls.is_empty() {
         let nostr_group_id_hex = hex::encode(welcome.nostr_group_id);
         let _ingested_messages: Vec<StoredMessage> =
             super::conversation_support::ingest_backlog_messages(
-                mdk,
+                mls,
                 client,
                 relay_urls,
                 &nostr_group_id_hex,
@@ -107,14 +107,14 @@ where
 
 pub(crate) fn create_group_and_plan_welcome_delivery(
     creator_pubkey: &PublicKey,
-    mdk: &PikaMdk,
+    mls: &PikaMls,
     peer_key_packages: Vec<Event>,
     config: NostrGroupConfigData,
     recipients: &[PublicKey],
 ) -> Result<PlannedGroupCreation> {
     shared_create_group_and_plan_welcome_delivery(
         creator_pubkey,
-        mdk,
+        mls,
         peer_key_packages,
         config,
         recipients,

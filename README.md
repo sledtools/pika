@@ -27,26 +27,26 @@ End-to-end encrypted messaging for iOS, Android, and Desktop, built on [MLS](htt
 
 ## How it works
 
-Pika uses the [Marmot protocol](https://github.com/marmot-protocol/mdk) to layer MLS group encryption on top of Nostr relays. Messages are encrypted client-side using MLS, then published as Nostr events. Nostr relays handle transport and delivery without ever seeing plaintext.
+Pika uses Nostr keys as identity roots and a Pika chat server for private-chat ordering, membership control, and delivery. The Rust core owns local chat state and emits snapshots to the native clients.
 
 ```
-┌─────────┐       UniFFI / JNI       ┌────────────┐       Nostr events       ┌───────────┐
-│ iOS /   │  ───  actions  ────────▶  │  Rust core │  ──  encrypted msgs ──▶  │   Nostr   │
-│ Android │  ◀──  state snapshots ──  │  (pika_core)│  ◀─  encrypted msgs ──  │   relays  │
-│ Desktop │                           │             │                          │           │
-└─────────┘                           └────────────┘                          └───────────┘
+┌─────────┐       UniFFI / JNI       ┌────────────┐       ordered room log       ┌──────────────┐
+│ iOS /   │  ───  actions  ────────▶  │ Rust core  │  ─── messages/control ───▶  │ Pika chat    │
+│ Android │  ◀──  state snapshots ──  │ (pika_core)│  ◀── sync/welcomes ───────  │ server       │
+│ Desktop │                           │            │                              │              │
+└─────────┘                           └────────────┘                              └──────────────┘
                                             │
                                             ▼
                                      ┌────────────┐
-                                     │    MDK     │
-                                     │ (MLS lib)  │
+                                     │ pika-mls   │
+                                     │ local state│
                                      └────────────┘
 ```
 
-- **Rust core** owns all business logic: MLS state, message encryption/decryption, Nostr transport, and app state
+- **Rust core** owns all business logic: chat state, private-chat transport, profile/media flows, and app state
 - **iOS** (SwiftUI), **Android** (Kotlin), and **Desktop** (Iced) are thin UI layers that render state snapshots from Rust and dispatch user actions back
-- **MDK** (Marmot Development Kit) provides the MLS implementation
-- **nostr-sdk** handles relay connections and event publishing/subscribing
+- **pika-mls** provides the repo-local chat state engine and MLS-compatible helper surface used by app, CLI, sidecar, and notification code
+- **nostr-sdk** handles identity, relay-compatible profile/media paths, and event publishing/subscribing where still needed
 
 ## Project structure
 
@@ -128,7 +128,7 @@ just desktop-ui-test           # Run desktop tests
 
 ### pikachat
 
-A command-line interface for testing the Marmot protocol directly:
+A command-line interface for testing Pika chat flows directly:
 
 ```sh
 just cli-build

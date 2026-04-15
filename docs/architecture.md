@@ -1,5 +1,5 @@
 ---
-summary: High-level architecture — Rust core, iOS/Android apps, MLS over Nostr
+summary: High-level architecture — Rust core, iOS/Android apps, local secure chat
 read_when:
   - starting work on the project
   - need to understand how components fit together
@@ -7,26 +7,26 @@ read_when:
 
 # Architecture
 
-Pika is an MLS-encrypted messaging app for iOS and Android, built on the Marmot protocol over Nostr.
+Pika is an encrypted messaging app for iOS and Android, rooted in Nostr identities and moving toward a server-ordered private-chat transport.
 
 For the canonical Rust Multiplatform model (including native adapter windows), see `docs/rmp.md`.
 This page is the topology overview.
 
 ## Components
 
-- **Rust core** (`rust/`) — MLS state machine, Nostr transport, UniFFI bindings
-- **Call control (Rust core)** — call signaling state machine over MLS app messages (`pika.call` namespace)
+- **Rust core** (`rust/`) — chat state machine, Nostr identity/signing, chat-server transport, UniFFI bindings
+- **Call control (Rust core)** — call signaling state machine over private chat messages (`pika.call` namespace)
 - **iOS app** (`ios/`) — Swift UI, uses PikaCore.xcframework
 - **Android app** (`android/`) — Kotlin, uses JNI bindings via cargo-ndk
 - **pikachat** (`cli/`) — Command-line interface for testing and agent automation
-- **MDK** (external, `https://github.com/marmot-protocol/mdk`) — Marmot Development Kit, the MLS library
+- **pika-mls** (`crates/pika-mls`) — local group/message/key-package storage and encrypted media helpers
 
 ## Data flow
 
 1. App calls Rust core via UniFFI (Swift) or JNI (Kotlin)
-2. Rust core uses MDK for MLS group operations (create, invite, encrypt, decrypt)
-3. Rust core uses nostr-sdk to publish/subscribe Nostr events on relays
-4. Key packages (kind 443) enable async peer discovery
+2. Rust core uses `pika-mls` for group state, invites, message wrapping, and encrypted media metadata
+3. Rust core uses the chat server for ordered private-chat delivery when configured
+4. Nostr keys and signatures remain the identity root for login, contact exchange, and compatibility paths
 
 ## State Management (v1/v2 Specs)
 

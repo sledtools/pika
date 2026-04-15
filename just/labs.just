@@ -39,7 +39,7 @@ primal-ios-lab-seed-reset:
 primal-ios-lab-dump-debug:
     ./tools/primal-ios-interop-lab dump-debug
 
-# Interop baseline: local Rust bot. Requires ~/code/marmot-interop-lab-rust.
+# Interop baseline: local Rust bot. Requires ~/code/pika-interop-lab-rust.
 interop-rust-baseline:
     cargo test -p pikahut --test integration_deterministic interop_rust_baseline -- --ignored --nocapture
 

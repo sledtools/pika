@@ -14,10 +14,6 @@ blurhash = "0.2"
 flume = { workspace = true }
 hex = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
-# NOTE: CI-compatible dependency pinning. Do not use local path deps here.
-# If you need to develop against a local MDK checkout, use a gitignored
-# `.cargo/config.toml` with a `[patch."https://github.com/marmot-protocol/mdk"]`
-# section instead.
 keyring-core = { workspace = true }
 nostr-sdk = { workspace = true, features = ["nip59"] }
 nostr-connect = { workspace = true }

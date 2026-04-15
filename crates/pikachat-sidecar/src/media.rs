@@ -9,7 +9,7 @@ use pika_mls::encrypted_media::types::{
 use pika_mls::storage_traits::{GroupId, messages::types::Message};
 use sha2::{Digest, Sha256};
 
-use crate::PikaMdk;
+use crate::PikaMls;
 
 pub const MAX_CHAT_MEDIA_BYTES: usize = 32 * 1024 * 1024;
 
@@ -66,12 +66,12 @@ pub struct ResolvedUploadMetadata {
 }
 
 pub struct MediaRuntime<'a> {
-    mdk: &'a PikaMdk,
+    mls: &'a PikaMls,
 }
 
 impl<'a> MediaRuntime<'a> {
-    pub fn new(mdk: &'a PikaMdk) -> Self {
-        Self { mdk }
+    pub fn new(mls: &'a PikaMls) -> Self {
+        Self { mls }
     }
 
     pub fn prepare_upload(
@@ -99,7 +99,7 @@ impl<'a> MediaRuntime<'a> {
                 .unwrap_or("application/octet-stream"),
         );
 
-        let manager = self.mdk.media_manager(mls_group_id.clone());
+        let manager = self.mls.media_manager(mls_group_id.clone());
         let mut upload = manager
             .encrypt_for_upload_with_options(
                 bytes,
@@ -122,7 +122,7 @@ impl<'a> MediaRuntime<'a> {
         upload: &EncryptedMediaUpload,
         uploaded_blob: UploadedBlob,
     ) -> RuntimeMediaUploadResult {
-        let manager = self.mdk.media_manager(mls_group_id.clone());
+        let manager = self.mls.media_manager(mls_group_id.clone());
         let imeta_tag = manager.create_imeta_tag(upload, &uploaded_blob.uploaded_url);
         let reference = manager.create_media_reference(upload, uploaded_blob.uploaded_url.clone());
         let attachment =
@@ -172,7 +172,7 @@ impl<'a> MediaRuntime<'a> {
     where
         I: IntoIterator<Item = &'b Tag>,
     {
-        let manager = self.mdk.media_manager(mls_group_id.clone());
+        let manager = self.mls.media_manager(mls_group_id.clone());
         tags.into_iter()
             .filter(|tag| is_imeta_tag(tag))
             .filter_map(|tag| manager.parse_imeta_tag(tag).ok())
@@ -222,7 +222,7 @@ impl<'a> MediaRuntime<'a> {
             }
         }
 
-        let manager = self.mdk.media_manager(mls_group_id.clone());
+        let manager = self.mls.media_manager(mls_group_id.clone());
         let decrypted_data = manager
             .decrypt_from_download(encrypted_data, reference)
             .context("decrypt downloaded media")?;
@@ -404,7 +404,7 @@ fn mime_from_extension_str(ext: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    use crate::open_mdk;
+    use crate::open_mls;
     use nostr_sdk::prelude::{EventBuilder, Keys, Kind, RelayUrl};
 
     #[test]
@@ -467,10 +467,10 @@ mod tests {
         assert_eq!(resolved.mime_type, "image/jpeg");
     }
 
-    fn make_key_package_event(mdk: &PikaMdk, keys: &Keys) -> nostr_sdk::prelude::Event {
+    fn make_key_package_event(mls: &PikaMls, keys: &Keys) -> nostr_sdk::prelude::Event {
         let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
         let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
-            mdk,
+            mls,
             &keys.public_key(),
             vec![relay],
         )
@@ -487,9 +487,9 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = open_mls(invitee_dir.path()).expect("open invitee mls");
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
 
         let config = pika_mls::prelude::NostrGroupConfigData::new(
             "media runtime".to_string(),
@@ -500,10 +500,10 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
-        let runtime = MediaRuntime::new(&inviter_mdk);
+        let runtime = MediaRuntime::new(&inviter_mls);
         let prepared = runtime
             .prepare_upload(
                 &created.group.mls_group_id,
@@ -542,9 +542,9 @@ mod tests {
         let invitee_dir = tempfile::tempdir().expect("invitee tempdir");
         let inviter_keys = Keys::generate();
         let invitee_keys = Keys::generate();
-        let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
-        let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
-        let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
+        let inviter_mls = open_mls(inviter_dir.path()).expect("open inviter mls");
+        let invitee_mls = open_mls(invitee_dir.path()).expect("open invitee mls");
+        let invitee_kp = make_key_package_event(&invitee_mls, &invitee_keys);
         let config = pika_mls::prelude::NostrGroupConfigData::new(
             "runtime decrypt".to_string(),
             String::new(),
@@ -554,12 +554,12 @@ mod tests {
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
             vec![inviter_keys.public_key(), invitee_keys.public_key()],
         );
-        let created = inviter_mdk
+        let created = inviter_mls
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
         let mls_group_id = created.group.mls_group_id;
 
-        let runtime = MediaRuntime::new(&inviter_mdk);
+        let runtime = MediaRuntime::new(&inviter_mls);
         let prepared = runtime
             .prepare_upload(
                 &mls_group_id,

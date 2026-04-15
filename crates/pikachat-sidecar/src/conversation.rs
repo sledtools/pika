@@ -2,14 +2,14 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use mdk_core::prelude::{GroupId, MessageProcessingResult};
-use mdk_storage_traits::{
-    groups::{Pagination, types::Group},
-    messages::types::Message,
-};
 use nostr_sdk::Metadata;
 use nostr_sdk::prelude::{
     Alphabet, Client, Event, EventId, Filter, Kind, PublicKey, RelayUrl, SingleLetterTag, Timestamp,
+};
+use pika_mls::prelude::{GroupId, MessageProcessingResult};
+use pika_mls::storage_traits::{
+    groups::{Pagination, types::Group},
+    messages::types::Message,
 };
 
 use crate::PikaMdk;
@@ -429,8 +429,8 @@ impl<'a> ConversationRuntime<'a> {
 mod tests {
     use super::*;
 
-    use mdk_core::prelude::NostrGroupConfigData;
     use nostr_sdk::prelude::{Keys, RelayUrl, TagKind, Tags, Timestamp};
+    use pika_mls::prelude::NostrGroupConfigData;
 
     fn open_test_mdk(dir: &tempfile::TempDir) -> PikaMdk {
         crate::open_mdk(dir.path()).expect("open test mdk")
@@ -473,7 +473,7 @@ mod tests {
             ),
             wrapper_event_id: EventId::all_zeros(),
             epoch: None,
-            state: mdk_storage_traits::messages::types::MessageState::Processed,
+            state: pika_mls::storage_traits::messages::types::MessageState::Processed,
         }
     }
 

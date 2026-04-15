@@ -62,7 +62,7 @@ pub fn resolve_daemon_socket_path(state_dir: &Path) -> PathBuf {
 pub fn ingest_application_message(
     mdk: &PikaMdk,
     event: &Event,
-) -> Result<Option<mdk_storage_traits::messages::types::Message>> {
+) -> Result<Option<pika_mls::storage_traits::messages::types::Message>> {
     match runtime::MarmotRuntime::new(mdk).process_event(event)? {
         Some(conversation::ConversationEvent::Application(message)) => Ok(Some(message.message)),
         _ => Ok(None),
@@ -76,7 +76,7 @@ pub async fn ingest_group_backlog(
     nostr_group_id_hex: &str,
     seen: &mut HashSet<EventId>,
     limit: usize,
-) -> Result<Vec<mdk_storage_traits::messages::types::Message>> {
+) -> Result<Vec<pika_mls::storage_traits::messages::types::Message>> {
     runtime::MarmotRuntime::with_client(mdk, client)
         .ingest_group_backlog(relay_urls, nostr_group_id_hex, seen, limit)
         .await

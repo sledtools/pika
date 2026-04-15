@@ -1,9 +1,9 @@
-use mdk_core::MDK;
-use mdk_core::encrypted_media::crypto::{DEFAULT_SCHEME_VERSION, derive_encryption_key};
-use mdk_core::prelude::GroupId;
-use mdk_sqlite_storage::MdkSqliteStorage;
 use nostr_sdk::hashes::{Hash as _, sha256};
 use pika_media::crypto::{FrameKeyMaterial, opaque_participant_label};
+use pika_mls::MDK;
+use pika_mls::MdkSqliteStorage;
+use pika_mls::encrypted_media::crypto::{DEFAULT_SCHEME_VERSION, derive_encryption_key};
+use pika_mls::prelude::GroupId;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_CALL_BROADCAST_PREFIX: &str = "pika/calls";

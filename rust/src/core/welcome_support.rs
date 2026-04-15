@@ -2,18 +2,18 @@ use std::collections::HashSet;
 use std::future::Future;
 
 use anyhow::{Context, Result};
-use mdk_core::prelude::NostrGroupConfigData;
 use nostr_sdk::prelude::{
     Event, EventBuilder, EventId, NostrSigner, PublicKey, RelayUrl, Tag, Timestamp, UnsignedEvent,
 };
 #[cfg(test)]
 use nostr_sdk::prelude::{Keys, Kind};
+use pika_mls::prelude::NostrGroupConfigData;
 
 use crate::mdk_support::PikaMdk;
 
-type StoredGroup = mdk_storage_traits::groups::types::Group;
-type StoredMessage = mdk_storage_traits::messages::types::Message;
-type StoredWelcome = mdk_storage_traits::welcomes::types::Welcome;
+type StoredGroup = pika_mls::storage_traits::groups::types::Group;
+type StoredMessage = pika_mls::storage_traits::messages::types::Message;
+type StoredWelcome = pika_mls::storage_traits::welcomes::types::Welcome;
 
 #[cfg(test)]
 #[allow(dead_code)]
@@ -46,7 +46,7 @@ pub(crate) struct PendingWelcomeSnapshot {
     pub welcomer: PublicKey,
     pub created_at: Timestamp,
     pub nostr_group_id_hex: String,
-    pub mls_group_id: mdk_storage_traits::GroupId,
+    pub mls_group_id: pika_mls::storage_traits::GroupId,
     pub group_name: String,
     pub group_description: String,
     pub member_count: u32,

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use ::image::GenericImageView as _;
 use base64::Engine;
-use mdk_core::encrypted_media::types::MediaReference;
+use pika_mls::encrypted_media::types::MediaReference;
 use sha2::{Digest, Sha256};
 
 use crate::state::{ChatMediaAttachment, ChatMediaKind, MediaGalleryItem, MediaGalleryState};
@@ -2298,8 +2298,8 @@ impl AppCore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mdk_core::prelude::NostrGroupConfigData;
     use nostr_sdk::prelude::{Event, EventBuilder, Keys, Kind, RelayUrl};
+    use pika_mls::prelude::NostrGroupConfigData;
 
     fn make_key_package_event(mdk: &PikaMdk, keys: &Keys) -> Event {
         let relay = RelayUrl::parse("wss://test.relay").expect("relay url");

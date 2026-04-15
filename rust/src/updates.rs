@@ -261,7 +261,7 @@ pub(crate) enum InternalEvent {
         chat_id: String,
         metadata_json: String,
         image_bytes: Vec<u8>,
-        upload: mdk_core::encrypted_media::types::EncryptedMediaUpload,
+        upload: pika_mls::encrypted_media::types::EncryptedMediaUpload,
         uploaded_url: String,
     },
 

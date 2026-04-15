@@ -1,8 +1,8 @@
 use std::future::Future;
 
 use anyhow::{anyhow, Context, Result};
-use mdk_storage_traits::GroupId;
 use nostr_sdk::prelude::{Event, PublicKey, UnsignedEvent};
+use pika_mls::storage_traits::GroupId;
 
 use crate::mdk_support::PikaMdk;
 

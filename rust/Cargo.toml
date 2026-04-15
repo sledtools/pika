@@ -18,9 +18,6 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 # If you need to develop against a local MDK checkout, use a gitignored
 # `.cargo/config.toml` with a `[patch."https://github.com/marmot-protocol/mdk"]`
 # section instead.
-# MDK is pinned at the workspace root to avoid version skew between workspace members.
-mdk-core = { workspace = true }
-mdk-storage-traits = { workspace = true }
 keyring-core = { workspace = true }
 nostr-sdk = { workspace = true, features = ["nip59"] }
 nostr-connect = { workspace = true }

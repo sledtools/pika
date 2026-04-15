@@ -2,11 +2,11 @@ use std::collections::HashSet;
 use std::future::Future;
 
 use anyhow::{Context, Result};
-use mdk_core::prelude::NostrGroupConfigData;
 use nostr_sdk::prelude::{
     Event, EventBuilder, EventId, Keys, Kind, NostrSigner, PublicKey, RelayUrl, Tag, Timestamp,
     UnsignedEvent,
 };
+use pika_mls::prelude::NostrGroupConfigData;
 
 use crate::{PikaMdk, ingest_group_backlog};
 
@@ -25,9 +25,9 @@ pub struct AcceptedWelcome {
     pub wrapper_event_id: EventId,
     pub welcome_event_id: EventId,
     pub nostr_group_id_hex: String,
-    pub mls_group_id: mdk_storage_traits::GroupId,
+    pub mls_group_id: pika_mls::storage_traits::GroupId,
     pub group_name: String,
-    pub ingested_messages: Vec<mdk_storage_traits::messages::types::Message>,
+    pub ingested_messages: Vec<pika_mls::storage_traits::messages::types::Message>,
 }
 
 #[derive(Debug, Clone)]
@@ -46,13 +46,13 @@ pub struct GroupWelcomeDeliveryPlan {
 
 #[derive(Debug, Clone)]
 pub struct PlannedGroupCreation {
-    pub group: mdk_storage_traits::groups::types::Group,
+    pub group: pika_mls::storage_traits::groups::types::Group,
     pub welcome_delivery: Option<GroupWelcomeDeliveryPlan>,
 }
 
 #[derive(Debug, Clone)]
 pub struct CreatedGroup {
-    pub group: mdk_storage_traits::groups::types::Group,
+    pub group: pika_mls::storage_traits::groups::types::Group,
     pub published_welcomes: Vec<PublishedWelcome>,
 }
 
@@ -63,7 +63,7 @@ pub struct PendingWelcomeSnapshot {
     pub welcomer: PublicKey,
     pub created_at: Timestamp,
     pub nostr_group_id_hex: String,
-    pub mls_group_id: mdk_storage_traits::GroupId,
+    pub mls_group_id: pika_mls::storage_traits::GroupId,
     pub group_name: String,
     pub group_description: String,
     pub member_count: u32,
@@ -71,7 +71,7 @@ pub struct PendingWelcomeSnapshot {
 }
 
 impl PendingWelcomeSnapshot {
-    fn from_welcome(welcome: &mdk_storage_traits::welcomes::types::Welcome) -> Self {
+    fn from_welcome(welcome: &pika_mls::storage_traits::welcomes::types::Welcome) -> Self {
         Self {
             wrapper_event_id: welcome.wrapper_event_id,
             welcome_event_id: welcome.id,
@@ -88,23 +88,23 @@ impl PendingWelcomeSnapshot {
 }
 
 fn pending_welcome_matches_event_id(
-    welcome: &mdk_storage_traits::welcomes::types::Welcome,
+    welcome: &pika_mls::storage_traits::welcomes::types::Welcome,
     target: &EventId,
 ) -> bool {
     welcome.wrapper_event_id == *target || welcome.id == *target
 }
 
 pub fn find_pending_welcome<'a>(
-    welcomes: &'a [mdk_storage_traits::welcomes::types::Welcome],
+    welcomes: &'a [pika_mls::storage_traits::welcomes::types::Welcome],
     target: &EventId,
-) -> Option<&'a mdk_storage_traits::welcomes::types::Welcome> {
+) -> Option<&'a pika_mls::storage_traits::welcomes::types::Welcome> {
     welcomes
         .iter()
         .find(|welcome| pending_welcome_matches_event_id(welcome, target))
 }
 
 pub fn find_pending_welcome_index(
-    welcomes: &[mdk_storage_traits::welcomes::types::Welcome],
+    welcomes: &[pika_mls::storage_traits::welcomes::types::Welcome],
     target: &EventId,
 ) -> Option<usize> {
     welcomes
@@ -113,9 +113,9 @@ pub fn find_pending_welcome_index(
 }
 
 pub fn take_pending_welcome(
-    welcomes: &mut Vec<mdk_storage_traits::welcomes::types::Welcome>,
+    welcomes: &mut Vec<pika_mls::storage_traits::welcomes::types::Welcome>,
     target: &EventId,
-) -> Option<mdk_storage_traits::welcomes::types::Welcome> {
+) -> Option<pika_mls::storage_traits::welcomes::types::Welcome> {
     find_pending_welcome_index(welcomes, target).map(|idx| welcomes.swap_remove(idx))
 }
 
@@ -131,7 +131,7 @@ pub fn list_pending_welcome_snapshots(mdk: &PikaMdk) -> Result<Vec<PendingWelcom
 pub fn lookup_pending_welcome(
     mdk: &PikaMdk,
     target: &EventId,
-) -> Result<Option<mdk_storage_traits::welcomes::types::Welcome>> {
+) -> Result<Option<pika_mls::storage_traits::welcomes::types::Welcome>> {
     let pending = mdk
         .get_pending_welcomes(None)
         .context("get pending welcomes")?;
@@ -222,7 +222,7 @@ pub async fn accept_welcome_and_catch_up<F, Fut>(
     mdk: &PikaMdk,
     client: &nostr_sdk::Client,
     relay_urls: &[nostr_sdk::RelayUrl],
-    welcome: &mdk_storage_traits::welcomes::types::Welcome,
+    welcome: &pika_mls::storage_traits::welcomes::types::Welcome,
     seen: &mut HashSet<EventId>,
     limit: usize,
     after_accept: F,

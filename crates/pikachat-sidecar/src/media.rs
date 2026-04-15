@@ -1,12 +1,12 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use mdk_core::encrypted_media::types::{
-    EncryptedMediaUpload, MediaProcessingOptions, MediaReference,
-};
-use mdk_storage_traits::{GroupId, messages::types::Message};
 use nostr_blossom::client::BlossomClient;
 use nostr_sdk::prelude::{NostrSigner, Tag, TagKind, Url};
+use pika_mls::encrypted_media::types::{
+    EncryptedMediaUpload, MediaProcessingOptions, MediaReference,
+};
+use pika_mls::storage_traits::{GroupId, messages::types::Message};
 use sha2::{Digest, Sha256};
 
 use crate::PikaMdk;
@@ -488,7 +488,7 @@ mod tests {
         let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
         let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
 
-        let config = mdk_core::prelude::NostrGroupConfigData::new(
+        let config = pika_mls::prelude::NostrGroupConfigData::new(
             "media runtime".to_string(),
             String::new(),
             None,
@@ -542,7 +542,7 @@ mod tests {
         let inviter_mdk = open_mdk(inviter_dir.path()).expect("open inviter mdk");
         let invitee_mdk = open_mdk(invitee_dir.path()).expect("open invitee mdk");
         let invitee_kp = make_key_package_event(&invitee_mdk, &invitee_keys);
-        let config = mdk_core::prelude::NostrGroupConfigData::new(
+        let config = pika_mls::prelude::NostrGroupConfigData::new(
             "runtime decrypt".to_string(),
             String::new(),
             None,

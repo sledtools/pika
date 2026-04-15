@@ -1845,8 +1845,8 @@ mod tests {
 
     // --- separate_messages / build_chat_message tests ---
 
-    use mdk_core::prelude::message_types;
     use nostr_sdk::prelude::*;
+    use pika_mls::prelude::message_types;
 
     fn make_stored_msg(
         id_byte: u8,
@@ -1863,7 +1863,7 @@ mod tests {
             id: EventId::from_byte_array(id_bytes),
             pubkey,
             kind,
-            mls_group_id: mdk_core::prelude::GroupId::from_slice(&[1]),
+            mls_group_id: pika_mls::prelude::GroupId::from_slice(&[1]),
             created_at,
             processed_at: created_at,
             content: content.to_string(),

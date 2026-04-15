@@ -1,13 +1,13 @@
 use anyhow::{Context, Result};
-use mdk_core::encrypted_media::types::{
-    EncryptedMediaUpload, MediaProcessingOptions, MediaReference,
-};
 use nostr_blossom::client::BlossomClient;
 use nostr_sdk::prelude::{NostrSigner, Tag, Url};
+use pika_mls::encrypted_media::types::{
+    EncryptedMediaUpload, MediaProcessingOptions, MediaReference,
+};
 use sha2::{Digest, Sha256};
 
 use crate::mdk_support::PikaMdk;
-use mdk_storage_traits::GroupId;
+use pika_mls::storage_traits::GroupId;
 
 pub(crate) const MAX_CHAT_MEDIA_BYTES: usize = 32 * 1024 * 1024;
 

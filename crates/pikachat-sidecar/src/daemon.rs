@@ -10,8 +10,6 @@ use std::time::Duration;
 use anyhow::{Context, anyhow};
 use base64::Engine;
 use hypernote_protocol as hn;
-use mdk_core::prelude::*;
-use mdk_sqlite_storage::MdkSqliteStorage;
 use nostr_sdk::prelude::*;
 use pika_marmot_runtime::call::{
     CallCryptoDeriveContext, CallMediaCryptoContext, CallSessionParams, CallTrackSpec,
@@ -46,6 +44,8 @@ use pika_media::session::{
     InMemoryRelay, MediaFrame, MediaSession, MediaSessionError, SessionConfig,
 };
 use pika_media::tracks::{TrackAddress, broadcast_path};
+use pika_mls::MdkSqliteStorage;
+use pika_mls::prelude::*;
 
 use serde::Deserialize;
 use serde_json::json;
@@ -229,7 +229,7 @@ async fn accept_welcome_with_backfill<F, Fut>(
     mdk: &MDK<MdkSqliteStorage>,
     client: &Client,
     relay_urls: &[RelayUrl],
-    welcome: &mdk_storage_traits::welcomes::types::Welcome,
+    welcome: &pika_mls::storage_traits::welcomes::types::Welcome,
     seen_group_events: &mut HashSet<EventId>,
     after_accept: F,
 ) -> anyhow::Result<AcceptedWelcome>
@@ -3459,7 +3459,7 @@ fn parse_relay_list(relay: &str, relays_override: &[String]) -> anyhow::Result<V
 }
 
 fn classify_daemon_message(
-    msg: &mdk_storage_traits::messages::types::Message,
+    msg: &pika_mls::storage_traits::messages::types::Message,
 ) -> Option<MessageClassification> {
     classify_shared_message(msg.kind, &msg.content, msg.tags.iter())
 }
@@ -5740,10 +5740,10 @@ pub async fn daemon_main(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mdk_core::prelude::NostrGroupConfigData;
     use pika_marmot_runtime::conversation::{RuntimeGroupUpdate, RuntimeGroupUpdateKind};
     use pika_marmot_runtime::media::{is_imeta_tag, mime_from_extension};
     use pika_marmot_runtime::message::TYPING_INDICATOR_KIND;
+    use pika_mls::prelude::NostrGroupConfigData;
 
     fn event_id(hex: &str) -> EventId {
         EventId::from_hex(hex).expect("valid event id")
@@ -5780,11 +5780,11 @@ mod tests {
         kind: Kind,
         content: &str,
         tags: Tags,
-    ) -> mdk_storage_traits::messages::types::Message {
+    ) -> pika_mls::storage_traits::messages::types::Message {
         let pubkey = Keys::generate().public_key();
         let created_at = Timestamp::from(123_u64);
         let mls_group_id = GroupId::from_slice(&[1, 2, 3]);
-        mdk_storage_traits::messages::types::Message {
+        pika_mls::storage_traits::messages::types::Message {
             id: EventId::all_zeros(),
             mls_group_id: mls_group_id.clone(),
             pubkey,
@@ -5818,10 +5818,10 @@ mod tests {
     fn make_pending_welcome(
         wrapper_hex: &str,
         welcome_hex: &str,
-    ) -> mdk_storage_traits::welcomes::types::Welcome {
+    ) -> pika_mls::storage_traits::welcomes::types::Welcome {
         let welcomer = Keys::generate().public_key();
         let created_at = Timestamp::from(1_u64);
-        mdk_storage_traits::welcomes::types::Welcome {
+        pika_mls::storage_traits::welcomes::types::Welcome {
             id: event_id(welcome_hex),
             event: UnsignedEvent::new(
                 welcomer,
@@ -5841,7 +5841,7 @@ mod tests {
             group_relays: std::collections::BTreeSet::new(),
             welcomer,
             member_count: 2,
-            state: mdk_storage_traits::welcomes::types::WelcomeState::Pending,
+            state: pika_mls::storage_traits::welcomes::types::WelcomeState::Pending,
             wrapper_event_id: event_id(wrapper_hex),
         }
     }

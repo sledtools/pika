@@ -1,8 +1,8 @@
 use crate::mdk_support::PikaMdk;
-use mdk_core::encrypted_media::crypto::{derive_encryption_key, DEFAULT_SCHEME_VERSION};
-use mdk_storage_traits::GroupId;
 use nostr_sdk::hashes::{sha256, Hash as _};
 use pika_media::crypto::{opaque_participant_label, FrameKeyMaterial};
+use pika_mls::encrypted_media::crypto::{derive_encryption_key, DEFAULT_SCHEME_VERSION};
+use pika_mls::storage_traits::GroupId;
 use serde::{Deserialize, Serialize};
 
 pub(crate) const DEFAULT_CALL_BROADCAST_PREFIX: &str = "pika/calls";

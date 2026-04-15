@@ -100,13 +100,13 @@ impl<'a> DaemonHostContext<'a> {
     pub(super) fn lookup_pending_welcome(
         &self,
         target: &EventId,
-    ) -> anyhow::Result<Option<mdk_storage_traits::welcomes::types::Welcome>> {
+    ) -> anyhow::Result<Option<pika_mls::storage_traits::welcomes::types::Welcome>> {
         self.queries().lookup_pending_welcome(target)
     }
 
     pub(super) fn parse_message_media_attachments(
         &self,
-        message: &mdk_storage_traits::messages::types::Message,
+        message: &pika_mls::storage_traits::messages::types::Message,
     ) -> Vec<ParsedMediaAttachment> {
         self.runtime().parse_message_attachments(message)
     }
@@ -418,7 +418,7 @@ impl<'a> DaemonHostContext<'a> {
         &self,
         mls_group_id: &GroupId,
         nostr_group_id_hex: String,
-        upload: &mdk_core::encrypted_media::types::EncryptedMediaUpload,
+        upload: &pika_mls::encrypted_media::types::EncryptedMediaUpload,
         status: pika_marmot_runtime::runtime::MediaUploadStatus,
     ) -> pika_marmot_runtime::runtime::RuntimeOperationEvent {
         self.commands().complete_media_upload_operation(

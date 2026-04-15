@@ -3,10 +3,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use mdk_core::prelude::{GroupId, MessageProcessingResult};
-use mdk_storage_traits::groups::{Pagination, types::Group};
-use mdk_storage_traits::messages::types::Message;
 use nostr_sdk::prelude::*;
+use pika_mls::prelude::{GroupId, MessageProcessingResult};
+use pika_mls::storage_traits::groups::{Pagination, types::Group};
+use pika_mls::storage_traits::messages::types::Message;
 
 use crate::PikaMdk;
 use crate::call::{CallSessionParams, ParsedCallSignal, parse_call_signal};
@@ -235,7 +235,7 @@ impl RuntimeOperationEvent {
 
     pub fn media_upload_failed(
         nostr_group_id_hex: String,
-        upload: &mdk_core::encrypted_media::types::EncryptedMediaUpload,
+        upload: &pika_mls::encrypted_media::types::EncryptedMediaUpload,
         error: String,
     ) -> Self {
         Self::MediaUpload(MediaUploadOperationEvent::Failed {
@@ -486,7 +486,7 @@ impl MediaUploadOperationEvent {
 }
 
 fn media_upload_operation_id(
-    upload: &mdk_core::encrypted_media::types::EncryptedMediaUpload,
+    upload: &pika_mls::encrypted_media::types::EncryptedMediaUpload,
 ) -> EventId {
     EventId::from_byte_array(upload.encrypted_hash)
 }
@@ -871,7 +871,7 @@ impl<'a> RuntimeQueries<'a> {
     pub fn lookup_pending_welcome(
         &self,
         target: &EventId,
-    ) -> Result<Option<mdk_storage_traits::welcomes::types::Welcome>> {
+    ) -> Result<Option<pika_mls::storage_traits::welcomes::types::Welcome>> {
         lookup_pending_welcome(self.mdk, target)
     }
 }
@@ -1115,7 +1115,7 @@ impl<'a> RuntimeCommands<'a> {
     pub fn finish_upload(
         &self,
         mls_group_id: &GroupId,
-        upload: &mdk_core::encrypted_media::types::EncryptedMediaUpload,
+        upload: &pika_mls::encrypted_media::types::EncryptedMediaUpload,
         uploaded_blob: crate::media::UploadedBlob,
     ) -> RuntimeMediaUploadResult {
         MediaRuntime::new(self.mdk).finish_upload(mls_group_id, upload, uploaded_blob)
@@ -1125,7 +1125,7 @@ impl<'a> RuntimeCommands<'a> {
         &self,
         mls_group_id: &GroupId,
         nostr_group_id_hex: String,
-        upload: &mdk_core::encrypted_media::types::EncryptedMediaUpload,
+        upload: &pika_mls::encrypted_media::types::EncryptedMediaUpload,
         status: MediaUploadStatus,
     ) -> RuntimeOperationEvent {
         let operation_id = media_upload_operation_id(upload);
@@ -1412,7 +1412,7 @@ impl<'a> MarmotRuntime<'a> {
     pub fn lookup_pending_welcome(
         &self,
         target: &EventId,
-    ) -> Result<Option<mdk_storage_traits::welcomes::types::Welcome>> {
+    ) -> Result<Option<pika_mls::storage_traits::welcomes::types::Welcome>> {
         self.queries().lookup_pending_welcome(target)
     }
 
@@ -1517,7 +1517,7 @@ impl<'a> MarmotRuntime<'a> {
     pub fn finish_upload(
         &self,
         mls_group_id: &GroupId,
-        upload: &mdk_core::encrypted_media::types::EncryptedMediaUpload,
+        upload: &pika_mls::encrypted_media::types::EncryptedMediaUpload,
         uploaded_blob: crate::media::UploadedBlob,
     ) -> RuntimeMediaUploadResult {
         self.commands()
@@ -1528,7 +1528,7 @@ impl<'a> MarmotRuntime<'a> {
         &self,
         mls_group_id: &GroupId,
         nostr_group_id_hex: String,
-        upload: &mdk_core::encrypted_media::types::EncryptedMediaUpload,
+        upload: &pika_mls::encrypted_media::types::EncryptedMediaUpload,
         status: MediaUploadStatus,
     ) -> RuntimeOperationEvent {
         self.commands().complete_media_upload_operation(
@@ -1546,7 +1546,7 @@ impl<'a> MarmotRuntime<'a> {
     pub async fn download_media(
         &self,
         mls_group_id: &GroupId,
-        reference: &mdk_core::encrypted_media::types::MediaReference,
+        reference: &pika_mls::encrypted_media::types::MediaReference,
         expected_encrypted_hash_hex: Option<&str>,
     ) -> Result<RuntimeDownloadedMedia> {
         self.media()
@@ -1557,7 +1557,7 @@ impl<'a> MarmotRuntime<'a> {
     pub fn decrypt_downloaded_media(
         &self,
         mls_group_id: &GroupId,
-        reference: &mdk_core::encrypted_media::types::MediaReference,
+        reference: &pika_mls::encrypted_media::types::MediaReference,
         encrypted_data: &[u8],
         expected_encrypted_hash_hex: Option<&str>,
     ) -> Result<RuntimeDownloadedMedia> {
@@ -1952,7 +1952,7 @@ mod tests {
     use crate::call::{CallTrackSpec, OutgoingCallSignal, build_call_signal_json};
     use crate::conversation::RuntimeApplicationMessage;
     use crate::welcome::ingest_welcome_from_giftwrap;
-    use mdk_core::prelude::NostrGroupConfigData;
+    use pika_mls::prelude::NostrGroupConfigData;
 
     fn open_test_mdk(dir: &tempfile::TempDir) -> PikaMdk {
         crate::open_mdk(dir.path()).expect("open test mdk")
@@ -2013,7 +2013,7 @@ mod tests {
             mls_group_id: mls_group_id.clone(),
             nostr_group_id_hex: "deadbeef".to_string(),
             classification,
-            message: mdk_storage_traits::messages::types::Message {
+            message: pika_mls::storage_traits::messages::types::Message {
                 id: EventId::all_zeros(),
                 mls_group_id,
                 pubkey,
@@ -2025,7 +2025,7 @@ mod tests {
                 event: UnsignedEvent::new(pubkey, created_at, kind, tags, content.to_string()),
                 wrapper_event_id: EventId::all_zeros(),
                 epoch: None,
-                state: mdk_core::prelude::message_types::MessageState::Processed,
+                state: pika_mls::prelude::message_types::MessageState::Processed,
             },
         }
     }

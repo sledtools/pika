@@ -2,13 +2,13 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use mdk_core::prelude::{GroupId, MessageProcessingResult};
-use mdk_storage_traits::{
-    groups::{types::Group, Pagination},
-    messages::types::Message,
-};
 use nostr_sdk::prelude::{
     Alphabet, Client, Event, EventId, Filter, Kind, PublicKey, RelayUrl, SingleLetterTag, Timestamp,
+};
+use pika_mls::prelude::{GroupId, MessageProcessingResult};
+use pika_mls::storage_traits::{
+    groups::{types::Group, Pagination},
+    messages::types::Message,
 };
 
 use super::AppMessageKind;

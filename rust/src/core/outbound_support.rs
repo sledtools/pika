@@ -1,6 +1,6 @@
 use anyhow::Result;
-use mdk_storage_traits::GroupId;
 use nostr_sdk::prelude::{Event, EventId, Kind, PublicKey, Tag, TagKind, Timestamp, UnsignedEvent};
+use pika_mls::storage_traits::GroupId;
 
 use crate::mdk_support::PikaMdk;
 

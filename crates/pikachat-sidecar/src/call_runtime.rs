@@ -4,7 +4,7 @@ use crate::call::{
     ParsedCallSignal, build_call_signal_json, derive_call_media_crypto_context,
     validate_relay_auth_token,
 };
-use mdk_core::prelude::GroupId;
+use pika_mls::prelude::GroupId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingIncomingCall {
@@ -346,8 +346,8 @@ mod tests {
     use crate::call::{CallTrackSpec, derive_relay_auth_token};
     use crate::membership::MembershipRuntime;
     use crate::open_mdk;
-    use mdk_core::prelude::NostrGroupConfigData;
     use nostr_sdk::prelude::{Event, EventBuilder, Keys, Kind, RelayUrl};
+    use pika_mls::prelude::NostrGroupConfigData;
 
     fn make_key_package_event(mdk: &PikaMdk, keys: &Keys) -> Event {
         let relay = RelayUrl::parse("wss://test.relay").expect("relay url");

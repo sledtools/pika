@@ -1,5 +1,5 @@
 use crate::mdk_support::PikaMdk;
-use mdk_storage_traits::GroupId;
+use pika_mls::storage_traits::GroupId;
 
 use super::call_support::{
     build_call_signal_json, derive_call_media_crypto_context, validate_relay_auth_token,

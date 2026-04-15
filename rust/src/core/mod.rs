@@ -61,9 +61,6 @@ use call_support::ParsedCallSignal;
 use call_workflow::{
     GroupCallContext, InboundCallSignalOutcome, InboundSignalContext, PreparedAcceptedCall,
 };
-use mdk_core::encrypted_media::types::{EncryptedMediaUpload, MediaReference};
-use mdk_core::prelude::{message_types, GroupId, MessageProcessingResult, NostrGroupConfigData};
-use mdk_storage_traits::groups::Pagination;
 use membership_support::{
     EvolutionPublishStatus, MembershipUpdateResult, PreparedMembershipEvolution,
 };
@@ -77,6 +74,9 @@ pub(crate) use message_support::{
 };
 use outbound_support::{OutboundConversationAction, PreparedConversationAction};
 use pika_chat_server::protocol::{RoomEvent, RoomEventType, WelcomeEnvelope};
+use pika_mls::encrypted_media::types::{EncryptedMediaUpload, MediaReference};
+use pika_mls::prelude::{message_types, GroupId, MessageProcessingResult, NostrGroupConfigData};
+use pika_mls::storage_traits::groups::Pagination;
 use welcome_support::{
     accept_welcome_and_catch_up, create_group_and_plan_welcome_delivery, publish_welcome_rumors,
     GroupWelcomeDeliveryPlan, PlannedGroupCreation,
@@ -4444,7 +4444,7 @@ impl AppCore {
         let already_joined = sess.groups.contains_key(&nostr_group_hex)
             || sess.mdk.get_groups().unwrap_or_default().iter().any(|g| {
                 hex::encode(g.nostr_group_id) == nostr_group_hex
-                    && g.state == mdk_storage_traits::groups::types::GroupState::Active
+                    && g.state == pika_mls::storage_traits::groups::types::GroupState::Active
             });
         if already_joined {
             if let Some(binding) = room_binding.as_ref() {
@@ -6690,7 +6690,7 @@ impl AppCore {
                     return;
                 };
 
-                let update = mdk_core::prelude::NostrGroupDataUpdate::new().name(name);
+                let update = pika_mls::prelude::NostrGroupDataUpdate::new().name(name);
                 let result = match sess.mdk.update_group_data(&entry.mls_group_id, update) {
                     Ok(r) => r,
                     Err(e) => {
@@ -7452,10 +7452,10 @@ mod tests {
         };
         use crate::mdk_support::open_mdk;
         use crate::state::ChatViewState;
-        use mdk_core::prelude::{
+        use nostr_sdk::prelude::*;
+        use pika_mls::prelude::{
             message_types, GroupId, MessageProcessingResult, NostrGroupConfigData,
         };
-        use nostr_sdk::prelude::*;
 
         /// Creates a core with a real MDK session and a group in storage.
         /// Returns (core, chat_id_hex, creator_keys, group_id).
@@ -9030,8 +9030,8 @@ mod tests {
         use crate::core::DEFAULT_GROUP_DESCRIPTION;
         use crate::mdk_support::open_mdk;
         use crate::updates::InternalEvent;
-        use mdk_core::prelude::{GroupId, NostrGroupConfigData};
         use nostr_sdk::prelude::*;
+        use pika_mls::prelude::{GroupId, NostrGroupConfigData};
 
         /// Creates a core with a real MDK session and a group already in storage,
         /// with the group registered in session.groups so add-members can find it.
@@ -9595,8 +9595,8 @@ mod tests {
     mod group_profile_tests {
         use super::*;
         use crate::mdk_support::open_mdk;
-        use mdk_core::prelude::{message_types, GroupId, NostrGroupConfigData};
         use nostr_sdk::prelude::*;
+        use pika_mls::prelude::{message_types, GroupId, NostrGroupConfigData};
 
         fn make_core_with_group() -> (AppCore, String, Keys, GroupId) {
             let tempdir = tempfile::tempdir().expect("tempdir");
@@ -10686,7 +10686,7 @@ mod tests {
             core.session.as_mut().unwrap().groups.insert(
                 "chat1".to_string(),
                 super::super::GroupIndexEntry {
-                    mls_group_id: mdk_core::prelude::GroupId::from_slice(&[1]),
+                    mls_group_id: pika_mls::prelude::GroupId::from_slice(&[1]),
                     is_group: true,
                     group_name: Some("Test".into()),
                     self_is_admin: false,
@@ -10737,7 +10737,7 @@ mod tests {
             // Simulate an in-flight group operation.
             core.pending_group_ops.insert("chat1".to_string());
 
-            let group_id = mdk_core::prelude::GroupId::from_slice(&[1]);
+            let group_id = pika_mls::prelude::GroupId::from_slice(&[1]);
             let keys = nostr_sdk::Keys::generate();
             let dummy_event = nostr_sdk::EventBuilder::new(nostr_sdk::Kind::Custom(444), "test")
                 .sign_with_keys(&keys)
@@ -10776,7 +10776,7 @@ mod tests {
             // Simulate the background publish completing.
             let keys = nostr_sdk::Keys::generate();
             let prepared = PreparedMembershipEvolution {
-                mls_group_id: mdk_core::prelude::GroupId::from_slice(&[1]),
+                mls_group_id: pika_mls::prelude::GroupId::from_slice(&[1]),
                 nostr_group_id_hex: "chat1".to_string(),
                 evolution_event: nostr_sdk::EventBuilder::new(nostr_sdk::Kind::Custom(444), "ok")
                     .sign_with_keys(&keys)
@@ -10804,7 +10804,7 @@ mod tests {
 
             let keys = nostr_sdk::Keys::generate();
             let prepared = PreparedMembershipEvolution {
-                mls_group_id: mdk_core::prelude::GroupId::from_slice(&[1]),
+                mls_group_id: pika_mls::prelude::GroupId::from_slice(&[1]),
                 nostr_group_id_hex: "chat1".to_string(),
                 evolution_event: nostr_sdk::EventBuilder::new(
                     nostr_sdk::Kind::Custom(444),
@@ -10835,9 +10835,9 @@ mod tests {
         use super::super::{GroupIndexEntry, GroupMember};
         use super::*;
         use crate::updates::InternalEvent;
-        use mdk_core::prelude::NostrGroupConfigData;
         use nostr_sdk::nips::nip19::ToBech32;
         use nostr_sdk::prelude::{Client, Event, EventBuilder, Keys, Kind, RelayUrl, Tag};
+        use pika_mls::prelude::NostrGroupConfigData;
         use std::sync::Arc;
 
         fn make_logged_in_core() -> (AppCore, tempfile::TempDir, Keys) {

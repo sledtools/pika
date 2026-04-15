@@ -1,10 +1,10 @@
 use anyhow::Result;
 use hypernote_protocol as hn;
-use mdk_storage_traits::GroupId;
-use mdk_storage_traits::groups::types::Group;
 use nostr_sdk::prelude::{
     Client, Event, EventId, Kind, PublicKey, RelayUrl, Tag, TagKind, Timestamp, UnsignedEvent,
 };
+use pika_mls::storage_traits::GroupId;
+use pika_mls::storage_traits::groups::types::Group;
 
 use crate::PikaMdk;
 use crate::conversation::{ConversationRuntime, RuntimeJoinedGroupSnapshot};
@@ -245,8 +245,8 @@ fn build_unsigned_action(
 mod tests {
     use super::*;
 
-    use mdk_core::prelude::NostrGroupConfigData;
     use nostr_sdk::prelude::{EventBuilder, Keys, RelayUrl};
+    use pika_mls::prelude::NostrGroupConfigData;
 
     fn open_test_mdk(dir: &tempfile::TempDir) -> PikaMdk {
         crate::open_mdk(dir.path()).expect("open test mdk")

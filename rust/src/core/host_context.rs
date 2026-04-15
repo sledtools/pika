@@ -95,7 +95,7 @@ impl<'a> AppHostContext<'a> {
     pub(super) fn lookup_pending_welcome(
         &self,
         target: &EventId,
-    ) -> anyhow::Result<Option<mdk_storage_traits::welcomes::types::Welcome>> {
+    ) -> anyhow::Result<Option<pika_mls::storage_traits::welcomes::types::Welcome>> {
         super::welcome_support::lookup_pending_welcome(&self.session.mdk, target)
     }
 

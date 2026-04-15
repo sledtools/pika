@@ -1,6 +1,7 @@
 mod mdk_support;
 
 use nostr::{Event, Kind, TagKind};
+use pika_mls::conversation::ConversationQueries;
 use pika_mls::prelude::MessageProcessingResult;
 
 uniffi::setup_scaffolding!();
@@ -104,6 +105,7 @@ pub fn decrypt_push_notification(
         MessageProcessingResult::ApplicationMessage(msg) => msg,
         _ => return None,
     };
+    let queries = ConversationQueries::new(&mdk);
 
     // Don't notify for self-messages.
     if msg.pubkey == pubkey {
@@ -111,7 +113,7 @@ pub fn decrypt_push_notification(
     }
 
     // Helper: fetch group only in branches that need it.
-    let get_group = || match mdk.get_group(&msg.mls_group_id) {
+    let get_group = || match queries.get_group(&msg.mls_group_id) {
         Ok(Some(g)) => Ok(g),
         Ok(None) => Err("group not found".to_string()),
         Err(e) => Err(format!("failed to get group: {e}")),
@@ -168,7 +170,7 @@ pub fn decrypt_push_notification(
                 None
             };
 
-            let members = mdk.get_members(&msg.mls_group_id).unwrap_or_default();
+            let members = queries.get_members(&msg.mls_group_id).unwrap_or_default();
             let other_count = members.iter().filter(|p| *p != &pubkey).count();
             let is_group = group_name.is_some() || other_count > 1;
 

@@ -127,14 +127,13 @@ struct BootstrappedAppSession {
 fn app_group_subscription_state_from_mdk(
     mdk: &PikaMdk,
 ) -> anyhow::Result<AppGroupSubscriptionState> {
-    let groups = mdk.get_groups()?;
+    let groups =
+        pika_mls::conversation::ConversationQueries::new(mdk).list_joined_group_snapshots()?;
     let mut target_group_ids = BTreeSet::new();
     let mut relay_urls = BTreeSet::new();
     for group in groups {
-        target_group_ids.insert(hex::encode(group.nostr_group_id));
-        if let Ok(group_relays) = mdk.get_relays(&group.mls_group_id) {
-            relay_urls.extend(group_relays);
-        }
+        target_group_ids.insert(group.nostr_group_id_hex);
+        relay_urls.extend(group.relay_urls);
     }
     Ok(AppGroupSubscriptionState {
         target_group_ids: target_group_ids.into_iter().collect(),

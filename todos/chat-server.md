@@ -146,6 +146,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `daemon/host_context.rs` and the shared runtime tests now use `PikaRuntime` directly, so `RuntimeCommands` / `RuntimeQueries` are no longer part of the outward sidecar boundary.
 - [x] Delete the internal sidecar command/query forwarding shim:
   `crates/pikachat-sidecar/src/runtime.rs` now implements query, outbound, membership, call, and media helpers directly on `PikaRuntime`, and the private `RuntimeCommands` / `RuntimeQueries` structs are gone instead of lingering as dead indirection.
+- [x] Reuse the shared conversation query layer outside the sidecar too:
+  `pika-mls::conversation::ConversationQueries` now owns DM lookup and cross-group message lookup helpers, and CLI / NSE / app-session / sidecar subscription planning use that shared query surface instead of open-coding group/member scans against `PikaMdk`.
 - Next seam:
   keep shrinking the raw `PikaMdk` surface from inside `pika-mls`, starting with the remaining message/welcome escape hatches and the direct wrapper consumers in CLI/NSE.
 - List the first data migrations and config cuts needed in the app:

@@ -1,5 +1,7 @@
+use std::collections::BTreeSet;
+
 use anyhow::{Context, Result, anyhow};
-use nostr::{PublicKey, RelayUrl, Timestamp};
+use nostr::{EventId, PublicKey, RelayUrl, Timestamp};
 
 use crate::PikaMdk;
 use crate::storage_traits::{
@@ -105,6 +107,24 @@ impl<'a> ConversationQueries<'a> {
             .map(|group| hex::encode(group.nostr_group_id)))
     }
 
+    pub fn get_group(&self, mls_group_id: &GroupId) -> Result<Option<Group>> {
+        self.mdk.get_group(mls_group_id).context("get group")
+    }
+
+    pub fn get_members(&self, mls_group_id: &GroupId) -> Result<BTreeSet<PublicKey>> {
+        self.mdk.get_members(mls_group_id).context("get members")
+    }
+
+    pub fn get_message(
+        &self,
+        mls_group_id: &GroupId,
+        message_id: &EventId,
+    ) -> Result<Option<Message>> {
+        self.mdk
+            .get_message(mls_group_id, message_id)
+            .context("get message")
+    }
+
     pub fn lookup_joined_group_snapshot(
         &self,
         nostr_group_id_hex: &str,
@@ -153,6 +173,35 @@ impl<'a> ConversationQueries<'a> {
             next_offset: query.offset + fetched_count,
             storage_exhausted: fetched_count < query.limit,
         })
+    }
+
+    pub fn find_direct_message_group(
+        &self,
+        local_pubkey: &PublicKey,
+        peer_pubkey: &PublicKey,
+    ) -> Result<Option<Group>> {
+        let groups = self.mdk.get_groups().context("get_groups")?;
+        Ok(groups.into_iter().find(|group| {
+            let members = self.get_members(&group.mls_group_id).unwrap_or_default();
+            let others: Vec<_> = members
+                .iter()
+                .filter(|pubkey| *pubkey != local_pubkey)
+                .collect();
+            others.len() == 1 && *others[0] == *peer_pubkey
+        }))
+    }
+
+    pub fn find_message_across_groups(
+        &self,
+        message_id: &EventId,
+    ) -> Result<Option<(GroupId, Message)>> {
+        let groups = self.mdk.get_groups().context("get_groups")?;
+        for group in groups {
+            if let Some(message) = self.get_message(&group.mls_group_id, message_id)? {
+                return Ok(Some((group.mls_group_id, message)));
+            }
+        }
+        Ok(None)
     }
 
     fn joined_group_snapshot(&self, group: Group) -> Result<JoinedGroupSnapshot> {

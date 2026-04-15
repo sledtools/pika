@@ -14,6 +14,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use hypernote_protocol as hn;
 use nostr_sdk::prelude::*;
 use pika_managed_agent_contract::{AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams};
+use pika_mls::conversation::ConversationQueries;
 use pika_mls::prelude::*;
 use pika_mls::welcome::WelcomeQueries;
 use pika_relay_profiles::{
@@ -1388,12 +1389,7 @@ async fn cmd_send(
             let my_pubkey = keys.public_key();
 
             // Search for an existing 1:1 DM with this peer.
-            let groups = mdk.get_groups().context("get groups")?;
-            let found = groups.into_iter().find(|g| {
-                let members = mdk.get_members(&g.mls_group_id).unwrap_or_default();
-                let others: Vec<_> = members.iter().filter(|p| *p != &my_pubkey).collect();
-                others.len() == 1 && *others[0] == peer_pubkey
-            });
+            let found = find_direct_group_with_peer(&mdk, &my_pubkey, &peer_pubkey)?;
 
             if let Some(group) = found {
                 let c = client(cli, &keys).await?;
@@ -1606,12 +1602,7 @@ async fn cmd_send_hypernote(
             let peer_pubkey = PublicKey::parse(peer_str.trim())
                 .with_context(|| format!("parse peer key: {peer_str}"))?;
             let my_pubkey = keys.public_key();
-            let groups = mdk.get_groups().context("get groups")?;
-            let found = groups.into_iter().find(|g| {
-                let members = mdk.get_members(&g.mls_group_id).unwrap_or_default();
-                let others: Vec<_> = members.iter().filter(|p| *p != &my_pubkey).collect();
-                others.len() == 1 && *others[0] == peer_pubkey
-            });
+            let found = find_direct_group_with_peer(&mdk, &my_pubkey, &peer_pubkey)?;
             if let Some(group) = found {
                 let c = client(cli, &keys).await?;
                 (group, c)
@@ -1719,15 +1710,9 @@ async fn cmd_download_media(
     let (_keys, mdk) = open(cli)?;
     let message_id = EventId::from_hex(message_id_hex.trim()).context("parse message id")?;
 
-    // Scan groups to find the one containing this message.
-    let groups = mdk.get_groups().context("get groups")?;
-    let mut found = None;
-    for g in &groups {
-        if let Ok(Some(msg)) = mdk.get_message(&g.mls_group_id, &message_id) {
-            found = Some((g.mls_group_id.clone(), msg));
-            break;
-        }
-    }
+    let found = ConversationQueries::new(&mdk)
+        .find_message_across_groups(&message_id)
+        .context("scan groups for message")?;
     let (mls_group_id, message) =
         found.ok_or_else(|| anyhow!("message {message_id_hex} not found in any group"))?;
 
@@ -1968,12 +1953,9 @@ fn find_direct_group_with_peer(
     my_pubkey: &PublicKey,
     peer_pubkey: &PublicKey,
 ) -> anyhow::Result<Option<pika_mls::storage_traits::groups::types::Group>> {
-    let groups = mdk.get_groups().context("get groups")?;
-    Ok(groups.into_iter().find(|g| {
-        let members = mdk.get_members(&g.mls_group_id).unwrap_or_default();
-        let others: Vec<_> = members.iter().filter(|p| *p != my_pubkey).collect();
-        others.len() == 1 && *others[0] == *peer_pubkey
-    }))
+    ConversationQueries::new(mdk)
+        .find_direct_message_group(my_pubkey, peer_pubkey)
+        .context("find direct group with peer")
 }
 
 async fn send_to_agent_and_optionally_listen(
@@ -2488,9 +2470,9 @@ async fn listen_for_incoming(
 
     // Subscribe to all known groups.
     let mut group_subs = std::collections::HashMap::<SubscriptionId, (String, GroupId)>::new();
-    if let Ok(groups) = mdk.get_groups() {
+    if let Ok(groups) = PikaRuntime::new(&mdk).list_joined_group_snapshots() {
         for g in &groups {
-            let ngid = hex::encode(g.nostr_group_id);
+            let ngid = g.nostr_group_id_hex.clone();
             let filter = Filter::new()
                 .kind(Kind::MlsGroupMessage)
                 .custom_tag(SingleLetterTag::lowercase(Alphabet::H), &ngid)

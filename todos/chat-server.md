@@ -88,8 +88,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   the shared create-group/welcome helper moved into the existing welcome module, and the extra `pika-marmot-runtime::group` wrapper module is gone.
 - [x] Cut the app host context off the broad Marmot facade:
   `pika_core` no longer constructs `MarmotRuntime` / `RuntimeCommands` for its host-context read/write paths, and instead calls the narrower conversation, membership, media, welcome, and call helpers directly.
+- [x] Remove runtime-owned app event carrier types:
+  `pika_core` now uses direct `PublishMessageResult`, `CallSignalPublishResult`, `ChatMediaUploadStatus`, and direct membership/media completion results instead of routing app state changes through `RuntimeOperationEvent` wrapper enums.
 - Next seam:
-  remove the remaining runtime-owned wrapper types from `pika_core` session/update plumbing, starting with the event/result carrier types that still tie app code to `pika-marmot-runtime::runtime`.
+  remove the remaining runtime-owned session-open wrapper types from `pika_core`, starting with `RuntimeSessionOpenRequest`, `RuntimeSessionOpenState`, and the bootstrap/session structs in `session.rs`.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
 
@@ -181,4 +183,4 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
 - The highest-value simplification after the current transport slices is not "replace MDK all at once."
   It is deleting `pika_core`'s dependency on the `pika-marmot-runtime` facade so the remaining MLS surface is smaller and more honest before the OpenMLS runtime cut.
 - That facade cut can land incrementally.
-  The first pass was to stop constructing `MarmotRuntime` / `RuntimeCommands` in app host context code; the next pass is to replace the remaining runtime-owned carrier enums and session-open wrappers.
+  The first pass was to stop constructing `MarmotRuntime` / `RuntimeCommands` in app host context code; the second pass replaced the remaining runtime-owned event/result carrier enums with direct app-local result types; the next pass is the session-open wrapper cleanup.

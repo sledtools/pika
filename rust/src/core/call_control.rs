@@ -66,23 +66,6 @@ impl CallSignalDispatchError {
     }
 }
 
-fn call_signal_publish_status(
-    wrapper_event_id: EventId,
-    outcome: super::relay_publish::PublishOutcome,
-) -> pika_marmot_runtime::runtime::CallSignalPublishStatus {
-    match outcome {
-        super::relay_publish::PublishOutcome::Ok => {
-            pika_marmot_runtime::runtime::CallSignalPublishStatus::Published { wrapper_event_id }
-        }
-        super::relay_publish::PublishOutcome::Err(error) => {
-            pika_marmot_runtime::runtime::CallSignalPublishStatus::PublishFailed {
-                wrapper_event_id,
-                error,
-            }
-        }
-    }
-}
-
 impl AppCore {
     fn has_live_call(&self) -> bool {
         self.state
@@ -343,17 +326,11 @@ impl AppCore {
                 let base_url = match Url::parse(&binding.server_url) {
                     Ok(url) => url,
                     Err(err) => {
-                        let operation = RuntimeOperationEvent::complete_call_signal_publish(
-                            kind,
-                            chat_id,
-                            signal,
-                            pika_marmot_runtime::runtime::CallSignalPublishStatus::PublishFailed {
-                                wrapper_event_id: wrapper.id,
-                                error: format!("invalid chat server URL: {err}"),
-                            },
-                        );
                         let _ = tx.send(CoreMsg::Internal(Box::new(
-                            InternalEvent::CallSignalPublishOperation { operation },
+                            InternalEvent::CallSignalPublishResult {
+                                kind,
+                                error: Some(format!("invalid chat server URL: {err}")),
+                            },
                         )));
                         return;
                     }
@@ -370,16 +347,8 @@ impl AppCore {
                 .await
                 {
                     Ok(appended) => {
-                        let operation = RuntimeOperationEvent::complete_call_signal_publish(
-                            kind,
-                            chat_id.clone(),
-                            signal,
-                            pika_marmot_runtime::runtime::CallSignalPublishStatus::Published {
-                                wrapper_event_id: wrapper.id,
-                            },
-                        );
                         let _ = tx.send(CoreMsg::Internal(Box::new(
-                            InternalEvent::CallSignalPublishOperation { operation },
+                            InternalEvent::CallSignalPublishResult { kind, error: None },
                         )));
                         let _ = tx.send(CoreMsg::Internal(Box::new(
                             InternalEvent::ChatServerRoomEventAppended {
@@ -391,17 +360,11 @@ impl AppCore {
                         )));
                     }
                     Err(err) => {
-                        let operation = RuntimeOperationEvent::complete_call_signal_publish(
-                            kind,
-                            chat_id,
-                            signal,
-                            pika_marmot_runtime::runtime::CallSignalPublishStatus::PublishFailed {
-                                wrapper_event_id: wrapper.id,
-                                error: err.to_string(),
-                            },
-                        );
                         let _ = tx.send(CoreMsg::Internal(Box::new(
-                            InternalEvent::CallSignalPublishOperation { operation },
+                            InternalEvent::CallSignalPublishResult {
+                                kind,
+                                error: Some(err.to_string()),
+                            },
                         )));
                     }
                 }
@@ -417,14 +380,14 @@ impl AppCore {
                 false,
             )
             .await;
-            let operation = RuntimeOperationEvent::complete_call_signal_publish(
-                kind,
-                chat_id,
-                signal,
-                call_signal_publish_status(wrapper.id, outcome),
-            );
             let _ = tx.send(CoreMsg::Internal(Box::new(
-                InternalEvent::CallSignalPublishOperation { operation },
+                InternalEvent::CallSignalPublishResult {
+                    kind,
+                    error: match outcome {
+                        super::relay_publish::PublishOutcome::Ok => None,
+                        super::relay_publish::PublishOutcome::Err(error) => Some(error),
+                    },
+                },
             )));
         });
         Ok(())

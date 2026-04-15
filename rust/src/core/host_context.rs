@@ -1,4 +1,7 @@
 use super::*;
+use crate::updates::ChatMediaUploadStatus;
+#[cfg(test)]
+use crate::updates::InternalEvent;
 
 pub(super) struct AppHostContext<'a> {
     session: &'a Session,
@@ -95,27 +98,40 @@ impl<'a> AppHostContext<'a> {
         &self,
         prepared: PreparedConversationAction,
         publish_status: pika_marmot_runtime::outbound::OutboundConversationPublishStatus,
-    ) -> pika_marmot_runtime::runtime::RuntimeOperationEvent {
-        pika_marmot_runtime::runtime::RuntimeOperationEvent::complete_outbound_conversation_publish(
-            prepared,
-            publish_status,
-        )
+    ) -> InternalEvent {
+        match publish_status {
+            pika_marmot_runtime::outbound::OutboundConversationPublishStatus::Published {
+                ..
+            } => InternalEvent::PublishMessageResult {
+                chat_id: prepared.target.nostr_group_id_hex,
+                rumor_id: prepared.rumor_id.to_hex(),
+                ok: true,
+                error: None,
+            },
+            pika_marmot_runtime::outbound::OutboundConversationPublishStatus::PublishFailed(
+                error,
+            ) => InternalEvent::PublishMessageResult {
+                chat_id: prepared.target.nostr_group_id_hex,
+                rumor_id: prepared.rumor_id.to_hex(),
+                ok: false,
+                error: Some(error),
+            },
+        }
     }
 
     #[cfg(test)]
     pub(super) fn complete_call_signal_publish_operation(
         &self,
         kind: pika_marmot_runtime::runtime::CallSignalPublishKind,
-        nostr_group_id_hex: String,
-        prepared: pika_marmot_runtime::call_runtime::PreparedCallSignal,
         publish_status: pika_marmot_runtime::runtime::CallSignalPublishStatus,
-    ) -> pika_marmot_runtime::runtime::RuntimeOperationEvent {
-        pika_marmot_runtime::runtime::RuntimeOperationEvent::complete_call_signal_publish(
-            kind,
-            nostr_group_id_hex,
-            prepared,
-            publish_status,
-        )
+    ) -> InternalEvent {
+        let error = match publish_status {
+            pika_marmot_runtime::runtime::CallSignalPublishStatus::Published { .. } => None,
+            pika_marmot_runtime::runtime::CallSignalPublishStatus::PublishFailed {
+                error, ..
+            } => Some(error),
+        };
+        InternalEvent::CallSignalPublishResult { kind, error }
     }
 
     pub(super) fn prepare_membership_evolution_for_chat(
@@ -145,25 +161,13 @@ impl<'a> AppHostContext<'a> {
         &self,
         prepared: PreparedMembershipEvolution,
         publish_status: EvolutionPublishStatus,
-    ) -> pika_marmot_runtime::runtime::RuntimeOperationEvent {
-        let operation_id = prepared.evolution_event.id;
+    ) -> Result<pika_marmot_runtime::membership::MembershipUpdateResult, String> {
         match publish_status {
-            EvolutionPublishStatus::Published => {
-                pika_marmot_runtime::runtime::RuntimeOperationEvent::MembershipEvolution(
-                    pika_marmot_runtime::runtime::MembershipEvolutionOperationEvent::Completed {
-                        operation_id,
-                        result: pika_marmot_runtime::membership::MembershipRuntime::new(
-                            &self.session.mdk,
-                        )
-                        .finalize_published_evolution(prepared),
-                    },
-                )
-            }
-            EvolutionPublishStatus::PublishFailed(error) => {
-                pika_marmot_runtime::runtime::RuntimeOperationEvent::membership_evolution_failed(
-                    prepared, error,
-                )
-            }
+            EvolutionPublishStatus::Published => Ok(
+                pika_marmot_runtime::membership::MembershipRuntime::new(&self.session.mdk)
+                    .finalize_published_evolution(prepared),
+            ),
+            EvolutionPublishStatus::PublishFailed(error) => Err(error),
         }
     }
 
@@ -313,35 +317,17 @@ impl<'a> AppHostContext<'a> {
         mls_group_id: &GroupId,
         nostr_group_id_hex: String,
         upload: &EncryptedMediaUpload,
-        status: pika_marmot_runtime::runtime::MediaUploadStatus,
-    ) -> pika_marmot_runtime::runtime::RuntimeOperationEvent {
-        let operation_id = EventId::from_byte_array(upload.encrypted_hash);
+        status: ChatMediaUploadStatus,
+    ) -> Result<pika_marmot_runtime::runtime::CompletedMediaUpload, String> {
         match status {
-            pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(uploaded_blob) => {
-                pika_marmot_runtime::runtime::RuntimeOperationEvent::MediaUpload(
-                    pika_marmot_runtime::runtime::MediaUploadOperationEvent::Completed {
-                        operation_id,
-                        result: Box::new(pika_marmot_runtime::runtime::CompletedMediaUpload {
-                            nostr_group_id_hex,
-                            result: pika_marmot_runtime::media::MediaRuntime::new(
-                                &self.session.mdk,
-                            )
-                            .finish_upload(
-                                mls_group_id,
-                                upload,
-                                uploaded_blob,
-                            ),
-                        }),
-                    },
-                )
-            }
-            pika_marmot_runtime::runtime::MediaUploadStatus::UploadFailed(error) => {
-                pika_marmot_runtime::runtime::RuntimeOperationEvent::media_upload_failed(
+            ChatMediaUploadStatus::Uploaded(uploaded_blob) => {
+                Ok(pika_marmot_runtime::runtime::CompletedMediaUpload {
                     nostr_group_id_hex,
-                    upload,
-                    error,
-                )
+                    result: pika_marmot_runtime::media::MediaRuntime::new(&self.session.mdk)
+                        .finish_upload(mls_group_id, upload, uploaded_blob),
+                })
             }
+            ChatMediaUploadStatus::UploadFailed(error) => Err(error),
         }
     }
 

@@ -68,10 +68,9 @@ pub(crate) use pika_marmot_runtime::message::{
 };
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
 use pika_marmot_runtime::runtime::{
-    temporary_client_from_session_signer, CallSignalPublishKind, CallSignalPublishOperationEvent,
-    MembershipEvolutionOperationEvent, OutboundConversationPublishOperationEvent,
+    temporary_client_from_session_signer, CallSignalPublishKind,
     RuntimeApplicationMessageInterpretation, RuntimeConversationEventInterpretation,
-    RuntimeOperationEvent, RuntimeRelayRolePlan,
+    RuntimeRelayRolePlan,
 };
 use pika_marmot_runtime::welcome::{
     accept_welcome_and_catch_up, create_group_and_plan_welcome_delivery, GroupWelcomeDeliveryPlan,
@@ -3516,11 +3515,8 @@ impl AppCore {
                 ok,
                 error,
             } => self.handle_publish_message_result(chat_id, rumor_id, ok, error),
-            InternalEvent::OutboundPublishOperation { operation } => {
-                self.handle_runtime_operation_event(operation)
-            }
-            InternalEvent::CallSignalPublishOperation { operation } => {
-                self.handle_runtime_operation_event(operation)
+            InternalEvent::CallSignalPublishResult { kind, error } => {
+                self.handle_call_signal_publish_result(kind, error)
             }
             InternalEvent::ChatMediaUploadCompleted { request_id, status } => {
                 self.handle_chat_media_upload_completed(request_id, status)
@@ -4037,20 +4033,12 @@ impl AppCore {
         self.update_delivery_or_refresh(&chat_id, &rumor_id, delivery);
     }
 
-    fn handle_outbound_publish_operation(
+    fn handle_call_signal_publish_result(
         &mut self,
-        operation: OutboundConversationPublishOperationEvent,
+        kind: CallSignalPublishKind,
+        error: Option<String>,
     ) {
-        let chat_id = operation.nostr_group_id_hex().to_string();
-        let rumor_id = operation.operation_id().to_hex();
-        match operation.into_result() {
-            Ok(_) => self.handle_publish_message_result(chat_id, rumor_id, true, None),
-            Err(error) => self.handle_publish_message_result(chat_id, rumor_id, false, Some(error)),
-        }
-    }
-    fn handle_call_signal_publish_operation(&mut self, operation: CallSignalPublishOperationEvent) {
-        let kind = operation.kind();
-        if let Err(error) = operation.into_result() {
+        if let Some(error) = error {
             self.toast(format!(
                 "{}: {error}",
                 call_signal_publish_failure_context(kind)
@@ -4722,42 +4710,28 @@ impl AppCore {
             }
             return;
         };
-        let operation = sess
+        let chat_id = prepared.nostr_group_id_hex.clone();
+        let result = sess
             .host_context()
             .complete_membership_evolution_operation(prepared, publish_status);
 
-        self.handle_runtime_operation_event(operation);
+        self.handle_membership_evolution_result(chat_id, result);
     }
 
-    fn handle_runtime_operation_event(&mut self, operation: RuntimeOperationEvent) {
-        self.pending_group_ops
-            .remove(operation.nostr_group_id_hex());
-
-        match operation {
-            RuntimeOperationEvent::MembershipEvolution(operation) => {
-                self.handle_membership_evolution_operation(operation);
-            }
-            RuntimeOperationEvent::OutboundConversationPublish(operation) => {
-                self.handle_outbound_publish_operation(operation);
-            }
-            RuntimeOperationEvent::CallSignalPublish(operation) => {
-                self.handle_call_signal_publish_operation(operation);
-            }
-            RuntimeOperationEvent::MediaUpload(_) => {}
-        }
-    }
-
-    fn handle_membership_evolution_operation(
+    fn handle_membership_evolution_result(
         &mut self,
-        operation: MembershipEvolutionOperationEvent,
+        chat_id: String,
+        result: Result<pika_marmot_runtime::membership::MembershipUpdateResult, String>,
     ) {
-        let result = match operation.into_result() {
+        let result = match result {
             Ok(result) => result,
             Err(error) => {
+                self.pending_group_ops.remove(&chat_id);
                 self.toast(format!("Group update failed: {error}"));
                 return;
             }
         };
+        self.pending_group_ops.remove(&result.nostr_group_id_hex);
 
         if let Some(ref merge_error) = result.merge_error {
             tracing::error!(error = %merge_error, "merge_pending_commit failed");
@@ -7934,7 +7908,7 @@ mod tests {
                     },
                 );
 
-            core.handle_runtime_operation_event(operation);
+            core.handle_internal(operation);
 
             assert!(core.pending_sends.get(&chat_id, &rumor_id_hex).is_none());
             assert!(core.failed_sends.get(&rumor_id_hex).is_none());
@@ -7983,7 +7957,7 @@ mod tests {
                     ),
                 );
 
-            core.handle_runtime_operation_event(operation);
+            core.handle_internal(operation);
 
             assert!(core.pending_sends.get(&chat_id, &rumor_id_hex).is_some());
             assert_eq!(
@@ -8000,7 +7974,7 @@ mod tests {
 
         #[test]
         fn app_call_signal_publish_operation_result_uses_shared_runtime_event_boundary() {
-            let (mut core, chat_id, _keys, _group_id) = make_core_with_group();
+            let (mut core, _chat_id, _keys, _group_id) = make_core_with_group();
             let wrapper_event_id = EventId::from_hex(
                 "2222222222222222222222222222222222222222222222222222222222222222",
             )
@@ -8010,18 +7984,13 @@ mod tests {
                 .expect("host context")
                 .complete_call_signal_publish_operation(
                     pika_marmot_runtime::runtime::CallSignalPublishKind::Invite,
-                    chat_id.clone(),
-                    pika_marmot_runtime::call_runtime::PreparedCallSignal {
-                        call_id: "550e8400-e29b-41d4-a716-446655440016".to_string(),
-                        payload_json: "{\"type\":\"call.invite\"}".to_string(),
-                    },
                     pika_marmot_runtime::runtime::CallSignalPublishStatus::PublishFailed {
                         wrapper_event_id,
                         error: "offline".to_string(),
                     },
                 );
 
-            core.handle_runtime_operation_event(operation);
+            core.handle_internal(operation);
 
             assert_eq!(
                 core.state.toast.as_deref(),
@@ -8048,7 +8017,7 @@ mod tests {
                             &group_id,
                             chat_id.clone(),
                             &prepared.upload,
-                            pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(
+                            crate::updates::ChatMediaUploadStatus::Uploaded(
                                 pika_marmot_runtime::media::UploadedBlob {
                                     blossom_server: "https://example.com".to_string(),
                                     uploaded_url: "https://example.com/blob".to_string(),
@@ -8058,7 +8027,6 @@ mod tests {
                                 },
                             ),
                         )
-                        .into_media_upload_result()
                         .expect("completed media upload")
                         .result
                 })
@@ -8105,9 +8073,7 @@ mod tests {
 
             core.handle_chat_media_upload_completed(
                 request_id.clone(),
-                pika_marmot_runtime::runtime::MediaUploadStatus::UploadFailed(
-                    "offline".to_string(),
-                ),
+                crate::updates::ChatMediaUploadStatus::UploadFailed("offline".to_string()),
             );
 
             assert!(core.pending_media_sends.contains_key(&request_id));
@@ -8156,7 +8122,7 @@ mod tests {
 
             core.handle_chat_media_upload_completed(
                 request_id.clone(),
-                pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(
+                crate::updates::ChatMediaUploadStatus::Uploaded(
                     pika_marmot_runtime::media::UploadedBlob {
                         blossom_server: "https://example.com".to_string(),
                         uploaded_url: "https://example.com/blob".to_string(),
@@ -8232,7 +8198,7 @@ mod tests {
 
             core.handle_chat_media_upload_completed(
                 first_request_id,
-                pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(
+                crate::updates::ChatMediaUploadStatus::Uploaded(
                     pika_marmot_runtime::media::UploadedBlob {
                         blossom_server: "https://example.com".to_string(),
                         uploaded_url: "https://example.com/blob-1".to_string(),
@@ -8320,7 +8286,7 @@ mod tests {
 
             core.handle_chat_media_upload_completed(
                 first_request_id,
-                pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(
+                crate::updates::ChatMediaUploadStatus::Uploaded(
                     pika_marmot_runtime::media::UploadedBlob {
                         blossom_server: "https://example.com".to_string(),
                         uploaded_url: "https://example.com/blob-1".to_string(),
@@ -8433,7 +8399,7 @@ mod tests {
                     &group_id,
                     chat_id.clone(),
                     &first.upload,
-                    pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(
+                    crate::updates::ChatMediaUploadStatus::Uploaded(
                         pika_marmot_runtime::media::UploadedBlob {
                             blossom_server: "https://example.com".to_string(),
                             uploaded_url: "https://example.com/blob-1".to_string(),
@@ -8441,7 +8407,6 @@ mod tests {
                         },
                     ),
                 )
-                .into_media_upload_result()
                 .expect("completed media upload")
                 .result;
             let second = core
@@ -8605,7 +8570,7 @@ mod tests {
 
             core.handle_chat_media_upload_completed(
                 request_id,
-                pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(
+                crate::updates::ChatMediaUploadStatus::Uploaded(
                     pika_marmot_runtime::media::UploadedBlob {
                         blossom_server: "https://example.com".to_string(),
                         uploaded_url: "https://example.com/workflow".to_string(),
@@ -9461,7 +9426,7 @@ mod tests {
                     pika_marmot_runtime::membership::EvolutionPublishStatus::Published,
                 );
 
-            core.handle_runtime_operation_event(operation);
+            core.handle_membership_evolution_result(chat_id.clone(), operation);
 
             let after_merge = core
                 .session
@@ -9572,7 +9537,7 @@ mod tests {
                     ),
                 );
 
-            core.handle_runtime_operation_event(operation);
+            core.handle_membership_evolution_result(chat_id.clone(), operation);
 
             let members_after_failure = core
                 .session

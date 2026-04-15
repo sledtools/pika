@@ -38,6 +38,12 @@ pub enum CoreMsg {
     Shutdown,
 }
 
+#[derive(Debug, Clone)]
+pub enum ChatMediaUploadStatus {
+    Uploaded(pika_marmot_runtime::media::UploadedBlob),
+    UploadFailed(String),
+}
+
 #[derive(Debug)]
 pub enum InternalEvent {
     // Nostr receive path
@@ -56,15 +62,13 @@ pub enum InternalEvent {
         ok: bool,
         error: Option<String>,
     },
-    OutboundPublishOperation {
-        operation: pika_marmot_runtime::runtime::RuntimeOperationEvent,
-    },
-    CallSignalPublishOperation {
-        operation: pika_marmot_runtime::runtime::RuntimeOperationEvent,
+    CallSignalPublishResult {
+        kind: pika_marmot_runtime::runtime::CallSignalPublishKind,
+        error: Option<String>,
     },
     ChatMediaUploadCompleted {
         request_id: String,
-        status: pika_marmot_runtime::runtime::MediaUploadStatus,
+        status: ChatMediaUploadStatus,
     },
     ChatMediaDownloadFetched {
         request_id: String,

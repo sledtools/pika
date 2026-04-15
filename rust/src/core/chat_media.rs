@@ -8,6 +8,7 @@ use pika_marmot_runtime::media::{upload_encrypted_blob, MAX_CHAT_MEDIA_BYTES};
 use sha2::{Digest, Sha256};
 
 use crate::state::{ChatMediaAttachment, ChatMediaKind, MediaGalleryItem, MediaGalleryState};
+use crate::updates::ChatMediaUploadStatus;
 
 use super::chat_media_db::{self, ChatMediaRecord};
 use super::*;
@@ -649,9 +650,8 @@ impl AppCore {
                 &group.mls_group_id,
                 chat_id.to_string(),
                 upload,
-                pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(uploaded_blob),
+                ChatMediaUploadStatus::Uploaded(uploaded_blob),
             )
-            .into_media_upload_result()
             .map(|completed| completed.result)
     }
 
@@ -1585,13 +1585,11 @@ impl AppCore {
             let event = match result {
                 Ok(uploaded) => InternalEvent::ChatMediaUploadCompleted {
                     request_id,
-                    status: pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(uploaded),
+                    status: ChatMediaUploadStatus::Uploaded(uploaded),
                 },
                 Err(e) => InternalEvent::ChatMediaUploadCompleted {
                     request_id,
-                    status: pika_marmot_runtime::runtime::MediaUploadStatus::UploadFailed(
-                        e.to_string(),
-                    ),
+                    status: ChatMediaUploadStatus::UploadFailed(e.to_string()),
                 },
             };
             let _ = tx.send(CoreMsg::Internal(Box::new(event)));
@@ -1601,7 +1599,7 @@ impl AppCore {
     pub(super) fn handle_chat_media_upload_completed(
         &mut self,
         request_id: String,
-        status: pika_marmot_runtime::runtime::MediaUploadStatus,
+        status: ChatMediaUploadStatus,
     ) {
         // Check if this request belongs to a batch upload.
         let batch_key = self
@@ -1617,7 +1615,7 @@ impl AppCore {
 
         // --- Single-item upload path ---
 
-        if let pika_marmot_runtime::runtime::MediaUploadStatus::UploadFailed(e) = &status {
+        if let ChatMediaUploadStatus::UploadFailed(e) = &status {
             let Some((chat_id, temp_rumor_id)) = self
                 .pending_media_sends
                 .get(&request_id)
@@ -1633,8 +1631,7 @@ impl AppCore {
             return;
         };
 
-        let pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(uploaded_blob) = status
-        else {
+        let ChatMediaUploadStatus::Uploaded(uploaded_blob) = status else {
             return;
         };
         let uploaded_blob =
@@ -1681,9 +1678,9 @@ impl AppCore {
         &mut self,
         batch_id: String,
         request_id: String,
-        status: pika_marmot_runtime::runtime::MediaUploadStatus,
+        status: ChatMediaUploadStatus,
     ) {
-        if let pika_marmot_runtime::runtime::MediaUploadStatus::UploadFailed(e) = &status {
+        if let ChatMediaUploadStatus::UploadFailed(e) = &status {
             let Some((chat_id, temp_rumor_id)) = self
                 .pending_media_batch_sends
                 .get(&batch_id)
@@ -1716,8 +1713,7 @@ impl AppCore {
                 batch.items[item_idx].prepared.upload.clone(),
             )
         };
-        let pika_marmot_runtime::runtime::MediaUploadStatus::Uploaded(uploaded_blob) = status
-        else {
+        let ChatMediaUploadStatus::Uploaded(uploaded_blob) = status else {
             return;
         };
         let uploaded_blob = match validate_uploaded_blob_hash(&prepared_upload, uploaded_blob) {
@@ -1936,15 +1932,13 @@ impl AppCore {
         self.refresh_current_chat_if_open(&chat_id);
 
         if !network_enabled {
-            let operation =
-                pika_marmot_runtime::runtime::RuntimeOperationEvent::complete_outbound_conversation_publish(
-                    prepared,
-                    pika_marmot_runtime::outbound::OutboundConversationPublishStatus::PublishFailed(
-                        "offline".into(),
-                    ),
-                );
             let _ = self.core_sender.send(CoreMsg::Internal(Box::new(
-                InternalEvent::OutboundPublishOperation { operation },
+                InternalEvent::PublishMessageResult {
+                    chat_id,
+                    rumor_id: prepared.rumor_id.to_hex(),
+                    ok: false,
+                    error: Some("offline".into()),
+                },
             )));
             return;
         }
@@ -1957,15 +1951,13 @@ impl AppCore {
             let base_url = match Url::parse(&binding.server_url) {
                 Ok(url) => url,
                 Err(err) => {
-                    let operation =
-                        pika_marmot_runtime::runtime::RuntimeOperationEvent::complete_outbound_conversation_publish(
-                            prepared,
-                            pika_marmot_runtime::outbound::OutboundConversationPublishStatus::PublishFailed(
-                                format!("invalid chat server URL: {err}"),
-                            ),
-                        );
                     let _ = tx.send(CoreMsg::Internal(Box::new(
-                        InternalEvent::OutboundPublishOperation { operation },
+                        InternalEvent::PublishMessageResult {
+                            chat_id,
+                            rumor_id: prepared.rumor_id.to_hex(),
+                            ok: false,
+                            error: Some(format!("invalid chat server URL: {err}")),
+                        },
                     )));
                     return;
                 }
@@ -1973,6 +1965,8 @@ impl AppCore {
 
             self.runtime.spawn(async move {
                 let wrapper = prepared.wrapper.clone();
+                let publish_chat_id = prepared.target.nostr_group_id_hex.clone();
+                let publish_rumor_id = prepared.rumor_id.to_hex();
                 match chat_server::append_wrapped_room_event(
                     &http_client,
                     &client,
@@ -1984,14 +1978,13 @@ impl AppCore {
                 .await
                 {
                     Ok(appended) => {
-                        let operation = pika_marmot_runtime::runtime::RuntimeOperationEvent::complete_outbound_conversation_publish(
-                            prepared,
-                            pika_marmot_runtime::outbound::OutboundConversationPublishStatus::Published {
-                                wrapper_event_id: wrapper.id,
-                            },
-                        );
                         let _ = tx.send(CoreMsg::Internal(Box::new(
-                            InternalEvent::OutboundPublishOperation { operation },
+                            InternalEvent::PublishMessageResult {
+                                chat_id: publish_chat_id,
+                                rumor_id: publish_rumor_id,
+                                ok: true,
+                                error: None,
+                            },
                         )));
                         let _ = tx.send(CoreMsg::Internal(Box::new(
                             InternalEvent::ChatServerRoomEventAppended {
@@ -2003,14 +1996,13 @@ impl AppCore {
                         )));
                     }
                     Err(err) => {
-                        let operation = pika_marmot_runtime::runtime::RuntimeOperationEvent::complete_outbound_conversation_publish(
-                            prepared,
-                            pika_marmot_runtime::outbound::OutboundConversationPublishStatus::PublishFailed(
-                                err.to_string(),
-                            ),
-                        );
                         let _ = tx.send(CoreMsg::Internal(Box::new(
-                            InternalEvent::OutboundPublishOperation { operation },
+                            InternalEvent::PublishMessageResult {
+                                chat_id: publish_chat_id,
+                                rumor_id: publish_rumor_id,
+                                ok: false,
+                                error: Some(err.to_string()),
+                            },
                         )));
                     }
                 }
@@ -2041,22 +2033,18 @@ impl AppCore {
             if !ok && !diag {
                 tracing::warn!(error = ?error, "message broadcast failed");
             }
-            let publish_status = if ok {
-                pika_marmot_runtime::outbound::OutboundConversationPublishStatus::Published {
-                    wrapper_event_id: prepared.wrapper.id,
-                }
+            let error = if ok {
+                None
             } else {
-                pika_marmot_runtime::outbound::OutboundConversationPublishStatus::PublishFailed(
-                    error.unwrap_or_else(|| "publish failed".into()),
-                )
+                Some(error.unwrap_or_else(|| "publish failed".into()))
             };
-            let operation =
-                pika_marmot_runtime::runtime::RuntimeOperationEvent::complete_outbound_conversation_publish(
-                    prepared,
-                    publish_status,
-                );
             let _ = tx.send(CoreMsg::Internal(Box::new(
-                InternalEvent::OutboundPublishOperation { operation },
+                InternalEvent::PublishMessageResult {
+                    chat_id: prepared.target.nostr_group_id_hex,
+                    rumor_id: prepared.rumor_id.to_hex(),
+                    ok,
+                    error,
+                },
             )));
         });
     }

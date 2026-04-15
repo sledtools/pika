@@ -677,29 +677,12 @@ pub struct BootstrappedRuntimeSession {
     pub open: RuntimeSessionOpenState,
 }
 
-struct RuntimeQueries<'a> {
-    mdk: &'a PikaMdk,
-}
-
-struct RuntimeCommands<'a> {
-    mdk: &'a PikaMdk,
-    client: Option<&'a Client>,
-}
-
 pub struct PikaRuntime<'a> {
     mdk: &'a PikaMdk,
     client: Option<&'a Client>,
 }
 
 impl RuntimeSession {
-    fn queries(&self) -> RuntimeQueries<'_> {
-        RuntimeQueries::new(&self.mdk)
-    }
-
-    fn commands(&self) -> RuntimeCommands<'_> {
-        RuntimeCommands::with_client(&self.mdk, &self.client)
-    }
-
     pub fn runtime(&self) -> PikaRuntime<'_> {
         PikaRuntime::with_client(&self.mdk, &self.client)
     }
@@ -794,7 +777,7 @@ impl RuntimeSession {
         &self,
         open_request: RuntimeSessionOpenRequest,
     ) -> Result<RuntimeSessionOpenState> {
-        self.queries()
+        self.runtime()
             .refresh_session_open_state(self.pubkey, open_request)
     }
 
@@ -803,7 +786,7 @@ impl RuntimeSession {
         nostr_group_id_hex: &str,
         action: OutboundConversationAction,
     ) -> Result<PreparedConversationAction> {
-        self.commands()
+        self.runtime()
             .prepare_outbound_action(self.pubkey, nostr_group_id_hex, action)
     }
 }
@@ -811,303 +794,6 @@ impl RuntimeSession {
 impl BootstrappedRuntimeSession {
     pub fn runtime(&self) -> PikaRuntime<'_> {
         self.session.runtime()
-    }
-}
-
-impl<'a> RuntimeQueries<'a> {
-    fn new(mdk: &'a PikaMdk) -> Self {
-        Self { mdk }
-    }
-
-    pub fn refresh_session_open_state(
-        &self,
-        pubkey: PublicKey,
-        open_request: RuntimeSessionOpenRequest,
-    ) -> Result<RuntimeSessionOpenState> {
-        refresh_runtime_session_open_state(self.mdk, pubkey, open_request)
-    }
-
-    pub fn list_joined_group_snapshots(&self) -> Result<Vec<RuntimeJoinedGroupSnapshot>> {
-        ConversationRuntime::new(self.mdk).list_joined_group_snapshots()
-    }
-
-    pub fn lookup_joined_group_snapshot(
-        &self,
-        nostr_group_id_hex: &str,
-    ) -> Result<RuntimeJoinedGroupSnapshot> {
-        ConversationRuntime::new(self.mdk).lookup_joined_group_snapshot(nostr_group_id_hex)
-    }
-
-    pub fn load_message_page(
-        &self,
-        nostr_group_id_hex: &str,
-        query: RuntimeMessagePageQuery,
-    ) -> Result<RuntimeMessagePage> {
-        ConversationRuntime::new(self.mdk).load_message_page(nostr_group_id_hex, query)
-    }
-
-    pub fn lookup_group_profile_snapshot(
-        &self,
-        nostr_group_id_hex: &str,
-        owner_pubkey: &PublicKey,
-    ) -> Result<Option<RuntimeGroupProfileSnapshot>> {
-        ConversationRuntime::new(self.mdk)
-            .lookup_group_profile_snapshot(nostr_group_id_hex, owner_pubkey)
-    }
-
-    pub fn lookup_group_profile_snapshot_for_owners(
-        &self,
-        nostr_group_id_hex: &str,
-        owner_pubkeys: &[PublicKey],
-    ) -> Result<Option<RuntimeGroupProfileSnapshot>> {
-        ConversationRuntime::new(self.mdk)
-            .lookup_group_profile_snapshot_for_owners(nostr_group_id_hex, owner_pubkeys)
-    }
-
-    pub fn list_pending_welcome_snapshots(&self) -> Result<Vec<PendingWelcomeSnapshot>> {
-        list_pending_welcome_snapshots(self.mdk)
-    }
-
-    pub fn lookup_pending_welcome(
-        &self,
-        target: &EventId,
-    ) -> Result<Option<pika_mls::storage_traits::welcomes::types::Welcome>> {
-        lookup_pending_welcome(self.mdk, target)
-    }
-}
-
-impl<'a> RuntimeCommands<'a> {
-    fn with_client(mdk: &'a PikaMdk, client: &'a Client) -> Self {
-        Self {
-            mdk,
-            client: Some(client),
-        }
-    }
-
-    pub fn resolve_outbound_target(
-        &self,
-        nostr_group_id_hex: &str,
-    ) -> Result<ResolvedConversationTarget> {
-        OutboundConversationRuntime::new(self.mdk).resolve_target(nostr_group_id_hex)
-    }
-
-    pub fn prepare_outbound_action(
-        &self,
-        sender: PublicKey,
-        nostr_group_id_hex: &str,
-        action: OutboundConversationAction,
-    ) -> Result<PreparedConversationAction> {
-        OutboundConversationRuntime::new(self.mdk).prepare_action(
-            sender,
-            nostr_group_id_hex,
-            action,
-        )
-    }
-
-    pub fn prepare_outbound_action_for_group(
-        &self,
-        sender: PublicKey,
-        group: Group,
-        action: OutboundConversationAction,
-    ) -> Result<PreparedConversationAction> {
-        OutboundConversationRuntime::new(self.mdk).prepare_action_for_group(sender, group, action)
-    }
-
-    pub fn prepare_outbound_action_for_group_ids(
-        &self,
-        sender: PublicKey,
-        mls_group_id: GroupId,
-        nostr_group_id_hex: String,
-        action: OutboundConversationAction,
-    ) -> Result<PreparedConversationAction> {
-        OutboundConversationRuntime::new(self.mdk).prepare_action_for_group_ids(
-            sender,
-            mls_group_id,
-            nostr_group_id_hex,
-            action,
-        )
-    }
-
-    pub fn prepare_outbound_action_for_target(
-        &self,
-        sender: PublicKey,
-        target: ResolvedConversationTarget,
-        action: OutboundConversationAction,
-    ) -> Result<PreparedConversationAction> {
-        OutboundConversationRuntime::new(self.mdk).prepare_action_for_target(sender, target, action)
-    }
-
-    pub fn prepare_add_members(
-        &self,
-        mls_group_id: &GroupId,
-        key_package_events: &[Event],
-    ) -> Result<PreparedMembershipEvolution> {
-        MembershipRuntime::new(self.mdk).prepare_add_members(mls_group_id, key_package_events)
-    }
-
-    pub fn prepare_add_members_for_nostr_group_id(
-        &self,
-        nostr_group_id_hex: &str,
-        key_package_events: &[Event],
-    ) -> Result<PreparedMembershipEvolution> {
-        let group = PikaRuntime::new(self.mdk).lookup_joined_group_snapshot(nostr_group_id_hex)?;
-        self.prepare_add_members(&group.mls_group_id, key_package_events)
-    }
-
-    pub fn prepare_remove_members(
-        &self,
-        mls_group_id: &GroupId,
-        removed_pubkeys: &[PublicKey],
-    ) -> Result<PreparedMembershipEvolution> {
-        MembershipRuntime::new(self.mdk).prepare_remove_members(mls_group_id, removed_pubkeys)
-    }
-
-    pub fn prepare_remove_members_for_nostr_group_id(
-        &self,
-        nostr_group_id_hex: &str,
-        removed_pubkeys: &[PublicKey],
-    ) -> Result<PreparedMembershipEvolution> {
-        let group = PikaRuntime::new(self.mdk).lookup_joined_group_snapshot(nostr_group_id_hex)?;
-        self.prepare_remove_members(&group.mls_group_id, removed_pubkeys)
-    }
-
-    pub fn prepare_leave_group(
-        &self,
-        mls_group_id: &GroupId,
-    ) -> Result<PreparedMembershipEvolution> {
-        MembershipRuntime::new(self.mdk).prepare_leave_group(mls_group_id)
-    }
-
-    pub fn prepare_leave_group_for_nostr_group_id(
-        &self,
-        nostr_group_id_hex: &str,
-    ) -> Result<PreparedMembershipEvolution> {
-        let group = PikaRuntime::new(self.mdk).lookup_joined_group_snapshot(nostr_group_id_hex)?;
-        self.prepare_leave_group(&group.mls_group_id)
-    }
-
-    pub fn prepare_evolution(
-        &self,
-        mls_group_id: GroupId,
-        evolution_event: Event,
-        welcome_rumors: Option<Vec<UnsignedEvent>>,
-        added_pubkeys: Vec<PublicKey>,
-    ) -> Result<PreparedMembershipEvolution> {
-        MembershipRuntime::new(self.mdk).prepare_evolution(
-            mls_group_id,
-            evolution_event,
-            welcome_rumors,
-            added_pubkeys,
-        )
-    }
-
-    pub fn finalize_published_evolution(
-        &self,
-        prepared: PreparedMembershipEvolution,
-    ) -> MembershipUpdateResult {
-        MembershipRuntime::new(self.mdk).finalize_published_evolution(prepared)
-    }
-
-    pub fn prepare_outgoing_call_invite(
-        &self,
-        target_id: &str,
-        peer_pubkey_hex: &str,
-        call_id: &str,
-        session: &CallSessionParams,
-    ) -> Result<
-        (
-            crate::call_runtime::PendingOutgoingCall,
-            crate::call_runtime::PreparedCallSignal,
-        ),
-        String,
-    > {
-        CallWorkflowRuntime::new(self.mdk).prepare_outgoing_invite(
-            target_id,
-            peer_pubkey_hex,
-            call_id,
-            session,
-        )
-    }
-
-    pub fn prepare_accept_incoming_call(
-        &self,
-        incoming: &PendingIncomingCall,
-        group: GroupCallContext<'_>,
-    ) -> Result<PreparedAcceptedCall, String> {
-        CallWorkflowRuntime::new(self.mdk).prepare_accept_incoming(incoming, group)
-    }
-
-    pub fn prepare_reject_call_signal(
-        &self,
-        call_id: &str,
-        reason: &str,
-    ) -> Result<PreparedCallSignal, String> {
-        CallWorkflowRuntime::new(self.mdk).prepare_reject_signal(call_id, reason)
-    }
-
-    pub fn prepare_end_call_signal(
-        &self,
-        call_id: &str,
-        reason: &str,
-    ) -> Result<PreparedCallSignal, String> {
-        CallWorkflowRuntime::new(self.mdk).prepare_end_signal(call_id, reason)
-    }
-
-    pub fn prepare_upload(
-        &self,
-        mls_group_id: &GroupId,
-        bytes: &[u8],
-        mime_type: Option<&str>,
-        filename: Option<&str>,
-    ) -> Result<PreparedMediaUpload> {
-        MediaRuntime::new(self.mdk).prepare_upload(mls_group_id, bytes, mime_type, filename)
-    }
-
-    pub fn finish_upload(
-        &self,
-        mls_group_id: &GroupId,
-        upload: &pika_mls::encrypted_media::types::EncryptedMediaUpload,
-        uploaded_blob: crate::media::UploadedBlob,
-    ) -> RuntimeMediaUploadResult {
-        MediaRuntime::new(self.mdk).finish_upload(mls_group_id, upload, uploaded_blob)
-    }
-
-    pub fn complete_media_upload_operation(
-        &self,
-        mls_group_id: &GroupId,
-        nostr_group_id_hex: String,
-        upload: &pika_mls::encrypted_media::types::EncryptedMediaUpload,
-        status: MediaUploadStatus,
-    ) -> RuntimeOperationEvent {
-        let operation_id = media_upload_operation_id(upload);
-        match status {
-            MediaUploadStatus::Uploaded(uploaded_blob) => {
-                RuntimeOperationEvent::MediaUpload(MediaUploadOperationEvent::Completed {
-                    operation_id,
-                    result: Box::new(CompletedMediaUpload {
-                        nostr_group_id_hex,
-                        result: self.finish_upload(mls_group_id, upload, uploaded_blob),
-                    }),
-                })
-            }
-            MediaUploadStatus::UploadFailed(error) => {
-                RuntimeOperationEvent::media_upload_failed(nostr_group_id_hex, upload, error)
-            }
-        }
-    }
-
-    pub async fn publish_prepared_action(
-        &self,
-        relay_urls: &[RelayUrl],
-        prepared: &PreparedConversationAction,
-        label: &str,
-    ) -> Result<PublishedConversationAction> {
-        let client = self
-            .client
-            .context("runtime client not configured for publish")?;
-        OutboundConversationRuntime::new(self.mdk)
-            .publish_prepared_with_confirm(client, relay_urls, prepared, label)
-            .await
     }
 }
 
@@ -1135,24 +821,12 @@ impl<'a> PikaRuntime<'a> {
         self.client
     }
 
-    fn queries(&self) -> RuntimeQueries<'_> {
-        RuntimeQueries::new(self.mdk)
-    }
-
-    fn commands(&self) -> RuntimeCommands<'_> {
-        RuntimeCommands {
-            mdk: self.mdk,
-            client: self.client,
-        }
-    }
-
     pub fn refresh_session_open_state(
         &self,
         pubkey: PublicKey,
         open_request: RuntimeSessionOpenRequest,
     ) -> Result<RuntimeSessionOpenState> {
-        self.queries()
-            .refresh_session_open_state(pubkey, open_request)
+        refresh_runtime_session_open_state(self.mdk, pubkey, open_request)
     }
 
     pub fn conversation(&self) -> ConversationRuntime<'a> {
@@ -1319,14 +993,14 @@ impl<'a> PikaRuntime<'a> {
     }
 
     pub fn list_joined_group_snapshots(&self) -> Result<Vec<RuntimeJoinedGroupSnapshot>> {
-        self.queries().list_joined_group_snapshots()
+        self.conversation().list_joined_group_snapshots()
     }
 
     pub fn lookup_joined_group_snapshot(
         &self,
         nostr_group_id_hex: &str,
     ) -> Result<RuntimeJoinedGroupSnapshot> {
-        self.queries()
+        self.conversation()
             .lookup_joined_group_snapshot(nostr_group_id_hex)
     }
 
@@ -1335,7 +1009,8 @@ impl<'a> PikaRuntime<'a> {
         nostr_group_id_hex: &str,
         query: RuntimeMessagePageQuery,
     ) -> Result<RuntimeMessagePage> {
-        self.queries().load_message_page(nostr_group_id_hex, query)
+        self.conversation()
+            .load_message_page(nostr_group_id_hex, query)
     }
 
     pub fn lookup_group_profile_snapshot(
@@ -1343,7 +1018,7 @@ impl<'a> PikaRuntime<'a> {
         nostr_group_id_hex: &str,
         owner_pubkey: &PublicKey,
     ) -> Result<Option<RuntimeGroupProfileSnapshot>> {
-        self.queries()
+        self.conversation()
             .lookup_group_profile_snapshot(nostr_group_id_hex, owner_pubkey)
     }
 
@@ -1352,19 +1027,19 @@ impl<'a> PikaRuntime<'a> {
         nostr_group_id_hex: &str,
         owner_pubkeys: &[PublicKey],
     ) -> Result<Option<RuntimeGroupProfileSnapshot>> {
-        self.queries()
+        self.conversation()
             .lookup_group_profile_snapshot_for_owners(nostr_group_id_hex, owner_pubkeys)
     }
 
     pub fn list_pending_welcome_snapshots(&self) -> Result<Vec<PendingWelcomeSnapshot>> {
-        self.queries().list_pending_welcome_snapshots()
+        list_pending_welcome_snapshots(self.mdk)
     }
 
     pub fn lookup_pending_welcome(
         &self,
         target: &EventId,
     ) -> Result<Option<pika_mls::storage_traits::welcomes::types::Welcome>> {
-        self.queries().lookup_pending_welcome(target)
+        lookup_pending_welcome(self.mdk, target)
     }
 
     pub fn get_messages(
@@ -1395,7 +1070,7 @@ impl<'a> PikaRuntime<'a> {
         &self,
         nostr_group_id_hex: &str,
     ) -> Result<ResolvedConversationTarget> {
-        self.commands().resolve_outbound_target(nostr_group_id_hex)
+        self.outbound().resolve_target(nostr_group_id_hex)
     }
 
     pub fn prepare_outbound_action(
@@ -1404,8 +1079,8 @@ impl<'a> PikaRuntime<'a> {
         nostr_group_id_hex: &str,
         action: OutboundConversationAction,
     ) -> Result<PreparedConversationAction> {
-        self.commands()
-            .prepare_outbound_action(sender, nostr_group_id_hex, action)
+        self.outbound()
+            .prepare_action(sender, nostr_group_id_hex, action)
     }
 
     pub fn prepare_outbound_action_for_group(
@@ -1414,8 +1089,8 @@ impl<'a> PikaRuntime<'a> {
         group: Group,
         action: OutboundConversationAction,
     ) -> Result<PreparedConversationAction> {
-        self.commands()
-            .prepare_outbound_action_for_group(sender, group, action)
+        self.outbound()
+            .prepare_action_for_group(sender, group, action)
     }
 
     pub fn prepare_outbound_action_for_group_ids(
@@ -1425,7 +1100,7 @@ impl<'a> PikaRuntime<'a> {
         nostr_group_id_hex: String,
         action: OutboundConversationAction,
     ) -> Result<PreparedConversationAction> {
-        self.commands().prepare_outbound_action_for_group_ids(
+        self.outbound().prepare_action_for_group_ids(
             sender,
             mls_group_id,
             nostr_group_id_hex,
@@ -1439,8 +1114,8 @@ impl<'a> PikaRuntime<'a> {
         target: ResolvedConversationTarget,
         action: OutboundConversationAction,
     ) -> Result<PreparedConversationAction> {
-        self.commands()
-            .prepare_outbound_action_for_target(sender, target, action)
+        self.outbound()
+            .prepare_action_for_target(sender, target, action)
     }
 
     pub async fn publish_prepared_action(
@@ -1449,8 +1124,11 @@ impl<'a> PikaRuntime<'a> {
         prepared: &PreparedConversationAction,
         label: &str,
     ) -> Result<PublishedConversationAction> {
-        self.commands()
-            .publish_prepared_action(relay_urls, prepared, label)
+        let client = self
+            .client
+            .context("runtime client not configured for publish")?;
+        self.outbound()
+            .publish_prepared_with_confirm(client, relay_urls, prepared, label)
             .await
     }
 
@@ -1461,7 +1139,7 @@ impl<'a> PikaRuntime<'a> {
         mime_type: Option<&str>,
         filename: Option<&str>,
     ) -> Result<PreparedMediaUpload> {
-        self.commands()
+        self.media()
             .prepare_upload(mls_group_id, bytes, mime_type, filename)
     }
 
@@ -1471,7 +1149,7 @@ impl<'a> PikaRuntime<'a> {
         upload: &pika_mls::encrypted_media::types::EncryptedMediaUpload,
         uploaded_blob: crate::media::UploadedBlob,
     ) -> RuntimeMediaUploadResult {
-        self.commands()
+        self.media()
             .finish_upload(mls_group_id, upload, uploaded_blob)
     }
 
@@ -1482,12 +1160,21 @@ impl<'a> PikaRuntime<'a> {
         upload: &pika_mls::encrypted_media::types::EncryptedMediaUpload,
         status: MediaUploadStatus,
     ) -> RuntimeOperationEvent {
-        self.commands().complete_media_upload_operation(
-            mls_group_id,
-            nostr_group_id_hex,
-            upload,
-            status,
-        )
+        let operation_id = media_upload_operation_id(upload);
+        match status {
+            MediaUploadStatus::Uploaded(uploaded_blob) => {
+                RuntimeOperationEvent::MediaUpload(MediaUploadOperationEvent::Completed {
+                    operation_id,
+                    result: Box::new(CompletedMediaUpload {
+                        nostr_group_id_hex,
+                        result: self.finish_upload(mls_group_id, upload, uploaded_blob),
+                    }),
+                })
+            }
+            MediaUploadStatus::UploadFailed(error) => {
+                RuntimeOperationEvent::media_upload_failed(nostr_group_id_hex, upload, error)
+            }
+        }
     }
 
     pub fn parse_message_attachments(&self, message: &Message) -> Vec<ParsedMediaAttachment> {
@@ -1525,7 +1212,7 @@ impl<'a> PikaRuntime<'a> {
         mls_group_id: &GroupId,
         key_package_events: &[Event],
     ) -> Result<PreparedMembershipEvolution> {
-        self.commands()
+        self.membership()
             .prepare_add_members(mls_group_id, key_package_events)
     }
 
@@ -1534,8 +1221,8 @@ impl<'a> PikaRuntime<'a> {
         nostr_group_id_hex: &str,
         key_package_events: &[Event],
     ) -> Result<PreparedMembershipEvolution> {
-        self.commands()
-            .prepare_add_members_for_nostr_group_id(nostr_group_id_hex, key_package_events)
+        let group = self.lookup_joined_group_snapshot(nostr_group_id_hex)?;
+        self.prepare_add_members(&group.mls_group_id, key_package_events)
     }
 
     pub fn prepare_remove_members(
@@ -1543,7 +1230,7 @@ impl<'a> PikaRuntime<'a> {
         mls_group_id: &GroupId,
         removed_pubkeys: &[PublicKey],
     ) -> Result<PreparedMembershipEvolution> {
-        self.commands()
+        self.membership()
             .prepare_remove_members(mls_group_id, removed_pubkeys)
     }
 
@@ -1552,23 +1239,23 @@ impl<'a> PikaRuntime<'a> {
         nostr_group_id_hex: &str,
         removed_pubkeys: &[PublicKey],
     ) -> Result<PreparedMembershipEvolution> {
-        self.commands()
-            .prepare_remove_members_for_nostr_group_id(nostr_group_id_hex, removed_pubkeys)
+        let group = self.lookup_joined_group_snapshot(nostr_group_id_hex)?;
+        self.prepare_remove_members(&group.mls_group_id, removed_pubkeys)
     }
 
     pub fn prepare_leave_group(
         &self,
         mls_group_id: &GroupId,
     ) -> Result<PreparedMembershipEvolution> {
-        self.commands().prepare_leave_group(mls_group_id)
+        self.membership().prepare_leave_group(mls_group_id)
     }
 
     pub fn prepare_leave_group_for_nostr_group_id(
         &self,
         nostr_group_id_hex: &str,
     ) -> Result<PreparedMembershipEvolution> {
-        self.commands()
-            .prepare_leave_group_for_nostr_group_id(nostr_group_id_hex)
+        let group = self.lookup_joined_group_snapshot(nostr_group_id_hex)?;
+        self.prepare_leave_group(&group.mls_group_id)
     }
 
     pub fn prepare_evolution(
@@ -1578,7 +1265,7 @@ impl<'a> PikaRuntime<'a> {
         welcome_rumors: Option<Vec<UnsignedEvent>>,
         added_pubkeys: Vec<PublicKey>,
     ) -> Result<PreparedMembershipEvolution> {
-        self.commands().prepare_evolution(
+        self.membership().prepare_evolution(
             mls_group_id,
             evolution_event,
             welcome_rumors,
@@ -1590,7 +1277,7 @@ impl<'a> PikaRuntime<'a> {
         &self,
         prepared: PreparedMembershipEvolution,
     ) -> MembershipUpdateResult {
-        self.commands().finalize_published_evolution(prepared)
+        self.membership().finalize_published_evolution(prepared)
     }
 
     pub fn prepare_outgoing_call_invite(
@@ -1606,8 +1293,8 @@ impl<'a> PikaRuntime<'a> {
         ),
         String,
     > {
-        self.commands()
-            .prepare_outgoing_call_invite(target_id, peer_pubkey_hex, call_id, session)
+        self.calls()
+            .prepare_outgoing_invite(target_id, peer_pubkey_hex, call_id, session)
     }
 
     pub fn prepare_accept_incoming_call(
@@ -1615,8 +1302,7 @@ impl<'a> PikaRuntime<'a> {
         incoming: &PendingIncomingCall,
         group: GroupCallContext<'_>,
     ) -> Result<PreparedAcceptedCall, String> {
-        self.commands()
-            .prepare_accept_incoming_call(incoming, group)
+        self.calls().prepare_accept_incoming(incoming, group)
     }
 
     pub fn prepare_reject_call_signal(
@@ -1624,7 +1310,7 @@ impl<'a> PikaRuntime<'a> {
         call_id: &str,
         reason: &str,
     ) -> Result<PreparedCallSignal, String> {
-        self.commands().prepare_reject_call_signal(call_id, reason)
+        self.calls().prepare_reject_signal(call_id, reason)
     }
 
     pub fn prepare_end_call_signal(
@@ -1632,7 +1318,7 @@ impl<'a> PikaRuntime<'a> {
         call_id: &str,
         reason: &str,
     ) -> Result<PreparedCallSignal, String> {
-        self.commands().prepare_end_call_signal(call_id, reason)
+        self.calls().prepare_end_signal(call_id, reason)
     }
 
     pub fn complete_membership_evolution_operation(

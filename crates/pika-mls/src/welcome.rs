@@ -98,6 +98,10 @@ pub fn take_pending_welcome(welcomes: &mut Vec<Welcome>, target: &EventId) -> Op
     find_pending_welcome_index(welcomes, target).map(|idx| welcomes.swap_remove(idx))
 }
 
+pub fn accept_pending_welcome(mdk: &PikaMdk, welcome: &Welcome) -> Result<()> {
+    mdk.accept_welcome(welcome).context("accept welcome")
+}
+
 pub fn ingest_unwrapped_welcome<F>(
     mdk: &PikaMdk,
     wrapper_event_id: &EventId,
@@ -295,21 +299,22 @@ impl<'a> WelcomeQueries<'a> {
         Self { mdk }
     }
 
+    pub fn list_pending_welcomes(&self) -> Result<Vec<Welcome>> {
+        self.mdk
+            .get_pending_welcomes(None)
+            .context("get pending welcomes")
+    }
+
     pub fn list_pending_welcome_snapshots(&self) -> Result<Vec<PendingWelcomeSnapshot>> {
         Ok(self
-            .mdk
-            .get_pending_welcomes(None)
-            .context("get pending welcomes")?
+            .list_pending_welcomes()?
             .iter()
             .map(PendingWelcomeSnapshot::from_welcome)
             .collect())
     }
 
     pub fn lookup_pending_welcome(&self, target: &EventId) -> Result<Option<Welcome>> {
-        let pending = self
-            .mdk
-            .get_pending_welcomes(None)
-            .context("get pending welcomes")?;
+        let pending = self.list_pending_welcomes()?;
         Ok(find_pending_welcome(&pending, target).cloned())
     }
 }

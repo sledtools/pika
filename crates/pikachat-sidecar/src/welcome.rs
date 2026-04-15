@@ -6,11 +6,11 @@ use nostr_sdk::prelude::{Event, EventId, Keys, PublicKey, Tag, UnsignedEvent};
 use pika_mls::prelude::NostrGroupConfigData;
 pub use pika_mls::welcome::{
     CreatedGroup, GroupWelcomeDeliveryPlan, IngestedWelcome, PendingWelcomeSnapshot,
-    PlannedGroupCreation, PublishedWelcome, find_pending_welcome, find_pending_welcome_index,
-    take_pending_welcome,
+    PlannedGroupCreation, PublishedWelcome, accept_pending_welcome, find_pending_welcome,
+    find_pending_welcome_index, take_pending_welcome,
 };
 use pika_mls::welcome::{
-    WelcomeQueries,
+    WelcomeQueries, accept_pending_welcome as shared_accept_pending_welcome,
     create_group_and_plan_welcome_delivery as shared_create_group_and_plan_welcome_delivery,
     create_group_and_publish_welcomes as shared_create_group_and_publish_welcomes,
     ingest_unwrapped_welcome as shared_ingest_unwrapped_welcome,
@@ -99,7 +99,7 @@ where
         ingested_messages: Vec::new(),
     };
 
-    mdk.accept_welcome(welcome).context("accept welcome")?;
+    shared_accept_pending_welcome(mdk, welcome)?;
     after_accept(&accepted).await?;
 
     if !relay_urls.is_empty() {

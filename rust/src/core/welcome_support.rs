@@ -11,6 +11,7 @@ use pika_mls::welcome::ingest_welcome_from_giftwrap as shared_ingest_welcome_fro
 #[cfg(test)]
 pub(crate) use pika_mls::welcome::IngestedWelcome;
 use pika_mls::welcome::{
+    accept_pending_welcome as shared_accept_pending_welcome,
     create_group_and_plan_welcome_delivery as shared_create_group_and_plan_welcome_delivery,
     publish_welcome_rumors as shared_publish_welcome_rumors, WelcomeQueries,
 };
@@ -60,7 +61,7 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    mdk.accept_welcome(welcome).context("accept welcome")?;
+    shared_accept_pending_welcome(mdk, welcome)?;
     after_accept().await?;
 
     if !relay_urls.is_empty() {

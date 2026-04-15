@@ -17,8 +17,11 @@ use pika_managed_agent_contract::{AgentProvisionRequest, AgentStartupPhase, Incu
 use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
 use pika_marmot_runtime::runtime::MarmotRuntime;
-use pika_marmot_runtime::welcome::{CreatedGroup, create_group_and_publish_welcomes};
+use pika_marmot_runtime::welcome::{
+    CreatedGroup, accept_pending_welcome, create_group_and_publish_welcomes, find_pending_welcome,
+};
 use pika_mls::prelude::*;
+use pika_mls::welcome::WelcomeQueries;
 use pika_relay_profiles::{
     default_key_package_relays, default_message_relays, default_primary_blossom_server,
 };
@@ -1235,9 +1238,7 @@ where
 
 fn cmd_welcomes(cli: &Cli) -> anyhow::Result<()> {
     let (_keys, mdk) = open(cli)?;
-    let pending = mdk
-        .get_pending_welcomes(None)
-        .context("get pending welcomes")?;
+    let pending = WelcomeQueries::new(&mdk).list_pending_welcomes()?;
     let out: Vec<serde_json::Value> = pending.iter().map(pending_welcome_json).collect();
     print(json!({ "welcomes": out }));
     Ok(())
@@ -1248,9 +1249,7 @@ fn cmd_accept_welcome(cli: &Cli, wrapper_event_id_hex: &str) -> anyhow::Result<(
     let target_id =
         EventId::from_hex(wrapper_event_id_hex).context("parse pending welcome event id")?;
 
-    let pending = mdk
-        .get_pending_welcomes(None)
-        .context("get pending welcomes")?;
+    let pending = WelcomeQueries::new(&mdk).list_pending_welcomes()?;
     let welcome = find_pending_welcome_for_accept(&pending, &target_id)
         .ok_or_else(|| {
             anyhow!(
@@ -1261,7 +1260,7 @@ fn cmd_accept_welcome(cli: &Cli, wrapper_event_id_hex: &str) -> anyhow::Result<(
     let ngid = hex::encode(welcome.nostr_group_id);
     let mls_gid = hex::encode(welcome.mls_group_id.as_slice());
 
-    mdk.accept_welcome(welcome).context("accept welcome")?;
+    accept_pending_welcome(&mdk, welcome)?;
 
     // CLI accept is intentionally narrow today: it joins locally but does not
     // subscribe or backfill here. Later `messages`, `send`, and listener flows
@@ -1278,7 +1277,7 @@ fn find_pending_welcome_for_accept<'a>(
     pending: &'a [pika_mls::storage_traits::welcomes::types::Welcome],
     target_id: &EventId,
 ) -> Option<&'a pika_mls::storage_traits::welcomes::types::Welcome> {
-    pika_marmot_runtime::welcome::find_pending_welcome(pending, target_id)
+    find_pending_welcome(pending, target_id)
 }
 
 fn pending_welcome_json(

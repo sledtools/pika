@@ -189,11 +189,13 @@ impl AppCore {
         let initial_seen_inbound = initial_open.bounded_inbound_relay_seen_cache();
 
         if self.network_enabled() {
-            let relays = initial_open
-                .sync_plan
-                .relay_roles
-                .session_connect_relays
-                .clone();
+            let relays = self.filter_session_connect_relays(
+                initial_open
+                    .sync_plan
+                    .relay_roles
+                    .session_connect_relays
+                    .clone(),
+            );
             tracing::info!(relays = ?relays.iter().map(|r| r.to_string()).collect::<Vec<_>>(), "connecting_relays");
             let client = runtime_session.client.clone();
             self.runtime.spawn(async move {
@@ -359,7 +361,7 @@ impl AppCore {
             self.key_package_publish_token = self.key_package_publish_token.wrapping_add(1);
             let token = self.key_package_publish_token;
             self.local_key_package_published = false;
-            let relays_for_tags = self.long_lived_session_relays();
+            let relays_for_tags = self.private_chat_bootstrap_relays();
 
             let (content, tags, _hash_ref) = match sess
                 .mdk
@@ -530,6 +532,16 @@ impl AppCore {
                 }
             }
         });
+    }
+
+    fn filter_session_connect_relays(&self, relays: Vec<RelayUrl>) -> Vec<RelayUrl> {
+        if !self.private_chat_uses_chat_server() {
+            return relays;
+        }
+        relays
+            .into_iter()
+            .filter(|relay| !crate::core::config::is_chat_server_compat_relay(relay))
+            .collect()
     }
 
     pub(super) fn publish_key_package_relays_best_effort(&mut self) {
@@ -1259,6 +1271,8 @@ impl AppCore {
 mod tests {
     use super::*;
     use crate::core::config::make_core_with_config_for_tests as make_core_with_config;
+    use crate::core::config::CHAT_SERVER_MLS_COMPAT_RELAY;
+    use crate::core::extract_relays_from_key_package_event;
 
     fn open_test_mdk(dir: &tempfile::TempDir, keys: &Keys) -> PikaMdk {
         crate::mdk_support::open_mdk(
@@ -1281,7 +1295,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_server_key_packages_keep_relay_tags_for_mdk_compatibility() {
+    fn chat_server_key_packages_use_compatibility_relay_for_mdk() {
         let (mut core, _tmp) = make_core_with_config(crate::core::config::AppConfig {
             private_chat_server_url: Some("https://chat.example".to_string()),
             relay_urls: Some(vec!["wss://message-1.example".to_string()]),
@@ -1304,17 +1318,39 @@ mod tests {
         let sess = core.session.as_ref().expect("session");
         let (content, tags, _hash_ref) = sess
             .mdk
-            .create_key_package_for_event(&sess.pubkey, core.long_lived_session_relays())
+            .create_key_package_for_event(&sess.pubkey, core.private_chat_bootstrap_relays())
             .expect("create key package");
         let event = EventBuilder::new(Kind::MlsKeyPackage, content)
             .tags(tags)
             .sign_with_keys(&keys)
             .expect("sign key package");
+        let relays = extract_relays_from_key_package_event(&event).expect("relays tag");
+        assert_eq!(
+            relays,
+            vec![RelayUrl::parse(CHAT_SERVER_MLS_COMPAT_RELAY).expect("compat relay")]
+        );
         let normalized = crate::normalize_peer_key_package_event_for_mdk(&event);
 
         sess.mdk
             .parse_key_package(&normalized)
             .expect("chat-server key package should stay parseable");
+    }
+
+    #[test]
+    fn chat_server_session_connect_relays_skip_compatibility_relay() {
+        let (core, _tmp) = make_core_with_config(crate::core::config::AppConfig {
+            private_chat_server_url: Some("https://chat.example".to_string()),
+            ..Default::default()
+        });
+        let filtered = core.filter_session_connect_relays(vec![
+            RelayUrl::parse("wss://message-1.example").expect("relay url"),
+            RelayUrl::parse(CHAT_SERVER_MLS_COMPAT_RELAY).expect("compat relay"),
+        ]);
+
+        assert_eq!(
+            filtered,
+            vec![RelayUrl::parse("wss://message-1.example").expect("relay url")]
+        );
     }
 
     #[test]

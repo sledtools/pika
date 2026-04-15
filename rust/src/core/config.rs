@@ -13,6 +13,11 @@ use super::AppCore;
 
 const DEFAULT_CALL_MOQ_URL: &str = "https://us-east.moq.logos.surf/anon";
 const DEFAULT_CALL_BROADCAST_PREFIX: &str = "pika/calls";
+pub(crate) const CHAT_SERVER_MLS_COMPAT_RELAY: &str = "wss://private-chat.invalid";
+
+pub(crate) fn is_chat_server_compat_relay(relay: &RelayUrl) -> bool {
+    relay.as_str_without_trailing_slash() == CHAT_SERVER_MLS_COMPAT_RELAY
+}
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -151,6 +156,14 @@ impl AppCore {
             .iter()
             .filter_map(|u| RelayUrl::parse(u).ok())
             .collect()
+    }
+
+    pub(super) fn private_chat_bootstrap_relays(&self) -> Vec<RelayUrl> {
+        if self.private_chat_uses_chat_server() {
+            return vec![RelayUrl::parse(CHAT_SERVER_MLS_COMPAT_RELAY)
+                .expect("chat-server compatibility relay URL must stay valid")];
+        }
+        self.default_relays()
     }
 
     pub(super) fn key_package_relays(&self) -> Vec<RelayUrl> {

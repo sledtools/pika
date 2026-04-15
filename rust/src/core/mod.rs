@@ -4092,7 +4092,7 @@ impl AppCore {
         };
         let kp_event = normalize_peer_key_package_event_for_mdk(&kp_event);
 
-        let mut group_relays = self.default_relays();
+        let mut group_relays = self.private_chat_bootstrap_relays();
         if self.private_chat_server_url().is_none() {
             // Relay-mode bootstrap still needs peer relay hints for group routing.
             let peer_relays = extract_relays_from_key_package_event(&kp_event).unwrap_or_default();
@@ -4628,7 +4628,7 @@ impl AppCore {
             } else {
                 Vec::new()
             };
-            let mut group_relays = self.default_relays();
+            let mut group_relays = self.private_chat_bootstrap_relays();
             if use_relay_metadata {
                 for r in candidate_kp_relays.iter().cloned() {
                     if !group_relays.contains(&r) {
@@ -6066,7 +6066,7 @@ impl AppCore {
                 }
 
                 let network_enabled = self.network_enabled();
-                let group_relays = self.default_relays();
+                let group_relays = self.private_chat_bootstrap_relays();
 
                 let peer_npub = invite.peer_key;
                 if peer_npub.is_empty() {
@@ -9243,6 +9243,7 @@ mod tests {
             core.config.relay_urls = Some(vec!["wss://local.example".into()]);
             core.config.disable_network = Some(true);
             core.state.busy.creating_chat = true;
+            let expected_relays = core.private_chat_bootstrap_relays();
 
             let peer = Keys::generate();
             let kp_event = make_peer_key_package_with_relay(&peer, "wss://peer-only.example");
@@ -9269,12 +9270,11 @@ mod tests {
                 .get_relays(&created.mls_group_id)
                 .expect("group relays");
 
-            assert_eq!(relays.len(), 1);
-            assert!(relays.contains(&RelayUrl::parse("wss://local.example").expect("relay")));
-            assert!(
-                !relays.contains(&RelayUrl::parse("wss://candidate-only.example").expect("relay"))
+            assert_eq!(
+                relays.into_iter().collect::<Vec<_>>(),
+                expected_relays,
+                "chat-server groups should carry only the MLS compatibility relay"
             );
-            assert!(!relays.contains(&RelayUrl::parse("wss://peer-only.example").expect("relay")));
         }
 
         #[test]
@@ -10316,6 +10316,7 @@ mod tests {
             core.config.private_chat_server_url = Some("https://chat.example".into());
             core.config.relay_urls = Some(vec!["wss://local.example".into()]);
             core.config.disable_network = Some(true);
+            let expected_relays = core.private_chat_bootstrap_relays();
             core.direct_chat_creation_token = 14;
             core.pending_direct_chat_creation = Some(super::super::PendingDirectChatCreation {
                 token: 14,
@@ -10338,9 +10339,11 @@ mod tests {
                 .get_relays(&created.mls_group_id)
                 .expect("group relays");
 
-            assert_eq!(relays.len(), 1);
-            assert!(relays.contains(&RelayUrl::parse("wss://local.example").expect("relay")));
-            assert!(!relays.contains(&RelayUrl::parse("wss://peer-only.example").expect("relay")));
+            assert_eq!(
+                relays.into_iter().collect::<Vec<_>>(),
+                expected_relays,
+                "chat-server DMs should carry only the MLS compatibility relay"
+            );
         }
 
         #[test]

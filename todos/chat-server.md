@@ -82,8 +82,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   chat-server mode now appends call invite/end wrappers through the room log for bound chats, and fixture E2E coverage proves the peer rings and observes remote hangup without relay private-chat subscriptions.
 - [x] Trim relay-era bootstrap metadata from chat-server mode:
   chat-server key-package uploads no longer register throwaway devices first, and chat-server DM/group bootstrap now ignores peer/candidate relay hints instead of folding them into server-bound group routing.
+- [x] Isolate MDK relay-tag compatibility behind a fake relay:
+  chat-server mode now uses `wss://private-chat.invalid` only where MDK still insists on non-empty relay tags, and session startup filters that sentinel back out before any network connection is attempted.
 - Next seam:
-  keep cutting the remaining relay/MDK bootstrap assumptions out of the chat-server path, starting with the mandatory relay tags that MDK still requires on key packages and welcome rumors, plus the larger runtime cut toward OpenMLS.
+  start the larger runtime cut toward direct OpenMLS usage so chat-server mode can stop carrying MDK relay-tag compatibility at all.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
 
@@ -144,8 +146,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   the `relay-chat-server` profile starts `pika-chat-server`, exports `PIKA_CHAT_SERVER_URL`, and gives the repo a repeatable app-level E2E lane for the new private-chat path.
 - The first durable transport model is file-backed:
   `PIKA_CHAT_SERVER_STATE_PATH` points at a JSON room/device log with persistent sequence numbers.
-- Chat-server key packages still need non-empty relay tags for MDK compatibility:
-  even though the chat server owns delivery in this mode, the current MDK-backed group bootstrap rejects a claimed key package whose relays tag is empty, so chat-server uploads now keep the app's long-lived relay URLs in the event metadata until the OpenMLS runtime cut replaces that parser dependency.
+- Chat-server key packages and bootstrap metadata still need non-empty relay tags for MDK compatibility:
+  chat-server mode now uses a synthetic relay value, `wss://private-chat.invalid`, anywhere the current MDK-backed bootstrap still rejects empty relay tags.
+- That compatibility relay is intentionally not part of the runtime transport:
+  session startup filters it out before relay connection planning, so it exists only to satisfy the current MDK parser contract while the OpenMLS runtime cut is still in flight.
 - `FfiApp` now has a real shutdown path on drop:
   the actor loop stops its session/runtime when the last app handle is released, which keeps restart tests honest and avoids duplicate MLS processing from leaked background instances.
 - Server-bound room-log publishes are simpler now:

@@ -5,6 +5,7 @@ mod chat_media;
 mod chat_media_db;
 pub(crate) mod chat_server;
 mod config;
+pub(crate) mod conversation_support;
 mod group_profile;
 mod host_context;
 mod interop;
@@ -8660,7 +8661,7 @@ mod tests {
                 .expect("host context")
                 .load_message_page(
                     &chat_id,
-                    pika_marmot_runtime::conversation::RuntimeMessagePageQuery::new(50, 0),
+                    crate::core::conversation_support::MessagePageQuery::new(50, 0),
                 )
                 .expect("load first page");
 

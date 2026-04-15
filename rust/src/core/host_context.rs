@@ -63,9 +63,8 @@ impl<'a> AppHostContext<'a> {
     pub(super) fn lookup_joined_group_snapshot(
         &self,
         chat_id: &str,
-    ) -> anyhow::Result<pika_marmot_runtime::conversation::RuntimeJoinedGroupSnapshot> {
-        pika_marmot_runtime::conversation::ConversationRuntime::new(&self.session.mdk)
-            .lookup_joined_group_snapshot(chat_id)
+    ) -> anyhow::Result<super::conversation_support::JoinedGroupSnapshot> {
+        super::conversation_support::lookup_joined_group_snapshot(&self.session.mdk, chat_id)
     }
 
     pub(super) fn current_pubkey_hex(&self) -> String {
@@ -74,18 +73,16 @@ impl<'a> AppHostContext<'a> {
 
     pub(super) fn list_joined_group_snapshots(
         &self,
-    ) -> anyhow::Result<Vec<pika_marmot_runtime::conversation::RuntimeJoinedGroupSnapshot>> {
-        pika_marmot_runtime::conversation::ConversationRuntime::new(&self.session.mdk)
-            .list_joined_group_snapshots()
+    ) -> anyhow::Result<Vec<super::conversation_support::JoinedGroupSnapshot>> {
+        super::conversation_support::list_joined_group_snapshots(&self.session.mdk)
     }
 
     pub(super) fn load_message_page(
         &self,
         chat_id: &str,
-        query: pika_marmot_runtime::conversation::RuntimeMessagePageQuery,
-    ) -> anyhow::Result<pika_marmot_runtime::conversation::RuntimeMessagePage> {
-        pika_marmot_runtime::conversation::ConversationRuntime::new(&self.session.mdk)
-            .load_message_page(chat_id, query)
+        query: super::conversation_support::MessagePageQuery,
+    ) -> anyhow::Result<super::conversation_support::MessagePage> {
+        super::conversation_support::load_message_page(&self.session.mdk, chat_id, query)
     }
 
     #[cfg(test)]
@@ -167,8 +164,7 @@ impl<'a> AppHostContext<'a> {
         key_package_events: &[Event],
     ) -> anyhow::Result<PreparedMembershipEvolution> {
         let snapshot =
-            pika_marmot_runtime::conversation::ConversationRuntime::new(&self.session.mdk)
-                .lookup_joined_group_snapshot(chat_id)?;
+            super::conversation_support::lookup_joined_group_snapshot(&self.session.mdk, chat_id)?;
         pika_marmot_runtime::membership::MembershipRuntime::new(&self.session.mdk)
             .prepare_add_members(&snapshot.mls_group_id, key_package_events)
     }

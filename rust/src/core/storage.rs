@@ -456,10 +456,7 @@ impl AppCore {
         loop {
             let page = match host.load_message_page(
                 chat_id,
-                pika_marmot_runtime::conversation::RuntimeMessagePageQuery::new(
-                    target,
-                    fetch_offset,
-                ),
+                super::conversation_support::MessagePageQuery::new(target, fetch_offset),
             ) {
                 Ok(page) => page,
                 Err(e) => {
@@ -871,7 +868,7 @@ impl AppCore {
         loop {
             let page = match host.load_message_page(
                 chat_id,
-                pika_marmot_runtime::conversation::RuntimeMessagePageQuery::new(
+                super::conversation_support::MessagePageQuery::new(
                     limit,
                     base_offset + total_fetched,
                 ),

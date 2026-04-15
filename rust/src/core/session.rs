@@ -95,7 +95,7 @@ struct AppSessionSyncPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AppSessionOpenState {
-    joined_group_snapshots: Vec<pika_marmot_runtime::conversation::RuntimeJoinedGroupSnapshot>,
+    joined_group_snapshots: Vec<super::conversation_support::JoinedGroupSnapshot>,
     pending_welcome_snapshots: Vec<pika_marmot_runtime::welcome::PendingWelcomeSnapshot>,
     sync_plan: AppSessionSyncPlan,
 }
@@ -186,8 +186,7 @@ fn refresh_app_session_open_state(
     temporary_key_package_relays: Vec<RelayUrl>,
 ) -> anyhow::Result<AppSessionOpenState> {
     Ok(AppSessionOpenState {
-        joined_group_snapshots: pika_marmot_runtime::conversation::ConversationRuntime::new(mdk)
-            .list_joined_group_snapshots()?,
+        joined_group_snapshots: super::conversation_support::list_joined_group_snapshots(mdk)?,
         pending_welcome_snapshots: list_pending_welcome_snapshots(mdk)?,
         sync_plan: plan_app_session_sync_from_mdk(
             mdk,
@@ -272,7 +271,7 @@ fn app_welcome_inbox_intent() -> AppWelcomeInboxIntent {
 
 fn seed_app_groups_from_open_state(
     local_pubkey: &PublicKey,
-    snapshots: &[pika_marmot_runtime::conversation::RuntimeJoinedGroupSnapshot],
+    snapshots: &[super::conversation_support::JoinedGroupSnapshot],
 ) -> HashMap<String, GroupIndexEntry> {
     snapshots
         .iter()

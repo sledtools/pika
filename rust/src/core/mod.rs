@@ -6747,22 +6747,23 @@ impl AppCore {
             return;
         }
         self.pending_group_ops.insert(chat_id.to_string());
-        let fallback_relays = self.default_relays();
         let Some(sess) = self.session.as_ref() else {
             self.pending_group_ops.remove(chat_id);
             return;
         };
-        let relays: Vec<RelayUrl> = sess
-            .mdk
-            .get_relays(&prepared.mls_group_id)
-            .ok()
-            .map(|s| s.into_iter().collect())
-            .filter(|v: &Vec<RelayUrl>| !v.is_empty())
-            .unwrap_or_else(|| fallback_relays.clone());
-
         let client = sess.client.clone();
         let http_client = self.http_client.clone();
         let room_binding = self.chat_server_rooms.get(chat_id).cloned();
+        let relays: Vec<RelayUrl> = if room_binding.is_some() {
+            Vec::new()
+        } else {
+            sess.mdk
+                .get_relays(&prepared.mls_group_id)
+                .ok()
+                .map(|s| s.into_iter().collect())
+                .filter(|v: &Vec<RelayUrl>| !v.is_empty())
+                .unwrap_or_else(|| self.default_relays())
+        };
         let authoritative_member_npubs = if !prepared.is_membership_change() {
             None
         } else {

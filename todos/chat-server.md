@@ -74,8 +74,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `pikahut` now has a dedicated `relay-chat-server` profile that starts `pika-chat-server`, fixture manifests expose `chat_server_url`, and `rust/tests/e2e_messaging.rs` covers create-DM / welcome-accept / send / receive through the chat server path.
 - [x] Cover reconnect/resume on the new fixture lane:
   the chat-server E2E now restarts the receiving app, verifies the persisted `chat_id -> room_id` binding and `last_synced_seq`, and confirms that new post-restart messages arrive through resumed room sync.
+- [x] Stop doing relay lookup work on already-bound room-log publishes:
+  once a chat already has `chat_id -> room_id`, both message publish and membership-commit publish now branch straight to chat-server append/submit without first asking MDK for relay targets they will never use.
 - Next seam:
-  keep cutting the remaining relay/MDK bootstrap assumptions out of the chat-server path, starting with any still-dead relay lookups that survive after a room is server-bound and the lifecycle/test scaffolding that still assumes the old relay runtime.
+  keep cutting the remaining relay/MDK bootstrap assumptions out of the chat-server path, starting with the key-package / welcome bootstrap bits that still lean on MDK-era relay metadata and the larger runtime cut toward OpenMLS.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
 
@@ -140,6 +142,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   even though the chat server owns delivery in this mode, the current MDK-backed group bootstrap rejects a claimed key package whose relays tag is empty, so chat-server uploads now keep the app's long-lived relay URLs in the event metadata until the OpenMLS runtime cut replaces that parser dependency.
 - `FfiApp` now has a real shutdown path on drop:
   the actor loop stops its session/runtime when the last app handle is released, which keeps restart tests honest and avoids duplicate MLS processing from leaked background instances.
+- Server-bound room-log publishes are simpler now:
+  once a room binding exists, the app no longer asks MDK for per-group relay targets before sending normal messages or membership commits through the chat server.
 - The inventory pass confirmed the biggest simplification wins:
   cut `pika-marmot-runtime`, delete `pika-server`'s relay listener path, and replace relay-centric app config early.
 - The v1 routing model is intentionally less Matrix-like:

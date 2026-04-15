@@ -1820,7 +1820,6 @@ impl AppCore {
         media: Vec<ChatMediaAttachment>,
     ) {
         let network_enabled = self.network_enabled();
-        let fallback_relays = self.default_relays();
 
         // Nostr timestamps are second-granularity; rapid sends can share the same second.
         // Keep outgoing timestamps monotonic to avoid tie-related paging nondeterminism.
@@ -1834,7 +1833,7 @@ impl AppCore {
             self.last_outgoing_ts
         };
 
-        let (client, prepared, relays, room_binding) = {
+        let (client, prepared, room_binding, relays) = {
             let Some(sess) = self.session.as_ref() else {
                 return;
             };
@@ -1912,23 +1911,19 @@ impl AppCore {
                 self.profile_db.as_ref(),
             );
 
-            let relays: Vec<RelayUrl> = if network_enabled {
+            let room_binding = self.chat_server_rooms.get(&chat_id).cloned();
+            let relays: Vec<RelayUrl> = if room_binding.is_some() || !network_enabled {
+                Vec::new()
+            } else {
                 sess.mdk
                     .get_relays(&group.mls_group_id)
                     .ok()
                     .map(|s| s.into_iter().collect())
                     .filter(|v: &Vec<RelayUrl>| !v.is_empty())
-                    .unwrap_or_else(|| fallback_relays.clone())
-            } else {
-                vec![]
+                    .unwrap_or_else(|| self.default_relays())
             };
 
-            (
-                sess.client.clone(),
-                prepared,
-                relays,
-                self.chat_server_rooms.get(&chat_id).cloned(),
-            )
+            (sess.client.clone(), prepared, room_binding, relays)
         };
 
         self.prune_local_outbox(&chat_id);

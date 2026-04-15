@@ -146,6 +146,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `pika-mls::conversation::{wrap_rumor, process_group_message_event}` now own the low-level MLS wrapper create/process step, and app / sidecar / CLI / NSE production paths no longer call `create_message` or `process_message` directly outside test harnesses.
 - [x] Collapse the CLI harness onto shared MLS helpers:
   the interop harness now wraps/processes group messages, stages/accepts welcomes, and lists joined groups through `pika-mls` helper surfaces instead of calling raw MDK message/welcome/group APIs directly.
+- [x] Delete the raw message/welcome/group API from `PikaMls`:
+  app, sidecar, CLI, NSE, and their test helpers now use `pika-mls` conversation/welcome query helpers for those flows, and the `PikaMls` wrapper no longer exposes raw `create_message`, `process_message`, `process_welcome`, `accept_welcome`, pending-welcome, or group/message read methods.
 - [x] Delete the last production raw-MDK call-crypto escape hatch:
   `PikaMls` now exposes media-key derivation directly, so app and sidecar call flows no longer reach into `as_raw()` for call media / relay-auth key derivation.
 - [x] Move sidecar host callers onto one runtime surface:
@@ -155,7 +157,7 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
 - [x] Reuse the shared conversation query layer outside the sidecar too:
   `pika-mls::conversation::ConversationQueries` now owns DM lookup, cross-group message lookup, and the common group/member/relay/message query helpers; CLI / NSE / app-session / sidecar subscription planning / core relay fallback paths now use that shared surface instead of open-coding those scans against `PikaMdk`.
 - Next seam:
-  keep shrinking the raw `PikaMdk` surface from inside `pika-mls`, starting with the remaining sidecar/core test helper leftovers and then deleting wrapper methods that no longer have external callers.
+  keep shrinking the raw `PikaMdk` surface from inside `pika-mls`, starting with the remaining mutation and bootstrap wrappers (`create_group`, membership updates, key-package parse/create, media manager) before the OpenMLS replacement.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
 

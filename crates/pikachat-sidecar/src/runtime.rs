@@ -1674,7 +1674,8 @@ mod tests {
         let rumor = EventBuilder::new(kind, content)
             .tags(tags)
             .build(keys.public_key());
-        mdk.create_message(mls_group_id, rumor)
+        pika_mls::conversation::wrap_rumor(mdk, mls_group_id, rumor)
+            .map(|wrapped| wrapped.wrapper)
             .expect("create group message event")
     }
 
@@ -2906,14 +2907,14 @@ mod tests {
         let prepared = commands
             .prepare_add_members(&created.group.mls_group_id, &[peer_kp])
             .expect("prepare add members");
-        let before_merge = inviter_mdk
+        let before_merge = pika_mls::conversation::ConversationQueries::new(&inviter_mdk)
             .get_members(&created.group.mls_group_id)
             .expect("members before merge")
             .len();
 
         let finalized = commands.finalize_published_evolution(prepared);
 
-        let after_merge = inviter_mdk
+        let after_merge = pika_mls::conversation::ConversationQueries::new(&inviter_mdk)
             .get_members(&created.group.mls_group_id)
             .expect("members after merge")
             .len();

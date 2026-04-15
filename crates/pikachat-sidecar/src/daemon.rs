@@ -5810,8 +5810,26 @@ mod tests {
         let rumor = EventBuilder::new(kind, content)
             .tags(tags)
             .build(keys.public_key());
-        mdk.create_message(mls_group_id, rumor)
+        wrap_group_rumor_for_test(mdk, mls_group_id, rumor)
+    }
+
+    fn wrap_group_rumor_for_test(
+        mdk: &crate::PikaMdk,
+        mls_group_id: &GroupId,
+        rumor: UnsignedEvent,
+    ) -> Event {
+        pika_mls::conversation::wrap_rumor(mdk, mls_group_id, rumor)
+            .map(|wrapped| wrapped.wrapper)
             .expect("create group message event")
+    }
+
+    fn process_group_message_for_test(
+        mdk: &crate::PikaMdk,
+        event: &Event,
+    ) -> MessageProcessingResult {
+        pika_mls::conversation::process_group_message_event(mdk, event)
+            .expect("process group message")
+            .expect("event should be a group message")
     }
 
     fn make_pending_welcome(
@@ -6068,9 +6086,7 @@ mod tests {
                 content,
                 Tags::new(),
             );
-            inviter_mdk
-                .process_message(&event)
-                .expect("process group message");
+            process_group_message_for_test(&inviter_mdk, &event);
         }
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
@@ -6309,7 +6325,7 @@ mod tests {
         let client = Client::new(signer);
         let relay_urls = vec![RelayUrl::parse("wss://test.relay").expect("relay url")];
         let host = test_host(&inviter_mdk, &inviter_keys, &client, &relay_urls);
-        let before_merge = inviter_mdk
+        let before_merge = pika_mls::conversation::ConversationQueries::new(&inviter_mdk)
             .get_members(&created.group.mls_group_id)
             .expect("members before merge")
             .len();
@@ -6319,7 +6335,7 @@ mod tests {
             .expect("prepare add members");
         let finalized = host.finalize_published_evolution(prepared);
 
-        let after_merge = inviter_mdk
+        let after_merge = pika_mls::conversation::ConversationQueries::new(&inviter_mdk)
             .get_members(&created.group.mls_group_id)
             .expect("members after merge")
             .len();
@@ -6578,8 +6594,7 @@ mod tests {
                 let mdk = &inviter_mdk;
                 async move {
                     if label == "add_members" {
-                        mdk.process_message(&event)
-                            .expect("process add_members event");
+                        process_group_message_for_test(mdk, &event);
                     }
                     Ok(())
                 }
@@ -6837,8 +6852,7 @@ mod tests {
             |event, _label| {
                 let mdk = &inviter_mdk;
                 async move {
-                    mdk.process_message(&event)
-                        .expect("process remove_members event");
+                    process_group_message_for_test(mdk, &event);
                     Ok(())
                 }
             },
@@ -6967,12 +6981,9 @@ mod tests {
             Tags::new(),
             r#"{"display_name":"Old Name","picture":"https://example.com/group.jpg"}"#,
         );
-        let existing_wrapper = inviter_mdk
-            .create_message(&created.group.mls_group_id, existing_profile)
-            .expect("create existing group profile");
-        inviter_mdk
-            .process_message(&existing_wrapper)
-            .expect("process existing group profile");
+        let existing_wrapper =
+            wrap_group_rumor_for_test(&inviter_mdk, &created.group.mls_group_id, existing_profile);
+        process_group_message_for_test(&inviter_mdk, &existing_wrapper);
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
@@ -6989,9 +7000,7 @@ mod tests {
             |prepared| {
                 let mdk = &inviter_mdk;
                 async move {
-                    let processed = mdk
-                        .process_message(&prepared.wrapper)
-                        .expect("process prepared profile");
+                    let processed = process_group_message_for_test(mdk, &prepared.wrapper);
                     match processed {
                         MessageProcessingResult::ApplicationMessage(message) => {
                             let metadata: Metadata =
@@ -7123,12 +7132,9 @@ mod tests {
             Tags::new(),
             r#"{"display_name":"Old Name","picture":"https://example.com/group.jpg"}"#,
         );
-        let existing_wrapper = inviter_mdk
-            .create_message(&created.group.mls_group_id, existing_profile)
-            .expect("create existing group profile");
-        inviter_mdk
-            .process_message(&existing_wrapper)
-            .expect("process existing group profile");
+        let existing_wrapper =
+            wrap_group_rumor_for_test(&inviter_mdk, &created.group.mls_group_id, existing_profile);
+        process_group_message_for_test(&inviter_mdk, &existing_wrapper);
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
@@ -7146,8 +7152,7 @@ mod tests {
             |prepared| {
                 let mdk = &inviter_mdk;
                 async move {
-                    mdk.process_message(&prepared.wrapper)
-                        .expect("process updated profile");
+                    process_group_message_for_test(mdk, &prepared.wrapper);
                     Ok(EventId::all_zeros())
                 }
             },
@@ -7500,12 +7505,8 @@ mod tests {
             Tags::new(),
             r#"{"display_name":"Latest Name","about":"Latest About","picture":"https://example.com/group.png"}"#,
         );
-        let wrapper = inviter_mdk
-            .create_message(&created.group.mls_group_id, profile)
-            .expect("create group profile");
-        inviter_mdk
-            .process_message(&wrapper)
-            .expect("process group profile");
+        let wrapper = wrap_group_rumor_for_test(&inviter_mdk, &created.group.mls_group_id, profile);
+        process_group_message_for_test(&inviter_mdk, &wrapper);
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
@@ -7605,12 +7606,9 @@ mod tests {
             Tags::new(),
             r#"{"display_name":"Profile Name","about":"Profile About"}"#,
         );
-        let existing_wrapper = inviter_mdk
-            .create_message(&created.group.mls_group_id, existing_profile)
-            .expect("create existing group profile");
-        inviter_mdk
-            .process_message(&existing_wrapper)
-            .expect("process existing group profile");
+        let existing_wrapper =
+            wrap_group_rumor_for_test(&inviter_mdk, &created.group.mls_group_id, existing_profile);
+        process_group_message_for_test(&inviter_mdk, &existing_wrapper);
 
         let signer: Arc<dyn NostrSigner> = Arc::new(inviter_keys.clone());
         let client = Client::new(signer);
@@ -7641,9 +7639,7 @@ mod tests {
             |prepared| {
                 let mdk = &inviter_mdk;
                 async move {
-                    let processed = mdk
-                        .process_message(&prepared.wrapper)
-                        .expect("process prepared profile image");
+                    let processed = process_group_message_for_test(mdk, &prepared.wrapper);
                     match processed {
                         MessageProcessingResult::ApplicationMessage(message) => {
                             let metadata: Metadata =

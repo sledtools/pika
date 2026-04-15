@@ -99,7 +99,7 @@ pub fn take_pending_welcome(welcomes: &mut Vec<Welcome>, target: &EventId) -> Op
 }
 
 pub fn accept_pending_welcome(mdk: &PikaMdk, welcome: &Welcome) -> Result<()> {
-    mdk.accept_welcome(welcome).context("accept welcome")
+    mdk.inner.accept_welcome(welcome).context("accept welcome")
 }
 
 pub fn stage_pending_welcome(
@@ -111,7 +111,8 @@ pub fn stage_pending_welcome(
         return Err(anyhow!("rumor is not an MLS welcome"));
     }
 
-    mdk.process_welcome(wrapper_event_id, rumor)
+    mdk.inner
+        .process_welcome(wrapper_event_id, rumor)
         .context("process welcome rumor")?;
 
     WelcomeQueries::new(mdk)
@@ -308,6 +309,7 @@ impl<'a> WelcomeQueries<'a> {
 
     pub fn list_pending_welcomes(&self) -> Result<Vec<Welcome>> {
         self.mdk
+            .inner
             .get_pending_welcomes(None)
             .context("get pending welcomes")
     }

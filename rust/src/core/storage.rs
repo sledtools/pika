@@ -211,10 +211,9 @@ impl AppCore {
             // Do not rely on `last_message_id` being populated in all MDK flows.
             // For MVP scale, fetching the newest message per group is cheap and robust.
             // Signal/control messages share the MLS app-message path; skip them in chat previews.
-            let newest = sess
-                .mdk
+            let newest = pika_mls::conversation::ConversationQueries::new(&sess.mdk)
                 .get_messages(
-                    &snapshot.mls_group_id,
+                    &snapshot.nostr_group_id_hex,
                     Some(Pagination::new(Some(20), Some(0))),
                 )
                 .ok()

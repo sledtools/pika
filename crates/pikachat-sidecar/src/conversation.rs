@@ -372,10 +372,12 @@ mod tests {
         let rumor = nostr_sdk::prelude::EventBuilder::new(kind, content)
             .custom_created_at(created_at)
             .build(keys.public_key());
-        let event = mdk
-            .create_message(mls_group_id, rumor)
+        let event = pika_mls::conversation::wrap_rumor(mdk, mls_group_id, rumor)
+            .map(|wrapped| wrapped.wrapper)
             .expect("create group message");
-        mdk.process_message(&event).expect("process group message");
+        process_group_message_event(mdk, &event)
+            .expect("process group message")
+            .expect("event should be a group message");
         event
     }
 

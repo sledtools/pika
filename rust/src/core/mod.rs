@@ -7564,9 +7564,8 @@ mod tests {
             let rumor = EventBuilder::new(kind, content)
                 .tags(tags)
                 .build(session.pubkey);
-            session
-                .mdk
-                .create_message(mls_group_id, rumor)
+            pika_mls::conversation::wrap_rumor(&session.mdk, mls_group_id, rumor)
+                .map(|wrapped| wrapped.wrapper)
                 .expect("create group message event")
         }
 
@@ -7578,12 +7577,10 @@ mod tests {
                 content,
                 Tags::new(),
             );
-            core.session
-                .as_ref()
-                .expect("session")
-                .mdk
-                .process_message(&event)
-                .expect("process group message");
+            let session = core.session.as_ref().expect("session");
+            pika_mls::conversation::process_group_message_event(&session.mdk, &event)
+                .expect("process group message")
+                .expect("event should be a group message");
         }
 
         #[test]
@@ -9200,8 +9197,7 @@ mod tests {
                 .values()
                 .find(|group| group.group_name.as_deref() == Some("Server Ordered Group"))
                 .expect("created group");
-            let relays = session
-                .mdk
+            let relays = pika_mls::conversation::ConversationQueries::new(&session.mdk)
                 .get_relays(&created.mls_group_id)
                 .expect("group relays");
 
@@ -9340,14 +9336,12 @@ mod tests {
             let peer = Keys::generate();
             let kp_event = make_peer_key_package(&peer);
 
-            let initial_members = core
-                .session
-                .as_ref()
-                .expect("session")
-                .mdk
-                .get_members(&gid)
-                .expect("get initial members")
-                .len();
+            let initial_members = pika_mls::conversation::ConversationQueries::new(
+                &core.session.as_ref().expect("session").mdk,
+            )
+            .get_members(&gid)
+            .expect("get initial members")
+            .len();
 
             core.handle_internal(InternalEvent::GroupKeyPackagesFetched {
                 peer_pubkeys: vec![peer.public_key()],
@@ -9358,14 +9352,12 @@ mod tests {
                 candidate_kp_relays: vec![],
             });
 
-            let before_merge = core
-                .session
-                .as_ref()
-                .expect("session")
-                .mdk
-                .get_members(&gid)
-                .expect("get members before merge")
-                .len();
+            let before_merge = pika_mls::conversation::ConversationQueries::new(
+                &core.session.as_ref().expect("session").mdk,
+            )
+            .get_members(&gid)
+            .expect("get members before merge")
+            .len();
             assert_eq!(
                 before_merge, initial_members,
                 "app add-members should leave the pending commit unmerged until publish confirmation"
@@ -9400,14 +9392,12 @@ mod tests {
 
             core.handle_membership_evolution_result(chat_id.clone(), operation);
 
-            let after_merge = core
-                .session
-                .as_ref()
-                .expect("session")
-                .mdk
-                .get_members(&gid)
-                .expect("get members after merge")
-                .len();
+            let after_merge = pika_mls::conversation::ConversationQueries::new(
+                &core.session.as_ref().expect("session").mdk,
+            )
+            .get_members(&gid)
+            .expect("get members after merge")
+            .len();
             assert_eq!(
                 after_merge,
                 initial_members + 1,
@@ -9421,14 +9411,12 @@ mod tests {
             core.config.disable_network = Some(true);
             let peer = Keys::generate();
             let kp_event = make_peer_key_package(&peer);
-            let initial_members = core
-                .session
-                .as_ref()
-                .expect("session")
-                .mdk
-                .get_members(&gid)
-                .expect("get initial members")
-                .len();
+            let initial_members = pika_mls::conversation::ConversationQueries::new(
+                &core.session.as_ref().expect("session").mdk,
+            )
+            .get_members(&gid)
+            .expect("get initial members")
+            .len();
 
             let prepared = core
                 .prepare_membership_evolution_for_chat(&chat_id, &[kp_event])
@@ -9437,14 +9425,12 @@ mod tests {
             core.pending_group_ops.insert(chat_id.clone());
             core.handle_group_evolution_published(prepared, EvolutionPublishStatus::Published);
 
-            let after_merge = core
-                .session
-                .as_ref()
-                .expect("session")
-                .mdk
-                .get_members(&gid)
-                .expect("get members after merge")
-                .len();
+            let after_merge = pika_mls::conversation::ConversationQueries::new(
+                &core.session.as_ref().expect("session").mdk,
+            )
+            .get_members(&gid)
+            .expect("get members after merge")
+            .len();
             assert_eq!(after_merge, initial_members + 1);
             assert!(!core.pending_group_ops.contains(&chat_id));
             assert!(core.state.toast.is_none());
@@ -9456,14 +9442,12 @@ mod tests {
             let peer = Keys::generate();
             let kp_event = make_peer_key_package(&peer);
 
-            let initial_members = core
-                .session
-                .as_ref()
-                .expect("session")
-                .mdk
-                .get_members(&gid)
-                .expect("get initial members")
-                .len();
+            let initial_members = pika_mls::conversation::ConversationQueries::new(
+                &core.session.as_ref().expect("session").mdk,
+            )
+            .get_members(&gid)
+            .expect("get initial members")
+            .len();
 
             core.handle_internal(InternalEvent::GroupKeyPackagesFetched {
                 peer_pubkeys: vec![peer.public_key()],
@@ -9506,14 +9490,12 @@ mod tests {
 
             core.handle_membership_evolution_result(chat_id.clone(), operation);
 
-            let members_after_failure = core
-                .session
-                .as_ref()
-                .expect("session")
-                .mdk
-                .get_members(&gid)
-                .expect("get members after failed publish")
-                .len();
+            let members_after_failure = pika_mls::conversation::ConversationQueries::new(
+                &core.session.as_ref().expect("session").mdk,
+            )
+            .get_members(&gid)
+            .expect("get members after failed publish")
+            .len();
             assert_eq!(
                 members_after_failure, initial_members,
                 "failed evolution publish should not merge the pending commit"
@@ -9548,13 +9530,11 @@ mod tests {
                 "stale epoch conflicts should clear the pending commit so the next membership change can be prepared"
             );
 
-            let members = core
-                .session
-                .as_ref()
-                .expect("session")
-                .mdk
-                .get_members(&gid)
-                .expect("get members after stale conflict");
+            let members = pika_mls::conversation::ConversationQueries::new(
+                &core.session.as_ref().expect("session").mdk,
+            )
+            .get_members(&gid)
+            .expect("get members after stale conflict");
             assert_eq!(
                 members.len(),
                 1,
@@ -10264,8 +10244,7 @@ mod tests {
             let session = core.session.as_ref().expect("session");
             assert_eq!(session.groups.len(), 1);
             let created = session.groups.values().next().expect("created chat");
-            let relays = session
-                .mdk
+            let relays = pika_mls::conversation::ConversationQueries::new(&session.mdk)
                 .get_relays(&created.mls_group_id)
                 .expect("group relays");
 
@@ -10892,13 +10871,11 @@ mod tests {
                 rumor: welcome_rumor.clone(),
             });
 
-            let groups = core
-                .session
-                .as_ref()
-                .expect("session")
-                .mdk
-                .get_groups()
-                .expect("get groups");
+            let groups = pika_mls::conversation::ConversationQueries::new(
+                &core.session.as_ref().expect("session").mdk,
+            )
+            .list_joined_group_snapshots()
+            .expect("get groups");
             assert_eq!(
                 groups.len(),
                 1,
@@ -10919,14 +10896,13 @@ mod tests {
                 rumor: welcome_rumor,
             });
 
+            let groups_after_redelivery = pika_mls::conversation::ConversationQueries::new(
+                &core.session.as_ref().expect("session").mdk,
+            )
+            .list_joined_group_snapshots()
+            .expect("get groups");
             assert_eq!(
-                core.session
-                    .as_ref()
-                    .expect("session")
-                    .mdk
-                    .get_groups()
-                    .expect("get groups")
-                    .len(),
+                groups_after_redelivery.len(),
                 1,
                 "re-delivered welcomes should not create duplicate active groups"
             );

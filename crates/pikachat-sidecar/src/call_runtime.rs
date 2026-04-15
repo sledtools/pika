@@ -477,10 +477,13 @@ mod tests {
         inviter_mdk
             .merge_pending_commit(&group_id)
             .expect("merge pending commit");
-        invitee_mdk
-            .process_message(&prepared_evolution.evolution_event)
-            .expect("process evolution");
-        let group_epoch = invitee_mdk
+        pika_mls::conversation::process_group_message_event(
+            invitee_mdk,
+            &prepared_evolution.evolution_event,
+        )
+        .expect("process evolution")
+        .expect("evolution should be a group message");
+        let group_epoch = ConversationQueries::new(invitee_mdk)
             .get_group(&group_id)
             .expect("load group")
             .expect("group should exist")

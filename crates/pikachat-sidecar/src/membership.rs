@@ -84,7 +84,7 @@ mod tests {
         assert_eq!(prepared.evolution_event.kind, Kind::MlsGroupMessage);
         assert_eq!(
             prepared.expected_epoch,
-            inviter_mdk
+            pika_mls::conversation::ConversationQueries::new(&inviter_mdk)
                 .get_group(&group_id)
                 .expect("get group")
                 .expect("group")
@@ -105,14 +105,14 @@ mod tests {
             .prepare_add_members(&group_id, &[peer_kp])
             .expect("prepare add members");
 
-        let before_merge = inviter_mdk
+        let before_merge = pika_mls::conversation::ConversationQueries::new(&inviter_mdk)
             .get_members(&group_id)
             .expect("members before merge")
             .len();
 
         let finalized = runtime.finalize_published_evolution(prepared);
 
-        let after_merge = inviter_mdk
+        let after_merge = pika_mls::conversation::ConversationQueries::new(&inviter_mdk)
             .get_members(&group_id)
             .expect("members after merge")
             .len();
@@ -131,7 +131,7 @@ mod tests {
     #[test]
     fn prepare_remove_members_returns_publishable_evolution_without_welcomes() {
         let (_inviter_dir, _invitee_dir, inviter_mdk, group_id, inviter_keys) = create_base_group();
-        let members = inviter_mdk
+        let members = pika_mls::conversation::ConversationQueries::new(&inviter_mdk)
             .get_members(&group_id)
             .expect("get members before removal");
         let peer_pubkey = members

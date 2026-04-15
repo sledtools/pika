@@ -96,6 +96,7 @@ impl<'a> ConversationQueries<'a> {
             anyhow::bail!("nostr_group_id must be 32 bytes hex");
         }
         self.mdk
+            .inner
             .get_groups()
             .context("get_groups")?
             .into_iter()
@@ -110,20 +111,27 @@ impl<'a> ConversationQueries<'a> {
     pub fn nostr_group_id_hex(&self, mls_group_id: &GroupId) -> Result<Option<String>> {
         Ok(self
             .mdk
+            .inner
             .get_group(mls_group_id)?
             .map(|group| hex::encode(group.nostr_group_id)))
     }
 
     pub fn get_group(&self, mls_group_id: &GroupId) -> Result<Option<Group>> {
-        self.mdk.get_group(mls_group_id).context("get group")
+        self.mdk.inner.get_group(mls_group_id).context("get group")
     }
 
     pub fn get_members(&self, mls_group_id: &GroupId) -> Result<BTreeSet<PublicKey>> {
-        self.mdk.get_members(mls_group_id).context("get members")
+        self.mdk
+            .inner
+            .get_members(mls_group_id)
+            .context("get members")
     }
 
     pub fn get_relays(&self, mls_group_id: &GroupId) -> Result<BTreeSet<RelayUrl>> {
-        self.mdk.get_relays(mls_group_id).context("get relays")
+        self.mdk
+            .inner
+            .get_relays(mls_group_id)
+            .context("get relays")
     }
 
     pub fn get_message(
@@ -132,6 +140,7 @@ impl<'a> ConversationQueries<'a> {
         message_id: &EventId,
     ) -> Result<Option<Message>> {
         self.mdk
+            .inner
             .get_message(mls_group_id, message_id)
             .context("get message")
     }
@@ -144,7 +153,7 @@ impl<'a> ConversationQueries<'a> {
     }
 
     pub fn list_joined_group_snapshots(&self) -> Result<Vec<JoinedGroupSnapshot>> {
-        let groups = self.mdk.get_groups().context("get_groups")?;
+        let groups = self.mdk.inner.get_groups().context("get_groups")?;
         groups
             .into_iter()
             .map(|group| self.joined_group_snapshot(group))
@@ -158,6 +167,7 @@ impl<'a> ConversationQueries<'a> {
     ) -> Result<Vec<Message>> {
         let mls_group_id = self.mls_group_id_for_nostr_group_id(nostr_group_id_hex)?;
         self.mdk
+            .inner
             .get_messages(&mls_group_id, pagination)
             .context("get messages")
     }
@@ -170,6 +180,7 @@ impl<'a> ConversationQueries<'a> {
         let mls_group_id = self.mls_group_id_for_nostr_group_id(nostr_group_id_hex)?;
         let messages = self
             .mdk
+            .inner
             .get_messages(
                 &mls_group_id,
                 Some(Pagination::new(Some(query.limit), Some(query.offset))),
@@ -191,7 +202,7 @@ impl<'a> ConversationQueries<'a> {
         local_pubkey: &PublicKey,
         peer_pubkey: &PublicKey,
     ) -> Result<Option<Group>> {
-        let groups = self.mdk.get_groups().context("get_groups")?;
+        let groups = self.mdk.inner.get_groups().context("get_groups")?;
         Ok(groups.into_iter().find(|group| {
             let members = self.get_members(&group.mls_group_id).unwrap_or_default();
             let others: Vec<_> = members
@@ -206,7 +217,7 @@ impl<'a> ConversationQueries<'a> {
         &self,
         message_id: &EventId,
     ) -> Result<Option<(GroupId, Message)>> {
-        let groups = self.mdk.get_groups().context("get_groups")?;
+        let groups = self.mdk.inner.get_groups().context("get_groups")?;
         for group in groups {
             if let Some(message) = self.get_message(&group.mls_group_id, message_id)? {
                 return Ok(Some((group.mls_group_id, message)));
@@ -218,9 +229,14 @@ impl<'a> ConversationQueries<'a> {
     fn joined_group_snapshot(&self, group: Group) -> Result<JoinedGroupSnapshot> {
         let admin_pubkeys = group.admin_pubkeys.clone();
         let mls_group_id = group.mls_group_id.clone();
-        let member_snapshots = self.mdk.get_members(&mls_group_id).unwrap_or_default();
+        let member_snapshots = self
+            .mdk
+            .inner
+            .get_members(&mls_group_id)
+            .unwrap_or_default();
         let relay_urls = self
             .mdk
+            .inner
             .get_relays(&mls_group_id)
             .unwrap_or_default()
             .into_iter()
@@ -253,6 +269,7 @@ pub fn wrap_rumor(
     rumor.ensure_id();
     let rumor_id = rumor.id();
     let wrapper = mdk
+        .inner
         .create_message(mls_group_id, rumor)
         .context("create group wrapper")?;
     Ok(WrappedRumor { rumor_id, wrapper })
@@ -265,7 +282,8 @@ pub fn process_group_message_event(
     if event.kind != Kind::MlsGroupMessage {
         return Ok(None);
     }
-    mdk.process_message(event)
+    mdk.inner
+        .process_message(event)
         .context("process group message")
         .map(Some)
 }

@@ -148,6 +148,7 @@ impl<'a> MembershipRuntime<'a> {
     ) -> Result<PreparedMembershipEvolution> {
         let group = self
             .mdk
+            .inner
             .get_group(&mls_group_id)
             .context("get group for evolution")?
             .ok_or_else(|| anyhow!("group not found"))?;

@@ -1,9 +1,9 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result, anyhow};
-use nostr::{Event, EventId, Keys, PublicKey, RelayUrl, UnsignedEvent};
+use nostr::{Event, EventId, Keys, PublicKey, RelayUrl};
 use serde::{Deserialize, Serialize};
 
 pub mod conversation;
@@ -95,86 +95,6 @@ impl PikaMls {
         group_id: &storage_traits::GroupId,
     ) -> std::result::Result<(), prelude::Error> {
         self.inner.clear_pending_commit(group_id)
-    }
-
-    pub fn create_message(
-        &self,
-        mls_group_id: &storage_traits::GroupId,
-        rumor: UnsignedEvent,
-    ) -> std::result::Result<Event, prelude::Error> {
-        self.inner.create_message(mls_group_id, rumor)
-    }
-
-    pub fn process_message(
-        &self,
-        event: &Event,
-    ) -> std::result::Result<prelude::MessageProcessingResult, prelude::Error> {
-        self.inner.process_message(event)
-    }
-
-    pub fn process_welcome(
-        &self,
-        wrapper_event_id: &EventId,
-        rumor_event: &UnsignedEvent,
-    ) -> std::result::Result<storage_traits::welcomes::types::Welcome, prelude::Error> {
-        self.inner.process_welcome(wrapper_event_id, rumor_event)
-    }
-
-    pub fn accept_welcome(
-        &self,
-        welcome: &storage_traits::welcomes::types::Welcome,
-    ) -> std::result::Result<(), prelude::Error> {
-        self.inner.accept_welcome(welcome)
-    }
-
-    pub fn get_group(
-        &self,
-        group_id: &storage_traits::GroupId,
-    ) -> std::result::Result<Option<storage_traits::groups::types::Group>, prelude::Error> {
-        self.inner.get_group(group_id)
-    }
-
-    pub fn get_groups(
-        &self,
-    ) -> std::result::Result<Vec<storage_traits::groups::types::Group>, prelude::Error> {
-        self.inner.get_groups()
-    }
-
-    pub fn get_members(
-        &self,
-        group_id: &storage_traits::GroupId,
-    ) -> std::result::Result<BTreeSet<PublicKey>, prelude::Error> {
-        self.inner.get_members(group_id)
-    }
-
-    pub fn get_relays(
-        &self,
-        group_id: &storage_traits::GroupId,
-    ) -> std::result::Result<BTreeSet<RelayUrl>, prelude::Error> {
-        self.inner.get_relays(group_id)
-    }
-
-    pub fn get_message(
-        &self,
-        group_id: &storage_traits::GroupId,
-        message_id: &EventId,
-    ) -> std::result::Result<Option<storage_traits::messages::types::Message>, prelude::Error> {
-        self.inner.get_message(group_id, message_id)
-    }
-
-    pub fn get_messages(
-        &self,
-        group_id: &storage_traits::GroupId,
-        pagination: Option<storage_traits::groups::Pagination>,
-    ) -> std::result::Result<Vec<storage_traits::messages::types::Message>, prelude::Error> {
-        self.inner.get_messages(group_id, pagination)
-    }
-
-    pub fn get_pending_welcomes(
-        &self,
-        pagination: Option<storage_traits::welcomes::Pagination>,
-    ) -> std::result::Result<Vec<storage_traits::welcomes::types::Welcome>, prelude::Error> {
-        self.inner.get_pending_welcomes(pagination)
     }
 
     pub fn parse_key_package(&self, event: &Event) -> std::result::Result<(), prelude::Error> {

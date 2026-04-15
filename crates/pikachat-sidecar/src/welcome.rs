@@ -502,15 +502,16 @@ mod tests {
             pending[0].wrapper_event_id, wrapper.id,
             "staged welcome should keep the wrapper id for explicit accept flows"
         );
-        let groups = invitee_mdk.get_groups().expect("get groups");
+        let groups = pika_mls::conversation::ConversationQueries::new(&invitee_mdk)
+            .list_joined_group_snapshots()
+            .expect("get groups");
         assert_eq!(
             groups.len(),
             1,
             "shared ingest already surfaces a pending group before accept"
         );
         assert_eq!(
-            hex::encode(groups[0].nostr_group_id),
-            ingested.nostr_group_id_hex,
+            groups[0].nostr_group_id_hex, ingested.nostr_group_id_hex,
             "pending group should line up with the staged welcome metadata"
         );
     }

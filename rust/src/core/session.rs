@@ -3,48 +3,86 @@
 use std::future::Future;
 
 use super::*;
-#[cfg(test)]
-use pika_marmot_runtime::runtime::RuntimeGroupSubscriptionPlan;
 use pika_marmot_runtime::runtime::{
-    bootstrap_runtime_session, classify_inbound_relay_event, connect_runtime_relays,
-    execute_runtime_base_session_sync, subscribe_group_messages_combined,
-    temporary_client_from_session_signer, BootstrappedRuntimeSession, InboundRelayEvent,
-    InboundRelaySeenCache, RuntimeSessionOpenRequest, RuntimeSessionSyncPlan,
-    RuntimeWelcomeInboxSubscriptionIntent,
+    classify_inbound_relay_event, connect_runtime_relays, execute_runtime_base_session_sync,
+    plan_runtime_session_sync_from_mdk, subscribe_group_messages_combined,
+    temporary_client_from_session_signer, InboundRelayEvent, InboundRelaySeenCache,
+    RuntimeSessionSyncPlan, RuntimeWelcomeInboxSubscriptionIntent,
 };
-use pika_marmot_runtime::welcome::publish_welcome_rumors;
+#[cfg(test)]
+use pika_marmot_runtime::runtime::{
+    plan_group_subscriptions_from_mdk, RuntimeGroupSubscriptionPlan,
+};
+use pika_marmot_runtime::welcome::{list_pending_welcome_snapshots, publish_welcome_rumors};
 
-fn app_open_request(
-    subscribed_group_ids: Vec<String>,
-    long_lived_session_relays: Vec<RelayUrl>,
-    temporary_key_package_relays: Vec<RelayUrl>,
-) -> RuntimeSessionOpenRequest {
-    RuntimeSessionOpenRequest {
-        subscribed_group_ids,
-        long_lived_session_relays,
-        temporary_key_package_relays,
-        welcome_inbox: app_welcome_inbox_intent(),
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AppSessionOpenState {
+    joined_group_snapshots: Vec<pika_marmot_runtime::conversation::RuntimeJoinedGroupSnapshot>,
+    pending_welcome_snapshots: Vec<pika_marmot_runtime::welcome::PendingWelcomeSnapshot>,
+    sync_plan: RuntimeSessionSyncPlan,
+}
+
+impl AppSessionOpenState {
+    fn current_group_subscriptions(
+        &self,
+    ) -> &pika_marmot_runtime::runtime::RuntimeGroupSubscriptionState {
+        &self.sync_plan.group_subscriptions.current
+    }
+
+    fn bounded_inbound_relay_seen_cache(&self) -> InboundRelaySeenCache {
+        let mut seen = InboundRelaySeenCache::default();
+        seen.extend(
+            self.pending_welcome_snapshots
+                .iter()
+                .map(|welcome| welcome.wrapper_event_id),
+        );
+        seen
     }
 }
 
-fn bootstrap_runtime_for_app(
+struct BootstrappedAppSession {
+    client: Client,
+    mdk: PikaMdk,
+    open: AppSessionOpenState,
+}
+
+fn refresh_app_session_open_state(
+    mdk: &PikaMdk,
+    subscribed_group_ids: Vec<String>,
+    long_lived_session_relays: Vec<RelayUrl>,
+    temporary_key_package_relays: Vec<RelayUrl>,
+) -> anyhow::Result<AppSessionOpenState> {
+    Ok(AppSessionOpenState {
+        joined_group_snapshots: pika_marmot_runtime::conversation::ConversationRuntime::new(mdk)
+            .list_joined_group_snapshots()?,
+        pending_welcome_snapshots: list_pending_welcome_snapshots(mdk)?,
+        sync_plan: plan_runtime_session_sync_from_mdk(
+            mdk,
+            subscribed_group_ids,
+            long_lived_session_relays,
+            temporary_key_package_relays,
+            app_welcome_inbox_intent(),
+        )?,
+    })
+}
+
+fn bootstrap_app_session(
     data_dir: &str,
     keychain_group: &str,
     pubkey: PublicKey,
     signer: Arc<dyn NostrSigner>,
     long_lived_session_relays: Vec<RelayUrl>,
     temporary_key_package_relays: Vec<RelayUrl>,
-) -> anyhow::Result<BootstrappedRuntimeSession> {
-    bootstrap_runtime_session(
-        pubkey,
-        signer,
-        || open_mdk(data_dir, &pubkey, keychain_group),
-        app_open_request(
-            Vec::new(),
-            long_lived_session_relays,
-            temporary_key_package_relays,
-        ),
-    )
+) -> anyhow::Result<BootstrappedAppSession> {
+    let mdk = open_mdk(data_dir, &pubkey, keychain_group)?;
+    let client = Client::new(signer);
+    let open = refresh_app_session_open_state(
+        &mdk,
+        Vec::new(),
+        long_lived_session_relays,
+        temporary_key_package_relays,
+    )?;
+    Ok(BootstrappedAppSession { client, mdk, open })
 }
 
 async fn classify_app_notification_event(
@@ -65,8 +103,7 @@ async fn classify_app_notification_event(
 
 #[cfg(test)]
 fn plan_app_group_subscriptions(sess: &Session) -> anyhow::Result<RuntimeGroupSubscriptionPlan> {
-    sess.host_context()
-        .plan_group_subscriptions(sess.groups.keys().cloned().collect())
+    plan_group_subscriptions_from_mdk(&sess.mdk, sess.groups.keys().cloned().collect::<Vec<_>>())
 }
 
 fn app_welcome_inbox_intent() -> RuntimeWelcomeInboxSubscriptionIntent {
@@ -112,15 +149,15 @@ fn seed_app_groups_from_open_state(
         .collect()
 }
 
-fn refresh_runtime_for_app(
+fn refresh_app_session_state(
     core: &AppCore,
     sess: &Session,
-) -> anyhow::Result<pika_marmot_runtime::runtime::RuntimeSessionOpenState> {
-    sess.host_context().refresh_session_state(
+) -> anyhow::Result<AppSessionOpenState> {
+    refresh_app_session_open_state(
+        &sess.mdk,
         sess.groups.keys().cloned().collect(),
         core.long_lived_session_relays(),
         core.temporary_key_package_relays(),
-        app_welcome_inbox_intent(),
     )
 }
 
@@ -171,7 +208,7 @@ impl AppCore {
 
         tracing::info!(pubkey = %pubkey_hex, npub = %npub, "start_session");
 
-        let bootstrapped = bootstrap_runtime_for_app(
+        let bootstrapped = bootstrap_app_session(
             &self.data_dir,
             &self.keychain_group,
             pubkey,
@@ -180,8 +217,9 @@ impl AppCore {
             self.temporary_key_package_relays(),
         )?;
         tracing::info!("mdk opened");
-        let BootstrappedRuntimeSession {
-            session: runtime_session,
+        let BootstrappedAppSession {
+            client,
+            mdk,
             open: initial_open,
         } = bootstrapped;
         let initial_groups =
@@ -197,18 +235,18 @@ impl AppCore {
                     .clone(),
             );
             tracing::info!(relays = ?relays.iter().map(|r| r.to_string()).collect::<Vec<_>>(), "connecting_relays");
-            let client = runtime_session.client.clone();
+            let session_client = client.clone();
             self.runtime.spawn(async move {
-                connect_runtime_relays(&client, &relays, false, None).await;
+                connect_runtime_relays(&session_client, &relays, false, None).await;
             });
             tracing::info!("relays connect scheduled");
         }
 
         let sess = Session {
-            pubkey: runtime_session.pubkey,
+            pubkey,
             local_keys,
-            mdk: runtime_session.mdk,
-            client: runtime_session.client,
+            mdk,
+            client,
             alive: Arc::new(AtomicBool::new(true)),
             giftwrap_sub: None,
             group_sub: None,
@@ -629,7 +667,7 @@ impl AppCore {
             });
             return;
         }
-        let refreshed = match refresh_runtime_for_app(self, sess) {
+        let refreshed = match refresh_app_session_state(self, sess) {
             Ok(refreshed) => refreshed,
             Err(err) => {
                 tracing::warn!(%err, "failed to refresh app runtime session state");
@@ -1376,7 +1414,7 @@ mod tests {
             .create_group(&inviter_keys.public_key(), vec![invitee_kp], config)
             .expect("create group");
 
-        let bootstrapped = bootstrap_runtime_for_app(
+        let bootstrapped = bootstrap_app_session(
             inviter_dir.path().to_str().expect("tempdir path"),
             "test.keychain.group",
             inviter_keys.public_key(),
@@ -1386,8 +1424,6 @@ mod tests {
         )
         .expect("bootstrap app runtime");
 
-        assert_eq!(bootstrapped.session.pubkey, inviter_keys.public_key());
-        assert_eq!(bootstrapped.open.pubkey, inviter_keys.public_key());
         assert_eq!(
             bootstrapped.open.joined_group_snapshots.len(),
             1,
@@ -1474,7 +1510,7 @@ mod tests {
             groups,
         };
 
-        let refreshed = refresh_runtime_for_app(&core, &session).expect("refresh app runtime");
+        let refreshed = refresh_app_session_state(&core, &session).expect("refresh app runtime");
 
         assert_eq!(refreshed.joined_group_snapshots.len(), 1);
         assert!(refreshed.pending_welcome_snapshots.is_empty());
@@ -1601,7 +1637,7 @@ mod tests {
             groups,
         };
 
-        let sync_plan = refresh_runtime_for_app(&core, &session)
+        let sync_plan = refresh_app_session_state(&core, &session)
             .expect("refresh app runtime")
             .sync_plan;
 
@@ -1666,7 +1702,7 @@ mod tests {
             group_sub: None,
             groups: HashMap::new(),
         };
-        let sync_plan = refresh_runtime_for_app(&core, &session)
+        let sync_plan = refresh_app_session_state(&core, &session)
             .expect("refresh app runtime")
             .sync_plan;
 

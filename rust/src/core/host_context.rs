@@ -23,10 +23,6 @@ impl AppCore {
 }
 
 impl<'a> AppHostContext<'a> {
-    fn queries(&self) -> pika_marmot_runtime::runtime::RuntimeQueries<'a> {
-        pika_marmot_runtime::runtime::RuntimeQueries::new(&self.session.mdk)
-    }
-
     pub(super) fn lookup_joined_group_snapshot(
         &self,
         chat_id: &str,
@@ -258,35 +254,6 @@ impl<'a> AppHostContext<'a> {
                 }
             }
         }
-    }
-
-    #[cfg(test)]
-    pub(super) fn plan_group_subscriptions(
-        &self,
-        subscribed_group_ids: Vec<String>,
-    ) -> anyhow::Result<pika_marmot_runtime::runtime::RuntimeGroupSubscriptionPlan> {
-        pika_marmot_runtime::runtime::plan_group_subscriptions_from_mdk(
-            &self.session.mdk,
-            subscribed_group_ids,
-        )
-    }
-
-    pub(super) fn refresh_session_state(
-        &self,
-        subscribed_group_ids: Vec<String>,
-        long_lived_session_relays: Vec<RelayUrl>,
-        temporary_key_package_relays: Vec<RelayUrl>,
-        welcome_inbox: pika_marmot_runtime::runtime::RuntimeWelcomeInboxSubscriptionIntent,
-    ) -> anyhow::Result<pika_marmot_runtime::runtime::RuntimeSessionOpenState> {
-        self.queries().refresh_session_open_state(
-            self.session.pubkey,
-            pika_marmot_runtime::runtime::RuntimeSessionOpenRequest {
-                subscribed_group_ids,
-                long_lived_session_relays,
-                temporary_key_package_relays,
-                welcome_inbox,
-            },
-        )
     }
 
     pub(super) fn interpret_processing_result(

@@ -2,26 +2,23 @@ use std::collections::HashSet;
 use std::future::Future;
 
 use anyhow::{Context, Result};
-use nostr_sdk::prelude::{
-    Event, EventBuilder, EventId, Keys, Kind, NostrSigner, PublicKey, Tag, UnsignedEvent,
-};
+use nostr_sdk::prelude::{Event, EventId, Keys, PublicKey, Tag, UnsignedEvent};
 use pika_mls::prelude::NostrGroupConfigData;
-use pika_mls::welcome::WelcomeQueries;
 pub use pika_mls::welcome::{
-    PendingWelcomeSnapshot, find_pending_welcome, find_pending_welcome_index, take_pending_welcome,
+    CreatedGroup, GroupWelcomeDeliveryPlan, IngestedWelcome, PendingWelcomeSnapshot,
+    PlannedGroupCreation, PublishedWelcome, find_pending_welcome, find_pending_welcome_index,
+    take_pending_welcome,
+};
+use pika_mls::welcome::{
+    WelcomeQueries,
+    create_group_and_plan_welcome_delivery as shared_create_group_and_plan_welcome_delivery,
+    create_group_and_publish_welcomes as shared_create_group_and_publish_welcomes,
+    ingest_unwrapped_welcome as shared_ingest_unwrapped_welcome,
+    ingest_welcome_from_giftwrap as shared_ingest_welcome_from_giftwrap,
+    publish_welcome_rumors as shared_publish_welcome_rumors,
 };
 
 use crate::{PikaMdk, ingest_group_backlog};
-
-#[derive(Debug, Clone)]
-pub struct IngestedWelcome {
-    pub wrapper_event_id: EventId,
-    pub welcome_event_id: EventId,
-    pub sender: PublicKey,
-    pub sender_hex: String,
-    pub nostr_group_id_hex: String,
-    pub group_name: String,
-}
 
 #[derive(Debug, Clone)]
 pub struct AcceptedWelcome {
@@ -31,32 +28,6 @@ pub struct AcceptedWelcome {
     pub mls_group_id: pika_mls::storage_traits::GroupId,
     pub group_name: String,
     pub ingested_messages: Vec<pika_mls::storage_traits::messages::types::Message>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PublishedWelcome {
-    pub receiver: PublicKey,
-    pub wrapper_event_id: EventId,
-    pub welcome_event_id: EventId,
-    pub rumor: UnsignedEvent,
-}
-
-#[derive(Debug, Clone)]
-pub struct GroupWelcomeDeliveryPlan {
-    pub recipients: Vec<PublicKey>,
-    pub welcome_rumors: Vec<UnsignedEvent>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PlannedGroupCreation {
-    pub group: pika_mls::storage_traits::groups::types::Group,
-    pub welcome_delivery: Option<GroupWelcomeDeliveryPlan>,
-}
-
-#[derive(Debug, Clone)]
-pub struct CreatedGroup {
-    pub group: pika_mls::storage_traits::groups::types::Group,
-    pub published_welcomes: Vec<PublishedWelcome>,
 }
 
 pub fn list_pending_welcome_snapshots(mdk: &PikaMdk) -> Result<Vec<PendingWelcomeSnapshot>> {
@@ -80,38 +51,7 @@ pub fn ingest_unwrapped_welcome<F>(
 where
     F: Fn(&str) -> bool,
 {
-    if rumor.kind != Kind::MlsWelcome {
-        return Ok(None);
-    }
-
-    let sender_hex = sender.to_hex().to_lowercase();
-    if !sender_allowed(&sender_hex) {
-        return Ok(None);
-    }
-
-    mdk.process_welcome(wrapper_event_id, rumor)
-        .context("process welcome rumor")?;
-
-    let pending = mdk
-        .get_pending_welcomes(None)
-        .context("get pending welcomes")?;
-    let stored = pending
-        .into_iter()
-        .find(|welcome| welcome.wrapper_event_id == *wrapper_event_id);
-    let (nostr_group_id_hex, group_name) = match stored {
-        Some(welcome) => (hex::encode(welcome.nostr_group_id), welcome.group_name),
-        None => (String::new(), String::new()),
-    };
-    let mut welcome_rumor = rumor.clone();
-
-    Ok(Some(IngestedWelcome {
-        wrapper_event_id: *wrapper_event_id,
-        welcome_event_id: welcome_rumor.id(),
-        sender,
-        sender_hex,
-        nostr_group_id_hex,
-        group_name,
-    }))
+    shared_ingest_unwrapped_welcome(mdk, wrapper_event_id, sender, rumor, sender_allowed)
 }
 
 /// Unwrap and process a gift-wrapped MLS welcome into MDK pending-welcome
@@ -127,20 +67,7 @@ pub async fn ingest_welcome_from_giftwrap<F>(
 where
     F: Fn(&str) -> bool,
 {
-    if event.kind != Kind::GiftWrap {
-        return Ok(None);
-    }
-
-    let unwrapped = nostr_sdk::nostr::nips::nip59::extract_rumor(keys, event)
-        .await
-        .context("unwrap giftwrap rumor")?;
-    ingest_unwrapped_welcome(
-        mdk,
-        &event.id,
-        unwrapped.sender,
-        &unwrapped.rumor,
-        sender_allowed,
-    )
+    shared_ingest_welcome_from_giftwrap(mdk, keys, event, sender_allowed).await
 }
 
 /// Accept a known pending welcome, optionally let the host run a narrow
@@ -191,49 +118,25 @@ where
     Ok(accepted)
 }
 
-pub async fn publish_welcome_rumors<T, F, Fut>(
-    signer: &T,
-    welcome_rumors: &[UnsignedEvent],
+pub async fn publish_welcome_rumors<F, Fut>(
+    signer: &Keys,
+    welcome_rumors: &[nostr_sdk::prelude::UnsignedEvent],
     recipients: &[PublicKey],
-    welcome_tags: Vec<Tag>,
-    mut publish_giftwrap: F,
+    welcome_tags: Vec<nostr_sdk::prelude::Tag>,
+    publish_giftwrap: F,
 ) -> Result<Vec<PublishedWelcome>>
 where
-    T: NostrSigner,
     F: FnMut(PublicKey, Event) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    if recipients.len() != welcome_rumors.len() {
-        anyhow::bail!(
-            "recipient/welcome mismatch: {} recipients for {} welcome rumors",
-            recipients.len(),
-            welcome_rumors.len()
-        );
-    }
-
-    let mut published_welcomes = Vec::new();
-    for (receiver, mut rumor) in recipients
-        .iter()
-        .copied()
-        .zip(welcome_rumors.iter().cloned())
-    {
-        let welcome_event_id = rumor.id();
-        let giftwrap =
-            EventBuilder::gift_wrap(signer, &receiver, rumor.clone(), welcome_tags.clone())
-                .await
-                .context("build welcome giftwrap")?;
-        publish_giftwrap(receiver, giftwrap.clone())
-            .await
-            .with_context(|| format!("publish welcome to {}", receiver.to_hex()))?;
-        published_welcomes.push(PublishedWelcome {
-            receiver,
-            wrapper_event_id: giftwrap.id,
-            welcome_event_id,
-            rumor,
-        });
-    }
-
-    Ok(published_welcomes)
+    shared_publish_welcome_rumors(
+        signer,
+        welcome_rumors,
+        recipients,
+        welcome_tags,
+        publish_giftwrap,
+    )
+    .await
 }
 
 pub fn create_group_and_plan_welcome_delivery(
@@ -243,31 +146,13 @@ pub fn create_group_and_plan_welcome_delivery(
     config: NostrGroupConfigData,
     recipients: &[PublicKey],
 ) -> Result<PlannedGroupCreation> {
-    if recipients.len() != peer_key_packages.len() {
-        anyhow::bail!(
-            "recipient/keypackage mismatch: {} recipients for {} key packages",
-            recipients.len(),
-            peer_key_packages.len()
-        );
-    }
-
-    let result = mdk
-        .create_group(creator_pubkey, peer_key_packages, config)
-        .context("create group")?;
-
-    let welcome_delivery = if recipients.is_empty() || result.welcome_rumors.is_empty() {
-        None
-    } else {
-        Some(GroupWelcomeDeliveryPlan {
-            recipients: recipients.to_vec(),
-            welcome_rumors: result.welcome_rumors,
-        })
-    };
-
-    Ok(PlannedGroupCreation {
-        group: result.group,
-        welcome_delivery,
-    })
+    shared_create_group_and_plan_welcome_delivery(
+        creator_pubkey,
+        mdk,
+        peer_key_packages,
+        config,
+        recipients,
+    )
 }
 
 pub async fn create_group_and_publish_welcomes<F, Fut>(
@@ -283,32 +168,16 @@ where
     F: FnMut(PublicKey, Event) -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
-    let creator_pubkey = keys.public_key();
-    let planned = create_group_and_plan_welcome_delivery(
-        &creator_pubkey,
+    shared_create_group_and_publish_welcomes(
+        keys,
         mdk,
         peer_key_packages,
         config,
         recipients,
-    )?;
-    let published_welcomes = match planned.welcome_delivery.as_ref() {
-        Some(plan) => {
-            publish_welcome_rumors(
-                keys,
-                &plan.welcome_rumors,
-                &plan.recipients,
-                welcome_tags,
-                publish_giftwrap,
-            )
-            .await?
-        }
-        None => Vec::new(),
-    };
-
-    Ok(CreatedGroup {
-        group: planned.group,
-        published_welcomes,
-    })
+        welcome_tags,
+        publish_giftwrap,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -316,7 +185,7 @@ mod tests {
     use super::*;
 
     use crate::open_mdk;
-    use nostr_sdk::prelude::{EventBuilder, RelayUrl};
+    use nostr_sdk::prelude::{EventBuilder, Kind, RelayUrl};
 
     fn make_key_package_event(mdk: &PikaMdk, keys: &Keys) -> Event {
         let relay = RelayUrl::parse("wss://test.relay").expect("relay url");

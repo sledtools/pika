@@ -10,7 +10,7 @@ keyring-core = { workspace = true }
 mdk-core = { workspace = true }
 mdk-sqlite-storage = { workspace = true }
 mdk-storage-traits = { workspace = true }
-nostr = { workspace = true }
+nostr = { workspace = true, features = ["nip59"] }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -192,6 +192,25 @@ impl<'a> AppHostContext<'a> {
         )
     }
 
+    pub(super) fn prepare_remove_members(
+        &self,
+        mls_group_id: &GroupId,
+        removed_pubkeys: &[PublicKey],
+    ) -> anyhow::Result<PreparedMembershipEvolution> {
+        super::membership_support::prepare_remove_members(
+            &self.session.mdk,
+            mls_group_id,
+            removed_pubkeys,
+        )
+    }
+
+    pub(super) fn prepare_leave_group(
+        &self,
+        mls_group_id: &GroupId,
+    ) -> anyhow::Result<PreparedMembershipEvolution> {
+        super::membership_support::prepare_leave_group(&self.session.mdk, mls_group_id)
+    }
+
     pub(super) fn complete_membership_evolution_operation(
         &self,
         prepared: PreparedMembershipEvolution,

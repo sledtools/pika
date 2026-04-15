@@ -6597,24 +6597,11 @@ impl AppCore {
                     }
                 }
 
-                let result = match sess.mdk.remove_members(&entry.mls_group_id, &pubkeys) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        self.toast(format!("Remove members failed: {e}"));
-                        return;
-                    }
-                };
-
-                let prepared = match sess.host_context().prepare_evolution(
-                    entry.mls_group_id.clone(),
-                    result.evolution_event,
-                    None,
-                    vec![],
-                ) {
-                    Ok(mut prepared) => {
-                        prepared.removed_pubkeys = pubkeys.clone();
-                        prepared
-                    }
+                let prepared = match sess
+                    .host_context()
+                    .prepare_remove_members(&entry.mls_group_id, &pubkeys)
+                {
+                    Ok(prepared) => prepared,
                     Err(e) => {
                         self.toast(format!("Remove members failed: {e}"));
                         return;
@@ -6636,24 +6623,8 @@ impl AppCore {
                     return;
                 };
 
-                let result = match sess.mdk.leave_group(&entry.mls_group_id) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        self.toast(format!("Leave group failed: {e}"));
-                        return;
-                    }
-                };
-
-                let prepared = match sess.host_context().prepare_evolution(
-                    entry.mls_group_id.clone(),
-                    result.evolution_event,
-                    None,
-                    vec![],
-                ) {
-                    Ok(mut prepared) => {
-                        prepared.self_removed = true;
-                        prepared
-                    }
+                let prepared = match sess.host_context().prepare_leave_group(&entry.mls_group_id) {
+                    Ok(prepared) => prepared,
                     Err(e) => {
                         self.toast(format!("Leave group failed: {e}"));
                         return;

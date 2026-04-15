@@ -7,6 +7,7 @@ use nostr::{Event, EventId, Keys, PublicKey, RelayUrl, UnsignedEvent};
 use serde::{Deserialize, Serialize};
 
 pub mod conversation;
+pub mod membership;
 pub mod welcome;
 
 pub use mdk_core::{self, MdkConfig, encrypted_media, prelude};

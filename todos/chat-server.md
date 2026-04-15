@@ -132,8 +132,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   joined-group snapshots, message-page queries, and pending-welcome lookup/snapshot helpers now live in `crates/pika-mls/src/{conversation,welcome}.rs`, and both `pika_core` and `pikachat-sidecar` alias those shared types instead of carrying near-copy structs/functions.
 - [x] Move the duplicated welcome workflow helpers into `pika-mls`:
   welcome ingest/giftwrap unwrap, welcome rumor publish planning, and group-create welcome delivery now live in `crates/pika-mls/src/welcome.rs`, while `pika_core` and `pikachat-sidecar` keep only the narrow accept-path wrappers that still differ in backlog catch-up and return shape.
+- [x] Move the duplicated membership evolution helpers into `pika-mls`:
+  `crates/pika-mls/src/membership.rs` now owns membership-evolution prep/finalize types and logic, `pika_core` and `pikachat-sidecar` only keep thin wrapper traits for their local publish outcomes, and the app now routes remove-member / leave-group prep through that same shared boundary instead of calling raw MDK directly in `core/mod.rs`.
 - Next seam:
-  move the duplicated membership evolution helpers into `pika-mls`, then replace the wrapper's remaining raw MDK mutation escape hatches from the inside.
+  collapse the remaining raw `PikaMdk` mutation escape hatches from the inside, starting with group-data updates, pending-commit abort/clear helpers, and direct key-package validation paths.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
 
@@ -236,6 +238,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `pika-mls` now owns the shared joined-group/message-page/pending-welcome query layer, which cuts some of the lowest-risk duplication before we touch the more stateful membership and message-mutation paths.
 - The next small MDK cut is another deletion multiplier, not a protocol redesign.
   Shared welcome workflow helpers now live in `pika-mls`, so the next honest seam is membership mutation prep/finalize logic rather than keeping near-copy helpers in app and sidecar code.
+- That membership seam is now shared too.
+  The next useful deletions are the smaller raw mutation helpers still called straight off `PikaMdk`, especially rename/update-group-data, stale pending-commit cleanup, and stray key-package validation paths.
 - The highest-value simplification after the current transport slices is not "replace MDK all at once."
   It is deleting `pika_core`'s dependency on the `pika-marmot-runtime` facade so the remaining MLS surface is smaller and more honest before the OpenMLS runtime cut.
 - That facade cut can land incrementally.

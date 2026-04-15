@@ -7,11 +7,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use nostr_sdk::prelude::{Client, PublicKey, RelayUrl};
-use pika_marmot_runtime::relay::fetch_latest_key_package;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::config::{self, ProfileName};
+use crate::support::fetch_latest_key_package;
 use crate::testing::{
     ArtifactPolicy, CommandRunner, CommandSpec, FixtureSpec, TenantNamespace, TestContext,
     command::SpawnHandle, start_fixture,

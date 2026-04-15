@@ -6334,7 +6334,6 @@ dependencies = [
  "nostr-connect",
  "nostr-sdk",
  "pika-desktop",
- "pika-marmot-runtime",
  "pika-relay-profiles",
  "pika_core",
  "rand 0.8.5",

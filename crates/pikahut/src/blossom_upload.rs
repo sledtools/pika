@@ -4,10 +4,11 @@ use anyhow::{Context, Result};
 use clap::Args;
 use nostr_blossom::client::BlossomClient;
 use nostr_sdk::Keys;
-use pika_marmot_runtime::media::mime_from_extension;
 use pika_relay_profiles::blossom_servers_or_default;
 use sha2::{Digest, Sha256};
 use url::Url;
+
+use crate::support::mime_from_extension;
 
 #[derive(Debug, Args)]
 pub struct BlossomUploadArgs {

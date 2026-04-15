@@ -6086,18 +6086,36 @@ dependencies = [
 ]
 
 [[package]]
-name = "pika-nse"
+name = "pika-mls"
 version = "0.1.0"
 dependencies = [
+ "android-native-keyring-store",
  "anyhow",
  "apple-native-keyring-store",
- "hex",
+ "jni",
  "keyring-core",
  "libsqlite3-sys",
  "mdk-core",
  "mdk-sqlite-storage",
  "mdk-storage-traits",
+ "ndk-context",
  "nostr",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "pika-nse"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hex",
+ "libsqlite3-sys",
+ "nostr",
+ "pika-mls",
  "pika-tls",
  "rusqlite",
  "serde",
@@ -6181,7 +6199,6 @@ version = "0.1.0"
 dependencies = [
  "android-native-keyring-store",
  "anyhow",
- "apple-native-keyring-store",
  "axum",
  "base64 0.22.1",
  "blurhash",
@@ -6196,7 +6213,6 @@ dependencies = [
  "keyring-core",
  "libsqlite3-sys",
  "mdk-core",
- "mdk-sqlite-storage",
  "mdk-storage-traits",
  "ndk-context",
  "nostr-blossom",
@@ -6206,6 +6222,7 @@ dependencies = [
  "pika-chat-server",
  "pika-managed-agent-contract",
  "pika-media",
+ "pika-mls",
  "pika-relay-profiles",
  "pika-tls",
  "pikahut",
@@ -6236,12 +6253,11 @@ dependencies = [
  "clap",
  "hex",
  "hypernote-protocol",
- "mdk-core",
- "mdk-storage-traits",
  "nostr-blossom",
  "nostr-sdk",
  "pika-agent-protocol",
  "pika-managed-agent-contract",
+ "pika-mls",
  "pika-relay-profiles",
  "pika-test-utils",
  "pikachat-sidecar",
@@ -6272,6 +6288,7 @@ dependencies = [
  "nostr-blossom",
  "nostr-sdk",
  "pika-media",
+ "pika-mls",
  "pika-relay-profiles",
  "reqwest",
  "serde",

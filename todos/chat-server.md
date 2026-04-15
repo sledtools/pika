@@ -122,8 +122,10 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `pikahut` now carries its own tiny MIME and key-package fetch helpers, so it no longer depends on `pika-marmot-runtime`.
 - [x] Delete the repo-wide Marmot runtime facade:
   `pikachat-sidecar` now absorbs the remaining CLI/daemon helper modules, `pikachat` imports that kept crate directly, the standalone `crates/pika-marmot-runtime` crate is deleted, and Cargo/Nix/CI no longer refer to it.
+- [x] Introduce a single local MLS storage/open seam:
+  `crates/pika-mls` now owns MLS DB opening, per-platform keyring/file-key handling, identity file helpers, and processed-event bookkeeping; `pika_core`, `pikachat`, `pikachat-sidecar`, and `pika-nse` now share that crate instead of each carrying their own storage bootstrap.
 - Next seam:
-  replace the remaining direct `mdk-*` engine/storage usage now concentrated in `rust/src/mdk_support.rs`, `crates/pikachat-sidecar`, `cli`, and `crates/pika-nse`.
+  move the remaining raw MDK method surface behind `pika-mls` itself so `pika_core` and `pikachat-sidecar` stop importing `mdk-core` / `mdk-storage-traits` directly.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
 
@@ -214,6 +216,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   We should not preserve old relay/Marmot paths longer than necessary once the new slice is proven.
 - The remaining raw MDK API surface is now small enough to attack directly.
   Current repo usage is concentrated in roughly fifteen calls: `get_groups`, `get_members`, `process_message`, `parse_key_package`, `merge_pending_commit`, `process_welcome`, `create_message`, `accept_welcome`, `leave_group`, `get_relays`, `get_message`, `get_group`, `update_group_data`, `remove_members`, `get_pending_welcomes`, and `clear_pending_commit`.
+- The first post-runtime MDK cut is now in place too.
+  `pika-mls` owns the MLS storage bootstrap and common engine reexports, CLI and NSE no longer depend on `mdk-*` crates directly, and the remaining raw MDK imports are concentrated mainly in `pika_core` and `pikachat-sidecar`.
 - The highest-value simplification after the current transport slices is not "replace MDK all at once."
   It is deleting `pika_core`'s dependency on the `pika-marmot-runtime` facade so the remaining MLS surface is smaller and more honest before the OpenMLS runtime cut.
 - That facade cut can land incrementally.

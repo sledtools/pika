@@ -6,6 +6,7 @@ members = [
   "crates/hypernote-protocol",
   "crates/pika-agent-protocol",
   "crates/pika-cloud",
+  "crates/pika-mls",
   "crates/pika-media",
   "crates/pika-relay-profiles",
   "crates/pika-server",
@@ -21,6 +22,7 @@ mdk-sqlite-storage = { git = "https://github.com/marmot-protocol/mdk", rev = "ca
 mdk-storage-traits = { git = "https://github.com/marmot-protocol/mdk", rev = "ca0663ee332958aa92efadf916d19c6e1b1f99c7" }
 hypernote-mdx = { git = "https://github.com/futurepaul/hypernote-mdx", rev = "db23b3d72e81389247716c5a59174cc4f4d55a34", version = "0.3.0" }
 hypernote-protocol = { path = "crates/hypernote-protocol" }
+pika-mls = { path = "crates/pika-mls" }
 
 anyhow = "1"
 apple-native-keyring-store = { version = "0.2.2", features = ["protected"] }

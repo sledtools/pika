@@ -1,10 +1,10 @@
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use mdk_core::MDK;
-use mdk_sqlite_storage::MdkSqliteStorage;
 use nostr_sdk::prelude::*;
 use pika_core::normalize_peer_key_package_event_for_mdk;
+use pika_mls::MdkSqliteStorage;
+use pika_mls::MDK;
 use pika_relay_profiles::app_default_message_relays;
 
 fn looks_like_hex(s: &str) -> bool {

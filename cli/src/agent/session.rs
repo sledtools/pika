@@ -5,10 +5,10 @@ use std::io::Write;
 use std::time::Duration;
 
 use anyhow::Context;
-use mdk_core::prelude::*;
 use nostr_sdk::JsonUtil;
 use nostr_sdk::prelude::*;
 use pika_marmot_runtime::welcome::create_group_and_publish_welcomes as create_group_and_publish_shared_welcomes;
+use pika_mls::prelude::*;
 use pikachat_sidecar as pika_marmot_runtime;
 use tokio::io::AsyncBufReadExt;
 

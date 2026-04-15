@@ -715,6 +715,7 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
     for (dependency_name, filter_path) in [
         ("pika-agent-protocol", "crates/pika-agent-protocol/**"),
         ("pika-cloud", "crates/pika-cloud/**"),
+        ("pika-mls", "crates/pika-mls/**"),
         ("pika-relay-profiles", "crates/pika-relay-profiles/**"),
         ("pikachat-sidecar", "crates/pikachat-sidecar/**"),
         ("hypernote-protocol", "crates/hypernote-protocol/**"),
@@ -741,6 +742,18 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
         assert!(
             pikachat_filter.contains("crates/pika-media/**"),
             "pikachat forge lane paths must include crates/pika-media/** while Apple follow-up sidecar clippy keeps pika-media in the build graph"
+        );
+    }
+    if apple_followup_jobs.contains("pikachat-sidecar -- -D warnings")
+        && sidecar_manifest.contains("pika-mls")
+    {
+        assert!(
+            apple_followup_filters.contains("crates/pika-mls/**"),
+            "pre-merge-pikachat-apple-followup filters must include crates/pika-mls/** while Apple follow-up sidecar clippy keeps pika-mls in the build graph"
+        );
+        assert!(
+            pikachat_filter.contains("crates/pika-mls/**"),
+            "pikachat forge lane paths must include crates/pika-mls/** while Apple follow-up sidecar clippy keeps pika-mls in the build graph"
         );
     }
     if apple_followup_jobs.contains("ui_e2e_local_desktop") {
@@ -1191,6 +1204,10 @@ fn pre_merge_fixture_filter_tracks_checked_in_lane_surface() -> Result<()> {
         (
             "crates/pika-agent-protocol",
             "cp -R ${./crates/pika-agent-protocol} \"$out/crates/pika-agent-protocol\"",
+        ),
+        (
+            "crates/pika-mls",
+            "cp -R ${./crates/pika-mls} \"$out/crates/pika-mls\"",
         ),
         (
             "crates/pikachat-sidecar",

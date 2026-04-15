@@ -20,7 +20,6 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 # section instead.
 # MDK is pinned at the workspace root to avoid version skew between workspace members.
 mdk-core = { workspace = true }
-mdk-sqlite-storage = { workspace = true }
 mdk-storage-traits = { workspace = true }
 keyring-core = { workspace = true }
 nostr-sdk = { workspace = true, features = ["nip59"] }
@@ -28,6 +27,7 @@ nostr-connect = { workspace = true }
 nostr-blossom = { workspace = true }
 pika-managed-agent-contract = { workspace = true }
 pika-chat-server = { path = "../crates/pika-chat-server" }
+pika-mls = { workspace = true }
 pika-relay-profiles = { path = "../crates/pika-relay-profiles" }
 pika-media = { path = "../crates/pika-media", features = ["network"] }
 pika-tls = { path = "../crates/pika-tls" }
@@ -72,5 +72,4 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 tokio-tungstenite = { workspace = true }
 
 [target.'cfg(target_os = "ios")'.dependencies]
-apple-native-keyring-store = { workspace = true }
 tracing-oslog = "0.3"

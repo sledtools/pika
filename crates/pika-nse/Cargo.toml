@@ -9,11 +9,8 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 [dependencies]
 anyhow = { workspace = true }
 hex = { workspace = true }
-keyring-core = { workspace = true }
-mdk-core = { workspace = true }
-mdk-sqlite-storage = { workspace = true }
-mdk-storage-traits = { workspace = true }
 nostr = { workspace = true }
+pika-mls = { workspace = true }
 pika-tls = { path = "../pika-tls" }
 rusqlite = { workspace = true }
 serde = { workspace = true }
@@ -26,6 +23,3 @@ libsqlite3-sys = { workspace = true, features = ["bundled-sqlcipher"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 libsqlite3-sys = { workspace = true, features = ["bundled-sqlcipher-vendored-openssl"] }
-
-[target.'cfg(target_os = "ios")'.dependencies]
-apple-native-keyring-store = { workspace = true }

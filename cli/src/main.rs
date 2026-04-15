@@ -12,13 +12,13 @@ use anyhow::{Context, anyhow};
 use base64::Engine;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use hypernote_protocol as hn;
-use mdk_core::prelude::*;
 use nostr_sdk::prelude::*;
 use pika_managed_agent_contract::{AgentProvisionRequest, AgentStartupPhase, IncusProvisionParams};
 use pika_marmot_runtime::key_package::normalize_peer_key_package_event_for_mdk;
 use pika_marmot_runtime::outbound::{OutboundConversationAction, PreparedConversationAction};
 use pika_marmot_runtime::runtime::MarmotRuntime;
 use pika_marmot_runtime::welcome::{CreatedGroup, create_group_and_publish_welcomes};
+use pika_mls::prelude::*;
 use pika_relay_profiles::{
     default_key_package_relays, default_message_relays, default_primary_blossom_server,
 };
@@ -823,7 +823,7 @@ async fn client_all(cli: &Cli, keys: &Keys) -> anyhow::Result<Client> {
 fn find_group(
     mdk: &mdk_util::PikaMdk,
     nostr_group_id_hex: &str,
-) -> anyhow::Result<mdk_storage_traits::groups::types::Group> {
+) -> anyhow::Result<pika_mls::storage_traits::groups::types::Group> {
     MarmotRuntime::new(mdk)
         .find_group(nostr_group_id_hex)
         .with_context(|| {
@@ -836,7 +836,7 @@ fn find_group(
 fn prepare_cli_outbound_action(
     mdk: &mdk_util::PikaMdk,
     sender: PublicKey,
-    group: mdk_storage_traits::groups::types::Group,
+    group: pika_mls::storage_traits::groups::types::Group,
     action: OutboundConversationAction,
 ) -> anyhow::Result<PreparedConversationAction> {
     MarmotRuntime::new(mdk).prepare_outbound_action_for_group(sender, group, action)
@@ -1275,14 +1275,14 @@ fn cmd_accept_welcome(cli: &Cli, wrapper_event_id_hex: &str) -> anyhow::Result<(
 }
 
 fn find_pending_welcome_for_accept<'a>(
-    pending: &'a [mdk_storage_traits::welcomes::types::Welcome],
+    pending: &'a [pika_mls::storage_traits::welcomes::types::Welcome],
     target_id: &EventId,
-) -> Option<&'a mdk_storage_traits::welcomes::types::Welcome> {
+) -> Option<&'a pika_mls::storage_traits::welcomes::types::Welcome> {
     pika_marmot_runtime::welcome::find_pending_welcome(pending, target_id)
 }
 
 fn pending_welcome_json(
-    welcome: &mdk_storage_traits::welcomes::types::Welcome,
+    welcome: &pika_mls::storage_traits::welcomes::types::Welcome,
 ) -> serde_json::Value {
     json!({
         "wrapper_event_id": welcome.wrapper_event_id.to_hex(),
@@ -1368,7 +1368,7 @@ async fn cmd_send(
 
     // ── Resolve target group ────────────────────────────────────────────
     struct ResolvedTarget {
-        group: mdk_storage_traits::groups::types::Group,
+        group: pika_mls::storage_traits::groups::types::Group,
         auto_created: bool,
     }
 
@@ -1971,7 +1971,7 @@ fn find_direct_group_with_peer(
     mdk: &mdk_util::PikaMdk,
     my_pubkey: &PublicKey,
     peer_pubkey: &PublicKey,
-) -> anyhow::Result<Option<mdk_storage_traits::groups::types::Group>> {
+) -> anyhow::Result<Option<pika_mls::storage_traits::groups::types::Group>> {
     let groups = mdk.get_groups().context("get groups")?;
     Ok(groups.into_iter().find(|g| {
         let members = mdk.get_members(&g.mls_group_id).unwrap_or_default();
@@ -2276,7 +2276,7 @@ fn cmd_messages(cli: &Cli, nostr_group_id_hex: &str, limit: usize) -> anyhow::Re
     let (_keys, mdk) = open(cli)?;
     let group = find_group(&mdk, nostr_group_id_hex)?;
 
-    let pagination = mdk_storage_traits::groups::Pagination::new(Some(limit), None);
+    let pagination = pika_mls::storage_traits::groups::Pagination::new(Some(limit), None);
     let msgs = MarmotRuntime::new(&mdk)
         .get_messages(nostr_group_id_hex, Some(pagination))
         .context("get messages")?;
@@ -2670,10 +2670,10 @@ mod tests {
     fn pending_welcome(
         wrapper_hex: &str,
         welcome_hex: &str,
-    ) -> mdk_storage_traits::welcomes::types::Welcome {
+    ) -> pika_mls::storage_traits::welcomes::types::Welcome {
         let welcomer = Keys::generate().public_key();
         let created_at = Timestamp::from(1_u64);
-        mdk_storage_traits::welcomes::types::Welcome {
+        pika_mls::storage_traits::welcomes::types::Welcome {
             id: event_id(welcome_hex),
             event: UnsignedEvent::new(
                 welcomer,
@@ -2694,7 +2694,7 @@ mod tests {
             group_admin_pubkeys: std::collections::BTreeSet::new(),
             group_relays: std::collections::BTreeSet::new(),
             member_count: 2,
-            state: mdk_storage_traits::welcomes::types::WelcomeState::Pending,
+            state: pika_mls::storage_traits::welcomes::types::WelcomeState::Pending,
         }
     }
 
@@ -3208,7 +3208,7 @@ mod tests {
                 width: None,
                 height: None,
             },
-            reference: mdk_core::encrypted_media::types::MediaReference {
+            reference: pika_mls::encrypted_media::types::MediaReference {
                 url: "https://cdn.example/blob".to_string(),
                 mime_type: "text/plain".to_string(),
                 filename: "cli.txt".to_string(),

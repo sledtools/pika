@@ -2,13 +2,13 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
+use crate::mdk_util::{PikaMdk, load_or_create_keys, new_mdk};
 use anyhow::{Context, anyhow};
 use clap::Subcommand;
-use mdk_core::encrypted_media::types::MediaProcessingOptions;
-use mdk_core::prelude::*;
 use nostr_blossom::client::BlossomClient;
 use nostr_sdk::prelude::*;
-use pika_marmot_runtime::{PikaMdk, load_or_create_keys, new_mdk};
+use pika_mls::encrypted_media::types::MediaProcessingOptions;
+use pika_mls::prelude::*;
 use pikachat_sidecar as pika_marmot_runtime;
 use rand::RngCore;
 use tokio::io::AsyncBufReadExt;
@@ -1844,7 +1844,7 @@ async fn wait_for_exact_application(
     expected_peer: &PublicKey,
     expected_content: &str,
     timeout: Duration,
-) -> anyhow::Result<mdk_storage_traits::messages::types::Message> {
+) -> anyhow::Result<pika_mls::storage_traits::messages::types::Message> {
     let deadline = Instant::now() + timeout;
     loop {
         let now = Instant::now();

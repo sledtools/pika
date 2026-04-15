@@ -1,7 +1,7 @@
 mod mdk_support;
 
-use mdk_core::prelude::MessageProcessingResult;
 use nostr::{Event, Kind, TagKind};
+use pika_mls::prelude::MessageProcessingResult;
 
 uniffi::setup_scaffolding!();
 
@@ -296,7 +296,7 @@ const MAX_NSE_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
 /// Returns `None` on any failure so the notification still shows with text only.
 fn download_and_decrypt_image(
     mdk: &mdk_support::PikaMdk,
-    mls_group_id: &mdk_storage_traits::GroupId,
+    mls_group_id: &pika_mls::storage_traits::GroupId,
     imeta_tag: &nostr::Tag,
 ) -> Option<Vec<u8>> {
     let manager = mdk.media_manager(mls_group_id.clone());

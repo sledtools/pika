@@ -11,6 +11,7 @@ members = [
   "crates/pika-incus-guest-role",
   "crates/pika-managed-agent-contract",
   "crates/pika-cloud",
+  "crates/pika-mls",
   "crates/pika-relay-profiles",
   "crates/hypernote-protocol",
   "crates/pikachat-sidecar",
@@ -40,6 +41,7 @@ jerichoci = { path = "crates/jerichoci" }
 pika-incus-guest-role = { path = "crates/pika-incus-guest-role" }
 pika-managed-agent-contract = { path = "crates/pika-managed-agent-contract" }
 pika-forge-model = { path = "crates/pika-forge-model" }
+pika-mls = { path = "crates/pika-mls" }
 
 anyhow = "1"
 apple-native-keyring-store = { version = "0.2.2", features = ["protected"] }

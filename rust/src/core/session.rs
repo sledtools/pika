@@ -1,15 +1,72 @@
 // Session lifecycle + networking side effects.
 
+use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 
 use super::config::{plan_relay_roles, RelayRolePlan};
 use super::*;
-use pika_marmot_runtime::runtime::{
-    classify_inbound_relay_event, connect_runtime_relays, group_subscription_state_from_mdk,
-    subscribe_group_messages_combined, subscribe_welcome_inbox,
-    temporary_client_from_session_signer, InboundRelayEvent, InboundRelaySeenCache,
-};
+use pika_marmot_runtime::runtime::temporary_client_from_session_signer;
 use pika_marmot_runtime::welcome::{list_pending_welcome_snapshots, publish_welcome_rumors};
+
+const APP_INBOUND_RELAY_SEEN_CAP: usize = 2048;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AppInboundRelayEvent {
+    Welcome {
+        wrapper: Event,
+        rumor: UnsignedEvent,
+    },
+    GroupMessage {
+        event: Event,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AppInboundSeenCache {
+    seen: HashSet<EventId>,
+    order: VecDeque<EventId>,
+    cap: Option<usize>,
+}
+
+impl Default for AppInboundSeenCache {
+    fn default() -> Self {
+        Self::bounded(APP_INBOUND_RELAY_SEEN_CAP)
+    }
+}
+
+impl AppInboundSeenCache {
+    fn bounded(cap: usize) -> Self {
+        Self {
+            seen: HashSet::new(),
+            order: VecDeque::new(),
+            cap: Some(cap),
+        }
+    }
+
+    fn extend<I>(&mut self, ids: I)
+    where
+        I: IntoIterator<Item = EventId>,
+    {
+        for id in ids {
+            let _ = self.record(id);
+        }
+    }
+
+    fn record(&mut self, id: EventId) -> bool {
+        if !self.seen.insert(id) {
+            return false;
+        }
+        self.order.push_back(id);
+        if let Some(cap) = self.cap {
+            while self.order.len() > cap {
+                if let Some(old) = self.order.pop_front() {
+                    self.seen.remove(&old);
+                }
+            }
+        }
+        true
+    }
+}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct AppGroupSubscriptionState {
@@ -49,8 +106,8 @@ impl AppSessionOpenState {
         &self.sync_plan.group_subscriptions.current
     }
 
-    fn bounded_inbound_relay_seen_cache(&self) -> InboundRelaySeenCache {
-        let mut seen = InboundRelaySeenCache::default();
+    fn bounded_inbound_relay_seen_cache(&self) -> AppInboundSeenCache {
+        let mut seen = AppInboundSeenCache::default();
         seen.extend(
             self.pending_welcome_snapshots
                 .iter()
@@ -69,10 +126,18 @@ struct BootstrappedAppSession {
 fn app_group_subscription_state_from_mdk(
     mdk: &PikaMdk,
 ) -> anyhow::Result<AppGroupSubscriptionState> {
-    let current = group_subscription_state_from_mdk(mdk)?;
+    let groups = mdk.get_groups()?;
+    let mut target_group_ids = BTreeSet::new();
+    let mut relay_urls = BTreeSet::new();
+    for group in groups {
+        target_group_ids.insert(hex::encode(group.nostr_group_id));
+        if let Ok(group_relays) = mdk.get_relays(&group.mls_group_id) {
+            relay_urls.extend(group_relays);
+        }
+    }
     Ok(AppGroupSubscriptionState {
-        target_group_ids: current.target_group_ids,
-        relay_urls: current.relay_urls,
+        target_group_ids: target_group_ids.into_iter().collect(),
+        relay_urls: relay_urls.into_iter().collect(),
     })
 }
 
@@ -155,17 +220,45 @@ fn bootstrap_app_session(
 
 async fn classify_app_notification_event(
     client: &Client,
-    seen: &mut InboundRelaySeenCache,
+    seen: &mut AppInboundSeenCache,
     event: Event,
 ) -> anyhow::Result<Option<InternalEvent>> {
-    match classify_inbound_relay_event(client, seen, event).await? {
-        Some(InboundRelayEvent::Welcome { wrapper, rumor, .. }) => {
+    match classify_app_inbound_relay_event(client, seen, event).await? {
+        Some(AppInboundRelayEvent::Welcome { wrapper, rumor }) => {
             Ok(Some(InternalEvent::GiftWrapReceived { wrapper, rumor }))
         }
-        Some(InboundRelayEvent::GroupMessage { event }) => {
+        Some(AppInboundRelayEvent::GroupMessage { event }) => {
             Ok(Some(InternalEvent::GroupMessageReceived { event }))
         }
         None => Ok(None),
+    }
+}
+
+async fn classify_app_inbound_relay_event(
+    client: &Client,
+    seen: &mut AppInboundSeenCache,
+    event: Event,
+) -> anyhow::Result<Option<AppInboundRelayEvent>> {
+    if !seen.record(event.id) {
+        return Ok(None);
+    }
+
+    match event.kind {
+        Kind::GiftWrap => {
+            let unwrapped = client
+                .unwrap_gift_wrap(&event)
+                .await
+                .context("unwrap giftwrap rumor")?;
+            if unwrapped.rumor.kind != Kind::MlsWelcome {
+                return Ok(None);
+            }
+            Ok(Some(AppInboundRelayEvent::Welcome {
+                wrapper: event,
+                rumor: unwrapped.rumor,
+            }))
+        }
+        Kind::MlsGroupMessage => Ok(Some(AppInboundRelayEvent::GroupMessage { event })),
+        _ => Ok(None),
     }
 }
 
@@ -235,14 +328,14 @@ async fn execute_app_base_session_sync(
     sync_plan: &AppSessionSyncPlan,
     force_reconnect: bool,
 ) -> Option<SubscriptionId> {
-    connect_runtime_relays(
+    connect_app_relays(
         client,
         &sync_plan.relay_roles.session_connect_relays,
         force_reconnect,
         Some(Duration::from_secs(4)),
     )
     .await;
-    subscribe_welcome_inbox(
+    subscribe_app_welcome_inbox(
         client,
         pubkey,
         sync_plan.welcome_inbox.lookback,
@@ -250,6 +343,59 @@ async fn execute_app_base_session_sync(
     )
     .await
     .ok()
+}
+
+async fn connect_app_relays(
+    client: &Client,
+    relays: &[RelayUrl],
+    reconnect: bool,
+    wait_timeout: Option<Duration>,
+) {
+    for relay in relays {
+        let _ = client.add_relay(relay.clone()).await;
+    }
+    if reconnect {
+        client.disconnect().await;
+    }
+    client.connect().await;
+    if let Some(timeout) = wait_timeout {
+        client.wait_for_connection(timeout).await;
+    }
+}
+
+async fn subscribe_app_welcome_inbox(
+    client: &Client,
+    pubkey: PublicKey,
+    lookback: Option<Duration>,
+    limit: Option<usize>,
+) -> anyhow::Result<SubscriptionId> {
+    let mut filter = Filter::new().kind(Kind::GiftWrap).custom_tag(
+        SingleLetterTag::lowercase(Alphabet::P),
+        pubkey.to_hex().to_lowercase(),
+    );
+    if let Some(limit) = limit {
+        filter = filter.limit(limit);
+    }
+    if let Some(lookback) = lookback {
+        filter = filter.since(Timestamp::now() - lookback);
+    }
+    let out = client.subscribe(filter, None).await?;
+    Ok(out.val)
+}
+
+async fn subscribe_app_group_messages(
+    client: &Client,
+    nostr_group_ids: &[String],
+) -> anyhow::Result<Option<SubscriptionId>> {
+    if nostr_group_ids.is_empty() {
+        return Ok(None);
+    }
+    let filter = Filter::new().kind(Kind::MlsGroupMessage).custom_tags(
+        SingleLetterTag::lowercase(Alphabet::H),
+        nostr_group_ids.to_vec(),
+    );
+    let out = client.subscribe(filter, None).await?;
+    Ok(Some(out.val))
 }
 
 impl AppCore {
@@ -310,7 +456,7 @@ impl AppCore {
             tracing::info!(relays = ?relays.iter().map(|r| r.to_string()).collect::<Vec<_>>(), "connecting_relays");
             let session_client = client.clone();
             self.runtime.spawn(async move {
-                connect_runtime_relays(&session_client, &relays, false, None).await;
+                connect_app_relays(&session_client, &relays, false, None).await;
             });
             tracing::info!("relays connect scheduled");
         }
@@ -415,7 +561,7 @@ impl AppCore {
         }
     }
 
-    pub(super) fn start_notifications_loop(&mut self, mut seen: InboundRelaySeenCache) {
+    fn start_notifications_loop(&mut self, mut seen: AppInboundSeenCache) {
         let Some(sess) = self.session.as_ref() else {
             return;
         };
@@ -794,7 +940,7 @@ impl AppCore {
             if !alive.load(Ordering::SeqCst) {
                 return;
             }
-            let group_sub = subscribe_group_messages_combined(&client, &h_values)
+            let group_sub = subscribe_app_group_messages(&client, &h_values)
                 .await
                 .ok()
                 .flatten();
@@ -1951,7 +2097,7 @@ mod tests {
         )
         .await
         .expect("gift wrap");
-        let mut seen = InboundRelaySeenCache::default();
+        let mut seen = AppInboundSeenCache::default();
 
         let first = classify_app_notification_event(&client, &mut seen, wrapper.clone())
             .await

@@ -3,10 +3,11 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result, anyhow};
-use nostr::{Event, EventId, Keys, PublicKey, RelayUrl};
+use nostr::{Event, EventId, Keys, PublicKey};
 use serde::{Deserialize, Serialize};
 
 pub mod conversation;
+pub mod key_package;
 pub mod membership;
 pub mod welcome;
 
@@ -27,10 +28,6 @@ impl PikaMls {
         Self { inner }
     }
 
-    pub fn as_raw(&self) -> &RawMls {
-        &self.inner
-    }
-
     pub fn create_group(
         &self,
         creator_public_key: &PublicKey,
@@ -39,17 +36,6 @@ impl PikaMls {
     ) -> std::result::Result<prelude::GroupResult, prelude::Error> {
         self.inner
             .create_group(creator_public_key, member_key_package_events, config)
-    }
-
-    pub fn create_key_package_for_event<I>(
-        &self,
-        public_key: &PublicKey,
-        relays: I,
-    ) -> std::result::Result<(String, Vec<nostr::Tag>, Vec<u8>), prelude::Error>
-    where
-        I: IntoIterator<Item = RelayUrl>,
-    {
-        self.inner.create_key_package_for_event(public_key, relays)
     }
 
     pub fn add_members(
@@ -95,10 +81,6 @@ impl PikaMls {
         group_id: &storage_traits::GroupId,
     ) -> std::result::Result<(), prelude::Error> {
         self.inner.clear_pending_commit(group_id)
-    }
-
-    pub fn parse_key_package(&self, event: &Event) -> std::result::Result<(), prelude::Error> {
-        self.inner.parse_key_package(event).map(|_| ())
     }
 
     pub fn media_manager(

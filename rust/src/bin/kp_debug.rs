@@ -93,11 +93,11 @@ fn main() -> Result<()> {
         let mdk = open_unencrypted_mls(db_path.parent().expect("db dir"))
             .context("open unencrypted mdk sqlite storage")?;
 
-        let r1 = mdk.parse_key_package(&ev);
+        let r1 = pika_mls::key_package::parse_key_package(&mdk, &ev);
         println!("mdk.parse_key_package(raw)={}", fmt_res(&r1));
 
         let normalized = normalize_peer_key_package_event_for_mdk(&ev);
-        let r2 = mdk.parse_key_package(&normalized);
+        let r2 = pika_mls::key_package::parse_key_package(&mdk, &normalized);
         println!("mdk.parse_key_package(normalized)={}", fmt_res(&r2));
 
         Ok::<(), anyhow::Error>(())

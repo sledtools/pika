@@ -1654,9 +1654,12 @@ mod tests {
 
     fn make_key_package_event(mdk: &PikaMdk, keys: &Keys) -> Event {
         let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
-        let (content, tags, _hash_ref) = mdk
-            .create_key_package_for_event(&keys.public_key(), vec![relay])
-            .expect("create key package");
+        let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
+            mdk,
+            &keys.public_key(),
+            vec![relay],
+        )
+        .expect("create key package");
         EventBuilder::new(Kind::MlsKeyPackage, content)
             .tags(tags)
             .sign_with_keys(keys)

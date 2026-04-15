@@ -995,9 +995,12 @@ async fn cmd_init(cli: &Cli, nsec: Option<&str>) -> anyhow::Result<()> {
     let kp_relays = relay_util::parse_relay_urls(&kp_relays_str)?;
     let client = relay_util::connect_client(&keys, &kp_relays_str).await?;
 
-    let (content, tags, _hash_ref) = mdk
-        .create_key_package_for_event(&keys.public_key(), kp_relays.clone())
-        .context("create key package")?;
+    let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
+        &mdk,
+        &keys.public_key(),
+        kp_relays.clone(),
+    )
+    .context("create key package")?;
 
     let tags: Tags = tags
         .into_iter()
@@ -1106,9 +1109,12 @@ async fn cmd_publish_kp(cli: &Cli) -> anyhow::Result<()> {
     let client = relay_util::connect_client(&keys, &kp_relays_str).await?;
     let relays = relay_util::parse_relay_urls(&kp_relays_str)?;
 
-    let (content, tags, _hash_ref) = mdk
-        .create_key_package_for_event(&keys.public_key(), relays.clone())
-        .context("create key package")?;
+    let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
+        &mdk,
+        &keys.public_key(),
+        relays.clone(),
+    )
+    .context("create key package")?;
 
     // Strip NIP-70 "protected" tag — many popular relays reject protected events.
     let tags: Tags = tags
@@ -2678,9 +2684,12 @@ mod tests {
 
     fn make_key_package_event(mdk: &mdk_util::PikaMdk, keys: &Keys) -> Event {
         let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
-        let (content, tags, _hash_ref) = mdk
-            .create_key_package_for_event(&keys.public_key(), vec![relay])
-            .expect("create key package");
+        let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
+            mdk,
+            &keys.public_key(),
+            vec![relay],
+        )
+        .expect("create key package");
         EventBuilder::new(Kind::MlsKeyPackage, content)
             .tags(tags)
             .sign_with_keys(keys)

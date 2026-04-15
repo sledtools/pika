@@ -9070,9 +9070,12 @@ mod tests {
 
             let peer_mdk = open_mdk(&peer_dir, &peer_keys.public_key(), "").expect("open peer mdk");
             let relay = RelayUrl::parse(relay).unwrap();
-            let (content, tags, _hash_ref) = peer_mdk
-                .create_key_package_for_event(&peer_keys.public_key(), vec![relay])
-                .expect("create_key_package_for_event");
+            let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
+                &peer_mdk,
+                &peer_keys.public_key(),
+                vec![relay],
+            )
+            .expect("create_key_package_for_event");
 
             EventBuilder::new(Kind::MlsKeyPackage, content)
                 .tags(tags)
@@ -9948,9 +9951,12 @@ mod tests {
             let peer_dir = peer_tmp.path().to_string_lossy().into_owned();
             let peer_mdk = open_mdk(&peer_dir, &peer_keys.public_key(), "").expect("open peer mdk");
             let relay = RelayUrl::parse(relay).expect("relay url");
-            let (content, tags, _hash_ref) = peer_mdk
-                .create_key_package_for_event(&peer_keys.public_key(), vec![relay])
-                .expect("create peer key package");
+            let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
+                &peer_mdk,
+                &peer_keys.public_key(),
+                vec![relay],
+            )
+            .expect("create peer key package");
 
             EventBuilder::new(Kind::MlsKeyPackage, content)
                 .tags(tags)
@@ -10813,9 +10819,12 @@ mod tests {
 
         fn make_key_package_event(mdk: &crate::mdk_support::PikaMdk, keys: &Keys) -> Event {
             let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
-            let (content, tags, _hash_ref) = mdk
-                .create_key_package_for_event(&keys.public_key(), vec![relay])
-                .expect("create key package");
+            let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
+                mdk,
+                &keys.public_key(),
+                vec![relay],
+            )
+            .expect("create key package");
             EventBuilder::new(Kind::MlsKeyPackage, content)
                 .tags(tags)
                 .sign_with_keys(keys)

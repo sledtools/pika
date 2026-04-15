@@ -3777,9 +3777,12 @@ pub async fn daemon_main(
                         }
                         client.connect().await;
 
-                        let (kp_content, kp_tags, _hash_ref) = match mdk
-                            .create_key_package_for_event(&keys.public_key(), selected.clone())
-                        {
+                        let (kp_content, kp_tags, _hash_ref) =
+                            match pika_mls::key_package::create_key_package_for_event(
+                                &mdk,
+                                &keys.public_key(),
+                                selected.clone(),
+                            ) {
                             Ok(v) => v,
                             Err(e) => {
                                 reply_tx.send(out_error(request_id, "mdk_error", format!("{e:#}"))).ok();
@@ -5750,9 +5753,12 @@ mod tests {
 
     fn make_key_package_event(mdk: &crate::PikaMdk, keys: &Keys) -> Event {
         let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
-        let (content, tags, _hash_ref) = mdk
-            .create_key_package_for_event(&keys.public_key(), vec![relay])
-            .expect("create key package");
+        let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
+            mdk,
+            &keys.public_key(),
+            vec![relay],
+        )
+        .expect("create key package");
         EventBuilder::new(Kind::MlsKeyPackage, content)
             .tags(tags)
             .sign_with_keys(keys)

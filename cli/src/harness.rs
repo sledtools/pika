@@ -1561,9 +1561,12 @@ async fn publish_key_package(
     keys: &Keys,
     relay_url: RelayUrl,
 ) -> anyhow::Result<Event> {
-    let (kp_content, kp_tags, _hash_ref) = mdk
-        .create_key_package_for_event(&keys.public_key(), vec![relay_url.clone()])
-        .context("create_key_package_for_event")?;
+    let (kp_content, kp_tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
+        mdk,
+        &keys.public_key(),
+        vec![relay_url.clone()],
+    )
+    .context("create_key_package_for_event")?;
 
     let event = EventBuilder::new(Kind::MlsKeyPackage, kp_content)
         .tags(kp_tags)

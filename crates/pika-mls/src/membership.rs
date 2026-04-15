@@ -230,7 +230,7 @@ impl<'a> MembershipRuntime<'a> {
 
 pub fn validate_key_package_events(mdk: &PikaMdk, key_package_events: &[Event]) -> Result<()> {
     for event in key_package_events {
-        mdk.parse_key_package(event).context("parse key package")?;
+        crate::key_package::parse_key_package(mdk, event)?;
     }
     Ok(())
 }

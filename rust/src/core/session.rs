@@ -619,16 +619,18 @@ impl AppCore {
             self.local_key_package_published = false;
             let relays_for_tags = self.private_chat_bootstrap_relays();
 
-            let (content, tags, _hash_ref) = match sess
-                .mdk
-                .create_key_package_for_event(&sess.pubkey, relays_for_tags)
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    self.fail_direct_chat_creation(format!("Key package create failed: {e}"));
-                    return;
-                }
-            };
+            let (content, tags, _hash_ref) =
+                match pika_mls::key_package::create_key_package_for_event(
+                    &sess.mdk,
+                    &sess.pubkey,
+                    relays_for_tags,
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        self.fail_direct_chat_creation(format!("Key package create failed: {e}"));
+                        return;
+                    }
+                };
 
             let tags: Tags = tags
                 .into_iter()
@@ -701,10 +703,11 @@ impl AppCore {
         self.key_package_publish_token = self.key_package_publish_token.wrapping_add(1);
         let token = self.key_package_publish_token;
         self.local_key_package_published = false;
-        let (content, tags, _hash_ref) = match sess
-            .mdk
-            .create_key_package_for_event(&sess.pubkey, relays_for_tags)
-        {
+        let (content, tags, _hash_ref) = match pika_mls::key_package::create_key_package_for_event(
+            &sess.mdk,
+            &sess.pubkey,
+            relays_for_tags,
+        ) {
             Ok(v) => v,
             Err(e) => {
                 self.fail_direct_chat_creation(format!("Key package create failed: {e}"));
@@ -1543,9 +1546,12 @@ mod tests {
 
     fn make_key_package_event(mdk: &PikaMdk, keys: &Keys) -> Event {
         let relay = RelayUrl::parse("wss://test.relay").expect("relay url");
-        let (content, tags, _hash_ref) = mdk
-            .create_key_package_for_event(&keys.public_key(), vec![relay])
-            .expect("create key package");
+        let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
+            mdk,
+            &keys.public_key(),
+            vec![relay],
+        )
+        .expect("create key package");
         EventBuilder::new(Kind::MlsKeyPackage, content)
             .tags(tags)
             .sign_with_keys(keys)
@@ -1574,10 +1580,12 @@ mod tests {
         });
 
         let sess = core.session.as_ref().expect("session");
-        let (content, tags, _hash_ref) = sess
-            .mdk
-            .create_key_package_for_event(&sess.pubkey, core.private_chat_bootstrap_relays())
-            .expect("create key package");
+        let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
+            &sess.mdk,
+            &sess.pubkey,
+            core.private_chat_bootstrap_relays(),
+        )
+        .expect("create key package");
         let event = EventBuilder::new(Kind::MlsKeyPackage, content)
             .tags(tags)
             .sign_with_keys(&keys)
@@ -1589,8 +1597,7 @@ mod tests {
         );
         let normalized = crate::normalize_peer_key_package_event_for_mdk(&event);
 
-        sess.mdk
-            .parse_key_package(&normalized)
+        pika_mls::key_package::parse_key_package(&sess.mdk, &normalized)
             .expect("chat-server key package should stay parseable");
     }
 

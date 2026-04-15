@@ -4,28 +4,48 @@ use std::future::Future;
 
 use super::*;
 use pika_marmot_runtime::runtime::{
-    classify_inbound_relay_event, connect_runtime_relays, execute_runtime_base_session_sync,
-    plan_runtime_session_sync_from_mdk, subscribe_group_messages_combined,
+    classify_inbound_relay_event, connect_runtime_relays, group_subscription_state_from_mdk,
+    plan_runtime_relay_roles, subscribe_group_messages_combined, subscribe_welcome_inbox,
     temporary_client_from_session_signer, InboundRelayEvent, InboundRelaySeenCache,
-    RuntimeSessionSyncPlan, RuntimeWelcomeInboxSubscriptionIntent,
-};
-#[cfg(test)]
-use pika_marmot_runtime::runtime::{
-    plan_group_subscriptions_from_mdk, RuntimeGroupSubscriptionPlan,
+    RuntimeRelayRolePlan,
 };
 use pika_marmot_runtime::welcome::{list_pending_welcome_snapshots, publish_welcome_rumors};
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct AppGroupSubscriptionState {
+    target_group_ids: Vec<String>,
+    relay_urls: Vec<RelayUrl>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct AppGroupSubscriptionPlan {
+    current: AppGroupSubscriptionState,
+    added_group_ids: Vec<String>,
+    removed_group_ids: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct AppWelcomeInboxIntent {
+    lookback: Option<Duration>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct AppSessionSyncPlan {
+    relay_roles: RuntimeRelayRolePlan,
+    welcome_inbox: AppWelcomeInboxIntent,
+    group_subscriptions: AppGroupSubscriptionPlan,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AppSessionOpenState {
     joined_group_snapshots: Vec<pika_marmot_runtime::conversation::RuntimeJoinedGroupSnapshot>,
     pending_welcome_snapshots: Vec<pika_marmot_runtime::welcome::PendingWelcomeSnapshot>,
-    sync_plan: RuntimeSessionSyncPlan,
+    sync_plan: AppSessionSyncPlan,
 }
 
 impl AppSessionOpenState {
-    fn current_group_subscriptions(
-        &self,
-    ) -> &pika_marmot_runtime::runtime::RuntimeGroupSubscriptionState {
+    fn current_group_subscriptions(&self) -> &AppGroupSubscriptionState {
         &self.sync_plan.group_subscriptions.current
     }
 
@@ -46,6 +66,55 @@ struct BootstrappedAppSession {
     open: AppSessionOpenState,
 }
 
+fn app_group_subscription_state_from_mdk(
+    mdk: &PikaMdk,
+) -> anyhow::Result<AppGroupSubscriptionState> {
+    let current = group_subscription_state_from_mdk(mdk)?;
+    Ok(AppGroupSubscriptionState {
+        target_group_ids: current.target_group_ids,
+        relay_urls: current.relay_urls,
+    })
+}
+
+fn plan_app_group_subscriptions_from_mdk(
+    mdk: &PikaMdk,
+    subscribed_group_ids: Vec<String>,
+) -> anyhow::Result<AppGroupSubscriptionPlan> {
+    let current = app_group_subscription_state_from_mdk(mdk)?;
+    let subscribed_group_ids: BTreeSet<String> = subscribed_group_ids.into_iter().collect();
+    let current_group_ids: BTreeSet<String> = current.target_group_ids.iter().cloned().collect();
+    Ok(AppGroupSubscriptionPlan {
+        added_group_ids: current_group_ids
+            .difference(&subscribed_group_ids)
+            .cloned()
+            .collect(),
+        removed_group_ids: subscribed_group_ids
+            .difference(&current_group_ids)
+            .cloned()
+            .collect(),
+        current,
+    })
+}
+
+fn plan_app_session_sync_from_mdk(
+    mdk: &PikaMdk,
+    subscribed_group_ids: Vec<String>,
+    long_lived_session_relays: Vec<RelayUrl>,
+    temporary_key_package_relays: Vec<RelayUrl>,
+) -> anyhow::Result<AppSessionSyncPlan> {
+    let group_subscriptions = plan_app_group_subscriptions_from_mdk(mdk, subscribed_group_ids)?;
+    let relay_roles = plan_runtime_relay_roles(
+        long_lived_session_relays,
+        group_subscriptions.current.relay_urls.clone(),
+        temporary_key_package_relays,
+    );
+    Ok(AppSessionSyncPlan {
+        relay_roles,
+        welcome_inbox: app_welcome_inbox_intent(),
+        group_subscriptions,
+    })
+}
+
 fn refresh_app_session_open_state(
     mdk: &PikaMdk,
     subscribed_group_ids: Vec<String>,
@@ -56,12 +125,11 @@ fn refresh_app_session_open_state(
         joined_group_snapshots: pika_marmot_runtime::conversation::ConversationRuntime::new(mdk)
             .list_joined_group_snapshots()?,
         pending_welcome_snapshots: list_pending_welcome_snapshots(mdk)?,
-        sync_plan: plan_runtime_session_sync_from_mdk(
+        sync_plan: plan_app_session_sync_from_mdk(
             mdk,
             subscribed_group_ids,
             long_lived_session_relays,
             temporary_key_package_relays,
-            app_welcome_inbox_intent(),
         )?,
     })
 }
@@ -102,12 +170,12 @@ async fn classify_app_notification_event(
 }
 
 #[cfg(test)]
-fn plan_app_group_subscriptions(sess: &Session) -> anyhow::Result<RuntimeGroupSubscriptionPlan> {
-    plan_group_subscriptions_from_mdk(&sess.mdk, sess.groups.keys().cloned().collect::<Vec<_>>())
+fn plan_app_group_subscriptions(sess: &Session) -> anyhow::Result<AppGroupSubscriptionPlan> {
+    plan_app_group_subscriptions_from_mdk(&sess.mdk, sess.groups.keys().cloned().collect())
 }
 
-fn app_welcome_inbox_intent() -> RuntimeWelcomeInboxSubscriptionIntent {
-    RuntimeWelcomeInboxSubscriptionIntent::default()
+fn app_welcome_inbox_intent() -> AppWelcomeInboxIntent {
+    AppWelcomeInboxIntent::default()
 }
 
 fn seed_app_groups_from_open_state(
@@ -164,19 +232,24 @@ fn refresh_app_session_state(
 async fn execute_app_base_session_sync(
     client: &Client,
     pubkey: PublicKey,
-    sync_plan: &RuntimeSessionSyncPlan,
+    sync_plan: &AppSessionSyncPlan,
     force_reconnect: bool,
 ) -> Option<SubscriptionId> {
-    execute_runtime_base_session_sync(
+    connect_runtime_relays(
         client,
-        pubkey,
-        sync_plan,
+        &sync_plan.relay_roles.session_connect_relays,
         force_reconnect,
         Some(Duration::from_secs(4)),
     )
+    .await;
+    subscribe_welcome_inbox(
+        client,
+        pubkey,
+        sync_plan.welcome_inbox.lookback,
+        sync_plan.welcome_inbox.limit,
+    )
     .await
     .ok()
-    .map(|execution| execution.welcome_inbox_sub)
 }
 
 impl AppCore {

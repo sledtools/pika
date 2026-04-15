@@ -1,17 +1,184 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result, anyhow};
-use nostr::{EventId, Keys, PublicKey};
+use nostr::{Event, EventId, Keys, PublicKey, RelayUrl, UnsignedEvent};
 use serde::{Deserialize, Serialize};
 
-pub use mdk_core::{self, MDK, MdkConfig, encrypted_media, prelude};
+pub use mdk_core::{self, MdkConfig, encrypted_media, prelude};
 pub use mdk_sqlite_storage::{self, MdkSqliteStorage};
 pub use mdk_storage_traits::{self as storage_traits};
 
-pub type PikaMls = MDK<MdkSqliteStorage>;
+type RawMls = mdk_core::MDK<MdkSqliteStorage>;
+
+pub struct PikaMls {
+    inner: RawMls,
+}
+
 pub type PikaMdk = PikaMls;
+
+impl PikaMls {
+    fn from_raw(inner: RawMls) -> Self {
+        Self { inner }
+    }
+
+    pub fn as_raw(&self) -> &RawMls {
+        &self.inner
+    }
+
+    pub fn create_group(
+        &self,
+        creator_public_key: &PublicKey,
+        member_key_package_events: Vec<Event>,
+        config: prelude::NostrGroupConfigData,
+    ) -> std::result::Result<prelude::GroupResult, prelude::Error> {
+        self.inner
+            .create_group(creator_public_key, member_key_package_events, config)
+    }
+
+    pub fn add_members(
+        &self,
+        group_id: &storage_traits::GroupId,
+        key_package_events: &[Event],
+    ) -> std::result::Result<prelude::UpdateGroupResult, prelude::Error> {
+        self.inner.add_members(group_id, key_package_events)
+    }
+
+    pub fn remove_members(
+        &self,
+        group_id: &storage_traits::GroupId,
+        pubkeys: &[PublicKey],
+    ) -> std::result::Result<prelude::UpdateGroupResult, prelude::Error> {
+        self.inner.remove_members(group_id, pubkeys)
+    }
+
+    pub fn update_group_data(
+        &self,
+        group_id: &storage_traits::GroupId,
+        update: prelude::NostrGroupDataUpdate,
+    ) -> std::result::Result<prelude::UpdateGroupResult, prelude::Error> {
+        self.inner.update_group_data(group_id, update)
+    }
+
+    pub fn leave_group(
+        &self,
+        group_id: &storage_traits::GroupId,
+    ) -> std::result::Result<prelude::UpdateGroupResult, prelude::Error> {
+        self.inner.leave_group(group_id)
+    }
+
+    pub fn merge_pending_commit(
+        &self,
+        group_id: &storage_traits::GroupId,
+    ) -> std::result::Result<(), prelude::Error> {
+        self.inner.merge_pending_commit(group_id)
+    }
+
+    pub fn clear_pending_commit(
+        &self,
+        group_id: &storage_traits::GroupId,
+    ) -> std::result::Result<(), prelude::Error> {
+        self.inner.clear_pending_commit(group_id)
+    }
+
+    pub fn create_message(
+        &self,
+        mls_group_id: &storage_traits::GroupId,
+        rumor: UnsignedEvent,
+    ) -> std::result::Result<Event, prelude::Error> {
+        self.inner.create_message(mls_group_id, rumor)
+    }
+
+    pub fn process_message(
+        &self,
+        event: &Event,
+    ) -> std::result::Result<prelude::MessageProcessingResult, prelude::Error> {
+        self.inner.process_message(event)
+    }
+
+    pub fn process_welcome(
+        &self,
+        wrapper_event_id: &EventId,
+        rumor_event: &UnsignedEvent,
+    ) -> std::result::Result<storage_traits::welcomes::types::Welcome, prelude::Error> {
+        self.inner.process_welcome(wrapper_event_id, rumor_event)
+    }
+
+    pub fn accept_welcome(
+        &self,
+        welcome: &storage_traits::welcomes::types::Welcome,
+    ) -> std::result::Result<(), prelude::Error> {
+        self.inner.accept_welcome(welcome)
+    }
+
+    pub fn get_group(
+        &self,
+        group_id: &storage_traits::GroupId,
+    ) -> std::result::Result<Option<storage_traits::groups::types::Group>, prelude::Error> {
+        self.inner.get_group(group_id)
+    }
+
+    pub fn get_groups(
+        &self,
+    ) -> std::result::Result<Vec<storage_traits::groups::types::Group>, prelude::Error> {
+        self.inner.get_groups()
+    }
+
+    pub fn get_members(
+        &self,
+        group_id: &storage_traits::GroupId,
+    ) -> std::result::Result<BTreeSet<PublicKey>, prelude::Error> {
+        self.inner.get_members(group_id)
+    }
+
+    pub fn get_relays(
+        &self,
+        group_id: &storage_traits::GroupId,
+    ) -> std::result::Result<BTreeSet<RelayUrl>, prelude::Error> {
+        self.inner.get_relays(group_id)
+    }
+
+    pub fn get_message(
+        &self,
+        group_id: &storage_traits::GroupId,
+        message_id: &EventId,
+    ) -> std::result::Result<Option<storage_traits::messages::types::Message>, prelude::Error> {
+        self.inner.get_message(group_id, message_id)
+    }
+
+    pub fn get_pending_welcomes(
+        &self,
+        pagination: Option<storage_traits::welcomes::Pagination>,
+    ) -> std::result::Result<Vec<storage_traits::welcomes::types::Welcome>, prelude::Error> {
+        self.inner.get_pending_welcomes(pagination)
+    }
+
+    pub fn parse_key_package(&self, event: &Event) -> std::result::Result<(), prelude::Error> {
+        self.inner.parse_key_package(event).map(|_| ())
+    }
+
+    pub fn media_manager(
+        &self,
+        group_id: storage_traits::GroupId,
+    ) -> encrypted_media::manager::EncryptedMediaManager<'_, MdkSqliteStorage> {
+        self.inner.media_manager(group_id)
+    }
+}
+
+impl std::fmt::Debug for PikaMls {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PikaMls").finish_non_exhaustive()
+    }
+}
+
+impl std::ops::Deref for PikaMls {
+    type Target = RawMls;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
 
 pub const SERVICE_ID: &str = "com.pika.app";
 pub const PROCESSED_MLS_EVENT_IDS_FILE: &str = "processed_mls_event_ids_v1.txt";
@@ -116,7 +283,11 @@ pub fn open_secure_mls(
         }
     };
 
-    Ok(MDK::builder(storage).with_config(mdk_config()).build())
+    Ok(PikaMls::from_raw(
+        mdk_core::MDK::builder(storage)
+            .with_config(mdk_config())
+            .build(),
+    ))
 }
 
 pub fn open_unencrypted_mls(state_dir: &Path) -> Result<PikaMls> {
@@ -127,7 +298,7 @@ pub fn open_unencrypted_mls(state_dir: &Path) -> Result<PikaMls> {
     }
     let storage = MdkSqliteStorage::new_unencrypted(&db_path)
         .with_context(|| format!("open mdk sqlite: {}", db_path.display()))?;
-    Ok(MDK::new(storage))
+    Ok(PikaMls::from_raw(mdk_core::MDK::new(storage)))
 }
 
 pub fn new_unencrypted_mls(state_dir: &Path, _label: &str) -> Result<PikaMls> {
@@ -275,9 +446,11 @@ fn open_mdk_desktop_file_key(data_dir: &str, pubkey: &PublicKey) -> Result<PikaM
                 )
             })
             .map(|storage| {
-                MDK::builder(storage)
-                    .with_config(MdkConfig::default())
-                    .build()
+                PikaMls::from_raw(
+                    mdk_core::MDK::builder(storage)
+                        .with_config(MdkConfig::default())
+                        .build(),
+                )
             })
     };
 
@@ -346,7 +519,11 @@ fn open_mdk_ios_file_key(data_dir: &str, pubkey: &PublicKey) -> Result<PikaMls> 
                     db_path.display()
                 )
             })?;
-    Ok(MDK::builder(storage).with_config(mdk_config()).build())
+    Ok(PikaMls::from_raw(
+        mdk_core::MDK::builder(storage)
+            .with_config(mdk_config())
+            .build(),
+    ))
 }
 
 #[cfg(test)]

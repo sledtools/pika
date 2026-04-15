@@ -13,7 +13,7 @@ pub(super) enum DaemonPrepareError {
 pub(super) struct DaemonHostContext<'a> {
     client: &'a Client,
     relay_urls: &'a [RelayUrl],
-    mdk: &'a MDK<MdkSqliteStorage>,
+    mdk: &'a crate::PikaMdk,
     keys: &'a Keys,
     pubkey_hex: String,
 }
@@ -22,7 +22,7 @@ impl<'a> DaemonHostContext<'a> {
     pub(super) fn new(
         client: &'a Client,
         relay_urls: &'a [RelayUrl],
-        mdk: &'a MDK<MdkSqliteStorage>,
+        mdk: &'a crate::PikaMdk,
         keys: &'a Keys,
         pubkey_hex: impl Into<String>,
     ) -> Self {

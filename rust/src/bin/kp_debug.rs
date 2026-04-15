@@ -3,8 +3,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use nostr_sdk::prelude::*;
 use pika_core::normalize_peer_key_package_event_for_mdk;
-use pika_mls::MdkSqliteStorage;
-use pika_mls::MDK;
+use pika_mls::open_unencrypted_mls;
 use pika_relay_profiles::app_default_message_relays;
 
 fn looks_like_hex(s: &str) -> bool {
@@ -91,9 +90,8 @@ fn main() -> Result<()> {
         if let Some(p) = db_path.parent() {
             std::fs::create_dir_all(p).ok();
         }
-        let storage = MdkSqliteStorage::new_unencrypted(db_path)
+        let mdk = open_unencrypted_mls(db_path.parent().expect("db dir"))
             .context("open unencrypted mdk sqlite storage")?;
-        let mdk = MDK::new(storage);
 
         let r1 = mdk.parse_key_package(&ev);
         println!("mdk.parse_key_package(raw)={}", fmt_res(&r1));

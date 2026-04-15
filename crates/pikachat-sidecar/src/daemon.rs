@@ -44,7 +44,7 @@ use pika_media::session::{
     InMemoryRelay, MediaFrame, MediaSession, MediaSessionError, SessionConfig,
 };
 use pika_media::tracks::{TrackAddress, broadcast_path};
-use pika_mls::MdkSqliteStorage;
+use pika_mls::PikaMdk;
 use pika_mls::prelude::*;
 
 use serde::Deserialize;
@@ -226,7 +226,7 @@ async fn execute_daemon_base_session_sync(
 }
 
 async fn accept_welcome_with_backfill<F, Fut>(
-    mdk: &MDK<MdkSqliteStorage>,
+    mdk: &PikaMdk,
     client: &Client,
     relay_urls: &[RelayUrl],
     welcome: &pika_mls::storage_traits::welcomes::types::Welcome,
@@ -252,7 +252,7 @@ where
 
 async fn create_group_and_publish_welcomes_for_init_group<F, Fut>(
     keys: &Keys,
-    mdk: &MDK<MdkSqliteStorage>,
+    mdk: &PikaMdk,
     peer_kp: Event,
     peer_pubkey: PublicKey,
     config: NostrGroupConfigData,
@@ -286,7 +286,7 @@ where
 
 async fn create_group_and_publish_welcomes_for_init_group_with_confirm(
     keys: &Keys,
-    mdk: &MDK<MdkSqliteStorage>,
+    mdk: &PikaMdk,
     client: &Client,
     relay_urls: &[RelayUrl],
     peer_kp: Event,

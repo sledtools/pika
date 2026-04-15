@@ -1,7 +1,6 @@
 use nostr_sdk::hashes::{Hash as _, sha256};
 use pika_media::crypto::{FrameKeyMaterial, opaque_participant_label};
-use pika_mls::MDK;
-use pika_mls::MdkSqliteStorage;
+use pika_mls::PikaMdk;
 use pika_mls::encrypted_media::crypto::{DEFAULT_SCHEME_VERSION, derive_encryption_key};
 use pika_mls::prelude::GroupId;
 use serde::{Deserialize, Serialize};
@@ -89,7 +88,7 @@ pub struct CallMediaCryptoContext {
 }
 
 pub struct CallCryptoDeriveContext<'a> {
-    pub mdk: &'a MDK<MdkSqliteStorage>,
+    pub mdk: &'a PikaMdk,
     pub mls_group_id: &'a GroupId,
     pub group_epoch: u64,
     pub call_id: &'a str,

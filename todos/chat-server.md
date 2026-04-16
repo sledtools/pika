@@ -88,6 +88,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   welcome rumors now carry group key material, so the harness keeps encrypted NIP-59 giftwrap captures only.
 - [x] Stop activating key-package relay config in chat-server mode:
   relay URL settings still exist for relay-mode/public work, but chat-server private chat no longer treats key-package relays as temporary private-chat transport inputs.
+- [x] Delete the chat-server device registry:
+  v1 auth is account/session based, key packages are owned directly by `npub`, and room events no longer carry server-side device ids.
 - [x] Delete one thin legacy relay chat helper seam instead of preserving it:
   the shared create-group/welcome helper moved into the existing welcome module, and the extra group wrapper module is gone.
 - [x] Cut the app host context off the broad legacy relay chat facade:
@@ -189,9 +191,9 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
 - First implementation slice is `crates/pika-chat-server` with:
   `POST /v1/session/login`, `GET /v1/session/me`, stateless signed session tokens, and tests.
 - The next server slice now exists too:
-  `POST /v1/devices/register`, `POST /v1/rooms`, `POST /v1/rooms/:room_id/events`, and `GET /v1/rooms/:room_id/events`.
+  `POST /v1/rooms`, `POST /v1/rooms/:room_id/events`, and `GET /v1/rooms/:room_id/events`.
 - Key-package inventory is now server-owned too:
-  `POST /v1/key-packages` uploads opaque package blobs for a registered device, and `POST /v1/key-packages/claim` consumes one package at a time for room bootstrap or room-scoped membership work.
+  `POST /v1/key-packages` uploads opaque package blobs for an `npub`, and `POST /v1/key-packages/claim` consumes one package at a time for room bootstrap or room-scoped membership work.
 - The app config now has an explicit private-chat server field:
   `private_chat_server_url` is separate from relay settings, which keeps the next runtime cut honest about what transport it is actually using.
 - `pika_core` now has a first chat-server client seam:
@@ -243,13 +245,15 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
 - Bound call control now follows the same transport split as text/profile updates:
   `publish_call_signal` appends wrappers through the room log whenever a `chat_id -> room_id` binding exists, and only uses relay publish for unbound / relay-mode calls.
 - Chat-server key-package bootstrap is simpler now:
-  the app uploads key packages straight to the chat server without first registering a device, while the server still accepts optional device IDs for future sender attribution and push plumbing.
+  the app uploads key packages straight to the chat server without first registering a device, and the server no longer keeps a v1 device registry or optional device IDs.
 - The CLI harness no longer writes raw welcome rumor JSON:
   welcome payloads carry group secrets after the local engine crypto hardening, so debug captures stay at the encrypted giftwrap layer.
 - Secure app/NSE chat state is now encrypted at rest on mobile:
   platform keyrings hold one random state key per `npub`, encrypted state files migrate old plaintext JSON on secure open, and tests cover round-trip, migration, and wrong-key rejection.
 - Chat-server mode no longer activates key-package relay config:
   temporary key-package relay planning returns empty when a private chat server is configured, and the chat-server sync poller starts only when server mode or existing room bindings make it useful.
+- Chat-server device state is gone:
+  `/v1/devices/register`, `devices_by_owner`, device-owner validation, and room/key-package device id fields were deleted; Nostr auth plus room membership are the v1 authority.
 - Chat-server room bootstrap now treats relay metadata as compatibility-only:
   direct-chat and group creation keep local default relays for MLS parsing, but stop importing peer key-package relay hints or candidate lookup relays into server-bound group state.
 - The inventory pass confirmed the biggest simplification wins:

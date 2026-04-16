@@ -6,9 +6,9 @@ sequenceDiagram
     participant C as Server C
 
     Note over Old,New: Existing device knows account is active on A, B, and C
-    New->>A: Login, register device, upload KeyPackages
-    New->>B: Login, register device, upload KeyPackages
-    New->>C: Login, register device, upload KeyPackages
+    New->>A: Login and upload KeyPackages
+    New->>B: Login and upload KeyPackages
+    New->>C: Login and upload KeyPackages
     par Rooms on A
         Old->>A: Add new device to every room on A
         A-->>New: Welcomes and ordered room logs for A

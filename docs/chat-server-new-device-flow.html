@@ -168,7 +168,7 @@
     <ol class="step-list">
       <li>User opens <strong>Add Existing Account</strong> on the new device.</li>
       <li>User approves the link on an existing device and transfers account access plus the current server list over a local authenticated channel.</li>
-      <li>The new device logs into each server, creates a fresh <code>device_id</code>, and uploads fresh KeyPackages.</li>
+      <li>The new device logs into each server and uploads fresh KeyPackages.</li>
       <li>The existing device still has valid MLS room state, so it creates the actual add-device commits room by room.</li>
       <li>Each room server assigns canonical ordering, persists the commit, and exposes the resulting Welcome.</li>
       <li>The new device syncs those Welcomes, joins each room, and starts normal ordered sync from the room server.</li>
@@ -245,7 +245,7 @@
         <tr>
           <td>Register</td>
           <td>“Connecting to 10 servers”</td>
-          <td>New device logs in everywhere, registers a new <code>device_id</code>, and uploads KeyPackages.</td>
+          <td>New device logs in everywhere and uploads KeyPackages.</td>
         </tr>
         <tr>
           <td>Enroll</td>

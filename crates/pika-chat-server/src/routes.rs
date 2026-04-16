@@ -11,9 +11,9 @@ use crate::nostr_auth::{
 use crate::protocol::{
     AppendRoomEventRequest, AppendRoomEventResponse, ClaimKeyPackageRequest,
     ClaimKeyPackageResponse, ClaimWelcomesResponse, CreateRoomRequest, CreateRoomResponse,
-    RegisterDeviceRequest, RegisterDeviceResponse, SubmitMembershipCommitRequest,
-    SubmitMembershipCommitResponse, SyncRoomEventsQuery, SyncRoomEventsResponse,
-    UploadKeyPackageRequest, UploadKeyPackageResponse, UploadWelcomeRequest, UploadWelcomeResponse,
+    SubmitMembershipCommitRequest, SubmitMembershipCommitResponse, SyncRoomEventsQuery,
+    SyncRoomEventsResponse, UploadKeyPackageRequest, UploadKeyPackageResponse,
+    UploadWelcomeRequest, UploadWelcomeResponse,
 };
 use crate::session::{SessionClaims, SessionManager, SessionTokenResponse};
 use crate::store::{StoreError, StoreHandle, StoreHandleError};
@@ -41,7 +41,6 @@ pub fn router(state: AppState) -> Router {
         .route("/health-check", get(health_check))
         .route("/v1/session/login", post(login))
         .route("/v1/session/me", get(me))
-        .route("/v1/devices/register", post(register_device))
         .route("/v1/key-packages", post(upload_key_package))
         .route("/v1/key-packages/claim", post(claim_key_package))
         .route("/v1/welcomes", post(upload_welcome))
@@ -90,22 +89,6 @@ async fn me(
 ) -> Result<Json<SessionInfoResponse>, (StatusCode, String)> {
     let claims = session_claims(&state, &headers)?;
     Ok(Json(session_info(claims)))
-}
-
-async fn register_device(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(request): Json<RegisterDeviceRequest>,
-) -> Result<Json<RegisterDeviceResponse>, (StatusCode, String)> {
-    let claims = session_claims(&state, &headers)?;
-    let now = Timestamp::now().as_secs();
-    let device = state
-        .store
-        .register_device(&claims.npub, request, now)
-        .await;
-    Ok(Json(RegisterDeviceResponse {
-        device: device.map_err(store_handle_error)?,
-    }))
 }
 
 async fn create_room(
@@ -262,10 +245,8 @@ fn internal(err: anyhow::Error) -> (StatusCode, String) {
 
 fn store_error(err: StoreError) -> (StatusCode, String) {
     let status = match err {
-        StoreError::RoomNotFound | StoreError::DeviceNotFound | StoreError::KeyPackageNotFound => {
-            StatusCode::NOT_FOUND
-        }
-        StoreError::NotRoomMember | StoreError::DeviceOwnerMismatch => StatusCode::FORBIDDEN,
+        StoreError::RoomNotFound | StoreError::KeyPackageNotFound => StatusCode::NOT_FOUND,
+        StoreError::NotRoomMember => StatusCode::FORBIDDEN,
         StoreError::RoomEpochMismatch { .. } => StatusCode::CONFLICT,
         StoreError::EmptyEventContent | StoreError::EmptyKeyPackagePayload => {
             StatusCode::BAD_REQUEST
@@ -463,32 +444,6 @@ mod tests {
             "creator should be present in room membership"
         );
 
-        let register_device_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/devices/register")
-                    .method("POST")
-                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        serde_json::to_vec(&RegisterDeviceRequest {
-                            platform: Some("ios".to_string()),
-                            push_token: Some("push-token".to_string()),
-                        })
-                        .expect("serialize register device request"),
-                    ))
-                    .expect("build register device request"),
-            )
-            .await
-            .expect("register device response");
-        assert_eq!(register_device_response.status(), StatusCode::OK);
-        let register_device_body = to_bytes(register_device_response.into_body(), usize::MAX)
-            .await
-            .expect("read register device body");
-        let register_device: RegisterDeviceResponse =
-            serde_json::from_slice(&register_device_body).expect("decode register device body");
-
         let append_response = app
             .clone()
             .oneshot(
@@ -501,7 +456,6 @@ mod tests {
                         serde_json::to_vec(&AppendRoomEventRequest {
                             event_type: crate::protocol::RoomEventType::ApplicationMessage,
                             epoch: 1,
-                            sender_device_id: Some(register_device.device.device_id.clone()),
                             content: "ciphertext-1".to_string(),
                         })
                         .expect("serialize append request"),
@@ -576,31 +530,6 @@ mod tests {
         let create_room: CreateRoomResponse =
             serde_json::from_slice(&create_room_body).expect("decode create room body");
 
-        let register_device_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/devices/register")
-                    .method("POST")
-                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        serde_json::to_vec(&RegisterDeviceRequest {
-                            platform: Some("ios".to_string()),
-                            push_token: None,
-                        })
-                        .expect("serialize register device request"),
-                    ))
-                    .expect("build register device request"),
-            )
-            .await
-            .expect("register device response");
-        let register_device_body = to_bytes(register_device_response.into_body(), usize::MAX)
-            .await
-            .expect("read register device body");
-        let register_device: RegisterDeviceResponse =
-            serde_json::from_slice(&register_device_body).expect("decode register device body");
-
         let commit_response = app
             .clone()
             .oneshot(
@@ -615,7 +544,6 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&crate::protocol::SubmitMembershipCommitRequest {
                             expected_epoch: 0,
-                            sender_device_id: Some(register_device.device.device_id.clone()),
                             member_npubs: vec![
                                 alice_npub.clone(),
                                 bob_npub.clone(),
@@ -742,31 +670,6 @@ mod tests {
         let create_room: CreateRoomResponse =
             serde_json::from_slice(&create_room_body).expect("decode create room body");
 
-        let register_device_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/devices/register")
-                    .method("POST")
-                    .header(header::AUTHORIZATION, format!("Bearer {alice_token}"))
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        serde_json::to_vec(&RegisterDeviceRequest {
-                            platform: Some("ios".to_string()),
-                            push_token: None,
-                        })
-                        .expect("serialize register device request"),
-                    ))
-                    .expect("build register device request"),
-            )
-            .await
-            .expect("register device response");
-        let register_device_body = to_bytes(register_device_response.into_body(), usize::MAX)
-            .await
-            .expect("read register device body");
-        let register_device: RegisterDeviceResponse =
-            serde_json::from_slice(&register_device_body).expect("decode register device body");
-
         let first_commit_response = app
             .clone()
             .oneshot(
@@ -781,7 +684,6 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&crate::protocol::SubmitMembershipCommitRequest {
                             expected_epoch: 0,
-                            sender_device_id: Some(register_device.device.device_id.clone()),
                             member_npubs: vec![alice_npub.clone(), bob_npub.clone()],
                             wrapper_event_json: "{\"kind\":1059,\"content\":\"membership-commit\"}"
                                 .to_string(),
@@ -809,7 +711,6 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&crate::protocol::SubmitMembershipCommitRequest {
                             expected_epoch: 0,
-                            sender_device_id: Some(register_device.device.device_id),
                             member_npubs: vec![alice_npub, bob_npub, carol_npub.clone()],
                             wrapper_event_json: "{\"kind\":1059,\"content\":\"stale-commit\"}"
                                 .to_string(),
@@ -906,7 +807,6 @@ mod tests {
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&UploadKeyPackageRequest {
-                            device_id: None,
                             ciphersuite: Some("mls128".to_string()),
                             payload: "opaque-key-package".to_string(),
                         })
@@ -923,7 +823,6 @@ mod tests {
         let uploaded: UploadKeyPackageResponse =
             serde_json::from_slice(&upload_body).expect("decode upload key package body");
         assert_eq!(uploaded.key_package.claimed_at, None);
-        assert_eq!(uploaded.key_package.device_id, None);
 
         let claim_response = app
             .oneshot(
@@ -1070,7 +969,6 @@ mod tests {
                         serde_json::to_vec(&AppendRoomEventRequest {
                             event_type: crate::protocol::RoomEventType::ApplicationMessage,
                             epoch: 1,
-                            sender_device_id: None,
                             content: "ciphertext-1".to_string(),
                         })
                         .expect("serialize append request"),
@@ -1123,7 +1021,6 @@ mod tests {
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&UploadKeyPackageRequest {
-                            device_id: None,
                             ciphersuite: Some("mls128".to_string()),
                             payload: "opaque-key-package".to_string(),
                         })

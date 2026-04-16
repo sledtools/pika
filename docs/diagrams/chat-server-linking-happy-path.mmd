@@ -7,7 +7,7 @@ sequenceDiagram
     User->>New: Choose Add Existing Account
     User->>Old: Approve Link Device
     Old->>New: Pair locally and transfer server list
-    New->>S: NIP-98 login and register device
+    New->>S: NIP-98 login and upload KeyPackages
     New->>S: Upload fresh KeyPackages
     Old->>S: Fetch device package refs for new device
     loop For each room hosted on this server

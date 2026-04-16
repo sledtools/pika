@@ -186,7 +186,6 @@ pub async fn append_wrapped_room_event(
         AppendRoomEventRequest {
             event_type,
             epoch: 0,
-            sender_device_id: None,
             content: serde_json::to_string(wrapper).context("serialize wrapped room event")?,
         },
     )
@@ -223,7 +222,6 @@ pub async fn submit_membership_commit(
         .header("Accept", "application/json")
         .json(&SubmitMembershipCommitRequest {
             expected_epoch,
-            sender_device_id: None,
             member_npubs,
             wrapper_event_json: serde_json::to_string(wrapper)
                 .map_err(|err| {
@@ -386,7 +384,6 @@ pub async fn upload_key_package_event(
             .bearer_auth(access_token)
             .header("Accept", "application/json")
             .json(&UploadKeyPackageRequest {
-                device_id: None,
                 ciphersuite: None,
                 payload: serde_json::to_string(key_package_event)
                     .context("serialize key package event payload")?,
@@ -493,7 +490,6 @@ mod tests {
             uploaded.owner_npub,
             alice_keys.public_key().to_bech32().unwrap().to_lowercase()
         );
-        assert_eq!(uploaded.device_id, None);
 
         let claimed = claim_key_package_event(
             &http_client,

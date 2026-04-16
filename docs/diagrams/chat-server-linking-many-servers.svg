@@ -40,17 +40,17 @@
 <line class="lifeline" data-actor="A" x1="457.0219999999999" y1="70" x2="457.0219999999999" y2="541" stroke="var(--_line)" stroke-width="0.75" stroke-dasharray="6 4" />
 <line class="lifeline" data-actor="B" x1="597.0219999999999" y1="70" x2="597.0219999999999" y2="541" stroke="var(--_line)" stroke-width="0.75" stroke-dasharray="6 4" />
 <line class="lifeline" data-actor="C" x1="737.0219999999999" y1="70" x2="737.0219999999999" y2="541" stroke="var(--_line)" stroke-width="0.75" stroke-dasharray="6 4" />
-<g class="message" data-from="New" data-to="A" data-label="Login, register device, upload KeyPackages" data-line-style="solid" data-arrow-head="filled" data-self="false">
+<g class="message" data-from="New" data-to="A" data-label="Login and upload KeyPackages" data-line-style="solid" data-arrow-head="filled" data-self="false">
   <line x1="317.02199999999993" y1="90" x2="457.0219999999999" y2="90" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
-  <text x="387.02199999999993" y="80" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Login, register device, upload KeyPackages</text>
+  <text x="387.02199999999993" y="80" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Login and upload KeyPackages</text>
 </g>
-<g class="message" data-from="New" data-to="B" data-label="Login, register device, upload KeyPackages" data-line-style="solid" data-arrow-head="filled" data-self="false">
+<g class="message" data-from="New" data-to="B" data-label="Login and upload KeyPackages" data-line-style="solid" data-arrow-head="filled" data-self="false">
   <line x1="317.02199999999993" y1="130" x2="597.0219999999999" y2="130" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
-  <text x="457.02199999999993" y="120" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Login, register device, upload KeyPackages</text>
+  <text x="457.02199999999993" y="120" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Login and upload KeyPackages</text>
 </g>
-<g class="message" data-from="New" data-to="C" data-label="Login, register device, upload KeyPackages" data-line-style="solid" data-arrow-head="filled" data-self="false">
+<g class="message" data-from="New" data-to="C" data-label="Login and upload KeyPackages" data-line-style="solid" data-arrow-head="filled" data-self="false">
   <line x1="317.02199999999993" y1="170" x2="737.0219999999999" y2="170" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />
-  <text x="527.0219999999999" y="160" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Login, register device, upload KeyPackages</text>
+  <text x="527.0219999999999" y="160" font-size="11" text-anchor="middle" font-weight="400" fill="var(--_text-muted)" dy="3.8499999999999996">Login and upload KeyPackages</text>
 </g>
 <g class="message" data-from="Old" data-to="A" data-label="Add new device to every room on A" data-line-style="solid" data-arrow-head="filled" data-self="false">
   <line x1="163.0439999999999" y1="238" x2="457.0219999999999" y2="238" stroke="var(--_line)" stroke-width="1" marker-end="url(#seq-arrow)" />

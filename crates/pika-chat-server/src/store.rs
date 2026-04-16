@@ -9,9 +9,9 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::protocol::{
-    AppendRoomEventRequest, ClaimKeyPackageRequest, CreateRoomRequest, DeviceRecord,
-    KeyPackageRecord, RegisterDeviceRequest, RoomEvent, RoomEventType, RoomSummary,
-    SubmitMembershipCommitRequest, UploadKeyPackageRequest, UploadWelcomeRequest, WelcomeRecord,
+    AppendRoomEventRequest, ClaimKeyPackageRequest, CreateRoomRequest, KeyPackageRecord, RoomEvent,
+    RoomEventType, RoomSummary, SubmitMembershipCommitRequest, UploadKeyPackageRequest,
+    UploadWelcomeRequest, WelcomeRecord,
 };
 
 const MAX_SYNC_LIMIT: usize = 200;
@@ -20,12 +20,8 @@ const MAX_SYNC_LIMIT: usize = 200;
 pub enum StoreError {
     #[error("room not found")]
     RoomNotFound,
-    #[error("device not found")]
-    DeviceNotFound,
     #[error("not a room member")]
     NotRoomMember,
-    #[error("device does not belong to caller")]
-    DeviceOwnerMismatch,
     #[error("event content must not be empty")]
     EmptyEventContent,
     #[error("key package payload must not be empty")]
@@ -53,7 +49,6 @@ pub struct StoreHandle {
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ChatStore {
-    devices_by_owner: BTreeMap<String, BTreeMap<String, DeviceRecord>>,
     key_packages_by_owner: BTreeMap<String, Vec<KeyPackageRecord>>,
     welcomes_by_recipient: BTreeMap<String, Vec<WelcomeRecord>>,
     rooms: BTreeMap<String, StoredRoom>,
@@ -87,18 +82,6 @@ impl StoreHandle {
             inner: Arc::new(RwLock::new(store)),
             state_path: Some(state_path),
         })
-    }
-
-    pub async fn register_device(
-        &self,
-        owner_npub: &str,
-        request: RegisterDeviceRequest,
-        now: u64,
-    ) -> Result<DeviceRecord, StoreHandleError> {
-        let mut store = self.inner.write().await;
-        let device = store.register_device(owner_npub, request, now);
-        self.persist_locked(&store)?;
-        Ok(device)
     }
 
     pub async fn create_room(
@@ -235,26 +218,6 @@ impl StoreHandle {
 }
 
 impl ChatStore {
-    pub fn register_device(
-        &mut self,
-        owner_npub: &str,
-        request: RegisterDeviceRequest,
-        now: u64,
-    ) -> DeviceRecord {
-        let device = DeviceRecord {
-            device_id: new_prefixed_id("dev"),
-            owner_npub: owner_npub.to_string(),
-            platform: clean_optional_field(request.platform),
-            push_token: clean_optional_field(request.push_token),
-            created_at: now,
-        };
-        self.devices_by_owner
-            .entry(owner_npub.to_string())
-            .or_default()
-            .insert(device.device_id.clone(), device.clone());
-        device
-    }
-
     pub fn create_room(
         &mut self,
         creator_npub: &str,
@@ -288,8 +251,6 @@ impl ChatStore {
         request: UploadKeyPackageRequest,
         now: u64,
     ) -> Result<KeyPackageRecord, StoreError> {
-        self.ensure_device_owner(owner_npub, request.device_id.as_deref())?;
-
         let payload = request.payload.trim().to_string();
         if payload.is_empty() {
             return Err(StoreError::EmptyKeyPackagePayload);
@@ -298,7 +259,6 @@ impl ChatStore {
         let key_package = KeyPackageRecord {
             key_package_id: new_prefixed_id("kp"),
             owner_npub: owner_npub.to_string(),
-            device_id: clean_optional_field(request.device_id),
             ciphersuite: clean_optional_field(request.ciphersuite),
             payload,
             created_at: now,
@@ -311,25 +271,6 @@ impl ChatStore {
             .or_default()
             .push(key_package.clone());
         Ok(key_package)
-    }
-
-    fn ensure_device_owner(
-        &self,
-        owner_npub: &str,
-        device_id: Option<&str>,
-    ) -> Result<(), StoreError> {
-        let Some(device_id) = device_id else {
-            return Ok(());
-        };
-        let devices = self
-            .devices_by_owner
-            .get(owner_npub)
-            .ok_or(StoreError::DeviceNotFound)?;
-        if devices.contains_key(device_id) {
-            Ok(())
-        } else {
-            Err(StoreError::DeviceOwnerMismatch)
-        }
     }
 
     pub fn enqueue_welcome(
@@ -406,7 +347,6 @@ impl ChatStore {
         request: AppendRoomEventRequest,
         now: u64,
     ) -> Result<RoomEvent, StoreError> {
-        self.ensure_device_owner(sender_npub, request.sender_device_id.as_deref())?;
         let room = self
             .rooms
             .get_mut(room_id)
@@ -426,7 +366,6 @@ impl ChatStore {
             event_type: request.event_type,
             epoch: request.epoch,
             sender_npub: sender_npub.to_string(),
-            sender_device_id: request.sender_device_id,
             content,
             created_at: now,
         };
@@ -444,12 +383,10 @@ impl ChatStore {
     ) -> Result<(RoomSummary, RoomEvent), StoreError> {
         let SubmitMembershipCommitRequest {
             expected_epoch,
-            sender_device_id,
             member_npubs,
             wrapper_event_json,
             welcomes,
         } = request;
-        self.ensure_device_owner(sender_npub, sender_device_id.as_deref())?;
         let content = wrapper_event_json.trim().to_string();
         if content.is_empty() {
             return Err(StoreError::EmptyEventContent);
@@ -492,7 +429,6 @@ impl ChatStore {
                 event_type: RoomEventType::Commit,
                 epoch: next_epoch,
                 sender_npub: sender_npub.to_string(),
-                sender_device_id,
                 content,
                 created_at: now,
             };
@@ -639,8 +575,8 @@ fn tmp_path(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use crate::protocol::{
-        AppendRoomEventRequest, ClaimKeyPackageRequest, CreateRoomRequest, RegisterDeviceRequest,
-        RoomEventType, SubmitMembershipCommitRequest, UploadKeyPackageRequest, WelcomeEnvelope,
+        AppendRoomEventRequest, ClaimKeyPackageRequest, CreateRoomRequest, RoomEventType,
+        SubmitMembershipCommitRequest, UploadKeyPackageRequest, WelcomeEnvelope,
     };
 
     #[test]
@@ -679,7 +615,6 @@ mod tests {
                 AppendRoomEventRequest {
                     event_type: RoomEventType::ApplicationMessage,
                     epoch: 1,
-                    sender_device_id: None,
                     content: "abc".to_string(),
                 },
                 101,
@@ -695,7 +630,6 @@ mod tests {
             .upload_key_package(
                 "npub1alice",
                 UploadKeyPackageRequest {
-                    device_id: None,
                     ciphersuite: Some("mls128".to_string()),
                     payload: "opaque-key-package".to_string(),
                 },
@@ -703,7 +637,6 @@ mod tests {
             )
             .expect("upload key package");
         assert_eq!(key_package.claimed_at, None);
-        assert_eq!(key_package.device_id, None);
 
         let claimed = store
             .claim_key_package(
@@ -734,14 +667,6 @@ mod tests {
     #[test]
     fn membership_commit_updates_room_epoch_members_and_welcomes() {
         let mut store = ChatStore::default();
-        let device = store.register_device(
-            "npub1alice",
-            RegisterDeviceRequest {
-                platform: Some("ios".to_string()),
-                push_token: None,
-            },
-            100,
-        );
         let room = store.create_room(
             "npub1alice",
             CreateRoomRequest {
@@ -757,7 +682,6 @@ mod tests {
                 &room.room_id,
                 SubmitMembershipCommitRequest {
                     expected_epoch: 0,
-                    sender_device_id: Some(device.device_id),
                     member_npubs: vec![
                         "npub1alice".to_string(),
                         "npub1bob".to_string(),
@@ -800,14 +724,6 @@ mod tests {
     #[test]
     fn membership_commit_epoch_mismatch_is_atomic() {
         let mut store = ChatStore::default();
-        let device = store.register_device(
-            "npub1alice",
-            RegisterDeviceRequest {
-                platform: Some("ios".to_string()),
-                push_token: None,
-            },
-            100,
-        );
         let room = store.create_room(
             "npub1alice",
             CreateRoomRequest {
@@ -823,7 +739,6 @@ mod tests {
                 &room.room_id,
                 SubmitMembershipCommitRequest {
                     expected_epoch: 1,
-                    sender_device_id: Some(device.device_id),
                     member_npubs: vec!["npub1alice".to_string(), "npub1carol".to_string()],
                     wrapper_event_json: "{\"kind\":1059,\"content\":\"commit\"}".to_string(),
                     welcomes: vec![WelcomeEnvelope {
@@ -885,7 +800,6 @@ mod tests {
                     AppendRoomEventRequest {
                         event_type: RoomEventType::ApplicationMessage,
                         epoch: 1,
-                        sender_device_id: None,
                         content: "ciphertext-1".to_string(),
                     },
                     101,

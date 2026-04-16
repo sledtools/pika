@@ -86,6 +86,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   chat-server mode now creates local groups and key packages with empty relay metadata instead of carrying a sentinel relay value for compatibility.
 - [x] Stop writing plaintext welcome artifacts from the CLI harness:
   welcome rumors now carry group key material, so the harness keeps encrypted NIP-59 giftwrap captures only.
+- [x] Stop activating key-package relay config in chat-server mode:
+  relay URL settings still exist for relay-mode/public work, but chat-server private chat no longer treats key-package relays as temporary private-chat transport inputs.
 - [x] Delete one thin legacy relay chat helper seam instead of preserving it:
   the shared create-group/welcome helper moved into the existing welcome module, and the extra group wrapper module is gone.
 - [x] Cut the app host context off the broad legacy relay chat facade:
@@ -246,6 +248,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   welcome payloads carry group secrets after the local engine crypto hardening, so debug captures stay at the encrypted giftwrap layer.
 - Secure app/NSE chat state is now encrypted at rest on mobile:
   platform keyrings hold one random state key per `npub`, encrypted state files migrate old plaintext JSON on secure open, and tests cover round-trip, migration, and wrong-key rejection.
+- Chat-server mode no longer activates key-package relay config:
+  temporary key-package relay planning returns empty when a private chat server is configured, and the chat-server sync poller starts only when server mode or existing room bindings make it useful.
 - Chat-server room bootstrap now treats relay metadata as compatibility-only:
   direct-chat and group creation keep local default relays for MLS parsing, but stop importing peer key-package relay hints or candidate lookup relays into server-bound group state.
 - The inventory pass confirmed the biggest simplification wins:

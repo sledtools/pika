@@ -488,7 +488,9 @@ impl AppCore {
             if !self.private_chat_uses_chat_server() {
                 self.start_notifications_loop(initial_seen_inbound);
             }
-            self.start_chat_server_sync_loop();
+            if self.private_chat_uses_chat_server() || !self.chat_server_rooms.is_empty() {
+                self.start_chat_server_sync_loop();
+            }
         }
 
         // Build the chat list. Profiles are already in memory, so names and

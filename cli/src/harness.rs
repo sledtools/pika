@@ -270,15 +270,11 @@ async fn scenario_invite_and_chat_peer(
         welcome_rumor.id().to_hex()
     );
 
-    // Debug aid: capture the exact welcome rumor and giftwrap sent over the wire.
-    let _ = std::fs::write(
-        state_dir.join("phase4_welcome_rumor.json"),
-        format!("{}\n", welcome_rumor.as_json()),
-    );
-
     let giftwrap = EventBuilder::gift_wrap(&a_keys, &peer_pubkey, welcome_rumor, [])
         .await
         .context("build giftwrap")?;
+    // Debug aid: capture the exact NIP-59 event sent over the wire. The unwrapped welcome carries
+    // group key material, so keep only the encrypted artifact on disk.
     let _ = std::fs::write(
         state_dir.join("phase4_welcome_giftwrap.json"),
         format!("{}\n", giftwrap.as_json()),
@@ -642,19 +638,12 @@ async fn scenario_invite_and_chat_rustbot(
         welcome_rumor.id().to_hex()
     );
 
-    // Debug aid: capture the exact welcome rumor (kind 444) before wrapping, so we can inspect
-    // encoding/tags across implementations.
-    let _ = std::fs::write(
-        state_dir.join("phase2_welcome_rumor.json"),
-        format!("{}\n", welcome_rumor.as_json()),
-    );
-
     let giftwrap = EventBuilder::gift_wrap(&a_keys, &bot_pubkey, welcome_rumor, [])
         .await
         .context("build giftwrap")?;
 
-    // Debug aid: capture the exact NIP-59 event sent over the wire for cross-impl investigation.
-    // This stays folder-local under `.state/`.
+    // Debug aid: capture the exact NIP-59 event sent over the wire. The unwrapped welcome carries
+    // group key material, so keep only the encrypted artifact on disk.
     let json = giftwrap.as_json();
     let _ = std::fs::write(
         state_dir.join("phase2_welcome_giftwrap.json"),

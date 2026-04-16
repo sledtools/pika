@@ -84,6 +84,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   chat-server key-package uploads no longer register throwaway devices first, and chat-server DM/group bootstrap now ignores peer/candidate relay hints instead of folding them into server-bound group routing.
 - [x] Delete fake relay metadata from chat-server bootstrap:
   chat-server mode now creates local groups and key packages with empty relay metadata instead of carrying a sentinel relay value for compatibility.
+- [x] Stop writing plaintext welcome artifacts from the CLI harness:
+  welcome rumors now carry group key material, so the harness keeps encrypted NIP-59 giftwrap captures only.
 - [x] Delete one thin legacy relay chat helper seam instead of preserving it:
   the shared create-group/welcome helper moved into the existing welcome module, and the extra group wrapper module is gone.
 - [x] Cut the app host context off the broad legacy relay chat facade:
@@ -238,6 +240,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `publish_call_signal` appends wrappers through the room log whenever a `chat_id -> room_id` binding exists, and only uses relay publish for unbound / relay-mode calls.
 - Chat-server key-package bootstrap is simpler now:
   the app uploads key packages straight to the chat server without first registering a device, while the server still accepts optional device IDs for future sender attribution and push plumbing.
+- The CLI harness no longer writes raw welcome rumor JSON:
+  welcome payloads carry group secrets after the local engine crypto hardening, so debug captures stay at the encrypted giftwrap layer.
 - Chat-server room bootstrap now treats relay metadata as compatibility-only:
   direct-chat and group creation keep local default relays for MLS parsing, but stop importing peer key-package relay hints or candidate lookup relays into server-bound group state.
 - The inventory pass confirmed the biggest simplification wins:

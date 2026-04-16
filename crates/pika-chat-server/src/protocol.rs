@@ -49,7 +49,6 @@ pub struct RoomSummary {
 pub struct CreateRoomRequest {
     #[serde(default)]
     pub member_npubs: Vec<String>,
-    pub epoch: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

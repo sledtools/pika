@@ -90,6 +90,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   relay URL settings still exist for relay-mode/public work, but chat-server private chat no longer treats key-package relays as temporary private-chat transport inputs.
 - [x] Delete the chat-server device registry:
   v1 auth is account/session based, key packages are owned directly by `npub`, and room events no longer carry server-side device ids.
+- [x] Delete ignored room-create epoch hints:
+  rooms always start at epoch 0 and only accepted membership commits advance the server epoch.
 - [x] Delete one thin legacy relay chat helper seam instead of preserving it:
   the shared create-group/welcome helper moved into the existing welcome module, and the extra group wrapper module is gone.
 - [x] Cut the app host context off the broad legacy relay chat facade:
@@ -254,6 +256,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   temporary key-package relay planning returns empty when a private chat server is configured, and the chat-server sync poller starts only when server mode or existing room bindings make it useful.
 - Chat-server device state is gone:
   `/v1/devices/register`, `devices_by_owner`, device-owner validation, and room/key-package device id fields were deleted; Nostr auth plus room membership are the v1 authority.
+- Room creation no longer accepts inert epoch hints:
+  `CreateRoomRequest` only carries member npubs now; the server initializes epoch 0 and membership commits are the sole epoch transition.
 - Chat-server room bootstrap now treats relay metadata as compatibility-only:
   direct-chat and group creation keep local default relays for MLS parsing, but stop importing peer key-package relay hints or candidate lookup relays into server-bound group state.
 - The inventory pass confirmed the biggest simplification wins:

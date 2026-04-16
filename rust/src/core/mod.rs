@@ -4179,7 +4179,7 @@ impl AppCore {
             return;
         }
 
-        let (session_client, http_client, tx, member_npubs, epoch) = {
+        let (session_client, http_client, tx, member_npubs) = {
             let Some(sess) = self.session.as_ref() else {
                 return;
             };
@@ -4201,39 +4201,19 @@ impl AppCore {
                         .map(|npub| npub.to_lowercase())
                 })
                 .collect::<Vec<_>>();
-            let epoch = match pika_mls::conversation::ConversationQueries::new(&sess.mls)
-                .get_group(&snapshot.mls_group_id)
-            {
-                Ok(Some(group)) => group.epoch,
-                Ok(None) => {
-                    tracing::warn!(%chat_id, "joined group missing during chat-server room binding");
-                    return;
-                }
-                Err(err) => {
-                    tracing::warn!(%err, %chat_id, "failed to load group epoch for chat-server room binding");
-                    return;
-                }
-            };
             (
                 sess.client.clone(),
                 self.http_client.clone(),
                 self.core_sender.clone(),
                 member_npubs,
-                epoch,
             )
         };
 
         let chat_id = chat_id.to_string();
         let server_url = base_url.as_str().trim_end_matches('/').to_string();
         self.runtime.spawn(async move {
-            match chat_server::create_room(
-                &http_client,
-                &session_client,
-                &base_url,
-                member_npubs,
-                epoch,
-            )
-            .await
+            match chat_server::create_room(&http_client, &session_client, &base_url, member_npubs)
+                .await
             {
                 Ok(room) => {
                     let _ = tx.send(CoreMsg::Internal(Box::new(

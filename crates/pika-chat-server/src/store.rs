@@ -586,7 +586,6 @@ mod tests {
             "npub1alice",
             CreateRoomRequest {
                 member_npubs: vec!["npub1bob".to_string(), "npub1alice".to_string()],
-                epoch: None,
             },
             100,
         );
@@ -604,7 +603,6 @@ mod tests {
             "npub1alice",
             CreateRoomRequest {
                 member_npubs: vec![],
-                epoch: None,
             },
             100,
         );
@@ -671,7 +669,6 @@ mod tests {
             "npub1alice",
             CreateRoomRequest {
                 member_npubs: vec!["npub1bob".to_string()],
-                epoch: None,
             },
             101,
         );
@@ -728,7 +725,6 @@ mod tests {
             "npub1alice",
             CreateRoomRequest {
                 member_npubs: vec!["npub1bob".to_string()],
-                epoch: None,
             },
             101,
         );
@@ -787,7 +783,6 @@ mod tests {
                     "npub1alice",
                     CreateRoomRequest {
                         member_npubs: vec!["npub1bob".to_string()],
-                        epoch: None,
                     },
                     100,
                 )

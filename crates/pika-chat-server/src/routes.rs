@@ -420,7 +420,6 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&CreateRoomRequest {
                             member_npubs: vec!["npub1bob".to_string()],
-                            epoch: None,
                         })
                         .expect("serialize create request"),
                     ))
@@ -516,7 +515,6 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&CreateRoomRequest {
                             member_npubs: vec![bob_npub.clone()],
-                            epoch: None,
                         })
                         .expect("serialize create room request"),
                     ))
@@ -656,7 +654,6 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&CreateRoomRequest {
                             member_npubs: vec![bob_npub.clone()],
-                            epoch: None,
                         })
                         .expect("serialize create room request"),
                     ))
@@ -944,7 +941,6 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&CreateRoomRequest {
                             member_npubs: vec!["npub1bob".to_string()],
-                            epoch: None,
                         })
                         .expect("serialize create request"),
                     ))
@@ -997,7 +993,6 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&CreateRoomRequest {
                             member_npubs: vec!["npub1bob".to_string()],
-                            epoch: None,
                         })
                         .expect("serialize create room request"),
                     ))

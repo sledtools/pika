@@ -124,7 +124,6 @@ pub async fn create_room(
     signer_client: &Client,
     base_url: &Url,
     member_npubs: Vec<String>,
-    epoch: u64,
 ) -> Result<RoomSummary> {
     let access_token = login(http_client, signer_client, base_url).await?;
     let url = endpoint(base_url, "/v1/rooms")?;
@@ -133,10 +132,7 @@ pub async fn create_room(
             .post(url)
             .bearer_auth(access_token)
             .header("Accept", "application/json")
-            .json(&CreateRoomRequest {
-                member_npubs,
-                epoch: Some(epoch),
-            })
+            .json(&CreateRoomRequest { member_npubs })
             .send()
             .await
             .context("send chat-server create-room request")?,
@@ -522,7 +518,6 @@ mod tests {
             &alice_client,
             &base_url,
             vec![bob_npub.clone()],
-            0,
         )
         .await
         .expect("create room");
@@ -547,7 +542,7 @@ mod tests {
         let bob_npub = bob_keys.public_key().to_bech32().unwrap().to_lowercase();
         let bob_client = Client::builder().signer(bob_keys).build();
 
-        let room = create_room(&http_client, &alice_client, &base_url, vec![bob_npub], 0)
+        let room = create_room(&http_client, &alice_client, &base_url, vec![bob_npub])
             .await
             .expect("create room");
         let wrapper = EventBuilder::new(Kind::MlsGroupMessage, "opaque-wrapper")
@@ -600,7 +595,6 @@ mod tests {
             &alice_client,
             &base_url,
             vec![bob_npub.clone()],
-            0,
         )
         .await
         .expect("create room");
@@ -658,7 +652,6 @@ mod tests {
             &alice_client,
             &base_url,
             vec![bob_npub.clone()],
-            0,
         )
         .await
         .expect("create room");
@@ -778,7 +771,6 @@ mod tests {
             &claimer_client,
             &base_url,
             vec![owner_npub.clone()],
-            0,
         )
         .await
         .expect("create room");

@@ -154,6 +154,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   `pika-mls` now owns a local JSON-backed state engine and local helper trait/types; Cargo, Nix, CI snapshots, docs, OpenClaw plugin code, app code, sidecar code, CLI code, and notification-service code no longer refer to the removed external packages.
 - [x] Harden the first local engine crypto layer:
   group secrets are generated locally, distributed through welcome payloads, and used to AES-GCM seal application wrapper payloads; media encryption now uses AES-GCM too, and tests prove the server-facing wrapper no longer contains plaintext plus tampered media fails authentication.
+- [x] Encrypt local chat-engine state on secure mobile opens:
+  `open_secure_mls` now stores app/NSE state through an encrypted codec backed by the platform keyring on iOS/Android, while the explicit unencrypted CLI/test path remains readable JSON.
 - [x] Move key-package create/parse behind `pika-mls` too:
   key-package creation and parsing now route through `pika-mls::key_package`, and `PikaMls` no longer exposes `create_key_package_for_event`, `parse_key_package`, or the unused raw `as_raw` escape hatch.
 - [x] Delete the last production raw-MLS call-crypto escape hatch:
@@ -165,7 +167,7 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
 - [x] Reuse the shared conversation query layer outside the sidecar too:
   `pika-mls::conversation::ConversationQueries` now owns DM lookup, cross-group message lookup, and the common group/member/relay/message query helpers; CLI / NSE / app-session / sidecar subscription planning / core relay fallback paths now use that shared surface instead of open-coding those scans against `PikaMls`.
 - Next seam:
-  harden local state persistence and delete the remaining relay-centric private-chat config surface once the server path is the default.
+  delete the remaining relay-centric private-chat config surface once the server path is the default.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
 
@@ -242,6 +244,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   the app uploads key packages straight to the chat server without first registering a device, while the server still accepts optional device IDs for future sender attribution and push plumbing.
 - The CLI harness no longer writes raw welcome rumor JSON:
   welcome payloads carry group secrets after the local engine crypto hardening, so debug captures stay at the encrypted giftwrap layer.
+- Secure app/NSE chat state is now encrypted at rest on mobile:
+  platform keyrings hold one random state key per `npub`, encrypted state files migrate old plaintext JSON on secure open, and tests cover round-trip, migration, and wrong-key rejection.
 - Chat-server room bootstrap now treats relay metadata as compatibility-only:
   direct-chat and group creation keep local default relays for MLS parsing, but stop importing peer key-package relay hints or candidate lookup relays into server-bound group state.
 - The inventory pass confirmed the biggest simplification wins:

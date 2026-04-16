@@ -42,6 +42,7 @@ use storage_traits::messages::types::{Message, MessageState};
 use storage_traits::welcomes::types::{Welcome, WelcomeState};
 
 const APPLICATION_MESSAGE_SCHEME_VERSION: &str = "pika-application-message-v1";
+const ENCRYPTED_STATE_SCHEME_VERSION: &str = "pika-local-mls-state-v1";
 
 pub struct PikaMls {
     inner: LocalMlsEngine,
@@ -286,6 +287,27 @@ struct StoreState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct EncryptedStoreState {
+    scheme_version: String,
+    nonce: String,
+    ciphertext: String,
+}
+
+struct LoadedStoreState {
+    state: StoreState,
+    was_plaintext: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum StateCodec {
+    Plaintext,
+    #[allow(dead_code)]
+    Encrypted {
+        key: [u8; 32],
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PendingCommit {
     group: Group,
     members: BTreeSet<PublicKey>,
@@ -294,6 +316,7 @@ struct PendingCommit {
 
 struct LocalMlsEngine {
     state_path: PathBuf,
+    codec: StateCodec,
     state: Mutex<StoreState>,
 }
 
@@ -346,19 +369,26 @@ enum WrappedPayload {
 
 impl LocalMlsEngine {
     fn open(state_path: PathBuf) -> Result<Self> {
+        Self::open_with_codec(state_path, StateCodec::Plaintext)
+    }
+
+    fn open_with_codec(state_path: PathBuf, codec: StateCodec) -> Result<Self> {
         if let Some(parent) = state_path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create MLS state dir: {}", parent.display()))?;
         }
-        let state = match std::fs::read_to_string(&state_path) {
-            Ok(raw) if !raw.trim().is_empty() => serde_json::from_str(&raw)
-                .with_context(|| format!("parse MLS state: {}", state_path.display()))?,
-            _ => StoreState::default(),
-        };
-        Ok(Self {
+        let loaded = codec
+            .load(&state_path)
+            .with_context(|| format!("load MLS state: {}", state_path.display()))?;
+        let engine = Self {
             state_path,
-            state: Mutex::new(state),
-        })
+            codec,
+            state: Mutex::new(loaded.state.clone()),
+        };
+        if matches!(codec, StateCodec::Encrypted { .. }) && loaded.was_plaintext {
+            engine.save(&loaded.state)?;
+        }
+        Ok(engine)
     }
 
     fn save(&self, state: &StoreState) -> Result<()> {
@@ -366,8 +396,8 @@ impl LocalMlsEngine {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create MLS state dir: {}", parent.display()))?;
         }
-        let body = serde_json::to_string_pretty(state).context("serialize MLS state")?;
-        std::fs::write(&self.state_path, format!("{body}\n"))
+        let body = self.codec.encode(state).context("serialize MLS state")?;
+        write_private_file(&self.state_path, body)
             .with_context(|| format!("write MLS state: {}", self.state_path.display()))
     }
 
@@ -1014,6 +1044,105 @@ impl LocalMlsEngine {
     }
 }
 
+impl StateCodec {
+    fn load(self, state_path: &Path) -> Result<LoadedStoreState> {
+        let raw = match std::fs::read_to_string(state_path) {
+            Ok(raw) if !raw.trim().is_empty() => raw,
+            _ => {
+                return Ok(LoadedStoreState {
+                    state: StoreState::default(),
+                    was_plaintext: false,
+                });
+            }
+        };
+        let trimmed = raw.trim();
+        if let Ok(envelope) = serde_json::from_str::<EncryptedStoreState>(trimmed)
+            && envelope.scheme_version == ENCRYPTED_STATE_SCHEME_VERSION
+        {
+            let StateCodec::Encrypted { key } = self else {
+                anyhow::bail!("encrypted MLS state requires open_secure_mls or an encrypted codec");
+            };
+            return Ok(LoadedStoreState {
+                state: decrypt_store_state(&key, &envelope)
+                    .context("decrypt encrypted MLS state")?,
+                was_plaintext: false,
+            });
+        }
+
+        let state = serde_json::from_str(trimmed).context("parse plaintext MLS state")?;
+        Ok(LoadedStoreState {
+            state,
+            was_plaintext: true,
+        })
+    }
+
+    fn encode(self, state: &StoreState) -> Result<String> {
+        let plaintext = serde_json::to_vec(state).context("serialize plaintext MLS state")?;
+        let body = match self {
+            StateCodec::Plaintext => {
+                serde_json::to_string_pretty(state).context("serialize plaintext MLS state")?
+            }
+            StateCodec::Encrypted { key } => {
+                let envelope = encrypt_store_state(&key, &plaintext)?;
+                serde_json::to_string_pretty(&envelope).context("serialize encrypted MLS state")?
+            }
+        };
+        Ok(format!("{body}\n"))
+    }
+}
+
+fn encrypt_store_state(key: &[u8; 32], plaintext: &[u8]) -> Result<EncryptedStoreState> {
+    let nonce = random_12();
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| anyhow!("invalid MLS state key"))?;
+    let ciphertext = cipher
+        .encrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: plaintext,
+                aad: ENCRYPTED_STATE_SCHEME_VERSION.as_bytes(),
+            },
+        )
+        .map_err(|_| anyhow!("AES-GCM seal failed"))?;
+    Ok(EncryptedStoreState {
+        scheme_version: ENCRYPTED_STATE_SCHEME_VERSION.to_string(),
+        nonce: hex::encode(nonce),
+        ciphertext: hex::encode(ciphertext),
+    })
+}
+
+fn decrypt_store_state(key: &[u8; 32], envelope: &EncryptedStoreState) -> Result<StoreState> {
+    if envelope.scheme_version != ENCRYPTED_STATE_SCHEME_VERSION {
+        anyhow::bail!(
+            "unknown encrypted MLS state scheme version: {}",
+            envelope.scheme_version
+        );
+    }
+    let nonce = decode_hex_array::<12>(&envelope.nonce).context("decode MLS state nonce")?;
+    let ciphertext = hex::decode(&envelope.ciphertext).context("decode MLS state ciphertext")?;
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| anyhow!("invalid MLS state key"))?;
+    let plaintext = cipher
+        .decrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: ciphertext.as_slice(),
+                aad: ENCRYPTED_STATE_SCHEME_VERSION.as_bytes(),
+            },
+        )
+        .map_err(|_| anyhow!("AES-GCM open failed"))?;
+    serde_json::from_slice(&plaintext).context("parse decrypted MLS state")
+}
+
+fn write_private_file(path: &Path, body: String) -> Result<()> {
+    std::fs::write(path, body).with_context(|| format!("write {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("set private permissions on {}", path.display()))?;
+    }
+    Ok(())
+}
+
 fn random_32() -> [u8; 32] {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
@@ -1294,12 +1423,84 @@ pub fn db_key_id(pubkey_hex: &str) -> String {
     format!("pika.mls.state.{pubkey_hex}")
 }
 
-pub fn init_keyring_once(#[allow(unused)] keychain_group: &str) -> Result<()> {
-    static INIT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
-    match INIT.get_or_init(|| Ok(())) {
+pub fn init_keyring_once(keychain_group: &str) -> Result<()> {
+    static INIT: OnceLock<(String, std::result::Result<(), String>)> = OnceLock::new();
+    let (configured_group, result) = INIT.get_or_init(|| {
+        (
+            keychain_group.to_string(),
+            install_keyring_store(keychain_group),
+        )
+    });
+    #[cfg(target_os = "ios")]
+    if result.is_ok() && configured_group != keychain_group {
+        anyhow::bail!(
+            "keyring already initialized with a different access group: {configured_group}"
+        );
+    }
+    #[cfg(not(target_os = "ios"))]
+    let _ = configured_group;
+    match result {
         Ok(()) => Ok(()),
         Err(e) => Err(anyhow!(e.clone())),
     }
+}
+
+fn install_keyring_store(#[allow(unused)] keychain_group: &str) -> std::result::Result<(), String> {
+    install_platform_keyring_store(keychain_group).map_err(|err| err.to_string())
+}
+
+#[cfg(target_os = "ios")]
+fn install_platform_keyring_store(keychain_group: &str) -> Result<()> {
+    let store = if keychain_group.trim().is_empty() {
+        apple_native_keyring_store::protected::Store::new()
+    } else {
+        let config = std::collections::HashMap::from([("access-group", keychain_group)]);
+        apple_native_keyring_store::protected::Store::new_with_configuration(&config)
+    }
+    .context("create iOS keyring store")?;
+    keyring_core::set_default_store(store);
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+fn install_platform_keyring_store(_keychain_group: &str) -> Result<()> {
+    let store =
+        android_native_keyring_store::Store::new().context("create Android keyring store")?;
+    keyring_core::set_default_store(store);
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+fn install_platform_keyring_store(_keychain_group: &str) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(any(target_os = "ios", target_os = "android"))]
+fn secure_state_codec(pubkey_hex: &str) -> Result<StateCodec> {
+    let entry = keyring_core::Entry::new(SERVICE_ID, &db_key_id(pubkey_hex))
+        .context("create MLS state keyring entry")?;
+    match entry.get_secret() {
+        Ok(secret) => {
+            let key = secret
+                .as_slice()
+                .try_into()
+                .map_err(|_| anyhow!("stored MLS state key must be 32 bytes"))?;
+            Ok(StateCodec::Encrypted { key })
+        }
+        Err(keyring_core::Error::NoEntry) => {
+            let key = random_32();
+            entry
+                .set_secret(&key)
+                .context("persist MLS state key to keyring")?;
+            Ok(StateCodec::Encrypted { key })
+        }
+        Err(err) => Err(anyhow!(err)).context("read MLS state key from keyring"),
+    }
+}
+
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+fn secure_state_codec(_pubkey_hex: &str) -> Result<StateCodec> {
+    Ok(StateCodec::Plaintext)
 }
 
 pub fn open_secure_mls(
@@ -1310,7 +1511,8 @@ pub fn open_secure_mls(
     init_keyring_once(keychain_group)?;
     let pubkey_hex = pubkey.to_hex();
     let state_path = mls_state_path(data_dir, &pubkey_hex);
-    LocalMlsEngine::open(state_path).map(PikaMls::from_engine)
+    let codec = secure_state_codec(&pubkey_hex)?;
+    LocalMlsEngine::open_with_codec(state_path, codec).map(PikaMls::from_engine)
 }
 
 pub fn open_unencrypted_mls(state_dir: &Path) -> Result<PikaMls> {
@@ -1426,6 +1628,126 @@ mod tests {
 
         let loaded = load_processed_mls_event_ids(state_dir);
         assert_eq!(loaded, ids);
+    }
+
+    #[test]
+    fn encrypted_state_file_hides_local_state_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("pika-mls.json");
+        let state_key = [7u8; 32];
+        let mls = PikaMls::from_engine(
+            LocalMlsEngine::open_with_codec(
+                state_path.clone(),
+                StateCodec::Encrypted { key: state_key },
+            )
+            .unwrap(),
+        );
+        let keys = Keys::generate();
+        let config = groups_api::NostrGroupConfigData::new(
+            "state secret chat".to_string(),
+            "state secret description".to_string(),
+            None,
+            None,
+            None,
+            Vec::new(),
+            vec![keys.public_key()],
+        );
+        let created = mls
+            .create_group(&keys.public_key(), Vec::new(), config)
+            .unwrap();
+
+        let raw = std::fs::read_to_string(&state_path).unwrap();
+        assert!(raw.contains(ENCRYPTED_STATE_SCHEME_VERSION));
+        assert!(raw.contains("\"ciphertext\""));
+        assert!(!raw.contains("state secret chat"));
+        assert!(!raw.contains("group_secrets"));
+        drop(mls);
+
+        let reopened = PikaMls::from_engine(
+            LocalMlsEngine::open_with_codec(state_path, StateCodec::Encrypted { key: state_key })
+                .unwrap(),
+        );
+        let group = crate::conversation::ConversationQueries::new(&reopened)
+            .get_group(&created.group.mls_group_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(group.name, "state secret chat");
+    }
+
+    #[test]
+    fn encrypted_open_migrates_plaintext_state_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mls = open_unencrypted_mls(dir.path()).unwrap();
+        let keys = Keys::generate();
+        let config = groups_api::NostrGroupConfigData::new(
+            "migrated state chat".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            Vec::new(),
+            vec![keys.public_key()],
+        );
+        let created = mls
+            .create_group(&keys.public_key(), Vec::new(), config)
+            .unwrap();
+        let state_path = dir.path().join("pika-mls.json");
+        let plaintext = std::fs::read_to_string(&state_path).unwrap();
+        assert!(plaintext.contains("migrated state chat"));
+        drop(mls);
+
+        let state_key = [9u8; 32];
+        let encrypted = PikaMls::from_engine(
+            LocalMlsEngine::open_with_codec(
+                state_path.clone(),
+                StateCodec::Encrypted { key: state_key },
+            )
+            .unwrap(),
+        );
+        let raw = std::fs::read_to_string(&state_path).unwrap();
+        assert!(raw.contains(ENCRYPTED_STATE_SCHEME_VERSION));
+        assert!(!raw.contains("migrated state chat"));
+        assert!(
+            crate::conversation::ConversationQueries::new(&encrypted)
+                .get_group(&created.group.mls_group_id)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn encrypted_state_file_rejects_wrong_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("pika-mls.json");
+        let mls = PikaMls::from_engine(
+            LocalMlsEngine::open_with_codec(
+                state_path.clone(),
+                StateCodec::Encrypted { key: [1; 32] },
+            )
+            .unwrap(),
+        );
+        let keys = Keys::generate();
+        let config = groups_api::NostrGroupConfigData::new(
+            "wrong key chat".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            Vec::new(),
+            vec![keys.public_key()],
+        );
+        mls.create_group(&keys.public_key(), Vec::new(), config)
+            .unwrap();
+        drop(mls);
+
+        let err = match LocalMlsEngine::open_with_codec(
+            state_path,
+            StateCodec::Encrypted { key: [2; 32] },
+        ) {
+            Ok(_) => panic!("wrong state key unexpectedly opened encrypted MLS state"),
+            Err(err) => err,
+        };
+        assert!(format!("{err:#}").contains("decrypt encrypted MLS state"));
     }
 
     #[test]

@@ -445,13 +445,11 @@ impl AppCore {
         let initial_seen_inbound = initial_open.bounded_inbound_relay_seen_cache();
 
         if self.network_enabled() {
-            let relays = self.filter_session_connect_relays(
-                initial_open
-                    .sync_plan
-                    .relay_roles
-                    .session_connect_relays
-                    .clone(),
-            );
+            let relays = initial_open
+                .sync_plan
+                .relay_roles
+                .session_connect_relays
+                .clone();
             tracing::info!(relays = ?relays.iter().map(|r| r.to_string()).collect::<Vec<_>>(), "connecting_relays");
             let session_client = client.clone();
             self.runtime.spawn(async move {
@@ -793,16 +791,6 @@ impl AppCore {
                 }
             }
         });
-    }
-
-    fn filter_session_connect_relays(&self, relays: Vec<RelayUrl>) -> Vec<RelayUrl> {
-        if !self.private_chat_uses_chat_server() {
-            return relays;
-        }
-        relays
-            .into_iter()
-            .filter(|relay| !crate::core::config::is_chat_server_compat_relay(relay))
-            .collect()
     }
 
     pub(super) fn publish_key_package_relays_best_effort(&mut self) {
@@ -1532,7 +1520,6 @@ impl AppCore {
 mod tests {
     use super::*;
     use crate::core::config::make_core_with_config_for_tests as make_core_with_config;
-    use crate::core::config::CHAT_SERVER_MLS_COMPAT_RELAY;
     use crate::core::extract_relays_from_key_package_event;
 
     fn open_test_mls(dir: &tempfile::TempDir, keys: &Keys) -> PikaMls {
@@ -1559,7 +1546,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_server_key_packages_use_compatibility_relay_for_mls() {
+    fn chat_server_key_packages_do_not_emit_relay_tags() {
         let (mut core, _tmp) = make_core_with_config(crate::core::config::AppConfig {
             private_chat_server_url: Some("https://chat.example".to_string()),
             relay_urls: Some(vec!["wss://message-1.example".to_string()]),
@@ -1590,32 +1577,11 @@ mod tests {
             .tags(tags)
             .sign_with_keys(&keys)
             .expect("sign key package");
-        let relays = extract_relays_from_key_package_event(&event).expect("relays tag");
-        assert_eq!(
-            relays,
-            vec![RelayUrl::parse(CHAT_SERVER_MLS_COMPAT_RELAY).expect("compat relay")]
-        );
+        assert!(extract_relays_from_key_package_event(&event).is_none());
         let normalized = crate::normalize_peer_key_package_event_for_mls(&event);
 
         pika_mls::key_package::parse_key_package(&sess.mls, &normalized)
             .expect("chat-server key package should stay parseable");
-    }
-
-    #[test]
-    fn chat_server_session_connect_relays_skip_compatibility_relay() {
-        let (core, _tmp) = make_core_with_config(crate::core::config::AppConfig {
-            private_chat_server_url: Some("https://chat.example".to_string()),
-            ..Default::default()
-        });
-        let filtered = core.filter_session_connect_relays(vec![
-            RelayUrl::parse("wss://message-1.example").expect("relay url"),
-            RelayUrl::parse(CHAT_SERVER_MLS_COMPAT_RELAY).expect("compat relay"),
-        ]);
-
-        assert_eq!(
-            filtered,
-            vec![RelayUrl::parse("wss://message-1.example").expect("relay url")]
-        );
     }
 
     #[test]

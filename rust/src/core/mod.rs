@@ -9207,7 +9207,7 @@ mod tests {
             assert_eq!(
                 relays.into_iter().collect::<Vec<_>>(),
                 expected_relays,
-                "chat-server groups should carry only the MLS compatibility relay"
+                "chat-server groups should not carry relay routing metadata"
             );
         }
 
@@ -10257,7 +10257,7 @@ mod tests {
             assert_eq!(
                 relays.into_iter().collect::<Vec<_>>(),
                 expected_relays,
-                "chat-server DMs should carry only the MLS compatibility relay"
+                "chat-server DMs should not carry relay routing metadata"
             );
         }
 

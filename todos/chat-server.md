@@ -82,8 +82,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   chat-server mode now appends call invite/end wrappers through the room log for bound chats, and fixture E2E coverage proves the peer rings and observes remote hangup without relay private-chat subscriptions.
 - [x] Trim relay-era bootstrap metadata from chat-server mode:
   chat-server key-package uploads no longer register throwaway devices first, and chat-server DM/group bootstrap now ignores peer/candidate relay hints instead of folding them into server-bound group routing.
-- [x] Isolate MLS relay-tag compatibility behind a fake relay:
-  chat-server mode now uses `wss://private-chat.invalid` only where MLS still insists on non-empty relay tags, and session startup filters that sentinel back out before any network connection is attempted.
+- [x] Delete fake relay metadata from chat-server bootstrap:
+  chat-server mode now creates local groups and key packages with empty relay metadata instead of carrying a sentinel relay value for compatibility.
 - [x] Delete one thin legacy relay chat helper seam instead of preserving it:
   the shared create-group/welcome helper moved into the existing welcome module, and the extra group wrapper module is gone.
 - [x] Cut the app host context off the broad legacy relay chat facade:
@@ -163,7 +163,7 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
 - [x] Reuse the shared conversation query layer outside the sidecar too:
   `pika-mls::conversation::ConversationQueries` now owns DM lookup, cross-group message lookup, and the common group/member/relay/message query helpers; CLI / NSE / app-session / sidecar subscription planning / core relay fallback paths now use that shared surface instead of open-coding those scans against `PikaMls`.
 - Next seam:
-  harden local state persistence and then remove the remaining fake-relay compatibility metadata from chat-server mode.
+  harden local state persistence and delete the remaining relay-centric private-chat config surface once the server path is the default.
 - List the first data migrations and config cuts needed in the app:
   replace `relay_urls` / `key_package_relay_urls` with server config for private chat.
 
@@ -224,10 +224,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   the `relay-chat-server` profile starts `pika-chat-server`, exports `PIKA_CHAT_SERVER_URL`, and gives the repo a repeatable app-level E2E lane for the new private-chat path.
 - The first durable transport model is file-backed:
   `PIKA_CHAT_SERVER_STATE_PATH` points at a JSON room/device log with persistent sequence numbers.
-- Chat-server key packages and bootstrap metadata still need non-empty relay tags for MLS compatibility:
-  chat-server mode now uses a synthetic relay value, `wss://private-chat.invalid`, anywhere the current MLS-backed bootstrap still rejects empty relay tags.
-- That compatibility relay is intentionally not part of the runtime transport:
-  session startup filters it out before relay connection planning, so it exists only to satisfy the current MLS parser contract while the OpenMLS runtime cut is still in flight.
+- Chat-server key packages and bootstrap metadata no longer need relay tags:
+  the local chat engine accepts empty relay metadata, so server-bound rooms avoid carrying fake relay routing values.
 - `FfiApp` now has a real shutdown path on drop:
   the actor loop stops its session/runtime when the last app handle is released, which keeps restart tests honest and avoids duplicate MLS processing from leaked background instances.
 - Server-bound room-log publishes are simpler now:

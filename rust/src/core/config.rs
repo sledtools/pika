@@ -12,11 +12,6 @@ use super::AppCore;
 
 const DEFAULT_CALL_MOQ_URL: &str = "https://us-east.moq.logos.surf/anon";
 const DEFAULT_CALL_BROADCAST_PREFIX: &str = "pika/calls";
-pub(crate) const CHAT_SERVER_MLS_COMPAT_RELAY: &str = "wss://private-chat.invalid";
-
-pub(crate) fn is_chat_server_compat_relay(relay: &RelayUrl) -> bool {
-    relay.as_str_without_trailing_slash() == CHAT_SERVER_MLS_COMPAT_RELAY
-}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(super) struct RelayRolePlan {
@@ -199,8 +194,7 @@ impl AppCore {
 
     pub(super) fn private_chat_bootstrap_relays(&self) -> Vec<RelayUrl> {
         if self.private_chat_uses_chat_server() {
-            return vec![RelayUrl::parse(CHAT_SERVER_MLS_COMPAT_RELAY)
-                .expect("chat-server compatibility relay URL must stay valid")];
+            return Vec::new();
         }
         self.default_relays()
     }
@@ -474,5 +468,17 @@ mod tests {
                 .collect()
         );
         assert!(long_lived.is_disjoint(&temporary));
+    }
+
+    #[test]
+    fn chat_server_bootstrap_relays_are_empty() {
+        let (core, _tempdir) = make_core_with_config(AppConfig {
+            private_chat_server_url: Some("https://chat.example".to_string()),
+            relay_urls: Some(vec!["wss://message-1.example".to_string()]),
+            key_package_relay_urls: Some(vec!["wss://kp-1.example".to_string()]),
+            ..AppConfig::default()
+        });
+
+        assert!(core.private_chat_bootstrap_relays().is_empty());
     }
 }

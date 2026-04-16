@@ -1,3 +1,5 @@
+use aes_gcm::aead::{Aead, Payload};
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use nostr::{Tag, TagKind};
 use rand::RngCore;
 use rand::rngs::OsRng;
@@ -95,10 +97,18 @@ pub mod crypto {
     use super::*;
     use types::EncryptedMediaError;
 
-    pub const DEFAULT_SCHEME_VERSION: &str = "pika-media-v1";
+    pub const DEFAULT_SCHEME_VERSION: &str = "pika-media-v2";
+
+    pub(crate) fn fallback_key_context(group_id: &GroupId) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(b"pika-media-fallback-context-v1");
+        hasher.update(group_id.as_slice());
+        hasher.finalize().into()
+    }
 
     pub fn derive_encryption_key(
         group_id: &GroupId,
+        key_context: &[u8; 32],
         scheme_version: &str,
         original_hash: &[u8; 32],
         mime_type: &str,
@@ -107,6 +117,7 @@ pub mod crypto {
         let mut hasher = Sha256::new();
         hasher.update(b"pika-media-key-v1");
         hasher.update(group_id.as_slice());
+        hasher.update(key_context);
         hasher.update(scheme_version.as_bytes());
         hasher.update(original_hash);
         hasher.update(mime_type.as_bytes());
@@ -114,37 +125,59 @@ pub mod crypto {
         Ok(hasher.finalize().into())
     }
 
-    pub(super) fn xor_with_key(data: &[u8], key: &[u8; 32], nonce: &[u8; 12]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(data.len());
-        for (counter, chunk) in data.chunks(32).enumerate() {
-            let mut hasher = Sha256::new();
-            hasher.update(b"pika-media-stream-v1");
-            hasher.update(key);
-            hasher.update(nonce);
-            hasher.update((counter as u64).to_le_bytes());
-            let stream: [u8; 32] = hasher.finalize().into();
-            for (idx, byte) in chunk.iter().enumerate() {
-                out.push(byte ^ stream[idx]);
-            }
-        }
-        out
+    pub(super) fn encrypt_bytes(
+        data: &[u8],
+        key: &[u8; 32],
+        nonce: &[u8; 12],
+        aad: &[u8],
+    ) -> Result<Vec<u8>, EncryptedMediaError> {
+        let cipher =
+            Aes256Gcm::new_from_slice(key).map_err(|_| EncryptedMediaError::EncryptionFailed {
+                reason: "invalid key length".to_string(),
+            })?;
+        cipher
+            .encrypt(Nonce::from_slice(nonce), Payload { msg: data, aad })
+            .map_err(|_| EncryptedMediaError::EncryptionFailed {
+                reason: "AES-GCM seal failed".to_string(),
+            })
+    }
+
+    pub(super) fn decrypt_bytes(
+        data: &[u8],
+        key: &[u8; 32],
+        nonce: &[u8; 12],
+        aad: &[u8],
+    ) -> Result<Vec<u8>, EncryptedMediaError> {
+        let cipher =
+            Aes256Gcm::new_from_slice(key).map_err(|_| EncryptedMediaError::DecryptionFailed {
+                reason: "invalid key length".to_string(),
+            })?;
+        cipher
+            .decrypt(Nonce::from_slice(nonce), Payload { msg: data, aad })
+            .map_err(|_| EncryptedMediaError::DecryptionFailed {
+                reason: "AES-GCM open failed".to_string(),
+            })
     }
 }
 
 pub mod manager {
     use super::*;
-    use crypto::{DEFAULT_SCHEME_VERSION, derive_encryption_key, xor_with_key};
+    use crypto::{DEFAULT_SCHEME_VERSION, decrypt_bytes, derive_encryption_key, encrypt_bytes};
     use types::{
         EncryptedMediaError, EncryptedMediaUpload, MediaProcessingOptions, MediaReference,
     };
 
     pub struct EncryptedMediaManager {
         group_id: GroupId,
+        key_context: [u8; 32],
     }
 
     impl EncryptedMediaManager {
-        pub(crate) fn new(group_id: GroupId) -> Self {
-            Self { group_id }
+        pub(crate) fn new(group_id: GroupId, key_context: [u8; 32]) -> Self {
+            Self {
+                group_id,
+                key_context,
+            }
         }
 
         pub fn encrypt_for_upload_with_options(
@@ -174,12 +207,18 @@ pub mod manager {
             OsRng.fill_bytes(&mut nonce);
             let key = derive_encryption_key(
                 &self.group_id,
+                &self.key_context,
                 DEFAULT_SCHEME_VERSION,
                 &original_hash,
                 mime_type,
                 filename,
             )?;
-            let encrypted_data = xor_with_key(bytes, &key, &nonce);
+            let encrypted_data = encrypt_bytes(
+                bytes,
+                &key,
+                &nonce,
+                media_aad(&self.group_id, DEFAULT_SCHEME_VERSION, mime_type, filename).as_bytes(),
+            )?;
             let encrypted_hash: [u8; 32] = Sha256::digest(&encrypted_data).into();
             Ok(EncryptedMediaUpload {
                 encrypted_size: encrypted_data.len() as u64,
@@ -207,12 +246,24 @@ pub mod manager {
             }
             let key = derive_encryption_key(
                 &self.group_id,
+                &self.key_context,
                 &reference.scheme_version,
                 &reference.original_hash,
                 &reference.mime_type,
                 &reference.filename,
             )?;
-            let plain = xor_with_key(encrypted_data, &key, &reference.nonce);
+            let plain = decrypt_bytes(
+                encrypted_data,
+                &key,
+                &reference.nonce,
+                media_aad(
+                    &self.group_id,
+                    &reference.scheme_version,
+                    &reference.mime_type,
+                    &reference.filename,
+                )
+                .as_bytes(),
+            )?;
             let actual: [u8; 32] = Sha256::digest(&plain).into();
             if actual != reference.original_hash {
                 return Err(EncryptedMediaError::HashVerificationFailed);
@@ -334,5 +385,18 @@ pub mod manager {
                 nonce: nonce.ok_or(EncryptedMediaError::InvalidNonce)?,
             })
         }
+    }
+
+    fn media_aad(
+        group_id: &GroupId,
+        scheme_version: &str,
+        mime_type: &str,
+        filename: &str,
+    ) -> String {
+        format!(
+            "pika-media-aad-v1:{}:{scheme_version}:{}:{filename}",
+            hex::encode(group_id.as_slice()),
+            mime_type.to_ascii_lowercase()
+        )
     }
 }

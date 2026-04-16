@@ -39,6 +39,7 @@ pika-forge-model = { path = "crates/pika-forge-model" }
 pika-mls = { path = "crates/pika-mls" }
 
 anyhow = "1"
+aes-gcm = "0.10"
 apple-native-keyring-store = { version = "0.2.2", features = ["protected"] }
 askama = "0.14"
 axum = "0.7"

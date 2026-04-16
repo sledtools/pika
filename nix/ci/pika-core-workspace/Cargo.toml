@@ -28,6 +28,7 @@ pika-managed-agent-contract = { path = "crates/pika-managed-agent-contract" }
 pika-mls = { path = "crates/pika-mls" }
 
 anyhow = "1"
+aes-gcm = "0.10"
 apple-native-keyring-store = { version = "0.2.2", features = ["protected"] }
 askama = "0.14"
 axum = "0.7"

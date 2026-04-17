@@ -445,6 +445,21 @@ mod tests {
     use pika_chat_server::store::StoreHandle;
     use pika_chat_server::{router, AppState, SessionManager};
 
+    fn real_key_package_event(keys: &Keys) -> Event {
+        let dir = tempfile::tempdir().expect("key package state dir");
+        let mls = pika_mls::open_unencrypted_mls(dir.path()).expect("open MLS");
+        let (content, tags, _hash_ref) = pika_mls::key_package::create_key_package_for_event(
+            &mls,
+            &keys.public_key(),
+            Vec::<nostr_sdk::prelude::RelayUrl>::new(),
+        )
+        .expect("create key package");
+        EventBuilder::new(Kind::MlsKeyPackage, content)
+            .tags(tags)
+            .sign_with_keys(keys)
+            .expect("sign key package event")
+    }
+
     async fn spawn_test_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
         let state = AppState {
             sessions: SessionManager::new([3u8; 32], 600),
@@ -474,9 +489,7 @@ mod tests {
         let bob_keys = Keys::generate();
         let bob_client = Client::builder().signer(bob_keys).build();
 
-        let key_package_event = EventBuilder::new(Kind::MlsKeyPackage, "opaque-key-package")
-            .sign_with_keys(&alice_keys)
-            .expect("sign key package event");
+        let key_package_event = real_key_package_event(&alice_keys);
 
         let uploaded =
             upload_key_package_event(&http_client, &alice_client, &base_url, &key_package_event)
@@ -759,9 +772,7 @@ mod tests {
         let claimer_keys = Keys::generate();
         let claimer_client = Client::builder().signer(claimer_keys).build();
 
-        let key_package_event = EventBuilder::new(Kind::MlsKeyPackage, "opaque-key-package")
-            .sign_with_keys(&owner_keys)
-            .expect("sign key package event");
+        let key_package_event = real_key_package_event(&owner_keys);
         upload_key_package_event(&http_client, &owner_client, &base_url, &key_package_event)
             .await
             .expect("upload key package");

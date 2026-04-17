@@ -7465,6 +7465,92 @@ mod tests {
             (core, chat_id, creator, group_id)
         }
 
+        fn make_core_with_peer_message(content: &str) -> (AppCore, String, Event) {
+            let alice_dir = tempfile::tempdir().expect("alice tempdir");
+            let alice_data_dir = alice_dir.path().to_string_lossy().into_owned();
+            std::mem::forget(alice_dir);
+            let bob_dir = tempfile::tempdir().expect("bob tempdir");
+            let bob_data_dir = bob_dir.path().to_string_lossy().into_owned();
+            std::mem::forget(bob_dir);
+
+            let alice = Keys::generate();
+            let bob = Keys::generate();
+            let alice_pubkey = alice.public_key();
+            let bob_pubkey = bob.public_key();
+            let alice_mls = open_mls(&alice_data_dir, &alice_pubkey, "").expect("open alice MLS");
+            let bob_mls = open_mls(&bob_data_dir, &bob_pubkey, "").expect("open bob MLS");
+            let relay = RelayUrl::parse("wss://test.relay").unwrap();
+            let (kp_content, kp_tags, _hash_ref) =
+                pika_mls::key_package::create_key_package_for_event(
+                    &bob_mls,
+                    &bob_pubkey,
+                    vec![relay.clone()],
+                )
+                .expect("create bob key package");
+            let bob_key_package = EventBuilder::new(Kind::MlsKeyPackage, kp_content)
+                .tags(kp_tags)
+                .sign_with_keys(&bob)
+                .expect("sign bob key package");
+            let config = NostrGroupConfigData::new(
+                "Test".to_string(),
+                String::new(),
+                None,
+                None,
+                None,
+                vec![relay],
+                vec![alice_pubkey],
+            );
+            let result = alice_mls
+                .create_group(&alice_pubkey, vec![bob_key_package], config)
+                .expect("create group");
+            let group_id = result.group.mls_group_id.clone();
+            let chat_id = hex::encode(result.group.nostr_group_id);
+            let welcome_rumor = result
+                .welcome_rumors
+                .first()
+                .cloned()
+                .expect("welcome rumor");
+            let wrapper_id = EventId::from_hex(&"2".repeat(64)).unwrap();
+            let staged =
+                pika_mls::welcome::stage_pending_welcome(&bob_mls, &wrapper_id, &welcome_rumor)
+                    .expect("stage bob welcome");
+            pika_mls::welcome::accept_pending_welcome(&bob_mls, &staged)
+                .expect("accept bob welcome");
+
+            let mut core = make_core(alice_data_dir);
+            let client = Client::builder().signer(alice.clone()).build();
+            core.session = Some(super::super::Session {
+                pubkey: alice_pubkey,
+                local_keys: Some(alice),
+                mls: alice_mls,
+                client,
+                alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                giftwrap_sub: None,
+                group_sub: None,
+                groups: std::collections::HashMap::from([(
+                    chat_id.clone(),
+                    crate::core::GroupIndexEntry {
+                        mls_group_id: group_id.clone(),
+                        is_group: true,
+                        group_name: Some("Test".to_string()),
+                        self_is_admin: true,
+                        members: vec![crate::core::GroupMember {
+                            pubkey: bob_pubkey,
+                            is_admin: false,
+                            name: None,
+                            picture_url: None,
+                        }],
+                    },
+                )]),
+            });
+
+            let rumor = EventBuilder::new(Kind::ChatMessage, content).build(bob_pubkey);
+            let wrapper = pika_mls::conversation::wrap_rumor(&bob_mls, &group_id, rumor)
+                .expect("wrap bob message")
+                .wrapper;
+            (core, chat_id, wrapper)
+        }
+
         fn test_media_attachment() -> crate::state::ChatMediaAttachment {
             crate::state::ChatMediaAttachment {
                 original_hash_hex: "original-hash".to_string(),
@@ -7776,14 +7862,8 @@ mod tests {
 
         #[test]
         fn app_group_message_ingress_uses_shared_runtime_group_message_helper() {
-            let (mut core, chat_id, _keys, group_id) = make_core_with_group();
-            let event = make_group_message_event(
-                &core,
-                &group_id,
-                Kind::ChatMessage,
-                "hello through shared inbound helper",
-                Tags::new(),
-            );
+            let (mut core, chat_id, event) =
+                make_core_with_peer_message("hello through shared inbound helper");
 
             assert_eq!(core.unread_counts.get(&chat_id).copied().unwrap_or(0), 0);
 
@@ -10048,9 +10128,8 @@ mod tests {
             let owner_keys = Keys::generate();
             let owner_client = Client::builder().signer(owner_keys.clone()).build();
             let claimer_client = Client::builder().signer(Keys::generate()).build();
-            let key_package_event = EventBuilder::new(Kind::MlsKeyPackage, "opaque-key-package")
-                .sign_with_keys(&owner_keys)
-                .expect("sign key package event");
+            let key_package_event =
+                make_peer_key_package_with_relay(&owner_keys, "wss://test.relay");
 
             super::super::chat_server::upload_key_package_event(
                 &http_client,

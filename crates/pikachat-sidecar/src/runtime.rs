@@ -1780,9 +1780,13 @@ mod tests {
 
     #[test]
     fn process_classified_inbound_group_message_returns_processed_application_outcome() {
-        let tempdir = tempfile::tempdir().expect("tempdir");
+        let local_dir = tempfile::tempdir().expect("local tempdir");
+        let peer_dir = tempfile::tempdir().expect("peer tempdir");
         let keys = Keys::generate();
-        let mls = open_test_mls(&tempdir);
+        let peer_keys = Keys::generate();
+        let mls = open_test_mls(&local_dir);
+        let peer_mls = open_test_mls(&peer_dir);
+        let local_kp = make_key_package_event(&mls, &keys);
         let config = NostrGroupConfigData::new(
             "runtime inbound group message".to_string(),
             String::new(),
@@ -1790,16 +1794,42 @@ mod tests {
             None,
             None,
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
-            vec![keys.public_key()],
+            vec![peer_keys.public_key(), keys.public_key()],
         );
-        let created = mls
-            .create_group(&keys.public_key(), vec![], config)
+        let created = peer_mls
+            .create_group(&peer_keys.public_key(), vec![local_kp], config)
             .expect("create group");
-        mls.merge_pending_commit(&created.group.mls_group_id)
+        peer_mls
+            .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge pending commit");
+        let welcome_rumor = created
+            .welcome_rumors
+            .first()
+            .cloned()
+            .expect("welcome rumor");
+        let welcome_wrapper = tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(async {
+                EventBuilder::gift_wrap(&peer_keys, &keys.public_key(), welcome_rumor, [])
+                    .await
+                    .expect("build welcome giftwrap")
+            });
+        tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(async {
+                ingest_welcome_from_giftwrap(&mls, &keys, &welcome_wrapper, |_| true)
+                    .await
+                    .expect("ingest welcome")
+                    .expect("welcome should ingest")
+            });
+        let pending = pika_mls::welcome::WelcomeQueries::new(&mls)
+            .list_pending_welcomes()
+            .expect("list pending welcomes");
+        pika_mls::welcome::accept_pending_welcome(&mls, pending.first().expect("pending welcome"))
+            .expect("accept welcome");
         let event = make_group_message_event(
-            &mls,
-            &keys,
+            &peer_mls,
+            &peer_keys,
             &created.group.mls_group_id,
             Kind::ChatMessage,
             "hello through shared runtime",

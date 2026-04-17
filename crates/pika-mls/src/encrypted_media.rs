@@ -99,13 +99,6 @@ pub mod crypto {
 
     pub const DEFAULT_SCHEME_VERSION: &str = "pika-media-v2";
 
-    pub(crate) fn fallback_key_context(group_id: &GroupId) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        hasher.update(b"pika-media-fallback-context-v1");
-        hasher.update(group_id.as_slice());
-        hasher.finalize().into()
-    }
-
     pub fn derive_encryption_key(
         group_id: &GroupId,
         key_context: &[u8; 32],

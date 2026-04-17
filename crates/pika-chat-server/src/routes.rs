@@ -805,7 +805,7 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&UploadKeyPackageRequest {
                             ciphersuite: Some("mls128".to_string()),
-                            payload: "opaque-key-package".to_string(),
+                            payload: "server-test-key-package-payload".to_string(),
                         })
                         .expect("serialize upload key package request"),
                     ))
@@ -845,7 +845,10 @@ mod tests {
             .expect("read claim key package body");
         let claimed: ClaimKeyPackageResponse =
             serde_json::from_slice(&claim_body).expect("decode claim key package body");
-        assert_eq!(claimed.key_package.payload, "opaque-key-package");
+        assert_eq!(
+            claimed.key_package.payload,
+            "server-test-key-package-payload"
+        );
         assert!(claimed.key_package.claimed_at.is_some());
     }
 
@@ -1017,7 +1020,7 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&UploadKeyPackageRequest {
                             ciphersuite: Some("mls128".to_string()),
-                            payload: "opaque-key-package".to_string(),
+                            payload: "server-test-key-package-payload".to_string(),
                         })
                         .expect("serialize upload key package request"),
                     ))

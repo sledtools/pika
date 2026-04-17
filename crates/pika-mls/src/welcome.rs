@@ -115,9 +115,17 @@ pub fn stage_pending_welcome(
         .process_welcome(wrapper_event_id, rumor)
         .context("process welcome rumor")?;
 
-    WelcomeQueries::new(mls)
-        .lookup_pending_welcome(wrapper_event_id)?
-        .ok_or_else(|| anyhow!("pending welcome missing after process"))
+    if let Some(welcome) = WelcomeQueries::new(mls).lookup_pending_welcome(wrapper_event_id)? {
+        return Ok(welcome);
+    }
+
+    mls.inner
+        .welcome_from_rumor(
+            wrapper_event_id,
+            rumor,
+            crate::storage_traits::welcomes::types::WelcomeState::Ignored,
+        )
+        .context("parse ignored welcome")
 }
 
 pub fn ingest_unwrapped_welcome<F>(

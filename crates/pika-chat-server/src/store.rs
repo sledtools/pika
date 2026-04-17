@@ -629,7 +629,7 @@ mod tests {
                 "npub1alice",
                 UploadKeyPackageRequest {
                     ciphersuite: Some("mls128".to_string()),
-                    payload: "opaque-key-package".to_string(),
+                    payload: "server-test-key-package-payload".to_string(),
                 },
                 100,
             )
@@ -647,7 +647,7 @@ mod tests {
             )
             .expect("claim key package");
         assert_eq!(claimed.claimed_by_npub.as_deref(), Some("npub1bob"));
-        assert_eq!(claimed.payload, "opaque-key-package");
+        assert_eq!(claimed.payload, "server-test-key-package-payload");
 
         let err = store
             .claim_key_package(

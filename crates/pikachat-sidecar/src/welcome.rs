@@ -510,12 +510,8 @@ mod tests {
             .expect("get groups");
         assert_eq!(
             groups.len(),
-            1,
-            "shared ingest already surfaces a pending group before accept"
-        );
-        assert_eq!(
-            groups[0].nostr_group_id_hex, ingested.nostr_group_id_hex,
-            "pending group should line up with the staged welcome metadata"
+            0,
+            "real OpenMLS ingest stages the Welcome but does not join until explicit accept"
         );
     }
 

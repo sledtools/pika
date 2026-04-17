@@ -5781,14 +5781,14 @@ mod tests {
         update
     }
 
-    fn make_test_message(
+    fn make_test_message_in_group(
+        mls_group_id: GroupId,
         kind: Kind,
         content: &str,
         tags: Tags,
     ) -> pika_mls::storage_traits::messages::types::Message {
         let pubkey = Keys::generate().public_key();
         let created_at = Timestamp::from(123_u64);
-        let mls_group_id = GroupId::from_slice(&[1, 2, 3]);
         pika_mls::storage_traits::messages::types::Message {
             id: EventId::all_zeros(),
             mls_group_id: mls_group_id.clone(),
@@ -5803,6 +5803,14 @@ mod tests {
             epoch: None,
             state: message_types::MessageState::Processed,
         }
+    }
+
+    fn make_test_message(
+        kind: Kind,
+        content: &str,
+        tags: Tags,
+    ) -> pika_mls::storage_traits::messages::types::Message {
+        make_test_message_in_group(GroupId::from_slice(&[1, 2, 3]), kind, content, tags)
     }
 
     fn make_group_message_event(
@@ -7006,21 +7014,25 @@ mod tests {
             |prepared| {
                 let mls = &inviter_mls;
                 async move {
-                    let processed = process_group_message_for_test(mls, &prepared.wrapper);
-                    match processed {
-                        MessageProcessingResult::ApplicationMessage(message) => {
-                            let metadata: Metadata =
-                                serde_json::from_str(&message.content).expect("parse metadata");
-                            assert_eq!(message.kind, Kind::Metadata);
-                            assert_eq!(metadata.display_name.as_deref(), Some("New Name"));
-                            assert_eq!(metadata.about.as_deref(), Some("New About"));
-                            assert_eq!(
-                                metadata.picture.as_deref(),
-                                Some("https://example.com/group.jpg")
-                            );
+                    match process_group_message_for_test(mls, &prepared.wrapper) {
+                        MessageProcessingResult::Unprocessable { .. } => {}
+                        other => {
+                            panic!("expected own OpenMLS echo to be unprocessable, got {other:?}")
                         }
-                        other => panic!("expected application message, got {other:?}"),
                     }
+                    let message = pika_mls::conversation::ConversationQueries::new(mls)
+                        .get_message(&prepared.target.mls_group_id, &prepared.rumor_id)
+                        .expect("query locally saved profile update")
+                        .expect("locally saved profile update");
+                    let metadata: Metadata =
+                        serde_json::from_str(&message.content).expect("parse metadata");
+                    assert_eq!(message.kind, Kind::Metadata);
+                    assert_eq!(metadata.display_name.as_deref(), Some("New Name"));
+                    assert_eq!(metadata.about.as_deref(), Some("New About"));
+                    assert_eq!(
+                        metadata.picture.as_deref(),
+                        Some("https://example.com/group.jpg")
+                    );
                     Ok(EventId::all_zeros())
                 }
             },
@@ -7645,22 +7657,26 @@ mod tests {
             |prepared| {
                 let mls = &inviter_mls;
                 async move {
-                    let processed = process_group_message_for_test(mls, &prepared.wrapper);
-                    match processed {
-                        MessageProcessingResult::ApplicationMessage(message) => {
-                            let metadata: Metadata =
-                                serde_json::from_str(&message.content).expect("parse metadata");
-                            assert_eq!(message.kind, Kind::Metadata);
-                            assert_eq!(metadata.display_name.as_deref(), Some("Profile Name"));
-                            assert_eq!(metadata.about.as_deref(), Some("Profile About"));
-                            assert_eq!(metadata.picture.as_deref(), Some(uploaded_url));
-                            assert!(
-                                message.tags.iter().any(crate::media::is_imeta_tag),
-                                "profile image update should publish an imeta tag"
-                            );
+                    match process_group_message_for_test(mls, &prepared.wrapper) {
+                        MessageProcessingResult::Unprocessable { .. } => {}
+                        other => {
+                            panic!("expected own OpenMLS echo to be unprocessable, got {other:?}")
                         }
-                        other => panic!("expected application message, got {other:?}"),
                     }
+                    let message = pika_mls::conversation::ConversationQueries::new(mls)
+                        .get_message(&prepared.target.mls_group_id, &prepared.rumor_id)
+                        .expect("query locally saved profile image update")
+                        .expect("locally saved profile image update");
+                    let metadata: Metadata =
+                        serde_json::from_str(&message.content).expect("parse metadata");
+                    assert_eq!(message.kind, Kind::Metadata);
+                    assert_eq!(metadata.display_name.as_deref(), Some("Profile Name"));
+                    assert_eq!(metadata.about.as_deref(), Some("Profile About"));
+                    assert_eq!(metadata.picture.as_deref(), Some(uploaded_url));
+                    assert!(
+                        message.tags.iter().any(crate::media::is_imeta_tag),
+                        "profile image update should publish an imeta tag"
+                    );
                     Ok(EventId::all_zeros())
                 }
             },
@@ -7823,12 +7839,16 @@ mod tests {
 
     #[test]
     fn daemon_group_message_processing_uses_shared_runtime_helper() {
-        let tempdir = tempfile::tempdir().expect("tempdir");
+        let local_dir = tempfile::tempdir().expect("local tempdir");
+        let peer_dir = tempfile::tempdir().expect("peer tempdir");
         let keys = Keys::generate();
+        let peer_keys = Keys::generate();
         let signer: Arc<dyn NostrSigner> = Arc::new(keys.clone());
         let client = Client::new(signer);
         let relay_urls: Vec<RelayUrl> = Vec::new();
-        let mls = crate::open_mls(tempdir.path()).expect("open mls");
+        let mls = crate::open_mls(local_dir.path()).expect("open local mls");
+        let peer_mls = crate::open_mls(peer_dir.path()).expect("open peer mls");
+        let local_kp = make_key_package_event(&mls, &keys);
         let config = NostrGroupConfigData::new(
             "daemon inbound group message".to_string(),
             String::new(),
@@ -7836,16 +7856,42 @@ mod tests {
             None,
             None,
             vec![RelayUrl::parse("wss://test.relay").expect("relay url")],
-            vec![keys.public_key()],
+            vec![peer_keys.public_key(), keys.public_key()],
         );
-        let created = mls
-            .create_group(&keys.public_key(), vec![], config)
+        let created = peer_mls
+            .create_group(&peer_keys.public_key(), vec![local_kp], config)
             .expect("create group");
-        mls.merge_pending_commit(&created.group.mls_group_id)
+        peer_mls
+            .merge_pending_commit(&created.group.mls_group_id)
             .expect("merge pending commit");
+        let welcome_rumor = created
+            .welcome_rumors
+            .first()
+            .cloned()
+            .expect("welcome rumor");
+        let welcome_wrapper = tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(async {
+                EventBuilder::gift_wrap(&peer_keys, &keys.public_key(), welcome_rumor, [])
+                    .await
+                    .expect("build welcome giftwrap")
+            });
+        tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(async {
+                crate::ingest_welcome_from_giftwrap(&mls, &keys, &welcome_wrapper, |_| true)
+                    .await
+                    .expect("ingest welcome")
+                    .expect("welcome should ingest")
+            });
+        let pending = pika_mls::welcome::WelcomeQueries::new(&mls)
+            .list_pending_welcomes()
+            .expect("list pending welcomes");
+        pika_mls::welcome::accept_pending_welcome(&mls, pending.first().expect("pending welcome"))
+            .expect("accept welcome");
         let event = make_group_message_event(
-            &mls,
-            &keys,
+            &peer_mls,
+            &peer_keys,
             &created.group.mls_group_id,
             Kind::ChatMessage,
             "hello through daemon helper",
@@ -8920,7 +8966,8 @@ mod tests {
             )
             .into_media_upload_result()
             .expect("completed media upload");
-        let message = make_test_message(
+        let message = make_test_message_in_group(
+            created.group.mls_group_id.clone(),
             Kind::ChatMessage,
             "hi",
             Tags::from_list(vec![completed.result.imeta_tag]),
@@ -9001,7 +9048,8 @@ mod tests {
             .expect("completed second upload"),
         ];
         let batch_fields = batch_media_fields_from_completed_uploads(&completed_uploads);
-        let message = make_test_message(
+        let message = make_test_message_in_group(
+            created.group.mls_group_id.clone(),
             Kind::ChatMessage,
             "hi",
             Tags::from_list(batch_fields.imeta_tags.clone()),

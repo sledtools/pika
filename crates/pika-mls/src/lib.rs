@@ -1,14 +1,26 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use anyhow::{Context, Result, anyhow};
+use base64::prelude::*;
 use nostr::{
     Event, EventBuilder, EventId, JsonUtil, Keys, Kind, PublicKey, RelayUrl, Tag, TagKind,
     Timestamp, UnsignedEvent,
 };
+use openmls::prelude::{
+    BasicCredential, Capabilities, Ciphersuite, CredentialType, CredentialWithKey, ExtensionType,
+    KeyPackage, KeyPackageIn, MlsGroup, MlsGroupCreateConfig, MlsGroupJoinConfig, MlsMessageBodyIn,
+    MlsMessageIn, MlsMessageOut, ProcessedMessageContent, ProtocolMessage, ProtocolVersion,
+    SenderRatchetConfiguration, StagedWelcome,
+    tls_codec::{Deserialize as TlsDeserializeTrait, Serialize as TlsSerializeTrait},
+};
+use openmls_basic_credential::SignatureKeyPair;
+use openmls_memory_storage::MemoryStorage;
+use openmls_rust_crypto::RustCrypto;
+use openmls_traits::OpenMlsProvider;
 use rand::RngCore;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
@@ -41,15 +53,20 @@ use storage_traits::groups::{MessageSortOrder, Pagination};
 use storage_traits::messages::types::{Message, MessageState};
 use storage_traits::welcomes::types::{Welcome, WelcomeState};
 
-const APPLICATION_MESSAGE_SCHEME_VERSION: &str = "pika-application-message-v1";
-const ENCRYPTED_STATE_SCHEME_VERSION: &str = "pika-local-mls-state-v1";
+const ENCRYPTED_STATE_SCHEME_VERSION: &str = "pika-local-openmls-state-v1";
+const KEY_PACKAGE_ENVELOPE_VERSION: u8 = 1;
+const WELCOME_ENVELOPE_VERSION: u8 = 1;
+const MLS_MESSAGE_ENVELOPE_VERSION: u8 = 1;
+const APPLICATION_PAYLOAD_VERSION: u8 = 1;
+const MEDIA_EXPORTER_LABEL: &str = "pika-media-exporter-v1";
+const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 
 pub struct PikaMls {
-    inner: LocalMlsEngine,
+    inner: OpenMlsEngine,
 }
 
 impl PikaMls {
-    fn from_engine(inner: LocalMlsEngine) -> Self {
+    fn from_engine(inner: OpenMlsEngine) -> Self {
         Self { inner }
     }
 
@@ -114,11 +131,8 @@ impl PikaMls {
     ) -> encrypted_media::manager::EncryptedMediaManager {
         let key_context = self
             .inner
-            .group_secret_context(&group_id)
-            .unwrap_or_else(|err| {
-                tracing::warn!(%err, "falling back to deterministic media key context");
-                encrypted_media::crypto::fallback_key_context(&group_id)
-            });
+            .export_media_context(&group_id)
+            .expect("media manager requires an active OpenMLS group");
         encrypted_media::manager::EncryptedMediaManager::new(group_id, key_context)
     }
 
@@ -130,7 +144,7 @@ impl PikaMls {
         mime_type: &str,
         filename: &str,
     ) -> std::result::Result<[u8; 32], encrypted_media::types::EncryptedMediaError> {
-        let key_context = self.inner.group_secret_context(group_id).map_err(|err| {
+        let key_context = self.inner.export_media_context(group_id).map_err(|err| {
             encrypted_media::types::EncryptedMediaError::EncryptionFailed {
                 reason: err.to_string(),
             }
@@ -281,9 +295,14 @@ struct StoreState {
     relays: BTreeMap<String, BTreeSet<RelayUrl>>,
     messages: BTreeMap<String, Vec<Message>>,
     pending_welcomes: Vec<Welcome>,
-    pending_commits: BTreeMap<String, PendingCommit>,
     #[serde(default)]
-    group_secrets: BTreeMap<String, Secret<[u8; 32]>>,
+    account_signers: BTreeMap<String, Vec<u8>>,
+    #[serde(default)]
+    openmls_storage: BTreeMap<String, String>,
+    #[serde(default)]
+    outbound_wrappers: BTreeSet<EventId>,
+    #[serde(default)]
+    local_pubkey: Option<PublicKey>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -307,67 +326,115 @@ enum StateCodec {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PendingCommit {
-    group: Group,
-    members: BTreeSet<PublicKey>,
-    relays: BTreeSet<RelayUrl>,
+#[derive(Debug, Default)]
+struct PikaOpenMlsProvider {
+    crypto: RustCrypto,
+    storage: MemoryStorage,
 }
 
-struct LocalMlsEngine {
+impl PikaOpenMlsProvider {
+    fn with_storage(storage: MemoryStorage) -> Self {
+        Self {
+            crypto: RustCrypto::default(),
+            storage,
+        }
+    }
+}
+
+impl OpenMlsProvider for PikaOpenMlsProvider {
+    type CryptoProvider = RustCrypto;
+    type RandProvider = RustCrypto;
+    type StorageProvider = MemoryStorage;
+
+    fn storage(&self) -> &Self::StorageProvider {
+        &self.storage
+    }
+
+    fn crypto(&self) -> &Self::CryptoProvider {
+        &self.crypto
+    }
+
+    fn rand(&self) -> &Self::RandProvider {
+        &self.crypto
+    }
+}
+
+struct OpenMlsEngine {
     state_path: PathBuf,
     codec: StateCodec,
+    provider: PikaOpenMlsProvider,
     state: Mutex<StoreState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct KeyPackagePayload {
+struct KeyPackageEnvelope {
     version: u8,
     owner_pubkey: String,
+    ciphersuite: String,
     relays: Vec<String>,
-    nonce: String,
+    key_package: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct WelcomePayload {
+struct WelcomeEnvelope {
     version: u8,
     mls_group_id: String,
     nostr_group_id: String,
-    #[serde(default)]
-    epoch: u64,
     name: String,
     description: String,
+    image_hash: Option<[u8; 32]>,
+    image_key: Option<[u8; 32]>,
+    image_nonce: Option<[u8; 12]>,
     relays: Vec<String>,
     admins: Vec<String>,
-    members: Vec<String>,
     welcomer: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    group_secret: Option<String>,
+    member_count: u32,
+    welcome: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MlsMessageEnvelope {
+    version: u8,
+    mls_group_id: String,
+    epoch: u64,
+    message_kind: MlsMessageKind,
+    mls_message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum MlsMessageKind {
+    Application,
+    Commit,
+    Proposal,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum WrappedPayload {
-    Application {
-        mls_group_id: String,
-        epoch: u64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        rumor_json: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        ciphertext: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        nonce: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        scheme_version: Option<String>,
+enum PikaApplicationPayload {
+    Rumor {
+        version: u8,
+        rumor_json: String,
     },
-    Commit {
-        mls_group_id: String,
-        epoch: u64,
-        group: WelcomePayload,
+    GroupData {
+        version: u8,
+        update: WireGroupDataUpdate,
     },
 }
 
-impl LocalMlsEngine {
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct WireGroupDataUpdate {
+    name: Option<String>,
+    description: Option<String>,
+    image_hash: Option<Option<[u8; 32]>>,
+    image_key: Option<Option<[u8; 32]>>,
+    image_nonce: Option<Option<[u8; 12]>>,
+    relays: Option<Vec<String>>,
+    admins: Option<Vec<String>>,
+    nostr_group_id: Option<[u8; 32]>,
+}
+
+impl OpenMlsEngine {
     fn open(state_path: PathBuf) -> Result<Self> {
         Self::open_with_codec(state_path, StateCodec::Plaintext)
     }
@@ -379,34 +446,128 @@ impl LocalMlsEngine {
         }
         let loaded = codec
             .load(&state_path)
-            .with_context(|| format!("load MLS state: {}", state_path.display()))?;
+            .with_context(|| format!("load OpenMLS state: {}", state_path.display()))?;
+        if looks_like_legacy_fake_mls_state(&loaded.state) {
+            anyhow::bail!(
+                "legacy fake MLS state detected; reset local pika-mls state before using real OpenMLS"
+            );
+        }
+        let storage = memory_storage_from_snapshot(&loaded.state.openmls_storage)
+            .context("restore OpenMLS storage snapshot")?;
         let engine = Self {
             state_path,
             codec,
+            provider: PikaOpenMlsProvider::with_storage(storage),
             state: Mutex::new(loaded.state.clone()),
         };
         if matches!(codec, StateCodec::Encrypted { .. }) && loaded.was_plaintext {
-            engine.save(&loaded.state)?;
+            engine.save_snapshot()?;
         }
         Ok(engine)
     }
 
-    fn save(&self, state: &StoreState) -> Result<()> {
+    fn save_locked(&self, state: &mut StoreState) -> Result<()> {
+        state.openmls_storage = memory_storage_snapshot(&self.provider.storage)?;
         if let Some(parent) = self.state_path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create MLS state dir: {}", parent.display()))?;
         }
-        let body = self.codec.encode(state).context("serialize MLS state")?;
+        let body = self
+            .codec
+            .encode(state)
+            .context("serialize OpenMLS state")?;
         write_private_file(&self.state_path, body)
-            .with_context(|| format!("write MLS state: {}", self.state_path.display()))
+            .with_context(|| format!("write OpenMLS state: {}", self.state_path.display()))
     }
 
-    fn group_secret_context(&self, group_id: &GroupId) -> Result<[u8; 32]> {
-        let state = self
+    fn save_snapshot(&self) -> Result<()> {
+        let mut state = self
             .state
             .lock()
-            .map_err(|_| anyhow!("MLS state lock poisoned"))?;
-        Ok(group_secret_context_from_state(&state, group_id))
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
+        self.save_locked(&mut state)
+    }
+
+    fn ensure_account_signer(&self, public_key: &PublicKey) -> Result<SignatureKeyPair> {
+        let account_key = public_key.to_hex();
+        let existing = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
+            state.local_pubkey = Some(*public_key);
+            state.account_signers.get(&account_key).cloned()
+        };
+        if let Some(public) = existing
+            && let Some(signer) = SignatureKeyPair::read(
+                self.provider.storage(),
+                &public,
+                CIPHERSUITE.signature_algorithm(),
+            )
+        {
+            return Ok(signer);
+        }
+
+        let signer = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm())
+            .map_err(|err| anyhow!("generate OpenMLS signer: {err:?}"))?;
+        signer
+            .store(self.provider.storage())
+            .map_err(|err| anyhow!("store OpenMLS signer: {err:?}"))?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
+        state
+            .account_signers
+            .insert(account_key, signer.to_public_vec());
+        state.local_pubkey = Some(*public_key);
+        self.save_locked(&mut state)?;
+        Ok(signer)
+    }
+
+    fn credential_with_key(
+        &self,
+        public_key: &PublicKey,
+        signer: &SignatureKeyPair,
+    ) -> CredentialWithKey {
+        CredentialWithKey {
+            credential: BasicCredential::new(public_key.to_bytes().to_vec()).into(),
+            signature_key: signer.to_public_vec().into(),
+        }
+    }
+
+    fn signer_for_group(&self, group: &MlsGroup) -> Result<SignatureKeyPair> {
+        let own_leaf = group
+            .own_leaf_node()
+            .ok_or_else(|| anyhow!("OpenMLS group has no own leaf"))?;
+        SignatureKeyPair::read(
+            self.provider.storage(),
+            own_leaf.signature_key().as_slice(),
+            CIPHERSUITE.signature_algorithm(),
+        )
+        .ok_or_else(|| anyhow!("missing OpenMLS signer for group"))
+    }
+
+    fn group_config() -> MlsGroupCreateConfig {
+        MlsGroupCreateConfig::builder()
+            .ciphersuite(CIPHERSUITE)
+            .sender_ratchet_configuration(SenderRatchetConfiguration::new(32, 2000))
+            .capabilities(Capabilities::new(
+                None,
+                Some(&[CIPHERSUITE]),
+                Some(&[ExtensionType::RatchetTree]),
+                None,
+                Some(&[CredentialType::Basic]),
+            ))
+            .use_ratchet_tree_extension(true)
+            .build()
+    }
+
+    fn join_config() -> MlsGroupJoinConfig {
+        MlsGroupJoinConfig::builder()
+            .sender_ratchet_configuration(SenderRatchetConfiguration::new(32, 2000))
+            .use_ratchet_tree_extension(true)
+            .build()
     }
 
     fn create_key_package_for_event<I>(
@@ -417,40 +578,73 @@ impl LocalMlsEngine {
     where
         I: IntoIterator<Item = RelayUrl>,
     {
-        let mut nonce = [0u8; 32];
-        OsRng.fill_bytes(&mut nonce);
         let relays: Vec<RelayUrl> = relays.into_iter().collect();
-        let payload = KeyPackagePayload {
-            version: 1,
+        let signer = self.ensure_account_signer(public_key)?;
+        let credential = self.credential_with_key(public_key, &signer);
+        let key_package_bundle = KeyPackage::builder()
+            .build(CIPHERSUITE, &self.provider, &signer, credential)
+            .map_err(|err| anyhow!("build OpenMLS key package: {err:?}"))?;
+        let key_package_bytes = key_package_bundle
+            .key_package()
+            .tls_serialize_detached()
+            .context("serialize OpenMLS key package")?;
+        let hash_ref = key_package_bundle
+            .key_package()
+            .hash_ref(self.provider.crypto())
+            .map_err(|err| anyhow!("hash OpenMLS key package: {err:?}"))?
+            .as_slice()
+            .to_vec();
+        let envelope = KeyPackageEnvelope {
+            version: KEY_PACKAGE_ENVELOPE_VERSION,
             owner_pubkey: public_key.to_hex(),
+            ciphersuite: format!("{CIPHERSUITE:?}"),
             relays: relays.iter().map(ToString::to_string).collect(),
-            nonce: hex::encode(nonce),
+            key_package: BASE64_STANDARD.encode(key_package_bytes),
         };
-        let content = serde_json::to_string(&payload).context("serialize key package")?;
+        let content = serde_json::to_string(&envelope).context("serialize key package envelope")?;
         let mut tags = vec![Tag::custom(TagKind::p(), [public_key.to_hex()])];
         if !relays.is_empty() {
             tags.push(Tag::from_standardized(nostr::TagStandard::Relays(relays)));
         }
-        let hash_ref = Sha256::digest(content.as_bytes()).to_vec();
+        self.save_snapshot()?;
         Ok((content, tags, hash_ref))
     }
 
-    fn parse_key_package(&self, event: &Event) -> Result<()> {
+    fn parse_key_package(&self, event: &Event) -> Result<KeyPackage> {
         if event.kind != Kind::MlsKeyPackage {
             anyhow::bail!("event is not an MLS key package");
         }
-        let content = event.content.trim();
-        if content.is_empty() || content == "opaque-key-package" {
-            return Ok(());
+        let envelope: KeyPackageEnvelope =
+            serde_json::from_str(&event.content).context("parse key package envelope")?;
+        if envelope.version != KEY_PACKAGE_ENVELOPE_VERSION {
+            anyhow::bail!(
+                "unsupported key package envelope version: {}",
+                envelope.version
+            );
         }
-        if let Ok(parsed) = serde_json::from_str::<KeyPackagePayload>(content) {
-            let owner =
-                PublicKey::parse(&parsed.owner_pubkey).context("parse key package owner")?;
-            if owner != event.pubkey {
-                anyhow::bail!("key package owner does not match event pubkey");
-            }
+        let owner = PublicKey::parse(&envelope.owner_pubkey).context("parse key package owner")?;
+        if owner != event.pubkey {
+            anyhow::bail!("key package owner does not match event pubkey");
         }
-        Ok(())
+        let key_package_bytes = BASE64_STANDARD
+            .decode(envelope.key_package)
+            .context("decode key package")?;
+        let key_package_in = KeyPackageIn::tls_deserialize_exact(key_package_bytes)
+            .context("deserialize OpenMLS key package")?;
+        let key_package = key_package_in
+            .validate(self.provider.crypto(), ProtocolVersion::Mls10)
+            .map_err(|err| anyhow!("validate OpenMLS key package: {err:?}"))?;
+        if key_package.ciphersuite() != CIPHERSUITE {
+            anyhow::bail!(
+                "unsupported key package ciphersuite: {:?}",
+                key_package.ciphersuite()
+            );
+        }
+        let credential_pubkey = pubkey_from_credential(key_package.leaf_node().credential())?;
+        if credential_pubkey != event.pubkey {
+            anyhow::bail!("key package credential does not match event pubkey");
+        }
+        Ok(key_package)
     }
 
     fn create_group(
@@ -459,19 +653,27 @@ impl LocalMlsEngine {
         member_key_package_events: Vec<Event>,
         config: groups_api::NostrGroupConfigData,
     ) -> Result<groups_api::GroupResult> {
+        let mut member_packages = Vec::with_capacity(member_key_package_events.len());
         for event in &member_key_package_events {
-            self.parse_key_package(event)?;
+            member_packages.push((event.pubkey, self.parse_key_package(event)?));
         }
 
+        let signer = self.ensure_account_signer(creator_public_key)?;
+        let credential = self.credential_with_key(creator_public_key, &signer);
         let mls_group_id = GroupId::from_slice(&random_32());
         let nostr_group_id = random_32();
-        let mut members: BTreeSet<PublicKey> = config.admins.iter().copied().collect();
-        members.insert(*creator_public_key);
-        for event in &member_key_package_events {
-            members.insert(event.pubkey);
-        }
+        let create_config = Self::group_config();
+        let mut open_group = MlsGroup::new_with_group_id(
+            &self.provider,
+            &signer,
+            &create_config,
+            open_group_id(&mls_group_id),
+            credential,
+        )
+        .map_err(|err| anyhow!("create OpenMLS group: {err:?}"))?;
 
-        let group = Group {
+        let relays: BTreeSet<RelayUrl> = config.relays.into_iter().collect();
+        let mut app_group = Group {
             mls_group_id: mls_group_id.clone(),
             nostr_group_id,
             name: config.name,
@@ -483,42 +685,49 @@ impl LocalMlsEngine {
             last_message_id: None,
             last_message_at: None,
             last_message_processed_at: None,
-            epoch: 0,
+            epoch: open_group.epoch().as_u64(),
             state: GroupState::Active,
             self_update_state: SelfUpdateState::CompletedAt(Timestamp::now()),
         };
-        let relays: BTreeSet<RelayUrl> = config.relays.into_iter().collect();
-        let group_secret = random_32();
 
+        let mut welcome_rumors = Vec::new();
+        if !member_packages.is_empty() {
+            let key_packages: Vec<KeyPackage> = member_packages
+                .iter()
+                .map(|(_, key_package)| key_package.clone())
+                .collect();
+            let (_commit, welcome, _group_info) = open_group
+                .add_members(&self.provider, &signer, &key_packages)
+                .map_err(|err| anyhow!("add initial OpenMLS members: {err:?}"))?;
+            open_group
+                .merge_pending_commit(&self.provider)
+                .map_err(|err| anyhow!("merge initial OpenMLS commit: {err:?}"))?;
+            app_group.epoch = open_group.epoch().as_u64();
+            let members = members_from_mls_group(&open_group)?;
+            let welcome_envelope = self.welcome_envelope(
+                &app_group,
+                &relays,
+                creator_public_key,
+                members.len(),
+                welcome,
+            )?;
+            welcome_rumors = member_packages
+                .iter()
+                .map(|_| build_welcome_rumor(&welcome_envelope, *creator_public_key))
+                .collect::<Result<Vec<_>>>()?;
+        }
+
+        let members = members_from_mls_group(&open_group)?;
         let mut state = self
             .state
             .lock()
-            .map_err(|_| anyhow!("MLS state lock poisoned"))?;
-        upsert_group(&mut state, group.clone(), members.clone(), relays.clone());
-        state
-            .group_secrets
-            .insert(group_key(&group.mls_group_id), Secret(group_secret));
-        self.save(&state)?;
-
-        let payload = welcome_payload(
-            &group,
-            &members,
-            &relays,
-            creator_public_key,
-            Some(group_secret),
-        );
-        let welcome_rumors = member_key_package_events
-            .into_iter()
-            .map(|event| {
-                build_welcome_rumor(&payload, *creator_public_key).map(|rumor| (event, rumor))
-            })
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .map(|(_event, rumor)| rumor)
-            .collect();
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
+        state.local_pubkey = Some(*creator_public_key);
+        upsert_group(&mut state, app_group.clone(), members, relays);
+        self.save_locked(&mut state)?;
 
         Ok(groups_api::GroupResult {
-            group,
+            group: app_group,
             welcome_rumors,
         })
     }
@@ -528,50 +737,48 @@ impl LocalMlsEngine {
         group_id: &GroupId,
         key_package_events: &[Event],
     ) -> Result<groups_api::UpdateGroupResult> {
-        for event in key_package_events {
-            self.parse_key_package(event)?;
+        if key_package_events.is_empty() {
+            anyhow::bail!("no key packages provided");
         }
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow!("MLS state lock poisoned"))?;
-        let group = find_group_in_state(&state, group_id)?.clone();
-        let mut next_members = state
-            .members
-            .get(&group_key(group_id))
-            .cloned()
-            .unwrap_or_default();
+        let mut open_group = self.load_group(group_id)?;
+        let signer = self.signer_for_group(&open_group)?;
+        let mut member_packages = Vec::with_capacity(key_package_events.len());
         for event in key_package_events {
-            next_members.insert(event.pubkey);
+            member_packages.push((event.pubkey, self.parse_key_package(event)?));
         }
-        let relays = state
-            .relays
-            .get(&group_key(group_id))
-            .cloned()
-            .unwrap_or_default();
-        let group_secret = group_secret_context_from_state(&state, group_id);
-        drop(state);
-
-        let mut next_group = group.clone();
-        next_group.epoch += 1;
-        let result = self.prepare_commit(next_group, next_members.clone(), relays.clone())?;
-        let welcomer = first_pubkey(&group.admin_pubkeys)
-            .or_else(|| first_pubkey(&next_members))
-            .ok_or_else(|| anyhow!("cannot add members to group with no members"))?;
-        let payload = welcome_payload(
-            &result.0,
-            &next_members,
-            &relays,
-            &welcomer,
-            Some(group_secret),
-        );
-        let welcomes = key_package_events
+        let key_packages: Vec<KeyPackage> = member_packages
             .iter()
-            .map(|event| build_welcome_rumor(&payload, event.pubkey))
+            .map(|(_, key_package)| key_package.clone())
+            .collect();
+        let old_epoch = open_group.epoch().as_u64();
+        let (commit, welcome, _group_info) = open_group
+            .add_members(&self.provider, &signer, &key_packages)
+            .map_err(|err| anyhow!("add OpenMLS members: {err:?}"))?;
+        let app_group = self.app_group(group_id)?;
+        let relays = self.group_relays(group_id)?;
+        let next_member_count = self
+            .group_members(group_id)?
+            .len()
+            .saturating_add(member_packages.len());
+        let local_pubkey = self.local_pubkey_for_wire()?;
+        let welcome_envelope = self.welcome_envelope(
+            &app_group,
+            &relays,
+            &local_pubkey,
+            next_member_count,
+            welcome,
+        )?;
+        let welcome_rumors = member_packages
+            .iter()
+            .map(|_| build_welcome_rumor(&welcome_envelope, local_pubkey))
             .collect::<Result<Vec<_>>>()?;
+        let event =
+            self.build_group_event(&app_group, commit, old_epoch, MlsMessageKind::Commit)?;
+        self.save_snapshot()?;
+
         Ok(groups_api::UpdateGroupResult {
-            evolution_event: result.1,
-            welcome_rumors: Some(welcomes),
+            evolution_event: event,
+            welcome_rumors: Some(welcome_rumors),
             mls_group_id: group_id.clone(),
         })
     }
@@ -581,29 +788,28 @@ impl LocalMlsEngine {
         group_id: &GroupId,
         pubkeys: &[PublicKey],
     ) -> Result<groups_api::UpdateGroupResult> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow!("MLS state lock poisoned"))?;
-        let group = find_group_in_state(&state, group_id)?.clone();
-        let mut next_members = state
-            .members
-            .get(&group_key(group_id))
-            .cloned()
-            .unwrap_or_default();
-        for pubkey in pubkeys {
-            next_members.remove(pubkey);
+        if pubkeys.is_empty() {
+            anyhow::bail!("no members provided");
         }
-        let relays = state
-            .relays
-            .get(&group_key(group_id))
-            .cloned()
-            .unwrap_or_default();
-        drop(state);
+        let mut open_group = self.load_group(group_id)?;
+        let signer = self.signer_for_group(&open_group)?;
+        let mut leaf_indices = Vec::with_capacity(pubkeys.len());
+        for target in pubkeys {
+            let member = open_group
+                .members()
+                .find(|member| pubkey_from_credential(&member.credential).ok() == Some(*target))
+                .ok_or_else(|| anyhow!("member not found: {}", target.to_hex()))?;
+            leaf_indices.push(member.index);
+        }
+        let old_epoch = open_group.epoch().as_u64();
+        let (commit, _welcome, _group_info) = open_group
+            .remove_members(&self.provider, &signer, &leaf_indices)
+            .map_err(|err| anyhow!("remove OpenMLS members: {err:?}"))?;
+        let app_group = self.app_group(group_id)?;
+        let event =
+            self.build_group_event(&app_group, commit, old_epoch, MlsMessageKind::Commit)?;
+        self.save_snapshot()?;
 
-        let mut next_group = group;
-        next_group.epoch += 1;
-        let (_group, event) = self.prepare_commit(next_group, next_members, relays)?;
         Ok(groups_api::UpdateGroupResult {
             evolution_event: event,
             welcome_rumors: None,
@@ -616,51 +822,20 @@ impl LocalMlsEngine {
         group_id: &GroupId,
         update: groups_api::NostrGroupDataUpdate,
     ) -> Result<groups_api::UpdateGroupResult> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow!("MLS state lock poisoned"))?;
-        let group = find_group_in_state(&state, group_id)?.clone();
-        let members = state
-            .members
-            .get(&group_key(group_id))
-            .cloned()
-            .unwrap_or_default();
-        let mut relays = state
-            .relays
-            .get(&group_key(group_id))
-            .cloned()
-            .unwrap_or_default();
-        drop(state);
+        let app_group = self.app_group(group_id)?;
+        let epoch = app_group.epoch;
+        let wire_update = WireGroupDataUpdate::try_from_update(update.clone())?;
+        self.apply_group_data_update(group_id, &wire_update)?;
+        let payload = PikaApplicationPayload::GroupData {
+            version: APPLICATION_PAYLOAD_VERSION,
+            update: wire_update,
+        };
+        let event = self.create_application_wrapper(
+            group_id,
+            &serde_json::to_vec(&payload).context("serialize group data payload")?,
+            epoch,
+        )?;
 
-        let mut next_group = group;
-        next_group.epoch += 1;
-        if let Some(name) = update.name {
-            next_group.name = name;
-        }
-        if let Some(description) = update.description {
-            next_group.description = description;
-        }
-        if let Some(image_hash) = update.image_hash {
-            next_group.image_hash = image_hash;
-        }
-        if let Some(image_key) = update.image_key {
-            next_group.image_key = image_key.map(Secret);
-        }
-        if let Some(image_nonce) = update.image_nonce {
-            next_group.image_nonce = image_nonce.map(Secret);
-        }
-        if let Some(admins) = update.admins {
-            next_group.admin_pubkeys = admins.into_iter().collect();
-        }
-        if let Some(next_relays) = update.relays {
-            relays = next_relays.into_iter().collect();
-        }
-        if let Some(nostr_group_id) = update.nostr_group_id {
-            next_group.nostr_group_id = nostr_group_id;
-        }
-
-        let (_group, event) = self.prepare_commit(next_group, members, relays)?;
         Ok(groups_api::UpdateGroupResult {
             evolution_event: event,
             welcome_rumors: None,
@@ -669,25 +844,23 @@ impl LocalMlsEngine {
     }
 
     fn leave_group(&self, group_id: &GroupId) -> Result<groups_api::UpdateGroupResult> {
-        let state = self
+        let mut open_group = self.load_group(group_id)?;
+        let signer = self.signer_for_group(&open_group)?;
+        let old_epoch = open_group.epoch().as_u64();
+        let proposal = open_group
+            .leave_group(&self.provider, &signer)
+            .map_err(|err| anyhow!("create OpenMLS leave proposal: {err:?}"))?;
+        let mut app_group = self.app_group(group_id)?;
+        app_group.state = GroupState::Inactive;
+        let event =
+            self.build_group_event(&app_group, proposal, old_epoch, MlsMessageKind::Proposal)?;
+        let mut state = self
             .state
             .lock()
-            .map_err(|_| anyhow!("MLS state lock poisoned"))?;
-        let mut group = find_group_in_state(&state, group_id)?.clone();
-        let members = state
-            .members
-            .get(&group_key(group_id))
-            .cloned()
-            .unwrap_or_default();
-        let relays = state
-            .relays
-            .get(&group_key(group_id))
-            .cloned()
-            .unwrap_or_default();
-        drop(state);
-        group.epoch += 1;
-        group.state = GroupState::Inactive;
-        let (_group, event) = self.prepare_commit(group, members, relays)?;
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
+        replace_group_catalog(&mut state, app_group);
+        self.save_locked(&mut state)?;
+
         Ok(groups_api::UpdateGroupResult {
             evolution_event: event,
             welcome_rumors: None,
@@ -695,65 +868,45 @@ impl LocalMlsEngine {
         })
     }
 
-    fn prepare_commit(
-        &self,
-        next_group: Group,
-        members: BTreeSet<PublicKey>,
-        relays: BTreeSet<RelayUrl>,
-    ) -> Result<(Group, Event)> {
-        let welcomer = first_pubkey(&next_group.admin_pubkeys)
-            .or_else(|| first_pubkey(&members))
-            .ok_or_else(|| anyhow!("cannot prepare commit for group with no members"))?;
-        let payload = welcome_payload(&next_group, &members, &relays, &welcomer, None);
-        let event = build_group_event(
-            &next_group,
-            WrappedPayload::Commit {
-                mls_group_id: hex::encode(next_group.mls_group_id.as_slice()),
-                epoch: next_group.epoch,
-                group: payload,
-            },
-        )?;
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow!("MLS state lock poisoned"))?;
-        state.pending_commits.insert(
-            group_key(&next_group.mls_group_id),
-            PendingCommit {
-                group: next_group.clone(),
-                members,
-                relays,
-            },
-        );
-        self.save(&state)?;
-        Ok((next_group, event))
-    }
-
     fn merge_pending_commit(&self, group_id: &GroupId) -> Result<()> {
+        let mut open_group = self.load_group(group_id)?;
+        open_group
+            .merge_pending_commit(&self.provider)
+            .map_err(|err| anyhow!("merge OpenMLS pending commit: {err:?}"))?;
+        let members = members_from_mls_group(&open_group)?;
         let mut state = self
             .state
             .lock()
-            .map_err(|_| anyhow!("MLS state lock poisoned"))?;
-        if let Some(pending) = state.pending_commits.remove(&group_key(group_id)) {
-            upsert_group(&mut state, pending.group, pending.members, pending.relays);
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
+        if let Some(group) = state
+            .groups
+            .iter_mut()
+            .find(|group| group.mls_group_id == *group_id)
+        {
+            group.epoch = open_group.epoch().as_u64();
+            group.state = if open_group.is_active() {
+                GroupState::Active
+            } else {
+                GroupState::Inactive
+            };
         }
-        self.save(&state)
+        state.members.insert(group_key(group_id), members);
+        self.save_locked(&mut state)
     }
 
     fn clear_pending_commit(&self, group_id: &GroupId) -> Result<()> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow!("MLS state lock poisoned"))?;
-        state.pending_commits.remove(&group_key(group_id));
-        self.save(&state)
+        let mut open_group = self.load_group(group_id)?;
+        open_group
+            .clear_pending_commit(self.provider.storage())
+            .map_err(|err| anyhow!("clear OpenMLS pending commit: {err:?}"))?;
+        self.save_snapshot()
     }
 
     fn get_group(&self, group_id: &GroupId) -> Result<Option<Group>> {
         let state = self
             .state
             .lock()
-            .map_err(|_| anyhow!("MLS state lock poisoned"))?;
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
         Ok(state
             .groups
             .iter()
@@ -765,7 +918,7 @@ impl LocalMlsEngine {
         let state = self
             .state
             .lock()
-            .map_err(|_| anyhow!("MLS state lock poisoned"))?;
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
         let mut groups = state.groups.clone();
         groups.sort_by(|a, b| {
             b.last_message_at.cmp(&a.last_message_at).then_with(|| {
@@ -777,34 +930,18 @@ impl LocalMlsEngine {
     }
 
     fn get_members(&self, group_id: &GroupId) -> Result<BTreeSet<PublicKey>> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow!("MLS state lock poisoned"))?;
-        Ok(state
-            .members
-            .get(&group_key(group_id))
-            .cloned()
-            .unwrap_or_default())
+        self.group_members(group_id)
     }
 
     fn get_relays(&self, group_id: &GroupId) -> Result<BTreeSet<RelayUrl>> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow!("MLS state lock poisoned"))?;
-        Ok(state
-            .relays
-            .get(&group_key(group_id))
-            .cloned()
-            .unwrap_or_default())
+        self.group_relays(group_id)
     }
 
     fn get_message(&self, group_id: &GroupId, message_id: &EventId) -> Result<Option<Message>> {
         let state = self
             .state
             .lock()
-            .map_err(|_| anyhow!("MLS state lock poisoned"))?;
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
         Ok(state
             .messages
             .get(&group_key(group_id))
@@ -820,7 +957,7 @@ impl LocalMlsEngine {
         let state = self
             .state
             .lock()
-            .map_err(|_| anyhow!("MLS state lock poisoned"))?;
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
         let pagination = pagination.unwrap_or_default();
         let mut messages = state
             .messages
@@ -843,26 +980,16 @@ impl LocalMlsEngine {
     fn create_message(&self, group_id: &GroupId, mut rumor: UnsignedEvent) -> Result<Event> {
         rumor.ensure_id();
         let rumor_id = rumor.id();
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow!("MLS state lock poisoned"))?;
-        let group = find_group_in_state(&state, group_id)?.clone();
-        let key_context = group_secret_context_from_state(&state, group_id);
-        let rumor_json = rumor.as_json();
-        let (ciphertext, nonce) =
-            encrypt_application_rumor(group_id, group.epoch, &key_context, rumor_json.as_bytes())
-                .context("encrypt application rumor")?;
-        let event = build_group_event(
-            &group,
-            WrappedPayload::Application {
-                mls_group_id: hex::encode(group_id.as_slice()),
-                epoch: group.epoch,
-                rumor_json: None,
-                ciphertext: Some(ciphertext),
-                nonce: Some(nonce),
-                scheme_version: Some(APPLICATION_MESSAGE_SCHEME_VERSION.to_string()),
-            },
+        let group = self.app_group(group_id)?;
+        let epoch = group.epoch;
+        let payload = PikaApplicationPayload::Rumor {
+            version: APPLICATION_PAYLOAD_VERSION,
+            rumor_json: rumor.as_json(),
+        };
+        let event = self.create_application_wrapper(
+            group_id,
+            &serde_json::to_vec(&payload).context("serialize application payload")?,
+            epoch,
         )?;
         let now = Timestamp::now();
         let message = Message {
@@ -876,94 +1003,112 @@ impl LocalMlsEngine {
             tags: rumor.tags.clone(),
             event: rumor,
             wrapper_event_id: event.id,
-            epoch: Some(group.epoch),
+            epoch: Some(epoch),
             state: MessageState::Created,
         };
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
         save_message_to_state(&mut state, message);
-        self.save(&state)?;
+        state.outbound_wrappers.insert(event.id);
+        self.save_locked(&mut state)?;
         Ok(event)
     }
 
     fn process_message(&self, event: &Event) -> Result<MessageProcessingResult> {
-        let payload: WrappedPayload =
-            serde_json::from_str(&event.content).context("parse group wrapper payload")?;
-        match payload {
-            WrappedPayload::Application {
-                mls_group_id,
-                epoch,
-                rumor_json,
-                ciphertext,
-                nonce,
-                scheme_version,
-            } => {
-                let group_id = group_id_from_hex(&mls_group_id)?;
-                let key_context = {
-                    let state = self
-                        .state
-                        .lock()
-                        .map_err(|_| anyhow!("MLS state lock poisoned"))?;
-                    find_group_in_state(&state, &group_id)?;
-                    group_secret_context_from_state(&state, &group_id)
-                };
-                let rumor_json = match rumor_json {
-                    Some(rumor_json) => rumor_json,
-                    None => {
-                        let ciphertext =
-                            ciphertext.ok_or_else(|| anyhow!("missing application ciphertext"))?;
-                        let nonce = nonce.ok_or_else(|| anyhow!("missing application nonce"))?;
-                        let scheme_version = scheme_version
-                            .ok_or_else(|| anyhow!("missing application scheme version"))?;
-                        let plaintext = decrypt_application_rumor(
-                            &group_id,
-                            epoch,
-                            &key_context,
-                            &scheme_version,
-                            &ciphertext,
-                            &nonce,
-                        )
-                        .context("decrypt application rumor")?;
-                        String::from_utf8(plaintext).context("application rumor is not UTF-8")?
+        let envelope: MlsMessageEnvelope =
+            serde_json::from_str(&event.content).context("parse MLS message envelope")?;
+        if envelope.version != MLS_MESSAGE_ENVELOPE_VERSION {
+            anyhow::bail!(
+                "unsupported MLS message envelope version: {}",
+                envelope.version
+            );
+        }
+        let group_id = group_id_from_hex(&envelope.mls_group_id)?;
+        if self.outbound_wrapper_seen(&event.id)? {
+            return Ok(MessageProcessingResult::Unprocessable {
+                mls_group_id: group_id,
+            });
+        }
+        let message_bytes = BASE64_STANDARD
+            .decode(&envelope.mls_message)
+            .context("decode MLS message")?;
+        let message_in = MlsMessageIn::tls_deserialize_exact(message_bytes)
+            .context("deserialize MLS message")?;
+        let protocol_message: ProtocolMessage = message_in
+            .try_into_protocol_message()
+            .map_err(|err| anyhow!("decode MLS protocol message: {err:?}"))?;
+        let mut open_group = self.load_group(&group_id)?;
+        let processed = open_group
+            .process_message(&self.provider, protocol_message)
+            .map_err(|err| anyhow!("process OpenMLS message: {err:?}"))?;
+
+        match processed.into_content() {
+            ProcessedMessageContent::ApplicationMessage(application_message) => {
+                let bytes = application_message.into_bytes();
+                match serde_json::from_slice::<PikaApplicationPayload>(&bytes) {
+                    Ok(PikaApplicationPayload::Rumor { rumor_json, .. }) => self
+                        .process_application_rumor(&group_id, event, envelope.epoch, &rumor_json),
+                    Ok(PikaApplicationPayload::GroupData { update, .. }) => {
+                        self.apply_group_data_update(&group_id, &update)?;
+                        Ok(MessageProcessingResult::Commit {
+                            mls_group_id: group_id,
+                        })
                     }
-                };
-                let mut rumor =
-                    UnsignedEvent::from_json(rumor_json).context("parse application rumor")?;
-                rumor.ensure_id();
-                let mut state = self
-                    .state
-                    .lock()
-                    .map_err(|_| anyhow!("MLS state lock poisoned"))?;
-                find_group_in_state(&state, &group_id)?;
-                let message = Message {
-                    id: rumor.id(),
-                    pubkey: rumor.pubkey,
-                    kind: rumor.kind,
-                    mls_group_id: group_id,
-                    created_at: rumor.created_at,
-                    processed_at: Timestamp::now(),
-                    content: rumor.content.clone(),
-                    tags: rumor.tags.clone(),
-                    event: rumor,
-                    wrapper_event_id: event.id,
-                    epoch: Some(epoch),
-                    state: MessageState::Processed,
-                };
-                save_message_to_state(&mut state, message.clone());
-                self.save(&state)?;
-                Ok(MessageProcessingResult::ApplicationMessage(message))
+                    Err(_) => {
+                        let rumor_json =
+                            String::from_utf8(bytes).context("application message is not UTF-8")?;
+                        self.process_application_rumor(
+                            &group_id,
+                            event,
+                            envelope.epoch,
+                            &rumor_json,
+                        )
+                    }
+                }
             }
-            WrappedPayload::Commit {
-                mls_group_id,
-                epoch: _,
-                group,
-            } => {
-                let group_id = group_id_from_hex(&mls_group_id)?;
+            ProcessedMessageContent::ProposalMessage(proposal) => {
+                open_group
+                    .store_pending_proposal(self.provider.storage(), *proposal)
+                    .map_err(|err| anyhow!("store OpenMLS proposal: {err:?}"))?;
+                self.save_snapshot()?;
+                Ok(MessageProcessingResult::PendingProposal {
+                    mls_group_id: group_id,
+                })
+            }
+            ProcessedMessageContent::ExternalJoinProposalMessage(proposal) => {
+                open_group
+                    .store_pending_proposal(self.provider.storage(), *proposal)
+                    .map_err(|err| anyhow!("store OpenMLS external join proposal: {err:?}"))?;
+                self.save_snapshot()?;
+                Ok(MessageProcessingResult::ExternalJoinProposal {
+                    mls_group_id: group_id,
+                })
+            }
+            ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
+                open_group
+                    .merge_staged_commit(&self.provider, *staged_commit)
+                    .map_err(|err| anyhow!("merge OpenMLS staged commit: {err:?}"))?;
+                let members = members_from_mls_group(&open_group)?;
                 let mut state = self
                     .state
                     .lock()
-                    .map_err(|_| anyhow!("MLS state lock poisoned"))?;
-                let (next_group, members, relays) = group_from_payload(group)?;
-                upsert_group(&mut state, next_group, members, relays);
-                self.save(&state)?;
+                    .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
+                if let Some(group) = state
+                    .groups
+                    .iter_mut()
+                    .find(|group| group.mls_group_id == group_id)
+                {
+                    group.epoch = open_group.epoch().as_u64();
+                    group.state = if open_group.is_active() {
+                        GroupState::Active
+                    } else {
+                        GroupState::Inactive
+                    };
+                }
+                state.members.insert(group_key(&group_id), members);
+                self.save_locked(&mut state)?;
                 Ok(MessageProcessingResult::Commit {
                     mls_group_id: group_id,
                 })
@@ -971,60 +1116,148 @@ impl LocalMlsEngine {
         }
     }
 
+    fn process_application_rumor(
+        &self,
+        group_id: &GroupId,
+        wrapper: &Event,
+        epoch: u64,
+        rumor_json: &str,
+    ) -> Result<MessageProcessingResult> {
+        let mut rumor = UnsignedEvent::from_json(rumor_json).context("parse application rumor")?;
+        rumor.ensure_id();
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
+        find_group_in_state(&state, group_id)?;
+        let message = Message {
+            id: rumor.id(),
+            pubkey: rumor.pubkey,
+            kind: rumor.kind,
+            mls_group_id: group_id.clone(),
+            created_at: rumor.created_at,
+            processed_at: Timestamp::now(),
+            content: rumor.content.clone(),
+            tags: rumor.tags.clone(),
+            event: rumor,
+            wrapper_event_id: wrapper.id,
+            epoch: Some(epoch),
+            state: MessageState::Processed,
+        };
+        save_message_to_state(&mut state, message.clone());
+        self.save_locked(&mut state)?;
+        Ok(MessageProcessingResult::ApplicationMessage(message))
+    }
+
     fn process_welcome(&self, wrapper_event_id: &EventId, rumor: &UnsignedEvent) -> Result<()> {
-        let payload = parse_welcome_payload(rumor)?;
-        let (group, members, relays) = group_from_payload(payload.clone())?;
-        let welcome = Welcome {
+        let welcome = self.welcome_from_rumor(wrapper_event_id, rumor, WelcomeState::Pending)?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
+        state
+            .pending_welcomes
+            .retain(|existing| existing.wrapper_event_id != *wrapper_event_id);
+        let already_active = state.groups.iter().any(|group| {
+            group.state == GroupState::Active
+                && (group.mls_group_id == welcome.mls_group_id
+                    || group.nostr_group_id == welcome.nostr_group_id)
+        });
+        if already_active {
+            return self.save_locked(&mut state);
+        }
+        state.pending_welcomes.push(welcome);
+        self.save_locked(&mut state)
+    }
+
+    fn welcome_from_rumor(
+        &self,
+        wrapper_event_id: &EventId,
+        rumor: &UnsignedEvent,
+        state: WelcomeState,
+    ) -> Result<Welcome> {
+        let envelope = parse_welcome_envelope(rumor)?;
+        Ok(Welcome {
             id: {
                 let mut event = rumor.clone();
                 event.ensure_id();
                 event.id()
             },
             event: rumor.clone(),
-            mls_group_id: group.mls_group_id,
-            nostr_group_id: group.nostr_group_id,
-            group_name: group.name,
-            group_description: group.description,
-            group_image_hash: group.image_hash,
-            group_image_key: group.image_key,
-            group_image_nonce: group.image_nonce,
-            group_admin_pubkeys: group.admin_pubkeys,
-            group_relays: relays,
-            welcomer: PublicKey::parse(&payload.welcomer).unwrap_or(rumor.pubkey),
-            member_count: members.len() as u32,
-            state: WelcomeState::Pending,
+            mls_group_id: group_id_from_hex(&envelope.mls_group_id)?,
+            nostr_group_id: decode_hex_array::<32>(&envelope.nostr_group_id)
+                .context("decode nostr group id")?,
+            group_name: envelope.name,
+            group_description: envelope.description,
+            group_image_hash: envelope.image_hash,
+            group_image_key: envelope.image_key.map(Secret),
+            group_image_nonce: envelope.image_nonce.map(Secret),
+            group_admin_pubkeys: parse_pubkey_set(&envelope.admins)?,
+            group_relays: parse_relay_set(&envelope.relays)?,
+            welcomer: PublicKey::parse(&envelope.welcomer).unwrap_or(rumor.pubkey),
+            member_count: envelope.member_count,
+            state,
             wrapper_event_id: *wrapper_event_id,
+        })
+    }
+
+    fn accept_welcome(&self, welcome: &Welcome) -> Result<()> {
+        let envelope = parse_welcome_envelope(&welcome.event)?;
+        let welcome_bytes = BASE64_STANDARD
+            .decode(&envelope.welcome)
+            .context("decode OpenMLS welcome")?;
+        let message_in = MlsMessageIn::tls_deserialize_exact(welcome_bytes)
+            .context("deserialize OpenMLS welcome")?;
+        let open_welcome = match message_in.extract() {
+            MlsMessageBodyIn::Welcome(welcome) => welcome,
+            other => anyhow::bail!("expected OpenMLS welcome, got {other:?}"),
+        };
+        let staged = StagedWelcome::new_from_welcome(
+            &self.provider,
+            &Self::join_config(),
+            open_welcome,
+            None,
+        )
+        .map_err(|err| anyhow!("stage OpenMLS welcome: {err:?}"))?;
+        let open_group = staged
+            .into_group(&self.provider)
+            .map_err(|err| anyhow!("join OpenMLS group: {err:?}"))?;
+        let members = members_from_mls_group(&open_group)?;
+        let relays = parse_relay_set(&envelope.relays)?;
+        let admins = parse_pubkey_set(&envelope.admins)?;
+        let mut group = Group {
+            mls_group_id: GroupId::from_slice(open_group.group_id().as_slice()),
+            nostr_group_id: decode_hex_array::<32>(&envelope.nostr_group_id)
+                .context("decode nostr group id")?,
+            name: envelope.name,
+            description: envelope.description,
+            image_hash: envelope.image_hash,
+            image_key: envelope.image_key.map(Secret),
+            image_nonce: envelope.image_nonce.map(Secret),
+            admin_pubkeys: admins,
+            last_message_id: None,
+            last_message_at: None,
+            last_message_processed_at: None,
+            epoch: open_group.epoch().as_u64(),
+            state: GroupState::Active,
+            self_update_state: SelfUpdateState::CompletedAt(Timestamp::now()),
+        };
+        group.state = if open_group.is_active() {
+            GroupState::Active
+        } else {
+            GroupState::Inactive
         };
         let mut state = self
             .state
             .lock()
-            .map_err(|_| anyhow!("MLS state lock poisoned"))?;
-        state
-            .pending_welcomes
-            .retain(|existing| existing.wrapper_event_id != *wrapper_event_id);
-        state.pending_welcomes.push(welcome);
-        self.save(&state)
-    }
-
-    fn accept_welcome(&self, welcome: &Welcome) -> Result<()> {
-        let payload = parse_welcome_payload(&welcome.event)?;
-        let (mut group, members, relays) = group_from_payload(payload.clone())?;
-        let group_secret = group_secret_from_payload(&payload, &group.mls_group_id)?;
-        group.state = GroupState::Active;
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow!("MLS state lock poisoned"))?;
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
         upsert_group(&mut state, group, members, relays);
-        state
-            .group_secrets
-            .insert(group_key(&welcome.mls_group_id), Secret(group_secret));
         for pending in &mut state.pending_welcomes {
             if pending.wrapper_event_id == welcome.wrapper_event_id {
                 pending.state = WelcomeState::Accepted;
             }
         }
-        self.save(&state)
+        self.save_locked(&mut state)
     }
 
     fn get_pending_welcomes(
@@ -1034,13 +1267,196 @@ impl LocalMlsEngine {
         let state = self
             .state
             .lock()
-            .map_err(|_| anyhow!("MLS state lock poisoned"))?;
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
         Ok(state
             .pending_welcomes
             .iter()
             .filter(|welcome| welcome.state == WelcomeState::Pending)
             .cloned()
             .collect())
+    }
+
+    fn export_media_context(&self, group_id: &GroupId) -> Result<[u8; 32]> {
+        let open_group = self.load_group(group_id)?;
+        let context = Sha256::digest(group_id.as_slice());
+        let secret = open_group
+            .export_secret(self.provider.crypto(), MEDIA_EXPORTER_LABEL, &context, 32)
+            .map_err(|err| anyhow!("export OpenMLS media secret: {err:?}"))?;
+        secret
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow!("OpenMLS media secret must be 32 bytes"))
+    }
+
+    fn load_group(&self, group_id: &GroupId) -> Result<MlsGroup> {
+        MlsGroup::load(self.provider.storage(), &open_group_id(group_id))
+            .map_err(|err| anyhow!("load OpenMLS group: {err:?}"))?
+            .ok_or_else(|| anyhow!("OpenMLS group not found"))
+    }
+
+    fn app_group(&self, group_id: &GroupId) -> Result<Group> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
+        Ok(find_group_in_state(&state, group_id)?.clone())
+    }
+
+    fn group_members(&self, group_id: &GroupId) -> Result<BTreeSet<PublicKey>> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
+        Ok(state
+            .members
+            .get(&group_key(group_id))
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn group_relays(&self, group_id: &GroupId) -> Result<BTreeSet<RelayUrl>> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
+        Ok(state
+            .relays
+            .get(&group_key(group_id))
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn local_pubkey_for_wire(&self) -> Result<PublicKey> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
+        state
+            .local_pubkey
+            .ok_or_else(|| anyhow!("local pubkey missing from OpenMLS state"))
+    }
+
+    fn outbound_wrapper_seen(&self, event_id: &EventId) -> Result<bool> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
+        Ok(state.outbound_wrappers.contains(event_id))
+    }
+
+    fn welcome_envelope(
+        &self,
+        group: &Group,
+        relays: &BTreeSet<RelayUrl>,
+        welcomer: &PublicKey,
+        member_count: usize,
+        welcome: MlsMessageOut,
+    ) -> Result<WelcomeEnvelope> {
+        Ok(WelcomeEnvelope {
+            version: WELCOME_ENVELOPE_VERSION,
+            mls_group_id: hex::encode(group.mls_group_id.as_slice()),
+            nostr_group_id: hex::encode(group.nostr_group_id),
+            name: group.name.clone(),
+            description: group.description.clone(),
+            image_hash: group.image_hash,
+            image_key: group.image_key.as_ref().map(|secret| secret.0),
+            image_nonce: group.image_nonce.as_ref().map(|secret| secret.0),
+            relays: relays.iter().map(ToString::to_string).collect(),
+            admins: group.admin_pubkeys.iter().map(PublicKey::to_hex).collect(),
+            welcomer: welcomer.to_hex(),
+            member_count: member_count as u32,
+            welcome: BASE64_STANDARD.encode(welcome.to_bytes().context("serialize welcome")?),
+        })
+    }
+
+    fn create_application_wrapper(
+        &self,
+        group_id: &GroupId,
+        plaintext: &[u8],
+        epoch: u64,
+    ) -> Result<Event> {
+        let mut open_group = self.load_group(group_id)?;
+        let signer = self.signer_for_group(&open_group)?;
+        let mls_message = open_group
+            .create_message(&self.provider, &signer, plaintext)
+            .map_err(|err| anyhow!("create OpenMLS application message: {err:?}"))?;
+        let app_group = self.app_group(group_id)?;
+        let event =
+            self.build_group_event(&app_group, mls_message, epoch, MlsMessageKind::Application)?;
+        self.save_snapshot()?;
+        Ok(event)
+    }
+
+    fn build_group_event(
+        &self,
+        group: &Group,
+        mls_message: MlsMessageOut,
+        epoch: u64,
+        message_kind: MlsMessageKind,
+    ) -> Result<Event> {
+        let envelope = MlsMessageEnvelope {
+            version: MLS_MESSAGE_ENVELOPE_VERSION,
+            mls_group_id: hex::encode(group.mls_group_id.as_slice()),
+            epoch,
+            message_kind,
+            mls_message: BASE64_STANDARD
+                .encode(mls_message.to_bytes().context("serialize MLS message")?),
+        };
+        let content = serde_json::to_string(&envelope).context("serialize MLS message envelope")?;
+        let tag = Tag::custom(TagKind::h(), [hex::encode(group.nostr_group_id)]);
+        let event = EventBuilder::new(Kind::MlsGroupMessage, content)
+            .tag(tag)
+            .sign_with_keys(&Keys::generate())
+            .context("sign group wrapper")?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
+        state.outbound_wrappers.insert(event.id);
+        self.save_locked(&mut state)?;
+        Ok(event)
+    }
+
+    fn apply_group_data_update(
+        &self,
+        group_id: &GroupId,
+        update: &WireGroupDataUpdate,
+    ) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
+        let group = state
+            .groups
+            .iter_mut()
+            .find(|group| group.mls_group_id == *group_id)
+            .ok_or_else(|| anyhow!("group not found"))?;
+        apply_wire_update_to_group(group, update)?;
+        if let Some(relays) = &update.relays {
+            state
+                .relays
+                .insert(group_key(group_id), parse_relay_set(relays)?);
+        }
+        self.save_locked(&mut state)
+    }
+}
+
+impl WireGroupDataUpdate {
+    fn try_from_update(update: groups_api::NostrGroupDataUpdate) -> Result<Self> {
+        Ok(Self {
+            name: update.name,
+            description: update.description,
+            image_hash: update.image_hash,
+            image_key: update.image_key,
+            image_nonce: update.image_nonce,
+            relays: update
+                .relays
+                .map(|relays| relays.into_iter().map(|relay| relay.to_string()).collect()),
+            admins: update
+                .admins
+                .map(|admins| admins.into_iter().map(|pubkey| pubkey.to_hex()).collect()),
+            nostr_group_id: update.nostr_group_id,
+        })
     }
 }
 
@@ -1060,16 +1476,16 @@ impl StateCodec {
             && envelope.scheme_version == ENCRYPTED_STATE_SCHEME_VERSION
         {
             let StateCodec::Encrypted { key } = self else {
-                anyhow::bail!("encrypted MLS state requires open_secure_mls or an encrypted codec");
+                anyhow::bail!("encrypted OpenMLS state requires open_secure_mls");
             };
             return Ok(LoadedStoreState {
                 state: decrypt_store_state(&key, &envelope)
-                    .context("decrypt encrypted MLS state")?,
+                    .context("decrypt encrypted OpenMLS state")?,
                 was_plaintext: false,
             });
         }
 
-        let state = serde_json::from_str(trimmed).context("parse plaintext MLS state")?;
+        let state = serde_json::from_str(trimmed).context("parse plaintext OpenMLS state")?;
         Ok(LoadedStoreState {
             state,
             was_plaintext: true,
@@ -1077,14 +1493,15 @@ impl StateCodec {
     }
 
     fn encode(self, state: &StoreState) -> Result<String> {
-        let plaintext = serde_json::to_vec(state).context("serialize plaintext MLS state")?;
+        let plaintext = serde_json::to_vec(state).context("serialize plaintext OpenMLS state")?;
         let body = match self {
             StateCodec::Plaintext => {
-                serde_json::to_string_pretty(state).context("serialize plaintext MLS state")?
+                serde_json::to_string_pretty(state).context("serialize plaintext OpenMLS state")?
             }
             StateCodec::Encrypted { key } => {
                 let envelope = encrypt_store_state(&key, &plaintext)?;
-                serde_json::to_string_pretty(&envelope).context("serialize encrypted MLS state")?
+                serde_json::to_string_pretty(&envelope)
+                    .context("serialize encrypted OpenMLS state")?
             }
         };
         Ok(format!("{body}\n"))
@@ -1093,7 +1510,8 @@ impl StateCodec {
 
 fn encrypt_store_state(key: &[u8; 32], plaintext: &[u8]) -> Result<EncryptedStoreState> {
     let nonce = random_12();
-    let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| anyhow!("invalid MLS state key"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|_| anyhow!("invalid OpenMLS state key"))?;
     let ciphertext = cipher
         .encrypt(
             Nonce::from_slice(&nonce),
@@ -1113,13 +1531,15 @@ fn encrypt_store_state(key: &[u8; 32], plaintext: &[u8]) -> Result<EncryptedStor
 fn decrypt_store_state(key: &[u8; 32], envelope: &EncryptedStoreState) -> Result<StoreState> {
     if envelope.scheme_version != ENCRYPTED_STATE_SCHEME_VERSION {
         anyhow::bail!(
-            "unknown encrypted MLS state scheme version: {}",
+            "unknown encrypted OpenMLS state scheme version: {}",
             envelope.scheme_version
         );
     }
-    let nonce = decode_hex_array::<12>(&envelope.nonce).context("decode MLS state nonce")?;
-    let ciphertext = hex::decode(&envelope.ciphertext).context("decode MLS state ciphertext")?;
-    let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| anyhow!("invalid MLS state key"))?;
+    let nonce = decode_hex_array::<12>(&envelope.nonce).context("decode OpenMLS state nonce")?;
+    let ciphertext =
+        hex::decode(&envelope.ciphertext).context("decode OpenMLS state ciphertext")?;
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|_| anyhow!("invalid OpenMLS state key"))?;
     let plaintext = cipher
         .decrypt(
             Nonce::from_slice(&nonce),
@@ -1129,7 +1549,44 @@ fn decrypt_store_state(key: &[u8; 32], envelope: &EncryptedStoreState) -> Result
             },
         )
         .map_err(|_| anyhow!("AES-GCM open failed"))?;
-    serde_json::from_slice(&plaintext).context("parse decrypted MLS state")
+    serde_json::from_slice(&plaintext).context("parse decrypted OpenMLS state")
+}
+
+fn looks_like_legacy_fake_mls_state(state: &StoreState) -> bool {
+    state.openmls_storage.is_empty()
+        && (!state.groups.is_empty()
+            || !state.members.is_empty()
+            || !state.relays.is_empty()
+            || state.messages.values().any(|messages| !messages.is_empty())
+            || !state.pending_welcomes.is_empty())
+}
+
+fn memory_storage_snapshot(storage: &MemoryStorage) -> Result<BTreeMap<String, String>> {
+    let values = storage
+        .values
+        .read()
+        .map_err(|_| anyhow!("OpenMLS storage lock poisoned"))?;
+    Ok(values
+        .iter()
+        .map(|(key, value)| (BASE64_STANDARD.encode(key), BASE64_STANDARD.encode(value)))
+        .collect())
+}
+
+fn memory_storage_from_snapshot(snapshot: &BTreeMap<String, String>) -> Result<MemoryStorage> {
+    let mut values = HashMap::new();
+    for (key, value) in snapshot {
+        values.insert(
+            BASE64_STANDARD
+                .decode(key)
+                .context("decode OpenMLS storage key")?,
+            BASE64_STANDARD
+                .decode(value)
+                .context("decode OpenMLS storage value")?,
+        );
+    }
+    Ok(MemoryStorage {
+        values: RwLock::new(values),
+    })
 }
 
 fn write_private_file(path: &Path, body: String) -> Result<()> {
@@ -1155,27 +1612,12 @@ fn random_12() -> [u8; 12] {
     bytes
 }
 
+fn open_group_id(group_id: &GroupId) -> openmls::prelude::GroupId {
+    openmls::prelude::GroupId::from_slice(group_id.as_slice())
+}
+
 fn group_key(group_id: &GroupId) -> String {
     hex::encode(group_id.as_slice())
-}
-
-fn group_secret_context_from_state(state: &StoreState, group_id: &GroupId) -> [u8; 32] {
-    state
-        .group_secrets
-        .get(&group_key(group_id))
-        .map(|secret| secret.0)
-        .unwrap_or_else(|| legacy_group_secret(group_id))
-}
-
-fn legacy_group_secret(group_id: &GroupId) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"pika-local-group-secret-fallback-v1");
-    hasher.update(group_id.as_slice());
-    hasher.finalize().into()
-}
-
-fn first_pubkey(keys: &BTreeSet<PublicKey>) -> Option<PublicKey> {
-    keys.iter().next().copied()
 }
 
 fn group_id_from_hex(hex_value: &str) -> Result<GroupId> {
@@ -1190,6 +1632,13 @@ fn find_group_in_state<'a>(state: &'a StoreState, group_id: &GroupId) -> Result<
         .iter()
         .find(|group| group.mls_group_id == *group_id)
         .ok_or_else(|| anyhow!("group not found"))
+}
+
+fn replace_group_catalog(state: &mut StoreState, group: Group) {
+    state
+        .groups
+        .retain(|existing| existing.mls_group_id != group.mls_group_id);
+    state.groups.push(group);
 }
 
 fn upsert_group(
@@ -1221,173 +1670,56 @@ fn save_message_to_state(state: &mut StoreState, message: Message) {
     }
 }
 
-fn welcome_payload(
-    group: &Group,
-    members: &BTreeSet<PublicKey>,
-    relays: &BTreeSet<RelayUrl>,
-    welcomer: &PublicKey,
-    group_secret: Option<[u8; 32]>,
-) -> WelcomePayload {
-    WelcomePayload {
-        version: 1,
-        mls_group_id: hex::encode(group.mls_group_id.as_slice()),
-        nostr_group_id: hex::encode(group.nostr_group_id),
-        epoch: group.epoch,
-        name: group.name.clone(),
-        description: group.description.clone(),
-        relays: relays.iter().map(ToString::to_string).collect(),
-        admins: group.admin_pubkeys.iter().map(PublicKey::to_hex).collect(),
-        members: members.iter().map(PublicKey::to_hex).collect(),
-        welcomer: welcomer.to_hex(),
-        group_secret: group_secret.map(hex::encode),
-    }
+fn pubkey_from_credential(credential: &openmls::prelude::Credential) -> Result<PublicKey> {
+    let basic = BasicCredential::try_from(credential.clone())
+        .map_err(|err| anyhow!("expected OpenMLS basic credential: {err:?}"))?;
+    PublicKey::from_slice(basic.identity()).context("parse Nostr pubkey from MLS credential")
 }
 
-fn parse_welcome_payload(rumor: &UnsignedEvent) -> Result<WelcomePayload> {
-    if let Ok(payload) = serde_json::from_str::<WelcomePayload>(&rumor.content) {
-        return Ok(payload);
-    }
-
-    let mut synthetic_group = [0u8; 32];
-    let mut event = rumor.clone();
-    event.ensure_id();
-    synthetic_group.copy_from_slice(&Sha256::digest(event.id().to_hex().as_bytes()));
-    Ok(WelcomePayload {
-        version: 1,
-        mls_group_id: hex::encode(synthetic_group),
-        nostr_group_id: hex::encode(synthetic_group),
-        epoch: 0,
-        name: "New chat".to_string(),
-        description: String::new(),
-        relays: Vec::new(),
-        admins: vec![rumor.pubkey.to_hex()],
-        members: vec![rumor.pubkey.to_hex()],
-        welcomer: rumor.pubkey.to_hex(),
-        group_secret: None,
-    })
+fn members_from_mls_group(group: &MlsGroup) -> Result<BTreeSet<PublicKey>> {
+    group
+        .members()
+        .map(|member| pubkey_from_credential(&member.credential))
+        .collect()
 }
 
-fn group_secret_from_payload(payload: &WelcomePayload, group_id: &GroupId) -> Result<[u8; 32]> {
-    let Some(group_secret) = &payload.group_secret else {
-        return Ok(legacy_group_secret(group_id));
-    };
-    let bytes = hex::decode(group_secret).context("decode group secret")?;
-    bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| anyhow!("group secret must be 32 bytes"))
-}
-
-fn group_from_payload(
-    payload: WelcomePayload,
-) -> Result<(Group, BTreeSet<PublicKey>, BTreeSet<RelayUrl>)> {
-    let mls_group_id = group_id_from_hex(&payload.mls_group_id)?;
-    let nostr_bytes = hex::decode(&payload.nostr_group_id).context("decode nostr group id")?;
-    let nostr_group_id: [u8; 32] = nostr_bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| anyhow!("nostr group id must be 32 bytes"))?;
-    let admins: BTreeSet<PublicKey> = payload
-        .admins
+fn parse_pubkey_set(values: &[String]) -> Result<BTreeSet<PublicKey>> {
+    values
         .iter()
-        .map(|pubkey| PublicKey::parse(pubkey).context("parse admin pubkey"))
-        .collect::<Result<_>>()?;
-    let members: BTreeSet<PublicKey> = payload
-        .members
+        .map(|value| PublicKey::parse(value).context("parse pubkey"))
+        .collect()
+}
+
+fn parse_relay_set(values: &[String]) -> Result<BTreeSet<RelayUrl>> {
+    values
         .iter()
-        .map(|pubkey| PublicKey::parse(pubkey).context("parse member pubkey"))
-        .collect::<Result<_>>()?;
-    let relays: BTreeSet<RelayUrl> = payload
-        .relays
-        .iter()
-        .map(|relay| RelayUrl::parse(relay).context("parse relay URL"))
-        .collect::<Result<_>>()?;
-    let group = Group {
-        mls_group_id,
-        nostr_group_id,
-        name: payload.name,
-        description: payload.description,
-        image_hash: None,
-        image_key: None,
-        image_nonce: None,
-        admin_pubkeys: admins,
-        last_message_id: None,
-        last_message_at: None,
-        last_message_processed_at: None,
-        epoch: payload.epoch,
-        state: GroupState::Active,
-        self_update_state: SelfUpdateState::CompletedAt(Timestamp::now()),
-    };
-    Ok((group, members, relays))
+        .map(|value| RelayUrl::parse(value).context("parse relay URL"))
+        .collect()
 }
 
-fn application_message_key(group_id: &GroupId, epoch: u64, key_context: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"pika-application-message-key-v1");
-    hasher.update(group_id.as_slice());
-    hasher.update(epoch.to_be_bytes());
-    hasher.update(key_context);
-    hasher.finalize().into()
-}
-
-fn application_message_aad(group_id: &GroupId, epoch: u64, scheme_version: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(80);
-    out.extend_from_slice(b"pika-application-message-aad-v1");
-    out.extend_from_slice(group_id.as_slice());
-    out.extend_from_slice(&epoch.to_be_bytes());
-    out.extend_from_slice(scheme_version.as_bytes());
-    out
-}
-
-fn encrypt_application_rumor(
-    group_id: &GroupId,
-    epoch: u64,
-    key_context: &[u8; 32],
-    plaintext: &[u8],
-) -> Result<(String, String)> {
-    let key = application_message_key(group_id, epoch, key_context);
-    let nonce = random_12();
-    let cipher =
-        Aes256Gcm::new_from_slice(&key).map_err(|_| anyhow!("invalid application message key"))?;
-    let aad = application_message_aad(group_id, epoch, APPLICATION_MESSAGE_SCHEME_VERSION);
-    let ciphertext = cipher
-        .encrypt(
-            Nonce::from_slice(&nonce),
-            Payload {
-                msg: plaintext,
-                aad: &aad,
-            },
-        )
-        .map_err(|_| anyhow!("AES-GCM seal failed"))?;
-    Ok((hex::encode(ciphertext), hex::encode(nonce)))
-}
-
-fn decrypt_application_rumor(
-    group_id: &GroupId,
-    epoch: u64,
-    key_context: &[u8; 32],
-    scheme_version: &str,
-    ciphertext_hex: &str,
-    nonce_hex: &str,
-) -> Result<Vec<u8>> {
-    if scheme_version != APPLICATION_MESSAGE_SCHEME_VERSION {
-        anyhow::bail!("unknown application message scheme version: {scheme_version}");
+fn apply_wire_update_to_group(group: &mut Group, update: &WireGroupDataUpdate) -> Result<()> {
+    if let Some(name) = &update.name {
+        group.name = name.clone();
     }
-    let ciphertext = hex::decode(ciphertext_hex).context("decode application ciphertext")?;
-    let nonce = decode_hex_array::<12>(nonce_hex).context("decode application nonce")?;
-    let key = application_message_key(group_id, epoch, key_context);
-    let cipher =
-        Aes256Gcm::new_from_slice(&key).map_err(|_| anyhow!("invalid application message key"))?;
-    let aad = application_message_aad(group_id, epoch, scheme_version);
-    cipher
-        .decrypt(
-            Nonce::from_slice(&nonce),
-            Payload {
-                msg: ciphertext.as_slice(),
-                aad: &aad,
-            },
-        )
-        .map_err(|_| anyhow!("AES-GCM open failed"))
+    if let Some(description) = &update.description {
+        group.description = description.clone();
+    }
+    if let Some(image_hash) = update.image_hash {
+        group.image_hash = image_hash;
+    }
+    if let Some(image_key) = update.image_key {
+        group.image_key = image_key.map(Secret);
+    }
+    if let Some(image_nonce) = update.image_nonce {
+        group.image_nonce = image_nonce.map(Secret);
+    }
+    if let Some(admins) = &update.admins {
+        group.admin_pubkeys = parse_pubkey_set(admins)?;
+    }
+    if let Some(nostr_group_id) = update.nostr_group_id {
+        group.nostr_group_id = nostr_group_id;
+    }
+    Ok(())
 }
 
 fn decode_hex_array<const N: usize>(hex_value: &str) -> Result<[u8; N]> {
@@ -1398,18 +1730,18 @@ fn decode_hex_array<const N: usize>(hex_value: &str) -> Result<[u8; N]> {
         .map_err(|_| anyhow!("expected {N} bytes"))
 }
 
-fn build_welcome_rumor(payload: &WelcomePayload, welcomer: PublicKey) -> Result<UnsignedEvent> {
-    let content = serde_json::to_string(payload).context("serialize welcome payload")?;
+fn build_welcome_rumor(payload: &WelcomeEnvelope, welcomer: PublicKey) -> Result<UnsignedEvent> {
+    let content = serde_json::to_string(payload).context("serialize welcome envelope")?;
     Ok(EventBuilder::new(Kind::MlsWelcome, content).build(welcomer))
 }
 
-fn build_group_event(group: &Group, payload: WrappedPayload) -> Result<Event> {
-    let content = serde_json::to_string(&payload).context("serialize group payload")?;
-    let tag = Tag::custom(TagKind::h(), [hex::encode(group.nostr_group_id)]);
-    EventBuilder::new(Kind::MlsGroupMessage, content)
-        .tag(tag)
-        .sign_with_keys(&Keys::generate())
-        .context("sign group wrapper")
+fn parse_welcome_envelope(rumor: &UnsignedEvent) -> Result<WelcomeEnvelope> {
+    let payload: WelcomeEnvelope =
+        serde_json::from_str(&rumor.content).context("parse welcome envelope")?;
+    if payload.version != WELCOME_ENVELOPE_VERSION {
+        anyhow::bail!("unsupported welcome envelope version: {}", payload.version);
+    }
+    Ok(payload)
 }
 
 pub fn mls_state_path(data_dir: &str, pubkey_hex: &str) -> PathBuf {
@@ -1478,23 +1810,23 @@ fn install_platform_keyring_store(_keychain_group: &str) -> Result<()> {
 #[cfg(any(target_os = "ios", target_os = "android"))]
 fn secure_state_codec(pubkey_hex: &str) -> Result<StateCodec> {
     let entry = keyring_core::Entry::new(SERVICE_ID, &db_key_id(pubkey_hex))
-        .context("create MLS state keyring entry")?;
+        .context("create OpenMLS state keyring entry")?;
     match entry.get_secret() {
         Ok(secret) => {
             let key = secret
                 .as_slice()
                 .try_into()
-                .map_err(|_| anyhow!("stored MLS state key must be 32 bytes"))?;
+                .map_err(|_| anyhow!("stored OpenMLS state key must be 32 bytes"))?;
             Ok(StateCodec::Encrypted { key })
         }
         Err(keyring_core::Error::NoEntry) => {
             let key = random_32();
             entry
                 .set_secret(&key)
-                .context("persist MLS state key to keyring")?;
+                .context("persist OpenMLS state key to keyring")?;
             Ok(StateCodec::Encrypted { key })
         }
-        Err(err) => Err(anyhow!(err)).context("read MLS state key from keyring"),
+        Err(err) => Err(anyhow!(err)).context("read OpenMLS state key from keyring"),
     }
 }
 
@@ -1512,11 +1844,23 @@ pub fn open_secure_mls(
     let pubkey_hex = pubkey.to_hex();
     let state_path = mls_state_path(data_dir, &pubkey_hex);
     let codec = secure_state_codec(&pubkey_hex)?;
-    LocalMlsEngine::open_with_codec(state_path, codec).map(PikaMls::from_engine)
+    let mls = OpenMlsEngine::open_with_codec(state_path, codec).map(PikaMls::from_engine)?;
+    {
+        let mut state = mls
+            .inner
+            .state
+            .lock()
+            .map_err(|_| anyhow!("OpenMLS state lock poisoned"))?;
+        if state.local_pubkey.is_none() {
+            state.local_pubkey = Some(*pubkey);
+            mls.inner.save_locked(&mut state)?;
+        }
+    }
+    Ok(mls)
 }
 
 pub fn open_unencrypted_mls(state_dir: &Path) -> Result<PikaMls> {
-    LocalMlsEngine::open(state_dir.join("pika-mls.json")).map(PikaMls::from_engine)
+    OpenMlsEngine::open(state_dir.join("pika-mls.json")).map(PikaMls::from_engine)
 }
 
 pub fn new_unencrypted_mls(state_dir: &Path, _label: &str) -> Result<PikaMls> {
@@ -1636,7 +1980,7 @@ mod tests {
         let state_path = dir.path().join("pika-mls.json");
         let state_key = [7u8; 32];
         let mls = PikaMls::from_engine(
-            LocalMlsEngine::open_with_codec(
+            OpenMlsEngine::open_with_codec(
                 state_path.clone(),
                 StateCodec::Encrypted { key: state_key },
             )
@@ -1660,11 +2004,11 @@ mod tests {
         assert!(raw.contains(ENCRYPTED_STATE_SCHEME_VERSION));
         assert!(raw.contains("\"ciphertext\""));
         assert!(!raw.contains("state secret chat"));
-        assert!(!raw.contains("group_secrets"));
+        assert!(!raw.contains("OpenMLS"));
         drop(mls);
 
         let reopened = PikaMls::from_engine(
-            LocalMlsEngine::open_with_codec(state_path, StateCodec::Encrypted { key: state_key })
+            OpenMlsEngine::open_with_codec(state_path, StateCodec::Encrypted { key: state_key })
                 .unwrap(),
         );
         let group = crate::conversation::ConversationQueries::new(&reopened)
@@ -1672,6 +2016,12 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(group.name, "state secret chat");
+        assert!(
+            reopened
+                .inner
+                .load_group(&created.group.mls_group_id)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1698,7 +2048,7 @@ mod tests {
 
         let state_key = [9u8; 32];
         let encrypted = PikaMls::from_engine(
-            LocalMlsEngine::open_with_codec(
+            OpenMlsEngine::open_with_codec(
                 state_path.clone(),
                 StateCodec::Encrypted { key: state_key },
             )
@@ -1716,11 +2066,39 @@ mod tests {
     }
 
     #[test]
+    fn legacy_fake_state_requires_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let mls = open_unencrypted_mls(dir.path()).unwrap();
+        let keys = Keys::generate();
+        let config = groups_api::NostrGroupConfigData::new(
+            "legacy fake state".to_string(),
+            String::new(),
+            None,
+            None,
+            None,
+            Vec::new(),
+            vec![keys.public_key()],
+        );
+        mls.create_group(&keys.public_key(), Vec::new(), config)
+            .unwrap();
+        drop(mls);
+
+        let state_path = dir.path().join("pika-mls.json");
+        let raw = std::fs::read_to_string(&state_path).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        value["openmls_storage"] = serde_json::json!({});
+        std::fs::write(&state_path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+
+        let err = open_unencrypted_mls(dir.path()).expect_err("legacy fake state should not open");
+        assert!(format!("{err:#}").contains("legacy fake MLS state detected"));
+    }
+
+    #[test]
     fn encrypted_state_file_rejects_wrong_key() {
         let dir = tempfile::tempdir().unwrap();
         let state_path = dir.path().join("pika-mls.json");
         let mls = PikaMls::from_engine(
-            LocalMlsEngine::open_with_codec(
+            OpenMlsEngine::open_with_codec(
                 state_path.clone(),
                 StateCodec::Encrypted { key: [1; 32] },
             )
@@ -1740,18 +2118,18 @@ mod tests {
             .unwrap();
         drop(mls);
 
-        let err = match LocalMlsEngine::open_with_codec(
+        let err = match OpenMlsEngine::open_with_codec(
             state_path,
             StateCodec::Encrypted { key: [2; 32] },
         ) {
-            Ok(_) => panic!("wrong state key unexpectedly opened encrypted MLS state"),
+            Ok(_) => panic!("wrong state key unexpectedly opened encrypted OpenMLS state"),
             Err(err) => err,
         };
-        assert!(format!("{err:#}").contains("decrypt encrypted MLS state"));
+        assert!(format!("{err:#}").contains("decrypt encrypted OpenMLS state"));
     }
 
     #[test]
-    fn application_messages_are_encrypted_and_shared_via_welcome() {
+    fn application_messages_are_openmls_encrypted_and_shared_via_welcome() {
         let alice_dir = tempfile::tempdir().unwrap();
         let bob_dir = tempfile::tempdir().unwrap();
         let alice_mls = open_unencrypted_mls(alice_dir.path()).unwrap();
@@ -1798,7 +2176,7 @@ mod tests {
             crate::conversation::wrap_rumor(&alice_mls, &created.group.mls_group_id, rumor)
                 .unwrap();
         assert!(!wrapped.wrapper.content.contains(plaintext));
-        assert!(wrapped.wrapper.content.contains("\"ciphertext\""));
+        assert!(wrapped.wrapper.content.contains("\"mls_message\""));
 
         let processed =
             crate::conversation::process_group_message_event(&bob_mls, &wrapped.wrapper)

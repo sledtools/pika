@@ -16,6 +16,7 @@ enum AppInboundRelayEvent {
     Welcome {
         wrapper: Event,
         rumor: UnsignedEvent,
+        sender: PublicKey,
     },
     GroupMessage {
         event: Event,
@@ -223,9 +224,15 @@ async fn classify_app_notification_event(
     event: Event,
 ) -> anyhow::Result<Option<InternalEvent>> {
     match classify_app_inbound_relay_event(client, seen, event).await? {
-        Some(AppInboundRelayEvent::Welcome { wrapper, rumor }) => {
-            Ok(Some(InternalEvent::GiftWrapReceived { wrapper, rumor }))
-        }
+        Some(AppInboundRelayEvent::Welcome {
+            wrapper,
+            rumor,
+            sender,
+        }) => Ok(Some(InternalEvent::GiftWrapReceived {
+            wrapper,
+            rumor,
+            sender,
+        })),
         Some(AppInboundRelayEvent::GroupMessage { event }) => {
             Ok(Some(InternalEvent::GroupMessageReceived { event }))
         }
@@ -254,6 +261,7 @@ async fn classify_app_inbound_relay_event(
             Ok(Some(AppInboundRelayEvent::Welcome {
                 wrapper: event,
                 rumor: unwrapped.rumor,
+                sender: unwrapped.sender,
             }))
         }
         Kind::MlsGroupMessage => Ok(Some(AppInboundRelayEvent::GroupMessage { event })),
@@ -964,7 +972,6 @@ impl AppCore {
         };
         let client = sess.client.clone();
         let http_client = self.http_client.clone();
-        let private_chat_server_url = self.private_chat_server_url();
         self.runtime.spawn(async move {
             let signer = match client.signer().await {
                 Ok(signer) => signer,
@@ -974,7 +981,18 @@ impl AppCore {
                 }
             };
 
-            if let Some(base_url) = private_chat_server_url {
+            if let Some(room_binding) = room_binding.clone() {
+                let base_url = match Url::parse(&room_binding.server_url) {
+                    Ok(url) => url,
+                    Err(err) => {
+                        tracing::error!(
+                            server_url = %room_binding.server_url,
+                            %err,
+                            "welcome upload skipped due invalid chat-server URL"
+                        );
+                        return;
+                    }
+                };
                 Self::publish_welcome_rumors_best_effort_with_publisher(
                     &signer,
                     &peer_pubkeys,
@@ -1001,7 +1019,7 @@ impl AppCore {
                                 &base_url,
                                 &receiver_npub,
                                 &giftwrap,
-                                room_binding.as_ref(),
+                                Some(&room_binding),
                             )
                             .await
                             {
@@ -1580,9 +1598,8 @@ mod tests {
             .sign_with_keys(&keys)
             .expect("sign key package");
         assert!(extract_relays_from_key_package_event(&event).is_none());
-        let normalized = crate::normalize_peer_key_package_event_for_mls(&event);
 
-        pika_mls::key_package::parse_key_package(&sess.mls, &normalized)
+        pika_mls::key_package::parse_key_package(&sess.mls, &event)
             .expect("chat-server key package should stay parseable");
     }
 
@@ -2086,8 +2103,10 @@ mod tests {
             Some(InternalEvent::GiftWrapReceived {
                 wrapper: first_wrapper,
                 rumor: first_rumor,
+                sender,
             }) => {
                 assert_eq!(first_wrapper.id, wrapper.id);
+                assert_eq!(sender, inviter_keys.public_key());
                 assert_eq!(first_rumor.pubkey, rumor.pubkey);
                 assert_eq!(first_rumor.kind, rumor.kind);
                 assert_eq!(first_rumor.content, rumor.content);

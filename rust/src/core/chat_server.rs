@@ -3,11 +3,12 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use nostr_sdk::prelude::{Client, Event, EventBuilder, Kind, Tag, TagKind, ToBech32};
 use pika_chat_server::protocol::{
-    AppendRoomEventRequest, AppendRoomEventResponse, ClaimKeyPackageRequest,
+    AckWelcomeRequest, AppendRoomEventRequest, AppendRoomEventResponse, ClaimKeyPackageRequest,
     ClaimKeyPackageResponse, ClaimWelcomesResponse, CreateRoomRequest, CreateRoomResponse,
-    KeyPackageRecord, RoomEvent, RoomEventType, RoomSummary, SubmitMembershipCommitRequest,
-    SubmitMembershipCommitResponse, SyncRoomEventsResponse, UploadKeyPackageRequest,
-    UploadKeyPackageResponse, UploadWelcomeRequest, UploadWelcomeResponse, WelcomeEnvelope,
+    KeyPackageRecord, ReleaseWelcomeRequest, RoomEvent, RoomEventType, RoomSummary,
+    SubmitRoomCommitRequest, SubmitRoomCommitResponse, SyncRoomEventsResponse,
+    UploadKeyPackageRequest, UploadKeyPackageResponse, UploadWelcomeRequest, UploadWelcomeResponse,
+    WelcomeEnvelope, WelcomeRecord,
 };
 use pika_chat_server::SessionTokenResponse;
 use reqwest::{Method, StatusCode};
@@ -18,28 +19,24 @@ use url::Url;
 pub struct WelcomeRoomBinding {
     pub server_url: String,
     pub room_id: String,
+    pub last_synced_seq: u64,
 }
 
-#[derive(Debug, Clone)]
-pub struct ClaimedWelcomeEvent {
-    pub wrapper: Event,
-    pub rumor: nostr_sdk::prelude::UnsignedEvent,
-    pub room_binding: Option<WelcomeRoomBinding>,
-}
+pub type ClaimedWelcomeRecord = WelcomeRecord;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SubmitMembershipCommitError {
+pub enum SubmitRoomCommitError {
     StaleEpochConflict(String),
     RequestFailed(String),
 }
 
-impl SubmitMembershipCommitError {
+impl SubmitRoomCommitError {
     pub fn is_stale_epoch_conflict(&self) -> bool {
         matches!(self, Self::StaleEpochConflict(_))
     }
 }
 
-impl std::fmt::Display for SubmitMembershipCommitError {
+impl std::fmt::Display for SubmitRoomCommitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::StaleEpochConflict(message) | Self::RequestFailed(message) => {
@@ -49,7 +46,7 @@ impl std::fmt::Display for SubmitMembershipCommitError {
     }
 }
 
-impl std::error::Error for SubmitMembershipCommitError {}
+impl std::error::Error for SubmitRoomCommitError {}
 
 fn endpoint(base_url: &Url, path: &str) -> Result<Url> {
     base_url
@@ -124,6 +121,8 @@ pub async fn create_room(
     signer_client: &Client,
     base_url: &Url,
     member_npubs: Vec<String>,
+    mls_group_id: Option<String>,
+    initial_epoch: Option<u64>,
 ) -> Result<RoomSummary> {
     let access_token = login(http_client, signer_client, base_url).await?;
     let url = endpoint(base_url, "/v1/rooms")?;
@@ -132,7 +131,11 @@ pub async fn create_room(
             .post(url)
             .bearer_auth(access_token)
             .header("Accept", "application/json")
-            .json(&CreateRoomRequest { member_npubs })
+            .json(&CreateRoomRequest {
+                member_npubs,
+                mls_group_id,
+                initial_epoch,
+            })
             .send()
             .await
             .context("send chat-server create-room request")?,
@@ -181,6 +184,7 @@ pub async fn append_wrapped_room_event(
         room_id,
         AppendRoomEventRequest {
             event_type,
+            expected_epoch: wrapper_mls_epoch(wrapper),
             epoch: 0,
             content: serde_json::to_string(wrapper).context("serialize wrapped room event")?,
         },
@@ -189,77 +193,78 @@ pub async fn append_wrapped_room_event(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn submit_membership_commit(
+pub async fn submit_room_commit(
     http_client: &reqwest::Client,
     signer_client: &Client,
     base_url: &Url,
     room_id: &str,
     expected_epoch: u64,
-    member_npubs: Vec<String>,
+    member_npubs: Option<Vec<String>>,
     wrapper: &Event,
     welcomes: Vec<WelcomeEnvelope>,
-) -> std::result::Result<(RoomSummary, RoomEvent), SubmitMembershipCommitError> {
+) -> std::result::Result<(RoomSummary, RoomEvent), SubmitRoomCommitError> {
     let access_token = login(http_client, signer_client, base_url)
         .await
         .map_err(|err| {
-            SubmitMembershipCommitError::RequestFailed(format!(
-                "chat-server submit membership commit: login failed: {err}"
+            SubmitRoomCommitError::RequestFailed(format!(
+                "chat-server submit room commit: login failed: {err}"
             ))
         })?;
-    let url =
-        endpoint(base_url, &format!("/v1/rooms/{room_id}/membership-commits")).map_err(|err| {
-            SubmitMembershipCommitError::RequestFailed(format!(
-                "chat-server submit membership commit: build endpoint failed: {err}"
-            ))
-        })?;
+    let url = endpoint(base_url, &format!("/v1/rooms/{room_id}/commits")).map_err(|err| {
+        SubmitRoomCommitError::RequestFailed(format!(
+            "chat-server submit room commit: build endpoint failed: {err}"
+        ))
+    })?;
     let response = http_client
         .post(url)
         .bearer_auth(access_token)
         .header("Accept", "application/json")
-        .json(&SubmitMembershipCommitRequest {
+        .json(&SubmitRoomCommitRequest {
             expected_epoch,
             member_npubs,
-            wrapper_event_json: serde_json::to_string(wrapper)
-                .map_err(|err| {
-                    SubmitMembershipCommitError::RequestFailed(format!(
-                        "chat-server submit membership commit: serialize membership commit wrapper: {err}"
-                    ))
-                })?,
+            wrapper_event_json: serde_json::to_string(wrapper).map_err(|err| {
+                SubmitRoomCommitError::RequestFailed(format!(
+                    "chat-server submit room commit: serialize commit wrapper: {err}"
+                ))
+            })?,
             welcomes,
         })
         .send()
         .await
         .map_err(|err| {
-            SubmitMembershipCommitError::RequestFailed(format!(
-                "chat-server submit membership commit: send request failed: {err}"
+            SubmitRoomCommitError::RequestFailed(format!(
+                "chat-server submit room commit: send request failed: {err}"
             ))
         })?;
+    read_commit_response(response, "chat-server submit room commit").await
+}
+
+async fn read_commit_response(
+    response: reqwest::Response,
+    context: &str,
+) -> std::result::Result<(RoomSummary, RoomEvent), SubmitRoomCommitError> {
     let status = response.status();
     let bytes = response.bytes().await.map_err(|err| {
-        SubmitMembershipCommitError::RequestFailed(format!(
-            "chat-server submit membership commit: read response body failed: {err}"
-        ))
+        SubmitRoomCommitError::RequestFailed(format!("{context}: read response body failed: {err}"))
     })?;
     if !status.is_success() {
         let detail = String::from_utf8_lossy(&bytes).trim().to_string();
         let message = if detail.is_empty() {
-            format!("chat-server submit membership commit: request failed with status {status}")
+            format!("{context}: request failed with status {status}")
         } else {
-            format!(
-                "chat-server submit membership commit: request failed with status {status}: {detail}"
-            )
+            format!("{context}: request failed with status {status}: {detail}")
         };
         return Err(if status == StatusCode::CONFLICT {
-            SubmitMembershipCommitError::StaleEpochConflict(message)
+            SubmitRoomCommitError::StaleEpochConflict(message)
         } else {
-            SubmitMembershipCommitError::RequestFailed(message)
+            SubmitRoomCommitError::RequestFailed(message)
         });
     }
-    serde_json::from_slice::<SubmitMembershipCommitResponse>(&bytes)
+    serde_json::from_slice::<SubmitRoomCommitResponse>(&bytes)
         .map(|response| (response.room, response.event))
         .map_err(|err| {
-            SubmitMembershipCommitError::RequestFailed(format!(
-                "chat-server submit membership commit: decode JSON body failed: {err}"
+            SubmitRoomCommitError::RequestFailed(format!(
+                "{context}: decode JSON body failed: {err}"
             ))
         })
 }
@@ -323,11 +328,11 @@ pub async fn upload_welcome_event(
     Ok(())
 }
 
-pub async fn claim_welcome_events(
+pub async fn claim_welcome_records(
     http_client: &reqwest::Client,
     signer_client: &Client,
     base_url: &Url,
-) -> Result<Vec<ClaimedWelcomeEvent>> {
+) -> Result<Vec<ClaimedWelcomeRecord>> {
     let access_token = login(http_client, signer_client, base_url).await?;
     let url = endpoint(base_url, "/v1/welcomes/claim")?;
     let claimed: ClaimWelcomesResponse = read_json(
@@ -341,29 +346,57 @@ pub async fn claim_welcome_events(
         "chat-server claim welcomes",
     )
     .await?;
+    Ok(claimed.welcomes)
+}
 
-    let mut welcomes = Vec::with_capacity(claimed.welcomes.len());
-    for record in claimed.welcomes {
-        let wrapper: Event = serde_json::from_str(&record.wrapper_event_json)
-            .context("decode claimed welcome wrapper")?;
-        let unwrapped = signer_client
-            .unwrap_gift_wrap(&wrapper)
-            .await
-            .context("unwrap claimed welcome giftwrap")?;
-        let room_binding = match (record.server_url, record.room_id) {
-            (Some(server_url), Some(room_id)) => Some(WelcomeRoomBinding {
-                server_url,
-                room_id,
-            }),
-            _ => None,
-        };
-        welcomes.push(ClaimedWelcomeEvent {
-            wrapper,
-            rumor: unwrapped.rumor,
-            room_binding,
-        });
-    }
-    Ok(welcomes)
+pub async fn ack_welcome_record(
+    http_client: &reqwest::Client,
+    signer_client: &Client,
+    base_url: &Url,
+    welcome_id: &str,
+    lease_token: &str,
+) -> Result<()> {
+    let access_token = login(http_client, signer_client, base_url).await?;
+    let url = endpoint(base_url, "/v1/welcomes/ack")?;
+    http_client
+        .post(url)
+        .bearer_auth(access_token)
+        .header("Accept", "application/json")
+        .json(&AckWelcomeRequest {
+            welcome_id: welcome_id.to_string(),
+            lease_token: lease_token.to_string(),
+        })
+        .send()
+        .await
+        .context("send chat-server ack-welcome request")?
+        .error_for_status()
+        .context("chat-server ack welcome")?;
+    Ok(())
+}
+
+pub async fn release_welcome_record(
+    http_client: &reqwest::Client,
+    signer_client: &Client,
+    base_url: &Url,
+    welcome_id: &str,
+    lease_token: &str,
+) -> Result<()> {
+    let access_token = login(http_client, signer_client, base_url).await?;
+    let url = endpoint(base_url, "/v1/welcomes/release")?;
+    http_client
+        .post(url)
+        .bearer_auth(access_token)
+        .header("Accept", "application/json")
+        .json(&ReleaseWelcomeRequest {
+            welcome_id: welcome_id.to_string(),
+            lease_token: lease_token.to_string(),
+        })
+        .send()
+        .await
+        .context("send chat-server release-welcome request")?
+        .error_for_status()
+        .context("chat-server release welcome")?;
+    Ok(())
 }
 
 pub async fn upload_key_package_event(
@@ -425,6 +458,11 @@ pub async fn claim_key_package_event(
         read_json(response, "chat-server claim key package").await?;
     let event: Event = serde_json::from_str(&claimed.key_package.payload)
         .context("decode claimed key package event payload")?;
+    let requested_owner =
+        nostr_sdk::prelude::PublicKey::parse(owner_npub).context("parse requested key owner")?;
+    if event.pubkey != requested_owner {
+        bail!("claimed key package pubkey does not match requested owner");
+    }
     Ok(Some(event))
 }
 
@@ -433,6 +471,12 @@ pub fn peer_npub(peer_pubkey: &nostr_sdk::prelude::PublicKey) -> Result<String> 
         .to_bech32()
         .map(|npub| npub.to_lowercase())
         .map_err(|err| anyhow!("encode peer npub: {err}"))
+}
+
+fn wrapper_mls_epoch(wrapper: &Event) -> Option<u64> {
+    serde_json::from_str::<serde_json::Value>(&wrapper.content)
+        .ok()
+        .and_then(|value| value.get("epoch").and_then(|epoch| epoch.as_u64()))
 }
 
 #[cfg(test)]
@@ -444,6 +488,9 @@ mod tests {
     use nostr_sdk::prelude::{Keys, ToBech32};
     use pika_chat_server::store::StoreHandle;
     use pika_chat_server::{router, AppState, SessionManager};
+
+    const TEST_MLS_GROUP_ID: &str =
+        "0000000000000000000000000000000000000000000000000000000000000000";
 
     fn real_key_package_event(keys: &Keys) -> Event {
         let dir = tempfile::tempdir().expect("key package state dir");
@@ -458,6 +505,20 @@ mod tests {
             .tags(tags)
             .sign_with_keys(keys)
             .expect("sign key package event")
+    }
+
+    fn mls_wrapper_event(keys: &Keys, epoch: u64, message_kind: &str) -> Event {
+        let content = serde_json::json!({
+            "version": 1,
+            "mls_group_id": TEST_MLS_GROUP_ID,
+            "epoch": epoch,
+            "message_kind": message_kind,
+            "mls_message": "opaque",
+        })
+        .to_string();
+        EventBuilder::new(Kind::MlsGroupMessage, content)
+            .sign_with_keys(keys)
+            .expect("sign MLS wrapper")
     }
 
     async fn spawn_test_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
@@ -531,11 +592,14 @@ mod tests {
             &alice_client,
             &base_url,
             vec![bob_npub.clone()],
+            Some(TEST_MLS_GROUP_ID.to_string()),
+            Some(1),
         )
         .await
         .expect("create room");
 
         assert_eq!(room.members.len(), 2);
+        assert_eq!(room.mls_group_id.as_deref(), Some(TEST_MLS_GROUP_ID));
         assert_eq!(room.last_seq, 0);
         assert!(room.members.contains(&alice_npub));
         assert!(room.members.contains(&bob_npub));
@@ -555,12 +619,17 @@ mod tests {
         let bob_npub = bob_keys.public_key().to_bech32().unwrap().to_lowercase();
         let bob_client = Client::builder().signer(bob_keys).build();
 
-        let room = create_room(&http_client, &alice_client, &base_url, vec![bob_npub])
-            .await
-            .expect("create room");
-        let wrapper = EventBuilder::new(Kind::MlsGroupMessage, "opaque-wrapper")
-            .sign_with_keys(&alice_keys)
-            .expect("sign wrapper");
+        let room = create_room(
+            &http_client,
+            &alice_client,
+            &base_url,
+            vec![bob_npub],
+            Some(TEST_MLS_GROUP_ID.to_string()),
+            None,
+        )
+        .await
+        .expect("create room");
+        let wrapper = mls_wrapper_event(&alice_keys, 0, "application");
 
         let appended = append_wrapped_room_event(
             &http_client,
@@ -608,20 +677,20 @@ mod tests {
             &alice_client,
             &base_url,
             vec![bob_npub.clone()],
+            Some(TEST_MLS_GROUP_ID.to_string()),
+            Some(1),
         )
         .await
         .expect("create room");
-        let wrapper = EventBuilder::new(Kind::MlsGroupMessage, "opaque-membership-commit")
-            .sign_with_keys(&alice_keys)
-            .expect("sign membership commit wrapper");
+        let wrapper = mls_wrapper_event(&alice_keys, 1, "commit");
 
-        let (updated_room, appended) = submit_membership_commit(
+        let (updated_room, appended) = submit_room_commit(
             &http_client,
             &alice_client,
             &base_url,
             &room.room_id,
-            0,
-            vec![alice_npub, bob_npub, carol_npub.clone()],
+            1,
+            Some(vec![alice_npub, bob_npub, carol_npub.clone()]),
             &wrapper,
             vec![WelcomeEnvelope {
                 recipient_npub: carol_npub.clone(),
@@ -633,18 +702,18 @@ mod tests {
         .await
         .expect("submit membership commit");
 
-        assert_eq!(updated_room.epoch, 1);
+        assert_eq!(updated_room.epoch, 2);
         assert_eq!(updated_room.last_seq, 1);
         assert!(updated_room.members.contains(&carol_npub));
         assert_eq!(appended.event_type, RoomEventType::Commit);
         assert_eq!(appended.seq, 1);
-        assert_eq!(appended.epoch, 1);
+        assert_eq!(appended.epoch, 2);
 
         let synced = sync_room_events(&http_client, &carol_client, &base_url, &room.room_id, 0, 10)
             .await
             .expect("sync room events");
-        assert_eq!(synced.room.epoch, 1);
-        assert_eq!(synced.events.len(), 1);
+        assert_eq!(synced.room.epoch, 2);
+        assert!(synced.events.is_empty());
 
         handle.abort();
     }
@@ -665,27 +734,27 @@ mod tests {
             &alice_client,
             &base_url,
             vec![bob_npub.clone()],
+            Some(TEST_MLS_GROUP_ID.to_string()),
+            Some(1),
         )
         .await
         .expect("create room");
-        let wrapper = EventBuilder::new(Kind::MlsGroupMessage, "stale-membership-commit")
-            .sign_with_keys(&alice_keys)
-            .expect("sign membership commit wrapper");
+        let wrapper = mls_wrapper_event(&alice_keys, 0, "commit");
 
-        let err = submit_membership_commit(
+        let err = submit_room_commit(
             &http_client,
             &alice_client,
             &base_url,
             &room.room_id,
-            1,
-            vec![bob_npub],
+            0,
+            Some(vec![bob_npub]),
             &wrapper,
             Vec::new(),
         )
         .await
         .expect_err("stale epoch should fail");
         assert!(err.is_stale_epoch_conflict());
-        assert!(err.to_string().contains("expected 1, actual 0"));
+        assert!(err.to_string().contains("expected 0, actual 1"));
 
         handle.abort();
     }
@@ -726,33 +795,33 @@ mod tests {
             Some(&WelcomeRoomBinding {
                 server_url: "https://chat.example".to_string(),
                 room_id: "room_123".to_string(),
+                last_synced_seq: 0,
             }),
         )
         .await
         .expect("upload welcome event");
 
-        let mut claimed = claim_welcome_events(&http_client, &receiver_client, &base_url)
+        let claimed = claim_welcome_records(&http_client, &receiver_client, &base_url)
             .await
             .expect("claim welcome events");
         assert_eq!(claimed.len(), 1);
-        assert_eq!(claimed[0].wrapper.id, wrapper.id);
-        assert_eq!(claimed[0].rumor.id(), rumor.id);
         assert_eq!(
-            claimed[0]
-                .room_binding
-                .as_ref()
-                .map(|binding| binding.server_url.as_str()),
+            claimed[0].wrapper_event_json,
+            serde_json::to_string(&wrapper).unwrap()
+        );
+        assert_eq!(
+            claimed[0].sender_npub,
+            sender_keys.public_key().to_bech32().unwrap().to_lowercase()
+        );
+        assert_eq!(
+            claimed[0].server_url.as_deref(),
             Some("https://chat.example")
         );
-        assert_eq!(
-            claimed[0]
-                .room_binding
-                .as_ref()
-                .map(|binding| binding.room_id.as_str()),
-            Some("room_123")
-        );
+        assert_eq!(claimed[0].room_id.as_deref(), Some("room_123"));
+        assert!(claimed[0].lease_token.is_some());
+        assert!(claimed[0].lease_until.is_some());
 
-        let claimed_again = claim_welcome_events(&http_client, &receiver_client, &base_url)
+        let claimed_again = claim_welcome_records(&http_client, &receiver_client, &base_url)
             .await
             .expect("claim welcome events again");
         assert!(claimed_again.is_empty());
@@ -782,6 +851,8 @@ mod tests {
             &claimer_client,
             &base_url,
             vec![owner_npub.clone()],
+            None,
+            None,
         )
         .await
         .expect("create room");

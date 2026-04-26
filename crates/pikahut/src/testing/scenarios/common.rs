@@ -130,10 +130,19 @@ mod tests {
 
     #[test]
     fn pick_free_port_returns_bindable_port() {
-        let port = pick_free_port().expect("pick port");
-        let listener =
-            std::net::TcpListener::bind(("127.0.0.1", port)).expect("port should be bindable");
-        drop(listener);
+        for _ in 0..16 {
+            let port = pick_free_port().expect("pick port");
+            match std::net::TcpListener::bind(("127.0.0.1", port)) {
+                Ok(listener) => {
+                    drop(listener);
+                    return;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => continue,
+                Err(err) => panic!("port should be bindable: {err}"),
+            }
+        }
+
+        panic!("freshly selected port stayed busy after retries");
     }
 
     #[test]

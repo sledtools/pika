@@ -33,18 +33,18 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
 
 ## Milestones
 
-- [ ] Add idempotency to mutating chat-server endpoints.
-- [ ] Store and dedupe room events by wrapper event id.
-- [ ] Move room-event cursor advancement after successful local processing.
+- [~] Add idempotency to mutating chat-server endpoints.
+- [x] Store and dedupe room events by wrapper event id.
+- [x] Move room-event cursor advancement after successful local processing.
 - [ ] Add explicit room recovery states such as `NeedsResync` and `Quarantined`.
-- [ ] Replace destructive welcome claims with lease/ack delivery.
-- [ ] Replace one-way key-package claims with lease/finalize/release semantics.
+- [~] Replace destructive welcome claims with lease/ack delivery.
+- [~] Replace one-way key-package claims with lease/finalize/release semantics.
 - [ ] Move `pika-chat-server` persistence from whole-file JSON to SQLite WAL.
-- [ ] Add a minimal client durable workflow layer for chat-server operations, effects, inbox rows, and processed events.
+- [~] Add a minimal client durable workflow layer for chat-server operations, effects, inbox rows, and processed events.
 - [ ] Make membership commits resumable across crash/restart.
 - [ ] Make room bootstrap resumable across crash/restart.
 - [ ] Split welcome join into observed, activation, catch-up, active, and quarantined states.
-- [ ] Move `pika-mls` off whole-state memory snapshots or make that migration explicit with an interim atomic-write guard.
+- [~] Move `pika-mls` off whole-state memory snapshots or make that migration explicit with an interim atomic-write guard.
 - [ ] Generate membership commits in an isolated working namespace before server acceptance.
 - [ ] Tighten server-side protocol validation without making the server decrypt MLS application data.
 - [ ] Tighten client-side MLS policy for credentials, self-update, self-remove, metadata changes, and membership changes.
@@ -53,18 +53,18 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
 
 ## Near-Term Steps
 
-- [ ] Add `wrapper_event_id` to persisted room events and API responses.
-- [ ] Enforce `(room_id, wrapper_event_id)` uniqueness and return the original append/commit response on duplicate submit.
+- [x] Add `wrapper_event_id` to persisted room events and API responses.
+- [x] Enforce `(room_id, wrapper_event_id)` uniqueness and return the original append/commit response on duplicate submit.
 - [ ] Add `client_request_id` or `Idempotency-Key` support for:
   room create, room append, commit submit, key-package upload/claim, welcome upload/claim.
 - [ ] Reject duplicate idempotency keys with different payload hashes.
-- [ ] Fix `handle_chat_server_room_event_appended` so `last_synced_seq` is not persisted before `handle_group_message` succeeds.
+- [x] Fix `handle_chat_server_room_event_appended` so `last_synced_seq` is not persisted before `handle_group_message` succeeds.
 - [ ] Split local room sync state into `server_acked_seq` and `processed_seq`.
 - [ ] Add processed room-event records keyed by room seq and wrapper event id.
-- [ ] Change welcome claim to return leased records with `lease_token` and `lease_until`.
-- [ ] Add welcome ack/release endpoints, keeping old claim behavior only as temporary compatibility if needed.
-- [ ] Persist claimed welcome records locally before unwrap/stage/accept.
-- [ ] Change key-package claim to lease inventory and finalize only after the membership commit is accepted.
+- [x] Change welcome claim to return leased records with `lease_token` and `lease_until`.
+- [x] Add welcome ack/release endpoints, keeping old claim behavior only as temporary compatibility if needed.
+- [x] Persist claimed welcome records locally before unwrap/stage/accept.
+- [~] Change key-package claim to lease inventory and finalize only after the membership commit is accepted.
 - [ ] Add a minimal `chat_server_ops` table for `room_bootstrap`, `append_message`, `membership_commit`, `welcome_activation`, and `key_package_publish`.
 - [ ] Add a minimal `chat_server_effects` table with exact artifact bytes, target URL, idempotency key, attempt count, next retry, and last error.
 - [ ] Resume pending chat-server effects on startup and network recovery.
@@ -72,6 +72,14 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
 ## Implementation Notes
 
 - Current server state is clone-write-rename JSON. That is useful for prototyping, but it cannot cleanly express durable idempotency, leases, acks, quotas, migrations, or multi-record atomicity.
+- Room appends and room commits now have a first natural idempotency key:
+  the signed Nostr wrapper event id is persisted on the room event and duplicate submits by the same account return the original event without advancing seq, epoch, or welcome delivery again.
+- The app append fast path no longer persists `last_synced_seq` before local wrapper processing succeeds.
+- The chat server now leases welcomes instead of deleting them on claim:
+  `claim -> local persistence -> unwrap/stage/accept -> ack`, with explicit release on permanent failure and lease expiry on abandonment.
+- The client now persists pending claimed welcomes in `profiles.sqlite3` before unwrap/stage/accept and replays them on the next poll cycle until ack succeeds.
+- The chat server now leases key packages instead of burning them on claim.
+  Finalize and release endpoints exist, but the client still needs durable operation plumbing so add-member and bootstrap flows finalize at the right atomic server boundary.
 - SQLite WAL is the preferred next server store:
   `rooms`, `room_members`, `room_events`, `event_visibility`, `key_packages`, `welcome_deliveries`, and `idempotency_records`.
 - The server should validate signed Nostr wrappers and visible MLS framing:
@@ -82,6 +90,8 @@ Living plan. Revise it as we learn. Do not treat this as a fixed contract.
   Provider writes and app metadata need a durable transaction boundary.
 - Short-term file persistence hardening is acceptable only as an interim step:
   write temp file, fsync file, rename, fsync directory.
+- The interim `pika-mls` file write guard is in place:
+  state files now write to a unique private temp path, fsync the file, rename into place, and fsync the parent directory on Unix.
 - Durable membership commit states should be:
   `prepared`, `submitted`, `accepted_at_seq`, `local_merged`, `complete`, `rejected_stale`, `needs_recovery`.
 - Durable welcome states should be:

@@ -347,7 +347,6 @@ fn accept_welcome_not_found_message() -> String {
     )
 }
 
-use crate::key_package::normalize_peer_key_package_event_for_mls;
 use crate::media::{
     MAX_CHAT_MEDIA_BYTES, ParsedMediaAttachment, PreparedMediaUpload, RuntimeMediaAttachment,
     UploadedBlob, resolve_upload_metadata, upload_encrypted_blob,
@@ -606,7 +605,7 @@ where
                 return out_error(request_id, mapped.code, mapped.message);
             }
         };
-        key_package_events.push(normalize_peer_key_package_event_for_mls(&key_package));
+        key_package_events.push(key_package);
     }
 
     let prepared = match host.prepare_add_members(nostr_group_id, &key_package_events) {
@@ -5151,8 +5150,6 @@ pub async fn daemon_main(
                                 continue;
                             }
                         };
-                        let peer_kp = normalize_peer_key_package_event_for_mls(&peer_kp);
-
                         // Create group.
                         let config = NostrGroupConfigData::new(
                             group_name,

@@ -58,6 +58,7 @@ pub(crate) enum InternalEvent {
     GiftWrapReceived {
         wrapper: nostr_sdk::prelude::Event,
         rumor: nostr_sdk::prelude::UnsignedEvent,
+        sender: nostr_sdk::prelude::PublicKey,
     },
     GroupMessageReceived {
         event: nostr_sdk::prelude::Event,
@@ -186,7 +187,7 @@ pub(crate) enum InternalEvent {
         wrapper: nostr_sdk::prelude::Event,
     },
     ChatServerWelcomesClaimed {
-        welcomes: Vec<crate::core::chat_server::ClaimedWelcomeEvent>,
+        welcomes: Vec<crate::core::chat_server::ClaimedWelcomeRecord>,
         error: Option<String>,
     },
 

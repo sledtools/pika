@@ -194,17 +194,21 @@ impl<'a> MembershipRuntime<'a> {
             mls_group_id,
             nostr_group_id_hex,
             added_pubkeys,
+            self_removed,
             welcome_rumors,
             transport_applied_membership,
             transport_delivered_welcomes,
             ..
         } = prepared;
 
-        let merge_error = self
-            .mls
-            .merge_pending_commit(&mls_group_id)
-            .err()
-            .map(|err| err.to_string());
+        let merge_error = if self_removed {
+            None
+        } else {
+            self.mls
+                .merge_pending_commit(&mls_group_id)
+                .err()
+                .map(|err| err.to_string())
+        };
 
         let welcome_delivery =
             if merge_error.is_none() && !transport_delivered_welcomes && !welcome_rumors.is_empty()
@@ -242,7 +246,7 @@ pub fn clear_pending_commit(mls: &PikaMls, mls_group_id: &GroupId) -> Result<()>
 
 impl PreparedMembershipEvolution {
     pub fn is_membership_change(&self) -> bool {
-        !self.added_pubkeys.is_empty() || !self.removed_pubkeys.is_empty() || self.self_removed
+        !self.added_pubkeys.is_empty() || !self.removed_pubkeys.is_empty()
     }
 
     pub fn mark_stale_epoch_conflict(&mut self) {

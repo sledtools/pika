@@ -134,7 +134,6 @@ pub(crate) fn relay_reset_config_json(existing_json: Option<&str>) -> String {
 }
 use nostr_sdk::prelude::*;
 
-pub use interop::normalize_peer_key_package_event_for_mls;
 use interop::{
     extract_relays_from_key_package_event, extract_relays_from_key_package_relays_event,
     referenced_key_package_event_id,
@@ -723,6 +722,13 @@ struct PendingDirectChatCreation {
     peer_pubkey: PublicKey,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingChatServerWelcomeAction {
+    Retain,
+    Ack,
+    Release,
+}
+
 #[derive(Debug, Clone)]
 struct NostrConnectConnectResponse {
     remote_signer_pubkey: PublicKey,
@@ -870,6 +876,7 @@ pub struct AppCore {
     profiles: HashMap<String, ProfileCache>, // hex pubkey -> cached global profile
     group_profiles: HashMap<String, HashMap<String, ProfileCache>>, // chat_id -> (pubkey -> profile)
     chat_server_rooms: HashMap<String, profile_db::ChatServerRoomBinding>, // local chat_id -> room binding
+    pending_chat_server_welcomes: Vec<profile_db::PendingChatServerWelcome>,
     chat_server_sync_in_flight: HashSet<String>, // chat ids currently syncing from the chat server
     chat_server_welcome_claim_in_flight: bool,
     profile_db: Option<rusqlite::Connection>,
@@ -982,6 +989,10 @@ impl AppCore {
             .as_ref()
             .map(profile_db::load_chat_server_rooms)
             .unwrap_or_default();
+        let pending_chat_server_welcomes = profile_db
+            .as_ref()
+            .map(profile_db::load_pending_chat_server_welcomes)
+            .unwrap_or_default();
         // Load pending_sends first — it prunes corrupt entries from both tables.
         let pending_sends = PendingSends::load(profile_db.as_ref());
         let failed_sends = FailedSends::load(profile_db.as_ref());
@@ -1029,6 +1040,7 @@ impl AppCore {
             profiles,
             group_profiles: HashMap::new(),
             chat_server_rooms,
+            pending_chat_server_welcomes,
             chat_server_sync_in_flight: HashSet::new(),
             chat_server_welcome_claim_in_flight: false,
             profile_db,
@@ -3289,6 +3301,7 @@ impl AppCore {
             self.local_outbox.clear();
             self.profiles.clear();
             self.chat_server_rooms.clear();
+            self.pending_chat_server_welcomes.clear();
             self.chat_server_sync_in_flight.clear();
             self.chat_server_welcome_claim_in_flight = false;
             if let Some(conn) = self.profile_db.as_ref() {
@@ -3316,6 +3329,7 @@ impl AppCore {
         // Drop SQLite handles before deleting files.
         self.profile_db = None;
         self.chat_server_rooms.clear();
+        self.pending_chat_server_welcomes.clear();
         self.chat_server_sync_in_flight.clear();
         self.chat_server_welcome_claim_in_flight = false;
         self.archived_chats.clear();
@@ -3439,7 +3453,6 @@ impl AppCore {
     }
 
     pub(crate) fn shutdown(&mut self) {
-        self.clear_pending_nostr_connect_login();
         self.stop_session();
         self.call_runtime.stop_all();
         self.cancel_call_duration_ticks();
@@ -3580,9 +3593,11 @@ impl AppCore {
                 key_package_event,
                 error,
             } => self.handle_peer_key_package_fetched(token, peer_pubkey, key_package_event, error),
-            InternalEvent::GiftWrapReceived { wrapper, rumor } => {
-                self.handle_gift_wrap_received(wrapper, rumor, None)
-            }
+            InternalEvent::GiftWrapReceived {
+                wrapper,
+                rumor,
+                sender,
+            } => self.handle_gift_wrap_received(wrapper, rumor, sender, None),
             InternalEvent::ProfilesFetched { profiles } => self.handle_profiles_fetched(profiles),
             InternalEvent::MyProfileFetched { metadata } => {
                 self.apply_my_profile_metadata(metadata, None)
@@ -4092,8 +4107,6 @@ impl AppCore {
             self.fail_direct_chat_creation(message);
             return;
         };
-        let kp_event = normalize_peer_key_package_event_for_mls(&kp_event);
-
         let mut group_relays = self.private_chat_bootstrap_relays();
         if self.private_chat_server_url().is_none() {
             // Relay-mode bootstrap still needs peer relay hints for group routing.
@@ -4179,7 +4192,7 @@ impl AppCore {
             return;
         }
 
-        let (session_client, http_client, tx, member_npubs) = {
+        let (session_client, http_client, tx, member_npubs, mls_group_id, initial_epoch) = {
             let Some(sess) = self.session.as_ref() else {
                 return;
             };
@@ -4206,14 +4219,23 @@ impl AppCore {
                 self.http_client.clone(),
                 self.core_sender.clone(),
                 member_npubs,
+                Some(hex::encode(snapshot.mls_group_id.as_slice())),
+                Some(snapshot.epoch),
             )
         };
 
         let chat_id = chat_id.to_string();
         let server_url = base_url.as_str().trim_end_matches('/').to_string();
         self.runtime.spawn(async move {
-            match chat_server::create_room(&http_client, &session_client, &base_url, member_npubs)
-                .await
+            match chat_server::create_room(
+                &http_client,
+                &session_client,
+                &base_url,
+                member_npubs,
+                mls_group_id,
+                initial_epoch,
+            )
+            .await
             {
                 Ok(room) => {
                     let _ = tx.send(CoreMsg::Internal(Box::new(
@@ -4317,6 +4339,8 @@ impl AppCore {
     }
 
     fn begin_chat_server_welcome_claim(&mut self) {
+        self.process_pending_chat_server_welcomes();
+
         if !self.network_enabled() || self.chat_server_welcome_claim_in_flight {
             return;
         }
@@ -4338,7 +4362,7 @@ impl AppCore {
         self.chat_server_welcome_claim_in_flight = true;
         self.runtime.spawn(async move {
             let result =
-                chat_server::claim_welcome_events(&http_client, &session_client, &base_url).await;
+                chat_server::claim_welcome_records(&http_client, &session_client, &base_url).await;
             let internal = match result {
                 Ok(welcomes) => InternalEvent::ChatServerWelcomesClaimed {
                     welcomes,
@@ -4351,6 +4375,25 @@ impl AppCore {
             };
             let _ = tx.send(CoreMsg::Internal(Box::new(internal)));
         });
+    }
+
+    fn process_pending_chat_server_welcomes(&mut self) {
+        let pending = self.pending_chat_server_welcomes.clone();
+        for welcome in pending {
+            match self.process_pending_chat_server_welcome(&welcome) {
+                PendingChatServerWelcomeAction::Retain => {}
+                PendingChatServerWelcomeAction::Ack => {
+                    if self.ack_pending_chat_server_welcome(&welcome) {
+                        self.remove_pending_chat_server_welcome(&welcome.welcome_id);
+                    }
+                }
+                PendingChatServerWelcomeAction::Release => {
+                    if self.release_pending_chat_server_welcome(&welcome) {
+                        self.remove_pending_chat_server_welcome(&welcome.welcome_id);
+                    }
+                }
+            }
+        }
     }
 
     fn finish_planned_group_creation(
@@ -4389,8 +4432,19 @@ impl AppCore {
         &mut self,
         wrapper: Event,
         rumor: UnsignedEvent,
+        sender: PublicKey,
         room_binding: Option<chat_server::WelcomeRoomBinding>,
     ) {
+        let _ = self.process_gift_wrap_received(wrapper, rumor, sender, room_binding);
+    }
+
+    fn process_gift_wrap_received(
+        &mut self,
+        wrapper: Event,
+        rumor: UnsignedEvent,
+        sender: PublicKey,
+        room_binding: Option<chat_server::WelcomeRoomBinding>,
+    ) -> PendingChatServerWelcomeAction {
         tracing::info!(
             wrapper_id = %wrapper.id.to_hex(),
             rumor_kind = rumor.kind.as_u16(),
@@ -4398,7 +4452,7 @@ impl AppCore {
         );
         let Some(sess) = self.session.as_mut() else {
             tracing::warn!("giftwrap_received but no session");
-            return;
+            return PendingChatServerWelcomeAction::Retain;
         };
 
         if rumor.kind != Kind::MlsWelcome {
@@ -4406,7 +4460,16 @@ impl AppCore {
                 kind = rumor.kind.as_u16(),
                 "giftwrap ignored (not MlsWelcome)"
             );
-            return;
+            return PendingChatServerWelcomeAction::Release;
+        }
+        if sender != rumor.pubkey {
+            tracing::warn!(
+                wrapper_id = %wrapper.id.to_hex(),
+                seal_sender = %sender.to_hex(),
+                rumor_pubkey = %rumor.pubkey.to_hex(),
+                "giftwrap ignored (seal sender does not match welcome rumor pubkey)"
+            );
+            return PendingChatServerWelcomeAction::Release;
         }
 
         let welcome = match pika_mls::welcome::stage_pending_welcome(&sess.mls, &wrapper.id, &rumor)
@@ -4414,7 +4477,7 @@ impl AppCore {
             Ok(w) => w,
             Err(e) => {
                 tracing::error!(%e, "process_welcome failed");
-                return;
+                return PendingChatServerWelcomeAction::Release;
             }
         };
 
@@ -4441,6 +4504,7 @@ impl AppCore {
                     &nostr_group_hex,
                     &binding.server_url,
                     &binding.room_id,
+                    binding.last_synced_seq,
                 );
                 self.begin_chat_server_room_sync();
             }
@@ -4448,7 +4512,7 @@ impl AppCore {
                 nostr_group_id = %nostr_group_hex,
                 "welcome skipped (group already exists)"
             );
-            return;
+            return PendingChatServerWelcomeAction::Ack;
         }
 
         // The app is currently eager here: it accepts MLS welcomes as soon as
@@ -4491,7 +4555,7 @@ impl AppCore {
         if let Err(e) = accept_result {
             tracing::error!(%e, "accept_welcome failed");
             self.toast(format!("Welcome accept failed: {e}"));
-            return;
+            return PendingChatServerWelcomeAction::Retain;
         }
 
         if let Some(binding) = room_binding.as_ref() {
@@ -4499,19 +4563,23 @@ impl AppCore {
                 &nostr_group_hex,
                 &binding.server_url,
                 &binding.room_id,
+                binding.last_synced_seq,
             );
             self.begin_chat_server_room_sync();
         }
 
         // Rotate the referenced key package: delete best-effort, publish fresh.
         if self.network_enabled() {
-            if let Some(kp_event_id) = referenced_key_package_event_id(&rumor) {
-                self.delete_event_best_effort(kp_event_id);
+            if room_binding.is_none() {
+                if let Some(kp_event_id) = referenced_key_package_event_id(&rumor) {
+                    self.delete_event_best_effort(kp_event_id);
+                }
             }
             self.ensure_key_package_published_best_effort();
         }
 
         self.refresh_all_from_storage();
+        PendingChatServerWelcomeAction::Ack
     }
 
     fn handle_profiles_fetched(&mut self, profiles: Vec<(String, Option<String>, i64)>) {
@@ -4580,23 +4648,19 @@ impl AppCore {
         }
 
         if let Some(chat_id) = existing_chat_id {
-            let kp_events: Vec<Event> = key_package_events
-                .iter()
-                .map(normalize_peer_key_package_event_for_mls)
-                .collect();
-
-            let prepared = match self.prepare_membership_evolution_for_chat(&chat_id, &kp_events) {
-                Ok(prepared) => prepared,
-                Err(e) => {
-                    self.set_busy(|b| b.creating_chat = false);
-                    if e.to_string().contains("parse key package") {
-                        self.toast(format!("Invalid key package: {}", e.root_cause()));
-                    } else {
-                        self.toast(format!("Add members failed: {e}"));
+            let prepared =
+                match self.prepare_membership_evolution_for_chat(&chat_id, &key_package_events) {
+                    Ok(prepared) => prepared,
+                    Err(e) => {
+                        self.set_busy(|b| b.creating_chat = false);
+                        if e.to_string().contains("parse key package") {
+                            self.toast(format!("Invalid key package: {}", e.root_cause()));
+                        } else {
+                            self.toast(format!("Add members failed: {e}"));
+                        }
+                        return;
                     }
-                    return;
-                }
-            };
+                };
 
             self.publish_prepared_evolution(&chat_id, prepared);
             // Clear busy immediately — relay confirmation, merge, and
@@ -4605,10 +4669,7 @@ impl AppCore {
             self.set_busy(|b| b.creating_chat = false);
         } else {
             // Create new group chat.
-            let kp_events: Vec<Event> = key_package_events
-                .iter()
-                .map(normalize_peer_key_package_event_for_mls)
-                .collect();
+            let kp_events = key_package_events;
 
             let use_relay_metadata = self.private_chat_server_url().is_none();
             let peer_relays: Vec<RelayUrl> = if use_relay_metadata {
@@ -4785,7 +4846,7 @@ impl AppCore {
             tracing::warn!(%chat_id, %server_url, "chat-server room binding completed without room id");
             return;
         };
-        self.upsert_chat_server_room_binding(&chat_id, &server_url, &room_id);
+        self.upsert_chat_server_room_binding(&chat_id, &server_url, &room_id, 0);
         if let Some(plan) = initial_welcome_delivery {
             self.publish_welcomes_to_peers(
                 plan.recipients,
@@ -4794,6 +4855,7 @@ impl AppCore {
                 Some(chat_server::WelcomeRoomBinding {
                     server_url: server_url.clone(),
                     room_id: room_id.clone(),
+                    last_synced_seq: 0,
                 }),
             );
         }
@@ -4824,6 +4886,17 @@ impl AppCore {
         let Some(existing) = self.chat_server_rooms.get(&chat_id).cloned() else {
             return;
         };
+        if existing.server_url != server_url || existing.room_id != room_id {
+            tracing::debug!(
+                %chat_id,
+                response_server_url = %server_url,
+                response_room_id = %room_id,
+                current_server_url = %existing.server_url,
+                current_room_id = %existing.room_id,
+                "dropping stale chat-server room sync result"
+            );
+            return;
+        }
         let mut binding = existing;
         let mut next_seq = binding.last_synced_seq;
 
@@ -4833,7 +4906,9 @@ impl AppCore {
             }
 
             match room_event.event_type {
-                RoomEventType::ApplicationMessage | RoomEventType::Commit => {
+                RoomEventType::ApplicationMessage
+                | RoomEventType::Commit
+                | RoomEventType::Proposal => {
                     let wrapper: Event = match serde_json::from_str(&room_event.content) {
                         Ok(wrapper) => wrapper,
                         Err(err) => {
@@ -4849,7 +4924,9 @@ impl AppCore {
                             break;
                         }
                     };
-                    self.handle_group_message(wrapper);
+                    if !self.handle_group_message(wrapper) {
+                        break;
+                    }
                 }
                 RoomEventType::Welcome => {
                     tracing::debug!(
@@ -4881,9 +4958,13 @@ impl AppCore {
         seq: u64,
         wrapper: Event,
     ) {
+        let processed = self.handle_group_message(wrapper);
         if let Some(existing) = self.chat_server_rooms.get(&chat_id).cloned() {
             let mut binding = existing;
-            if binding.room_id == room_id && seq == binding.last_synced_seq.saturating_add(1) {
+            if processed
+                && binding.room_id == room_id
+                && seq == binding.last_synced_seq.saturating_add(1)
+            {
                 binding.last_synced_seq = seq;
                 if let Some(conn) = self.profile_db.as_ref() {
                     profile_db::save_chat_server_room(conn, &binding);
@@ -4892,11 +4973,16 @@ impl AppCore {
             }
         }
 
-        self.handle_group_message(wrapper);
         self.begin_chat_server_room_sync();
     }
 
-    fn upsert_chat_server_room_binding(&mut self, chat_id: &str, server_url: &str, room_id: &str) {
+    fn upsert_chat_server_room_binding(
+        &mut self,
+        chat_id: &str,
+        server_url: &str,
+        room_id: &str,
+        initial_last_synced_seq: u64,
+    ) {
         let normalized_server_url = server_url.trim().trim_end_matches('/').to_string();
         let preserved_seq = self
             .chat_server_rooms
@@ -4905,7 +4991,8 @@ impl AppCore {
                 (existing.server_url == normalized_server_url && existing.room_id == room_id)
                     .then_some(existing.last_synced_seq)
             })
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .max(initial_last_synced_seq);
         let binding = profile_db::ChatServerRoomBinding {
             chat_id: chat_id.to_string(),
             server_url: normalized_server_url,
@@ -4920,7 +5007,7 @@ impl AppCore {
 
     fn handle_chat_server_welcomes_claimed(
         &mut self,
-        welcomes: Vec<chat_server::ClaimedWelcomeEvent>,
+        welcomes: Vec<chat_server::ClaimedWelcomeRecord>,
         error: Option<String>,
     ) {
         self.chat_server_welcome_claim_in_flight = false;
@@ -4930,8 +5017,176 @@ impl AppCore {
             return;
         }
 
+        let Some(base_url) = self.private_chat_server_url() else {
+            tracing::warn!("chat-server welcome claim completed without configured server URL");
+            return;
+        };
+        let server_url = base_url.as_str().trim_end_matches('/').to_string();
         for welcome in welcomes {
-            self.handle_gift_wrap_received(welcome.wrapper, welcome.rumor, welcome.room_binding);
+            let Some(lease_token) = welcome.lease_token.clone() else {
+                tracing::warn!(welcome_id = %welcome.welcome_id, "claimed welcome missing lease token");
+                continue;
+            };
+            let Some(lease_until) = welcome.lease_until else {
+                tracing::warn!(welcome_id = %welcome.welcome_id, "claimed welcome missing lease expiry");
+                continue;
+            };
+            let pending = profile_db::PendingChatServerWelcome {
+                welcome_id: welcome.welcome_id,
+                server_url: server_url.clone(),
+                room_id: welcome.room_id,
+                commit_seq: welcome.commit_seq,
+                wrapper_event_json: welcome.wrapper_event_json,
+                lease_token,
+                lease_until,
+                claimed_at: welcome
+                    .leased_at
+                    .unwrap_or_else(|| now_seconds().max(0) as u64),
+            };
+            self.save_pending_chat_server_welcome(pending);
+        }
+        self.process_pending_chat_server_welcomes();
+    }
+
+    fn process_pending_chat_server_welcome(
+        &mut self,
+        pending: &profile_db::PendingChatServerWelcome,
+    ) -> PendingChatServerWelcomeAction {
+        let Some(session_client) = self.session.as_ref().map(|sess| sess.client.clone()) else {
+            return PendingChatServerWelcomeAction::Retain;
+        };
+        let wrapper = match serde_json::from_str::<Event>(&pending.wrapper_event_json) {
+            Ok(wrapper) => wrapper,
+            Err(err) => {
+                tracing::warn!(
+                    welcome_id = %pending.welcome_id,
+                    %err,
+                    "pending chat-server welcome has malformed wrapper json"
+                );
+                return PendingChatServerWelcomeAction::Release;
+            }
+        };
+        let unwrapped = match self
+            .runtime
+            .block_on(async { session_client.unwrap_gift_wrap(&wrapper).await })
+        {
+            Ok(unwrapped) => unwrapped,
+            Err(err) => {
+                tracing::warn!(
+                    welcome_id = %pending.welcome_id,
+                    wrapper_id = %wrapper.id.to_hex(),
+                    %err,
+                    "pending chat-server welcome could not be unwrapped"
+                );
+                return PendingChatServerWelcomeAction::Release;
+            }
+        };
+        let room_binding =
+            pending
+                .room_id
+                .as_ref()
+                .map(|room_id| chat_server::WelcomeRoomBinding {
+                    server_url: pending.server_url.clone(),
+                    room_id: room_id.clone(),
+                    last_synced_seq: pending.commit_seq.unwrap_or(0),
+                });
+        self.process_gift_wrap_received(wrapper, unwrapped.rumor, unwrapped.sender, room_binding)
+    }
+
+    fn save_pending_chat_server_welcome(&mut self, pending: profile_db::PendingChatServerWelcome) {
+        if let Some(conn) = self.profile_db.as_ref() {
+            profile_db::save_pending_chat_server_welcome(conn, &pending);
+        }
+        if let Some(existing) = self
+            .pending_chat_server_welcomes
+            .iter_mut()
+            .find(|existing| existing.welcome_id == pending.welcome_id)
+        {
+            *existing = pending;
+            return;
+        }
+        self.pending_chat_server_welcomes.push(pending);
+    }
+
+    fn remove_pending_chat_server_welcome(&mut self, welcome_id: &str) {
+        self.pending_chat_server_welcomes
+            .retain(|welcome| welcome.welcome_id != welcome_id);
+        if let Some(conn) = self.profile_db.as_ref() {
+            profile_db::remove_pending_chat_server_welcome(conn, welcome_id);
+        }
+    }
+
+    fn ack_pending_chat_server_welcome(
+        &mut self,
+        pending: &profile_db::PendingChatServerWelcome,
+    ) -> bool {
+        let Some(sess) = self.session.as_ref() else {
+            return false;
+        };
+        let Ok(base_url) = url::Url::parse(&pending.server_url) else {
+            tracing::warn!(
+                welcome_id = %pending.welcome_id,
+                server_url = %pending.server_url,
+                "pending chat-server welcome has invalid server URL for ack"
+            );
+            return false;
+        };
+        match self.runtime.block_on(async {
+            chat_server::ack_welcome_record(
+                &self.http_client,
+                &sess.client,
+                &base_url,
+                &pending.welcome_id,
+                &pending.lease_token,
+            )
+            .await
+        }) {
+            Ok(()) => true,
+            Err(err) => {
+                tracing::warn!(
+                    welcome_id = %pending.welcome_id,
+                    %err,
+                    "failed to ack pending chat-server welcome"
+                );
+                false
+            }
+        }
+    }
+
+    fn release_pending_chat_server_welcome(
+        &mut self,
+        pending: &profile_db::PendingChatServerWelcome,
+    ) -> bool {
+        let Some(sess) = self.session.as_ref() else {
+            return false;
+        };
+        let Ok(base_url) = url::Url::parse(&pending.server_url) else {
+            tracing::warn!(
+                welcome_id = %pending.welcome_id,
+                server_url = %pending.server_url,
+                "pending chat-server welcome has invalid server URL for release"
+            );
+            return false;
+        };
+        match self.runtime.block_on(async {
+            chat_server::release_welcome_record(
+                &self.http_client,
+                &sess.client,
+                &base_url,
+                &pending.welcome_id,
+                &pending.lease_token,
+            )
+            .await
+        }) {
+            Ok(()) => true,
+            Err(err) => {
+                tracing::warn!(
+                    welcome_id = %pending.welcome_id,
+                    %err,
+                    "failed to release pending chat-server welcome"
+                );
+                false
+            }
         }
     }
 
@@ -5242,11 +5497,11 @@ impl AppCore {
         self.emit_state();
     }
 
-    pub(crate) fn handle_group_message(&mut self, event: Event) {
+    pub(crate) fn handle_group_message(&mut self, event: Event) -> bool {
         let outcome = {
             let Some(sess) = self.session.as_mut() else {
                 tracing::warn!("group_message but no session");
-                return;
+                return false;
             };
             let event_id = event.id;
             match sess.host_context().process_group_message_event(event) {
@@ -5254,11 +5509,12 @@ impl AppCore {
                 Err(e) => {
                     tracing::error!(event_id = %event_id.to_hex(), %e, "process_message failed");
                     self.toast(format!("Message decrypt failed: {e}"));
-                    return;
+                    return false;
                 }
             }
         };
         self.handle_conversation_event(outcome);
+        true
     }
 
     #[allow(dead_code)]
@@ -6268,7 +6524,7 @@ impl AppCore {
                 let network_enabled = self.network_enabled();
                 let fallback_relays = self.default_relays();
 
-                let (client, relays, ps) = {
+                let (client, room_binding, relays, ps) = {
                     let Some(sess) = self.session.as_mut() else {
                         return;
                     };
@@ -6278,20 +6534,24 @@ impl AppCore {
                     };
 
                     if !network_enabled {
-                        (sess.client.clone(), vec![], ps)
+                        (sess.client.clone(), None, vec![], ps)
                     } else {
                         let Some(group) = sess.groups.get(&chat_id).cloned() else {
                             self.toast("Chat not found");
                             return;
                         };
-                        let relays: Vec<RelayUrl> =
+                        let room_binding = self.chat_server_rooms.get(&chat_id).cloned();
+                        let relays: Vec<RelayUrl> = if room_binding.is_some() {
+                            Vec::new()
+                        } else {
                             pika_mls::conversation::ConversationQueries::new(&sess.mls)
                                 .get_relays(&group.mls_group_id)
                                 .ok()
                                 .map(|s| s.into_iter().collect())
                                 .filter(|v: &Vec<RelayUrl>| !v.is_empty())
-                                .unwrap_or_else(|| fallback_relays.clone());
-                        (sess.client.clone(), relays, ps)
+                                .unwrap_or_else(|| fallback_relays.clone())
+                        };
+                        (sess.client.clone(), room_binding, relays, ps)
                     }
                 };
 
@@ -6320,6 +6580,59 @@ impl AppCore {
                 let tx = self.core_sender.clone();
                 let rumor_id = ps.rumor_id_hex.clone();
                 let wrapper = ps.wrapper_event.clone();
+                if let Some(binding) = room_binding {
+                    let http_client = self.http_client.clone();
+                    let room_id = binding.room_id.clone();
+                    let base_url = match Url::parse(&binding.server_url) {
+                        Ok(url) => url,
+                        Err(err) => {
+                            let _ = tx.send(CoreMsg::Internal(Box::new(
+                                InternalEvent::PublishMessageResult {
+                                    chat_id,
+                                    rumor_id,
+                                    ok: false,
+                                    error: Some(format!("invalid chat server URL: {err}")),
+                                },
+                            )));
+                            return;
+                        }
+                    };
+                    self.runtime.spawn(async move {
+                        let (ok, error, appended_seq) =
+                            match chat_server::append_wrapped_room_event(
+                                &http_client,
+                                &client,
+                                &base_url,
+                                &room_id,
+                                RoomEventType::ApplicationMessage,
+                                &wrapper,
+                            )
+                            .await
+                            {
+                                Ok(appended) => (true, None, Some(appended.seq)),
+                                Err(err) => (false, Some(err.to_string()), None),
+                            };
+                        let _ = tx.send(CoreMsg::Internal(Box::new(
+                            InternalEvent::PublishMessageResult {
+                                chat_id: chat_id.clone(),
+                                rumor_id,
+                                ok,
+                                error,
+                            },
+                        )));
+                        if let Some(seq) = appended_seq {
+                            let _ = tx.send(CoreMsg::Internal(Box::new(
+                                InternalEvent::ChatServerRoomEventAppended {
+                                    chat_id,
+                                    room_id,
+                                    seq,
+                                    wrapper,
+                                },
+                            )));
+                        }
+                    });
+                    return;
+                }
                 self.runtime.spawn(async move {
                     let (ok, error) =
                         chat_media::send_event_first_ack(&client, &relays, &wrapper).await;
@@ -6783,13 +7096,13 @@ impl AppCore {
                     };
 
                     let mut prepared = prepared;
-                    match chat_server::submit_membership_commit(
+                    match chat_server::submit_room_commit(
                         &http_client,
                         &client,
                         &base_url,
                         &room_id,
                         prepared.expected_epoch,
-                        member_npubs,
+                        Some(member_npubs),
                         &wrapper,
                         welcomes,
                     )
@@ -6836,12 +7149,17 @@ impl AppCore {
                     return;
                 }
 
+                let room_event_type = if prepared.self_removed {
+                    RoomEventType::Proposal
+                } else {
+                    RoomEventType::ApplicationMessage
+                };
                 match chat_server::append_wrapped_room_event(
                     &http_client,
                     &client,
                     &base_url,
                     &room_id,
-                    RoomEventType::Commit,
+                    room_event_type,
                     &wrapper,
                 )
                 .await
@@ -10937,6 +11255,7 @@ mod tests {
             core.handle_internal(InternalEvent::GiftWrapReceived {
                 wrapper: wrapper.clone(),
                 rumor: welcome_rumor.clone(),
+                sender: inviter_keys.public_key(),
             });
 
             let groups = pika_mls::conversation::ConversationQueries::new(
@@ -10962,6 +11281,7 @@ mod tests {
             core.handle_internal(InternalEvent::GiftWrapReceived {
                 wrapper,
                 rumor: welcome_rumor,
+                sender: inviter_keys.public_key(),
             });
 
             let groups_after_redelivery = pika_mls::conversation::ConversationQueries::new(
@@ -11031,13 +11351,34 @@ mod tests {
                 });
 
             core.handle_internal(InternalEvent::ChatServerWelcomesClaimed {
-                welcomes: vec![crate::core::chat_server::ClaimedWelcomeEvent {
-                    wrapper,
-                    rumor: welcome_rumor,
-                    room_binding: Some(crate::core::chat_server::WelcomeRoomBinding {
-                        server_url: "https://chat.example".to_string(),
-                        room_id: "room_123".to_string(),
-                    }),
+                welcomes: vec![pika_chat_server::protocol::WelcomeRecord {
+                    welcome_id: "welcome_test".to_string(),
+                    recipient_npub: invitee_keys
+                        .public_key()
+                        .to_bech32()
+                        .expect("npub")
+                        .to_lowercase(),
+                    sender_npub: inviter_keys
+                        .public_key()
+                        .to_bech32()
+                        .expect("npub")
+                        .to_lowercase(),
+                    wrapper_event_json: serde_json::to_string(&wrapper).expect("serialize wrapper"),
+                    server_url: Some("https://chat.example".to_string()),
+                    room_id: Some("room_123".to_string()),
+                    commit_seq: Some(42),
+                    lease_token: Some("lease_test".to_string()),
+                    leased_at: Some(1),
+                    lease_until: Some(u64::MAX),
+                    leased_by_npub: Some(
+                        invitee_keys
+                            .public_key()
+                            .to_bech32()
+                            .expect("npub")
+                            .to_lowercase(),
+                    ),
+                    acked_at: None,
+                    created_at: 1,
                 }],
                 error: None,
             });
@@ -11048,6 +11389,7 @@ mod tests {
                 .expect("room binding should exist");
             assert_eq!(binding.server_url, "https://chat.example");
             assert_eq!(binding.room_id, "room_123");
+            assert_eq!(binding.last_synced_seq, 42);
 
             let persisted = super::super::profile_db::load_chat_server_rooms(
                 core.profile_db.as_ref().expect("profile db"),

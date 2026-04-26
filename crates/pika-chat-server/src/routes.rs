@@ -9,11 +9,12 @@ use crate::nostr_auth::{
     event_from_authorization_header, expected_host_from_headers, verify_nip98_event,
 };
 use crate::protocol::{
-    AppendRoomEventRequest, AppendRoomEventResponse, ClaimKeyPackageRequest,
+    AckWelcomeRequest, AppendRoomEventRequest, AppendRoomEventResponse, ClaimKeyPackageRequest,
     ClaimKeyPackageResponse, ClaimWelcomesResponse, CreateRoomRequest, CreateRoomResponse,
-    SubmitMembershipCommitRequest, SubmitMembershipCommitResponse, SyncRoomEventsQuery,
-    SyncRoomEventsResponse, UploadKeyPackageRequest, UploadKeyPackageResponse,
-    UploadWelcomeRequest, UploadWelcomeResponse,
+    FinalizeKeyPackageRequest, ReleaseKeyPackageRequest, ReleaseWelcomeRequest,
+    SubmitMembershipCommitRequest, SubmitMembershipCommitResponse, SubmitRoomCommitRequest,
+    SubmitRoomCommitResponse, SyncRoomEventsQuery, SyncRoomEventsResponse, UploadKeyPackageRequest,
+    UploadKeyPackageResponse, UploadWelcomeRequest, UploadWelcomeResponse,
 };
 use crate::session::{SessionClaims, SessionManager, SessionTokenResponse};
 use crate::store::{StoreError, StoreHandle, StoreHandleError};
@@ -43,8 +44,12 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/session/me", get(me))
         .route("/v1/key-packages", post(upload_key_package))
         .route("/v1/key-packages/claim", post(claim_key_package))
+        .route("/v1/key-packages/finalize", post(finalize_key_package))
+        .route("/v1/key-packages/release", post(release_key_package))
         .route("/v1/welcomes", post(upload_welcome))
         .route("/v1/welcomes/claim", post(claim_welcomes))
+        .route("/v1/welcomes/ack", post(ack_welcome))
+        .route("/v1/welcomes/release", post(release_welcome))
         .route("/v1/rooms", post(create_room))
         .route(
             "/v1/rooms/:room_id/events",
@@ -54,6 +59,7 @@ pub fn router(state: AppState) -> Router {
             "/v1/rooms/:room_id/membership-commits",
             post(submit_membership_commit),
         )
+        .route("/v1/rooms/:room_id/commits", post(submit_room_commit))
         .with_state(state)
 }
 
@@ -136,6 +142,36 @@ async fn claim_key_package(
     }))
 }
 
+async fn finalize_key_package(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<FinalizeKeyPackageRequest>,
+) -> Result<Json<ClaimKeyPackageResponse>, (StatusCode, String)> {
+    let claims = session_claims(&state, &headers)?;
+    let now = Timestamp::now().as_secs();
+    let key_package = state
+        .store
+        .finalize_key_package(&claims.npub, request, now)
+        .await;
+    Ok(Json(ClaimKeyPackageResponse {
+        key_package: key_package.map_err(store_handle_error)?,
+    }))
+}
+
+async fn release_key_package(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ReleaseKeyPackageRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let claims = session_claims(&state, &headers)?;
+    state
+        .store
+        .release_key_package(&claims.npub, request)
+        .await
+        .map_err(store_handle_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn upload_welcome(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -156,12 +192,42 @@ async fn claim_welcomes(
     headers: HeaderMap,
 ) -> Result<Json<ClaimWelcomesResponse>, (StatusCode, String)> {
     let claims = session_claims(&state, &headers)?;
+    let now = Timestamp::now().as_secs();
     let welcomes = state
         .store
-        .claim_welcomes(&claims.npub)
+        .claim_welcomes(now, &claims.npub)
         .await
         .map_err(store_handle_error)?;
     Ok(Json(ClaimWelcomesResponse { welcomes }))
+}
+
+async fn ack_welcome(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<AckWelcomeRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let claims = session_claims(&state, &headers)?;
+    let now = Timestamp::now().as_secs();
+    state
+        .store
+        .ack_welcome(&claims.npub, request, now)
+        .await
+        .map_err(store_handle_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn release_welcome(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ReleaseWelcomeRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let claims = session_claims(&state, &headers)?;
+    state
+        .store
+        .release_welcome(&claims.npub, request)
+        .await
+        .map_err(store_handle_error)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn append_room_event(
@@ -189,14 +255,9 @@ async fn sync_room_events(
     let claims = session_claims(&state, &headers)?;
     let after_seq = query.after_seq.unwrap_or(0);
     let limit = query.limit.unwrap_or(100);
-    let room = state
+    let (room, events) = state
         .store
-        .room_summary_for_member(&claims.npub, &room_id)
-        .await
-        .map_err(store_error)?;
-    let events = state
-        .store
-        .sync_room_events(&claims.npub, &room_id, after_seq, limit)
+        .sync_room(&claims.npub, &room_id, after_seq, limit)
         .await
         .map_err(store_error)?;
     Ok(Json(SyncRoomEventsResponse { room, events }))
@@ -216,6 +277,22 @@ async fn submit_membership_commit(
         .await
         .map_err(store_handle_error)?;
     Ok(Json(SubmitMembershipCommitResponse { room, event }))
+}
+
+async fn submit_room_commit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(room_id): Path<String>,
+    Json(request): Json<SubmitRoomCommitRequest>,
+) -> Result<Json<SubmitRoomCommitResponse>, (StatusCode, String)> {
+    let claims = session_claims(&state, &headers)?;
+    let now = Timestamp::now().as_secs();
+    let (room, event) = state
+        .store
+        .submit_room_commit(&claims.npub, &room_id, request, now)
+        .await
+        .map_err(store_handle_error)?;
+    Ok(Json(SubmitRoomCommitResponse { room, event }))
 }
 
 fn session_info(claims: SessionClaims) -> SessionInfoResponse {
@@ -245,12 +322,18 @@ fn internal(err: anyhow::Error) -> (StatusCode, String) {
 
 fn store_error(err: StoreError) -> (StatusCode, String) {
     let status = match err {
-        StoreError::RoomNotFound | StoreError::KeyPackageNotFound => StatusCode::NOT_FOUND,
-        StoreError::NotRoomMember => StatusCode::FORBIDDEN,
-        StoreError::RoomEpochMismatch { .. } => StatusCode::CONFLICT,
-        StoreError::EmptyEventContent | StoreError::EmptyKeyPackagePayload => {
-            StatusCode::BAD_REQUEST
+        StoreError::RoomNotFound | StoreError::KeyPackageNotFound | StoreError::WelcomeNotFound => {
+            StatusCode::NOT_FOUND
         }
+        StoreError::NotRoomMember => StatusCode::FORBIDDEN,
+        StoreError::RoomEpochMismatch { .. }
+        | StoreError::LeaseNotActive
+        | StoreError::LeaseTokenMismatch => StatusCode::CONFLICT,
+        StoreError::EmptyEventContent
+        | StoreError::EmptyKeyPackagePayload
+        | StoreError::CommitRequiresCommitEndpoint
+        | StoreError::InvalidRoomEventEnvelope(_)
+        | StoreError::RoomEventKindMismatch { .. } => StatusCode::BAD_REQUEST,
     };
     (status, err.to_string())
 }
@@ -281,7 +364,10 @@ mod tests {
         }
     }
 
-    fn signed_login_headers(host: &str) -> (HeaderMap, String) {
+    const TEST_MLS_GROUP_ID: &str =
+        "0000000000000000000000000000000000000000000000000000000000000000";
+
+    fn signed_login_headers(host: &str) -> (HeaderMap, String, Keys) {
         let keys = Keys::generate();
         let event = EventBuilder::new(Kind::Custom(27235), "")
             .tags([
@@ -310,13 +396,29 @@ mod tests {
                 .to_bech32()
                 .expect("encode npub")
                 .to_lowercase(),
+            keys,
         )
+    }
+
+    fn mls_wrapper_json(keys: &Keys, epoch: u64, message_kind: &str) -> String {
+        let content = serde_json::json!({
+            "version": 1,
+            "mls_group_id": TEST_MLS_GROUP_ID,
+            "epoch": epoch,
+            "message_kind": message_kind,
+            "mls_message": format!("opaque-{}", uuid::Uuid::new_v4()),
+        })
+        .to_string();
+        let event = EventBuilder::new(Kind::MlsGroupMessage, content)
+            .sign_with_keys(keys)
+            .expect("sign MLS wrapper");
+        serde_json::to_string(&event).expect("serialize MLS wrapper")
     }
 
     #[tokio::test]
     async fn login_issues_bearer_session_and_me_reads_it() {
         let app = router(test_state());
-        let (headers, expected_npub) = signed_login_headers("chat.test");
+        let (headers, expected_npub, _) = signed_login_headers("chat.test");
         let response = app
             .clone()
             .oneshot(
@@ -373,8 +475,8 @@ mod tests {
         );
     }
 
-    async fn login_token(app: Router, host: &str) -> (Router, String, String) {
-        let (headers, npub) = signed_login_headers(host);
+    async fn login_token(app: Router, host: &str) -> (Router, String, String, Keys) {
+        let (headers, npub, keys) = signed_login_headers(host);
         let response = app
             .clone()
             .oneshot(
@@ -402,12 +504,13 @@ mod tests {
             .expect("read login body");
         let login_response: SessionTokenResponse =
             serde_json::from_slice(&body).expect("decode login response");
-        (app, login_response.access_token, npub)
+        (app, login_response.access_token, npub, keys)
     }
 
     #[tokio::test]
     async fn member_can_create_room_append_and_sync_events() {
-        let (app, alice_token, alice_npub) = login_token(router(test_state()), "chat.test").await;
+        let (app, alice_token, alice_npub, alice_keys) =
+            login_token(router(test_state()), "chat.test").await;
 
         let create_room_response = app
             .clone()
@@ -420,6 +523,8 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&CreateRoomRequest {
                             member_npubs: vec!["npub1bob".to_string()],
+                            mls_group_id: Some(TEST_MLS_GROUP_ID.to_string()),
+                            initial_epoch: Some(1),
                         })
                         .expect("serialize create request"),
                     ))
@@ -433,7 +538,7 @@ mod tests {
             .expect("read create room body");
         let create_room: CreateRoomResponse =
             serde_json::from_slice(&create_room_body).expect("decode create room body");
-        assert_eq!(create_room.room.epoch, 0);
+        assert_eq!(create_room.room.epoch, 1);
         assert!(
             create_room
                 .room
@@ -454,8 +559,9 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&AppendRoomEventRequest {
                             event_type: crate::protocol::RoomEventType::ApplicationMessage,
+                            expected_epoch: Some(1),
                             epoch: 1,
-                            content: "ciphertext-1".to_string(),
+                            content: mls_wrapper_json(&alice_keys, 1, "application"),
                         })
                         .expect("serialize append request"),
                     ))
@@ -491,18 +597,21 @@ mod tests {
             .expect("read sync body");
         let sync: SyncRoomEventsResponse =
             serde_json::from_slice(&sync_body).expect("decode sync body");
-        assert_eq!(sync.room.epoch, 0);
+        assert_eq!(sync.room.epoch, 1);
         assert_eq!(sync.room.last_seq, 1);
         assert_eq!(sync.events.len(), 1);
-        assert_eq!(sync.events[0].content, "ciphertext-1");
+        assert_eq!(
+            sync.events[0].event_type,
+            crate::protocol::RoomEventType::ApplicationMessage
+        );
     }
 
     #[tokio::test]
     async fn member_can_submit_authoritative_membership_commit() {
         let app = router(test_state());
-        let (app, alice_token, alice_npub) = login_token(app, "chat.test").await;
-        let (app, _bob_token, bob_npub) = login_token(app, "chat.test").await;
-        let (app, carol_token, carol_npub) = login_token(app, "chat.test").await;
+        let (app, alice_token, alice_npub, alice_keys) = login_token(app, "chat.test").await;
+        let (app, _bob_token, bob_npub, _) = login_token(app, "chat.test").await;
+        let (app, carol_token, carol_npub, _) = login_token(app, "chat.test").await;
 
         let create_room_response = app
             .clone()
@@ -515,6 +624,8 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&CreateRoomRequest {
                             member_npubs: vec![bob_npub.clone()],
+                            mls_group_id: Some(TEST_MLS_GROUP_ID.to_string()),
+                            initial_epoch: Some(1),
                         })
                         .expect("serialize create room request"),
                     ))
@@ -541,14 +652,13 @@ mod tests {
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&crate::protocol::SubmitMembershipCommitRequest {
-                            expected_epoch: 0,
+                            expected_epoch: 1,
                             member_npubs: vec![
                                 alice_npub.clone(),
                                 bob_npub.clone(),
                                 carol_npub.clone(),
                             ],
-                            wrapper_event_json: "{\"kind\":1059,\"content\":\"membership-commit\"}"
-                                .to_string(),
+                            wrapper_event_json: mls_wrapper_json(&alice_keys, 1, "commit"),
                             welcomes: vec![crate::protocol::WelcomeEnvelope {
                                 recipient_npub: carol_npub.clone(),
                                 wrapper_event_json: "{\"kind\":1059,\"content\":\"welcome\"}"
@@ -569,7 +679,7 @@ mod tests {
             .expect("read membership commit body");
         let committed: crate::protocol::SubmitMembershipCommitResponse =
             serde_json::from_slice(&commit_body).expect("decode membership commit body");
-        assert_eq!(committed.room.epoch, 1);
+        assert_eq!(committed.room.epoch, 2);
         assert_eq!(committed.room.last_seq, 1);
         assert!(committed.room.members.contains(&carol_npub));
         assert_eq!(
@@ -577,7 +687,7 @@ mod tests {
             crate::protocol::RoomEventType::Commit
         );
         assert_eq!(committed.event.seq, 1);
-        assert_eq!(committed.event.epoch, 1);
+        assert_eq!(committed.event.epoch, 2);
 
         let claim_response = app
             .clone()
@@ -607,6 +717,7 @@ mod tests {
             claimed.welcomes[0].room_id.as_deref(),
             Some(create_room.room.room_id.as_str())
         );
+        assert_eq!(claimed.welcomes[0].commit_seq, Some(1));
 
         let sync_response = app
             .oneshot(
@@ -628,20 +739,16 @@ mod tests {
             .expect("read sync body");
         let sync: SyncRoomEventsResponse =
             serde_json::from_slice(&sync_body).expect("decode sync body");
-        assert_eq!(sync.room.epoch, 1);
-        assert_eq!(sync.events.len(), 1);
-        assert_eq!(
-            sync.events[0].event_type,
-            crate::protocol::RoomEventType::Commit
-        );
+        assert_eq!(sync.room.epoch, 2);
+        assert!(sync.events.is_empty());
     }
 
     #[tokio::test]
     async fn membership_commit_rejects_stale_epoch_without_side_effects() {
         let app = router(test_state());
-        let (app, alice_token, alice_npub) = login_token(app, "chat.test").await;
-        let (app, _bob_token, bob_npub) = login_token(app, "chat.test").await;
-        let (app, carol_token, carol_npub) = login_token(app, "chat.test").await;
+        let (app, alice_token, alice_npub, alice_keys) = login_token(app, "chat.test").await;
+        let (app, _bob_token, bob_npub, _) = login_token(app, "chat.test").await;
+        let (app, carol_token, carol_npub, _) = login_token(app, "chat.test").await;
 
         let create_room_response = app
             .clone()
@@ -654,6 +761,8 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&CreateRoomRequest {
                             member_npubs: vec![bob_npub.clone()],
+                            mls_group_id: Some(TEST_MLS_GROUP_ID.to_string()),
+                            initial_epoch: Some(1),
                         })
                         .expect("serialize create room request"),
                     ))
@@ -680,10 +789,9 @@ mod tests {
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&crate::protocol::SubmitMembershipCommitRequest {
-                            expected_epoch: 0,
+                            expected_epoch: 1,
                             member_npubs: vec![alice_npub.clone(), bob_npub.clone()],
-                            wrapper_event_json: "{\"kind\":1059,\"content\":\"membership-commit\"}"
-                                .to_string(),
+                            wrapper_event_json: mls_wrapper_json(&alice_keys, 1, "commit"),
                             welcomes: vec![],
                         })
                         .expect("serialize first membership commit request"),
@@ -707,10 +815,9 @@ mod tests {
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&crate::protocol::SubmitMembershipCommitRequest {
-                            expected_epoch: 0,
+                            expected_epoch: 1,
                             member_npubs: vec![alice_npub, bob_npub, carol_npub.clone()],
-                            wrapper_event_json: "{\"kind\":1059,\"content\":\"stale-commit\"}"
-                                .to_string(),
+                            wrapper_event_json: mls_wrapper_json(&alice_keys, 1, "commit"),
                             welcomes: vec![crate::protocol::WelcomeEnvelope {
                                 recipient_npub: carol_npub.clone(),
                                 wrapper_event_json: "{\"kind\":1059,\"content\":\"welcome\"}"
@@ -767,7 +874,7 @@ mod tests {
             .expect("read sync body");
         let sync: SyncRoomEventsResponse =
             serde_json::from_slice(&sync_body).expect("decode sync body");
-        assert_eq!(sync.room.epoch, 1);
+        assert_eq!(sync.room.epoch, 2);
         assert_eq!(sync.room.last_seq, 1);
         assert_eq!(sync.events.len(), 1);
 
@@ -791,8 +898,8 @@ mod tests {
     #[tokio::test]
     async fn member_can_upload_and_claim_key_package() {
         let app = router(test_state());
-        let (app, alice_token, _) = login_token(app, "chat.test").await;
-        let (app, bob_token, _) = login_token(app, "chat.test").await;
+        let (app, alice_token, _, _) = login_token(app, "chat.test").await;
+        let (app, bob_token, _, _) = login_token(app, "chat.test").await;
 
         let upload_response = app
             .clone()
@@ -849,14 +956,15 @@ mod tests {
             claimed.key_package.payload,
             "server-test-key-package-payload"
         );
-        assert!(claimed.key_package.claimed_at.is_some());
+        assert!(claimed.key_package.claimed_at.is_none());
+        assert!(claimed.key_package.lease_token.is_some());
     }
 
     #[tokio::test]
     async fn member_can_upload_and_claim_welcome() {
         let app = router(test_state());
-        let (app, alice_token, _) = login_token(app, "chat.test").await;
-        let (app, bob_token, bob_npub) = login_token(app, "chat.test").await;
+        let (app, alice_token, _, _) = login_token(app, "chat.test").await;
+        let (app, bob_token, bob_npub, _) = login_token(app, "chat.test").await;
 
         let upload_response = app
             .clone()
@@ -930,8 +1038,8 @@ mod tests {
     #[tokio::test]
     async fn outsider_cannot_append_to_room() {
         let app = router(test_state());
-        let (app, alice_token, _) = login_token(app, "chat.test").await;
-        let (app, mallory_token, _) = login_token(app, "chat.test").await;
+        let (app, alice_token, _, _) = login_token(app, "chat.test").await;
+        let (app, mallory_token, _, _) = login_token(app, "chat.test").await;
 
         let create_room_response = app
             .clone()
@@ -944,6 +1052,8 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&CreateRoomRequest {
                             member_npubs: vec!["npub1bob".to_string()],
+                            mls_group_id: None,
+                            initial_epoch: None,
                         })
                         .expect("serialize create request"),
                     ))
@@ -967,6 +1077,7 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&AppendRoomEventRequest {
                             event_type: crate::protocol::RoomEventType::ApplicationMessage,
+                            expected_epoch: None,
                             epoch: 1,
                             content: "ciphertext-1".to_string(),
                         })
@@ -982,8 +1093,8 @@ mod tests {
     #[tokio::test]
     async fn outsider_cannot_claim_room_scoped_key_package() {
         let app = router(test_state());
-        let (app, alice_token, _) = login_token(app, "chat.test").await;
-        let (app, mallory_token, _) = login_token(app, "chat.test").await;
+        let (app, alice_token, _, _) = login_token(app, "chat.test").await;
+        let (app, mallory_token, _, _) = login_token(app, "chat.test").await;
 
         let create_room_response = app
             .clone()
@@ -996,6 +1107,8 @@ mod tests {
                     .body(Body::from(
                         serde_json::to_vec(&CreateRoomRequest {
                             member_npubs: vec!["npub1bob".to_string()],
+                            mls_group_id: None,
+                            initial_epoch: None,
                         })
                         .expect("serialize create room request"),
                     ))

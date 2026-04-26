@@ -519,11 +519,17 @@ timeout_secs = 120
 
     #[test]
     fn resolve_udp_port_uses_preferred_when_available() {
-        let probe = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind probe udp socket");
-        let preferred = probe.local_addr().expect("probe udp local addr").port();
-        drop(probe);
-        let chosen = resolve_udp_port(preferred).expect("resolve udp preferred port");
-        assert_eq!(chosen, preferred);
+        for _ in 0..32 {
+            let probe = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind probe udp socket");
+            let preferred = probe.local_addr().expect("probe udp local addr").port();
+            drop(probe);
+
+            if resolve_udp_port(preferred).expect("resolve udp preferred port") == preferred {
+                return;
+            }
+        }
+
+        panic!("could not verify preferred UDP port reuse without a concurrent port race");
     }
 
     #[test]

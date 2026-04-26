@@ -4,8 +4,6 @@ use anyhow::{Context, Result, anyhow};
 use nostr_sdk::prelude::*;
 use tokio::time::Instant;
 
-use crate::key_package::normalize_peer_key_package_event_for_mls;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PublishOutcome {
     Ok,
@@ -184,12 +182,7 @@ pub async fn fetch_latest_key_package_for_mls(
     relay_urls: &[RelayUrl],
     timeout: Duration,
 ) -> Result<Event> {
-    let event = fetch_latest_key_package(client, author, relay_urls, timeout).await?;
-    Ok(normalize_fetched_key_package_for_mls(&event))
-}
-
-fn normalize_fetched_key_package_for_mls(event: &Event) -> Event {
-    normalize_peer_key_package_event_for_mls(event)
+    fetch_latest_key_package(client, author, relay_urls, timeout).await
 }
 
 async fn backoff_sleep(attempt: u8) {

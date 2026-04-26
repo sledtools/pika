@@ -17,62 +17,6 @@ fn clean_token(token: &str) -> String {
         .to_string()
 }
 
-fn extract_branch_lane_paths(manifest: &str, lane_id: &str) -> Vec<String> {
-    let mut entries = Vec::new();
-    let mut in_branch_lane = false;
-    let mut current_lane_id: Option<String> = None;
-    let mut collecting_paths = false;
-
-    for line in manifest.lines() {
-        let trimmed = line.trim();
-
-        if trimmed == "[[branch.lanes]]" {
-            if collecting_paths {
-                break;
-            }
-            in_branch_lane = true;
-            current_lane_id = None;
-            continue;
-        }
-
-        if !in_branch_lane {
-            continue;
-        }
-
-        if let Some(id) = trimmed
-            .strip_prefix("id = \"")
-            .and_then(|rest| rest.strip_suffix('"'))
-        {
-            current_lane_id = Some(id.to_string());
-            continue;
-        }
-
-        if current_lane_id.as_deref() != Some(lane_id) {
-            continue;
-        }
-
-        if !collecting_paths {
-            if trimmed == "paths = [" {
-                collecting_paths = true;
-            }
-            continue;
-        }
-
-        if trimmed == "]" {
-            break;
-        }
-
-        if let Some(entry) = trimmed
-            .strip_prefix('"')
-            .and_then(|rest| rest.strip_suffix("\",").or_else(|| rest.strip_suffix('"')))
-        {
-            entries.push(entry.to_string());
-        }
-    }
-
-    entries
-}
-
 fn matches_filter(path: &str, pattern: &str) -> bool {
     if let Some(prefix) = pattern.strip_suffix("/**") {
         path == prefix || path.starts_with(&format!("{prefix}/"))
@@ -641,8 +585,8 @@ fn policy_docs_call_out_non_owner_surfaces_and_deferred_mismatches() -> Result<(
 #[test]
 fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
     let root = workspace_root();
-    let manifest = fs::read_to_string(root.join("crates/pikaci/src/forge_lanes.rs"))?;
-    let pikachat_filter = extract_branch_lane_paths(&manifest, "pikachat");
+    let pikaci_targets = fs::read_to_string(root.join("crates/pikaci/src/targets.rs"))?;
+    let pikachat_filter = extract_pikaci_target_filters(&pikaci_targets, "pre-merge-pikachat-rust");
     let pikachat_filter: HashSet<_> = pikachat_filter.into_iter().collect();
 
     let justfile = fs::read_to_string(root.join("justfile"))?;
@@ -658,20 +602,20 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
     );
 
     let rust_lane_filters = pikachat_filter.clone();
-    let pikaci = fs::read_to_string(root.join("crates/pikaci/src/main.rs"))?;
+    let pikaci = &pikaci_targets;
     let apple_followup_filters: HashSet<_> =
-        extract_pikaci_target_filters(&pikaci, "pre-merge-pikachat-apple-followup")
+        extract_pikaci_target_filters(pikaci, "pre-merge-pikachat-apple-followup")
             .into_iter()
             .collect();
-    let apple_followup_jobs = extract_rust_function_body(&pikaci, "pikachat_apple_followup_jobs");
+    let apple_followup_jobs = extract_rust_function_body(pikaci, "pikachat_apple_followup_jobs");
     let flake = fs::read_to_string(root.join("flake.nix"))?;
     assert!(
         !apple_followup_filters.is_empty(),
-        "pikaci main.rs must keep pre-merge-pikachat-apple-followup filters discoverable"
+        "pikaci target catalog must keep pre-merge-pikachat-apple-followup filters discoverable"
     );
     assert!(
         !apple_followup_jobs.is_empty(),
-        "pikaci main.rs must keep a checked-in Apple follow-up jobs helper"
+        "pikaci target catalog must keep a checked-in Apple follow-up jobs helper"
     );
     assert!(
         flake.contains("pikachatStagedLinuxRustArgs = commonStagedLinuxRustArgs // {"),
@@ -777,7 +721,7 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
         );
     }
 
-    let pikachat_jobs = extract_rust_function_body(&pikaci, "pikachat_rust_jobs");
+    let pikachat_jobs = extract_rust_function_body(pikaci, "pikachat_rust_jobs");
     let lane_keeps_relay_backed_selectors = [
         "cli_smoke_local",
         "openclaw_scenario_invite_and_chat",
@@ -927,8 +871,8 @@ fn pre_merge_pikachat_filter_tracks_checked_in_lane_surface() -> Result<()> {
 #[test]
 fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<()> {
     let root = workspace_root();
-    let manifest = fs::read_to_string(root.join("crates/pikaci/src/forge_lanes.rs"))?;
-    let agent_filter = extract_branch_lane_paths(&manifest, "agent_contracts");
+    let pikaci_targets = fs::read_to_string(root.join("crates/pikaci/src/targets.rs"))?;
+    let agent_filter = extract_pikaci_target_filters(&pikaci_targets, "pre-merge-agent-contracts");
     let agent_filter: HashSet<_> = agent_filter.into_iter().collect();
     let checks = fs::read_to_string(root.join("just/checks.just"))?;
     let justfile = fs::read_to_string(root.join("justfile"))?;
@@ -1025,8 +969,9 @@ fn pre_merge_agent_contracts_filter_tracks_checked_in_lane_surface() -> Result<(
 #[test]
 fn pre_merge_notifications_filter_tracks_checked_in_lane_surface() -> Result<()> {
     let root = workspace_root();
-    let manifest = fs::read_to_string(root.join("crates/pikaci/src/forge_lanes.rs"))?;
-    let notifications_filter = extract_branch_lane_paths(&manifest, "notifications");
+    let pikaci_targets = fs::read_to_string(root.join("crates/pikaci/src/targets.rs"))?;
+    let notifications_filter =
+        extract_pikaci_target_filters(&pikaci_targets, "pre-merge-notifications");
     let notifications_filter: HashSet<_> = notifications_filter.into_iter().collect();
     let checks = fs::read_to_string(root.join("just/checks.just"))?;
     let justfile = fs::read_to_string(root.join("justfile"))?;
@@ -1122,8 +1067,8 @@ fn pre_merge_notifications_filter_tracks_checked_in_lane_surface() -> Result<()>
 #[test]
 fn pre_merge_fixture_filter_tracks_checked_in_lane_surface() -> Result<()> {
     let root = workspace_root();
-    let manifest = fs::read_to_string(root.join("crates/pikaci/src/forge_lanes.rs"))?;
-    let fixture_filter = extract_branch_lane_paths(&manifest, "fixture");
+    let pikaci_targets = fs::read_to_string(root.join("crates/pikaci/src/targets.rs"))?;
+    let fixture_filter = extract_pikaci_target_filters(&pikaci_targets, "pre-merge-fixture-rust");
     let fixture_filter: HashSet<_> = fixture_filter.into_iter().collect();
     let checks = fs::read_to_string(root.join("just/checks.just"))?;
     let justfile = fs::read_to_string(root.join("justfile"))?;

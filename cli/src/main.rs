@@ -20,7 +20,6 @@ use pika_mls::welcome::WelcomeQueries;
 use pika_relay_profiles::{
     default_key_package_relays, default_message_relays, default_primary_blossom_server,
 };
-use pikachat_sidecar::key_package::normalize_peer_key_package_event_for_mls;
 use pikachat_sidecar::outbound::{OutboundConversationAction, PreparedConversationAction};
 use pikachat_sidecar::runtime::PikaRuntime;
 use pikachat_sidecar::welcome::{
@@ -1155,8 +1154,6 @@ async fn cmd_invite(cli: &Cli, peer_str: &str, group_name: &str) -> anyhow::Resu
     )
     .await
     .context("fetch peer key package — has the peer run `publish-kp`?")?;
-    let peer_kp = normalize_peer_key_package_event_for_mls(&peer_kp);
-
     // Create group.
     let config = NostrGroupConfigData::new(
         group_name.to_string(),
@@ -1441,7 +1438,6 @@ async fn cmd_send(
                         }
                     }
                 };
-                let peer_kp = normalize_peer_key_package_event_for_mls(&peer_kp);
                 let config = NostrGroupConfigData::new(
                     "DM".to_string(),
                     String::new(),
@@ -1645,7 +1641,6 @@ async fn cmd_send_hypernote(
                         }
                     }
                 };
-                let peer_kp = normalize_peer_key_package_event_for_mls(&peer_kp);
                 let config = NostrGroupConfigData::new(
                     "DM".to_string(),
                     String::new(),

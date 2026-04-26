@@ -39,6 +39,16 @@ const SCHEMA: &str = "
         room_id TEXT NOT NULL,
         last_synced_seq INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS chat_server_pending_welcomes (
+        welcome_id TEXT PRIMARY KEY,
+        server_url TEXT NOT NULL,
+        room_id TEXT,
+        commit_seq INTEGER,
+        wrapper_event_json TEXT NOT NULL,
+        lease_token TEXT NOT NULL,
+        lease_until INTEGER NOT NULL,
+        claimed_at INTEGER NOT NULL
+    );
 ";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,6 +57,18 @@ pub struct ChatServerRoomBinding {
     pub server_url: String,
     pub room_id: String,
     pub last_synced_seq: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingChatServerWelcome {
+    pub welcome_id: String,
+    pub server_url: String,
+    pub room_id: Option<String>,
+    pub commit_seq: Option<u64>,
+    pub wrapper_event_json: String,
+    pub lease_token: String,
+    pub lease_until: u64,
+    pub claimed_at: u64,
 }
 
 pub fn open_profile_db(data_dir: &str) -> Result<Connection, rusqlite::Error> {
@@ -240,9 +262,12 @@ pub fn delete_group_profiles(conn: &Connection, chat_id: &str) {
 
 /// Delete all cached profiles and follows (used on logout).
 pub fn clear_all(conn: &Connection) {
-    if let Err(e) = conn
-        .execute_batch("DELETE FROM profiles; DELETE FROM follows; DELETE FROM chat_server_rooms;")
-    {
+    if let Err(e) = conn.execute_batch(
+        "DELETE FROM profiles;
+             DELETE FROM follows;
+             DELETE FROM chat_server_rooms;
+             DELETE FROM chat_server_pending_welcomes;",
+    ) {
         tracing::warn!(%e, "failed to clear profile cache db");
     }
 }
@@ -310,6 +335,92 @@ pub fn remove_chat_server_room(conn: &Connection, chat_id: &str) {
         [chat_id],
     ) {
         tracing::warn!(%err, %chat_id, "failed to remove chat server room binding");
+    }
+}
+
+pub fn load_pending_chat_server_welcomes(conn: &Connection) -> Vec<PendingChatServerWelcome> {
+    let mut stmt = match conn.prepare(
+        "SELECT welcome_id, server_url, room_id, commit_seq, wrapper_event_json, lease_token, lease_until, claimed_at
+         FROM chat_server_pending_welcomes
+         ORDER BY claimed_at ASC, welcome_id ASC",
+    ) {
+        Ok(stmt) => stmt,
+        Err(err) => {
+            tracing::warn!(%err, "failed to prepare pending chat-server welcomes query");
+            return Vec::new();
+        }
+    };
+    let rows = match stmt.query_map([], |row| {
+        Ok(PendingChatServerWelcome {
+            welcome_id: row.get(0)?,
+            server_url: row.get(1)?,
+            room_id: row.get(2)?,
+            commit_seq: row.get(3)?,
+            wrapper_event_json: row.get(4)?,
+            lease_token: row.get(5)?,
+            lease_until: row.get(6)?,
+            claimed_at: row.get(7)?,
+        })
+    }) {
+        Ok(rows) => rows,
+        Err(err) => {
+            tracing::warn!(%err, "failed to query pending chat-server welcomes");
+            return Vec::new();
+        }
+    };
+
+    rows.flatten().collect()
+}
+
+pub fn save_pending_chat_server_welcome(conn: &Connection, pending: &PendingChatServerWelcome) {
+    if let Err(err) = conn.execute(
+        "INSERT INTO chat_server_pending_welcomes (
+            welcome_id, server_url, room_id, commit_seq, wrapper_event_json, lease_token, lease_until, claimed_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(welcome_id) DO UPDATE SET
+            server_url = excluded.server_url,
+            room_id = excluded.room_id,
+            commit_seq = excluded.commit_seq,
+            wrapper_event_json = excluded.wrapper_event_json,
+            lease_token = excluded.lease_token,
+            lease_until = excluded.lease_until,
+            claimed_at = excluded.claimed_at",
+        rusqlite::params![
+            &pending.welcome_id,
+            &pending.server_url,
+            &pending.room_id,
+            pending.commit_seq,
+            &pending.wrapper_event_json,
+            &pending.lease_token,
+            pending.lease_until,
+            pending.claimed_at,
+        ],
+    ) {
+        tracing::warn!(
+            %err,
+            welcome_id = pending.welcome_id,
+            "failed to save pending chat-server welcome"
+        );
+    }
+}
+
+pub fn remove_pending_chat_server_welcome(conn: &Connection, welcome_id: &str) {
+    if let Err(err) = conn.execute(
+        "DELETE FROM chat_server_pending_welcomes WHERE welcome_id = ?1",
+        [welcome_id],
+    ) {
+        tracing::warn!(
+            %err,
+            %welcome_id,
+            "failed to remove pending chat-server welcome"
+        );
+    }
+}
+
+#[cfg(test)]
+pub fn clear_pending_chat_server_welcomes(conn: &Connection) {
+    if let Err(err) = conn.execute("DELETE FROM chat_server_pending_welcomes", []) {
+        tracing::warn!(%err, "failed to clear pending chat-server welcomes");
     }
 }
 
@@ -694,6 +805,34 @@ mod tests {
 
         remove_chat_server_room(&conn, "chat1");
         assert!(load_chat_server_rooms(&conn).is_empty());
+    }
+
+    #[test]
+    fn pending_chat_server_welcome_round_trip() {
+        let conn = test_db();
+        let pending = PendingChatServerWelcome {
+            welcome_id: "welcome_1".to_string(),
+            server_url: "https://chat.example".to_string(),
+            room_id: Some("room_123".to_string()),
+            commit_seq: Some(7),
+            wrapper_event_json: r#"{"id":"abc"}"#.to_string(),
+            lease_token: "lease_1".to_string(),
+            lease_until: 123,
+            claimed_at: 100,
+        };
+        save_pending_chat_server_welcome(&conn, &pending);
+
+        assert_eq!(
+            load_pending_chat_server_welcomes(&conn),
+            vec![pending.clone()]
+        );
+
+        remove_pending_chat_server_welcome(&conn, "welcome_1");
+        assert!(load_pending_chat_server_welcomes(&conn).is_empty());
+
+        save_pending_chat_server_welcome(&conn, &pending);
+        clear_pending_chat_server_welcomes(&conn);
+        assert!(load_pending_chat_server_welcomes(&conn).is_empty());
     }
 
     #[test]

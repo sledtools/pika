@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use nostr_sdk::prelude::*;
-use pika_core::normalize_peer_key_package_event_for_mls;
 use pika_mls::open_unencrypted_mls;
 use pika_relay_profiles::app_default_message_relays;
 
@@ -94,10 +93,6 @@ fn main() -> Result<()> {
 
         let r1 = pika_mls::key_package::parse_key_package(&mls, &ev);
         println!("mls.parse_key_package(raw)={}", fmt_res(&r1));
-
-        let normalized = normalize_peer_key_package_event_for_mls(&ev);
-        let r2 = pika_mls::key_package::parse_key_package(&mls, &normalized);
-        println!("mls.parse_key_package(normalized)={}", fmt_res(&r2));
 
         Ok::<(), anyhow::Error>(())
     })?;
